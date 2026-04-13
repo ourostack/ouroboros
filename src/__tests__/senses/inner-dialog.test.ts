@@ -37,6 +37,7 @@ const mockGetToolsForChannel = vi.fn()
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
   readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
 vi.mock("../../heart/core", () => ({
@@ -158,7 +159,7 @@ describe("inner dialog runtime", () => {
     fs.mkdirSync(path.join(agentRoot, "psyche"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "psyche", "ASPIRATIONS.md"), "Keep improving the harness.", "utf8")
 
-    mockBuildSystem.mockReset().mockResolvedValue("system prompt")
+    mockBuildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
     mockRunAgent.mockReset().mockImplementation(async (_messages: any, callbacks: any) => {
       callbacks?.onModelStart?.()
       callbacks?.onModelStreamStart?.()

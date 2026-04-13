@@ -854,7 +854,7 @@ describe("Teams adapter - message handling", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -868,7 +868,8 @@ describe("Teams adapter - message handling", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1101,7 +1102,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1138,7 +1139,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1175,7 +1176,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1208,7 +1209,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1257,12 +1258,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1325,7 +1327,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1360,7 +1362,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1452,7 +1455,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1466,7 +1469,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1552,12 +1556,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1645,12 +1650,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1741,7 +1747,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1776,7 +1782,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1856,7 +1863,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1888,7 +1895,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -1949,7 +1957,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -1981,7 +1989,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2042,7 +2051,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -2077,7 +2086,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2140,7 +2150,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -2175,7 +2185,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       resetToolChoiceRequired: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2253,12 +2264,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2348,12 +2360,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2443,12 +2456,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2529,12 +2543,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2591,7 +2606,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn().mockRejectedValue(new Error("agent crashed")),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -2637,7 +2652,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn().mockRejectedValue("string-crash"),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -2685,12 +2700,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2758,12 +2774,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2830,12 +2847,13 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -2900,7 +2918,7 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -2966,7 +2984,7 @@ describe("Teams adapter - startTeamsApp signin.verify-state handler", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -3077,7 +3095,7 @@ describe("Teams adapter - channel.message_received event", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
     }))
 
@@ -3134,7 +3152,7 @@ describe("Teams adapter - channel.message_received event", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
     }))
 
@@ -3190,12 +3208,13 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -3274,12 +3293,13 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -3376,7 +3396,7 @@ describe("Teams adapter - unhandledRejection guard", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -3427,7 +3447,7 @@ describe("Teams adapter - unhandledRejection guard", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -3482,7 +3502,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-client-id", "test-secret", "test-tenant-id")
@@ -3516,7 +3536,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("my-app-id", "my-secret", "my-tenant")
@@ -3551,7 +3571,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
@@ -3585,7 +3605,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
@@ -3621,7 +3641,7 @@ describe("Teams adapter - startTeamsApp (Bot mode)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     mockBotConfig("test-id", "test-secret", "test-tenant")
@@ -3841,7 +3861,7 @@ describe("Teams adapter - session persistence", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -3855,7 +3875,8 @@ describe("Teams adapter - session persistence", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -4752,7 +4773,7 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -4766,7 +4787,8 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -4915,7 +4937,7 @@ describe("Teams adapter - startTeamsApp no --disable-streaming flag", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -4951,7 +4973,7 @@ describe("Teams adapter - startTeamsApp no --disable-streaming flag", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: vi.fn(),
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -4995,7 +5017,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -5009,7 +5031,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -5140,7 +5163,7 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: mockRunAgent,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       summarizeArgs: vi.fn().mockReturnValue(""),
       repairOrphanedToolCalls: vi.fn(),
     }))
@@ -5155,7 +5178,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -5202,7 +5226,7 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -5215,7 +5239,8 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue({ skipConfirmation: false, port: 3978 }),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -5731,7 +5756,7 @@ describe("Teams adapter - GitHub token handling", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -5744,7 +5769,8 @@ describe("Teams adapter - GitHub token handling", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({
@@ -5923,7 +5949,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     vi.doMock("../../heart/core", () => ({
       createSummarize: vi.fn(() => vi.fn()),
       runAgent: runAgentFn,
-      buildSystem: vi.fn().mockReturnValue("system prompt"),
+      buildSystem: vi.fn().mockReturnValue({ stable: "system prompt", volatile: "" }),
       repairOrphanedToolCalls: vi.fn(),
     }))
     vi.doMock("../../heart/config", () => ({
@@ -5936,7 +5962,8 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       getTeamsChannelConfig: vi.fn().mockReturnValue(teamsChannelConfig),
     }))
     vi.doMock("../../mind/prompt", () => ({
-      buildSystem: vi.fn().mockResolvedValue("system prompt"),
+      buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
       contextSection: vi.fn().mockReturnValue(""),
     }))
     vi.doMock("../../mind/context", () => ({

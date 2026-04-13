@@ -14,7 +14,7 @@ import { getAgentRoot } from "../heart/identity"
 import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
 import { loadSession } from "../mind/context"
-import { buildSystem } from "../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { FriendResolver } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
@@ -106,7 +106,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let persistPromise: Promise<unknown> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: await buildSystem(channel, {}, undefined) }]
+    : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
 
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)

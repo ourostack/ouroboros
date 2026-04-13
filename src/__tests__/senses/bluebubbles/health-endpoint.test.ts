@@ -30,7 +30,8 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 }))
 
 vi.mock("../../../mind/prompt", () => ({
-  buildSystem: vi.fn().mockResolvedValue("system prompt"),
+  buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
 vi.mock("../../../heart/config", () => ({

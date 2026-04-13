@@ -3,7 +3,7 @@ import * as readline from "readline"
 import * as os from "os"
 import * as path from "path"
 import { runAgent, ChannelCallbacks, getProvider, createSummarize, repairOrphanedToolCalls } from "../heart/core"
-import { buildSystem } from "../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
@@ -542,7 +542,7 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
   }
 
   const messages: OpenAI.ChatCompletionMessageParam[] = options.messages
-    ?? [{ role: "system", content: await buildSystem("cli") }]
+    ?? [{ role: "system", content: flattenSystemPrompt(await buildSystem("cli")) }]
 
   // ─── Rendering: TUI (Ink + Static) for TTY, imperative for tests/pipes ───
   const useTui = !options._testInputSource && process.stdin.isTTY === true
@@ -1017,7 +1017,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
   const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: await buildSystem("cli", {}, resolvedContext) }]
+    : [{ role: "system", content: flattenSystemPrompt(await buildSystem("cli", {}, resolvedContext)) }]
 
   // Repair any orphaned tool calls from a crash mid-turn
   repairOrphanedToolCalls(sessionMessages)

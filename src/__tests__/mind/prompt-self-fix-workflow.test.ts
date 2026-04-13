@@ -100,10 +100,10 @@ describe("self-fix workflow contract — locked content in prompt", () => {
   })
 
   it("includes the self-fix workflow contract in the system prompt", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // The core steps of the self-fix workflow
     expect(system).toContain("self-fix")
     expect(system).toContain("no direct-to-main")
@@ -111,10 +111,10 @@ describe("self-fix workflow contract — locked content in prompt", () => {
   })
 
   it("self-fix workflow requires branch/PR/CI/review/merge discipline", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     // Must mention the explicit steps
     expect(system).toContain("create a branch")
     expect(system).toContain("coding_spawn")
@@ -123,10 +123,10 @@ describe("self-fix workflow contract — locked content in prompt", () => {
   })
 
   it("self-fix workflow requires recording what was personally verified", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("record what i personally verified")
     expect(system).toContain("no claiming verification i did not personally perform")
   })
@@ -157,10 +157,10 @@ describe("self-fix workflow contract — no direct-to-main bypass", () => {
   })
 
   it("self-fix contract appears on inner channel too", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("inner")
-
+    const system = flattenSystemPrompt(await buildSystem("inner")
+)
     expect(system).toContain("self-fix")
     expect(system).toContain("no direct-to-main")
   })

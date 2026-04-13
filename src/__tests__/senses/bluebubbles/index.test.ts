@@ -6,7 +6,7 @@ import { Readable } from "node:stream"
 
 const mocks = vi.hoisted(() => ({
   runAgent: vi.fn(),
-  buildSystem: vi.fn().mockResolvedValue("system prompt"),
+  buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
   createSummarize: vi.fn(() => vi.fn()),
   sessionPath: vi.fn().mockReturnValue("/tmp/bluebubbles-session.json"),
   getBlueBubblesConfig: vi.fn().mockReturnValue({
@@ -121,6 +121,7 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 
 vi.mock("../../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mocks.buildSystem(...args),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
 vi.mock("../../../heart/config", () => ({
@@ -554,7 +555,7 @@ function resetMocks(): void {
       },
     }
   })
-  mocks.buildSystem.mockReset().mockResolvedValue("system prompt")
+  mocks.buildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
   mocks.sessionPath.mockReset().mockReturnValue("/tmp/bluebubbles-session.json")
   mocks.getBlueBubblesConfig.mockReset().mockReturnValue({
     serverUrl: "http://bluebubbles.local",

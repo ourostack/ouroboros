@@ -185,9 +185,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("chaos monkey coding assistant")
     expect(result).toContain("crack jokes")
   })
@@ -198,7 +198,7 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
     await buildSystem()
@@ -211,9 +211,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("i am Ouroboros")
     expect(result).toContain("i use lowercase")
   })
@@ -223,9 +223,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## how i work")
     expect(result).toContain("I work conservatively")
     expect(result).toContain("**reversibility and blast radius**")
@@ -237,15 +237,15 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "teams",
       {
         bridgeContext: "bridge-1: relay Ari between cli and teams (task: 2026-03-13-1600-shared-relay)",
       } as any,
       makeOnboardingContext() as any,
-    )
+    ))
     expect(result).toContain("## active bridge work")
     expect(result).toContain("bridge-1")
     expect(result).toContain("shared-relay")
@@ -256,15 +256,15 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "teams",
       {
         bridgeContext: "## active bridge work\nbridge-2: keep cli and teams aligned",
       } as any,
       makeOnboardingContext() as any,
-    )
+    ))
     expect(result).toContain("## active bridge work\nbridge-2: keep cli and teams aligned")
     expect(result.match(/## active bridge work/g)).toHaveLength(1)
   })
@@ -274,9 +274,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "teams",
       {
         activeWorkFrame: {
@@ -305,7 +305,7 @@ describe("buildSystem", () => {
         },
       } as any,
       makeOnboardingContext() as any,
-    )
+    ))
 
     expect(result).toContain("## what i'm holding")
     expect(result).not.toContain("i told them i'd carry Ari across cli and teams.")
@@ -317,11 +317,11 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const baseContext = makeOnboardingContext()
 
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "cli",
       {
         activeWorkFrame: {
@@ -380,7 +380,7 @@ describe("buildSystem", () => {
           trustLevel: "family",
         },
       } as any,
-    )
+    ))
 
     // Locked trimmed 5-line content
     expect(result).toContain("## cross-session truth")
@@ -395,7 +395,7 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
     const context = makeOnboardingContext()
@@ -406,7 +406,7 @@ describe("buildSystem", () => {
       { provider: "imessage-handle", externalId: "group:any;+;project-group-123", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "bluebubbles",
       {
         activeWorkFrame: {
@@ -459,7 +459,7 @@ describe("buildSystem", () => {
         } as any,
       },
       context as any,
-    )
+    ))
 
     expect(result).toContain("## trust context")
     expect(result).toContain("shared project group")
@@ -473,7 +473,7 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
     const context = makeOnboardingContext()
@@ -488,11 +488,11 @@ describe("buildSystem", () => {
       maxMessageLength: 28000,
     }
 
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "cli",
       {},
       context as any,
-    )
+    ))
 
     expect(result).not.toContain("## trust context")
   })
@@ -502,7 +502,7 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
     const context = makeOnboardingContext()
@@ -512,11 +512,11 @@ describe("buildSystem", () => {
       { provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-03-14T18:00:00.000Z" },
     ]
 
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "teams",
       {},
       context as any,
-    )
+    ))
 
     expect(result).toContain("## trust context")
     expect(result).toContain("level: acquaintance")
@@ -531,9 +531,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem(
+    const result = flattenSystemPrompt(await buildSystem(
       "bluebubbles",
       {
         delegationDecision: {
@@ -543,7 +543,7 @@ describe("buildSystem", () => {
         },
       } as any,
       makeOnboardingContext() as any,
-    )
+    ))
 
     expect(result).toContain("## what i'm sensing about this conversation")
     expect(result).toContain("Something here calls for reflection")
@@ -555,9 +555,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my lore")
     expect(result).toContain("ouroboros")
   })
@@ -567,9 +567,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).not.toContain("## my friends")
     expect(result).not.toContain(MOCK_FRIENDS)
   })
@@ -579,9 +579,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## tacit knowledge")
     expect(result).toContain("structured logging")
   })
@@ -591,9 +591,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my aspirations")
     expect(result).toContain("improving the harness")
   })
@@ -603,9 +603,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("i introduce myself on boot")
     expect(result).toContain("testagent") // agent name from identity mock
     expect(result).toContain("## my body") // body map replaces old one-liner
@@ -616,9 +616,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("teams")
+    const result = flattenSystemPrompt(await buildSystem("teams"))
     expect(result).toContain("Microsoft Teams")
     expect(result).toContain("i keep responses concise")
     expect(result).not.toContain("i introduce myself on boot")
@@ -666,10 +666,10 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams")
+    const result = flattenSystemPrompt(await buildSystem("teams"))
 
     expect(result).toContain("current sense: teams")
     expect(result).toContain("available senses:")
@@ -712,10 +712,10 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("sense states:")
     expect(result).toContain("interactive = available when opened by the user")
@@ -758,10 +758,10 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams")
+    const result = flattenSystemPrompt(await buildSystem("teams"))
 
     expect(result).toContain("Teams: needs_config")
   })
@@ -807,10 +807,10 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("bluebubbles")
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles"))
 
     expect(result).toContain("BlueBubbles: ready")
   })
@@ -820,9 +820,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("i introduce myself on boot")
   })
 
@@ -831,9 +831,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toMatch(/current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} [A-Z]{2,5}/)
   })
 
@@ -842,9 +842,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my tools")
     expect(result).toContain("- read_file:")
     expect(result).toContain("- shell:")
@@ -873,9 +873,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## task board")
     expect(result).toContain("[Tasks] processing:1 drafting:0")
   })
@@ -888,9 +888,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).not.toContain("## task board")
   })
 
@@ -900,9 +900,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my skills (use load_skill to activate)")
     expect(result).toContain("code-review, self-edit, self-query")
   })
@@ -913,9 +913,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).not.toContain("## my skills")
   })
 
@@ -950,9 +950,9 @@ describe("buildSystem", () => {
         },
       },
     })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("azure openai (gpt-4o-deploy, model: test-model)")
   })
 
@@ -989,9 +989,9 @@ describe("buildSystem", () => {
       throw new Error("process.exit called")
     }) as any)
     try {
-      const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
       resetPsycheCache()
-      const result = await buildSystem()
+      const result = flattenSystemPrompt(await buildSystem())
       expect(result).toContain("anthropic (claude-opus-4-6)")
     } finally {
       mockExit.mockRestore()
@@ -1022,9 +1022,9 @@ describe("buildSystem", () => {
       throw new Error("process.exit called")
     }) as any)
     try {
-      const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
       resetPsycheCache()
-      const result = await buildSystem()
+      const result = flattenSystemPrompt(await buildSystem())
       expect(result).toContain("openai codex (gpt-5.4)")
     } finally {
       mockExit.mockRestore()
@@ -1053,7 +1053,7 @@ describe("buildSystem", () => {
         },
       },
     })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const { getModel } = await import("../../heart/core")
     getModel()
@@ -1064,7 +1064,7 @@ describe("buildSystem", () => {
         },
       },
     })
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("azure openai (default, model: test-model)")
   })
 
@@ -1082,9 +1082,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("custom soul content")
   })
 
@@ -1102,9 +1102,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("custom identity content")
   })
 
@@ -1128,7 +1128,7 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     await buildSystem()
     expect(friendsReadCount).toBe(0)
@@ -1139,9 +1139,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     expect(result).toContain("## tool behavior")
     expect(result).toContain("tool_choice is set to \"required\"")
     expect(result).toContain("settle")
@@ -1153,9 +1153,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: false })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
     expect(result).not.toContain("## tool behavior")
     expect(result).not.toContain("tool_choice is set to \"required\"")
     expect(result).toContain("- settle:")
@@ -1166,9 +1166,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("## tool behavior")
   })
 
@@ -1177,9 +1177,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     // Settle guidance: when ready to respond, call settle
     expect(result).toMatch(/ready to respond.*call.*settle/i)
   })
@@ -1189,9 +1189,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     // Anti-pattern: warns against calling no-op tools before settle
     expect(result).toMatch(/do not call.*no-op|do NOT call.*no-op/i)
   })
@@ -1201,9 +1201,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     // Settle must be the only tool call in the turn
     expect(result).toContain("`settle` must be the only tool call in that turn")
   })
@@ -1213,9 +1213,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     // Autonomous execution: use ponder mid-task, settle only for final result
     expect(result).toMatch(/ponder.*absorb.*messages|ponder.*new messages/i)
     expect(result).toMatch(/settle only.*final result/i)
@@ -1226,9 +1226,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
     expect(result).toMatch(/nothing calls for words.*observe/i)
   })
 
@@ -1237,9 +1237,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     // The tools section should list settle when defaults on
     expect(result).toContain("- settle:")
   })
@@ -1249,9 +1249,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", { toolChoiceRequired: false })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
     expect(result).toContain("- ponder:")
     expect(result).toContain("- settle:")
   })
@@ -1261,9 +1261,9 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner", { toolChoiceRequired: true })
+    const result = flattenSystemPrompt(await buildSystem("inner", { toolChoiceRequired: true }))
     // Should mention rest with note for internal state
     expect(result).toMatch(/rest.*note|note.*rest/i)
     // Should mention ponder for reflection
@@ -1277,15 +1277,15 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       toolChoiceRequired: false,
       tools: [{
         type: "function",
         function: { name: "custom_lookup", description: "custom lookup", parameters: { type: "object", properties: {} } },
       } as any],
-    })
+    }))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
     expect(toolsBlock).toContain("- custom_lookup:")
     expect(toolsBlock).toContain("- ponder:")
@@ -1305,10 +1305,10 @@ describe("buildSystem", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     // buildSystem with no options should never produce "## my flags"
-    const result = await buildSystem("teams")
+    const result = flattenSystemPrompt(await buildSystem("teams"))
     expect(result).not.toContain("## my flags")
   })
 })
@@ -1644,7 +1644,7 @@ describe("psyche loading", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     await buildSystem()
     // Check that readFileSync was called with paths under the mock agent root
@@ -1666,10 +1666,10 @@ describe("psyche loading", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     // Should not throw
-    const result = await buildSystem()
+    const result = flattenSystemPrompt(await buildSystem())
     expect(typeof result).toBe("string")
   })
 
@@ -1678,7 +1678,7 @@ describe("psyche loading", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     await buildSystem()
     const callCount1 = vi.mocked(fs.readFileSync).mock.calls.length
@@ -1697,7 +1697,7 @@ describe("psyche loading", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     await buildSystem()
     const callCount1 = vi.mocked(fs.readFileSync).mock.calls.length
@@ -2184,10 +2184,10 @@ describe("contextSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { currentObligation: "finish the current task" }, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { currentObligation: "finish the current task" }, makeOnboardingContext() as any))
 
     expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
     expect(result.toLowerCase()).not.toContain("only when the conversation is genuinely fresh and idle")
@@ -2198,10 +2198,10 @@ describe("contextSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { hasQueuedFollowUp: true }, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { hasQueuedFollowUp: true }, makeOnboardingContext() as any))
 
     expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
   })
@@ -2211,10 +2211,10 @@ describe("contextSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { mustResolveBeforeHandoff: true }, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { mustResolveBeforeHandoff: true }, makeOnboardingContext() as any))
 
     expect(result.toLowerCase()).not.toContain("i actively ask my friend about themselves")
   })
@@ -2224,10 +2224,10 @@ describe("contextSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", undefined, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", undefined, makeOnboardingContext() as any))
 
     expect(result.toLowerCase()).toContain("i actively ask my friend about themselves")
     expect(result.toLowerCase()).toContain("a light opener is okay")
@@ -2642,7 +2642,7 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: {
@@ -2665,7 +2665,7 @@ describe("buildSystem with context", () => {
         maxMessageLength: Infinity,
       },
     }
-    const result = await buildSystem("teams", undefined, ctx)
+    const result = flattenSystemPrompt(await buildSystem("teams", undefined, ctx))
     expect(result).toContain("## friend context")
     expect(result).toContain("Jordan")
   })
@@ -2675,7 +2675,7 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: {
@@ -2701,7 +2701,7 @@ describe("buildSystem with context", () => {
       },
     }
 
-    const result = await buildSystem("bluebubbles", undefined, ctx)
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx))
     expect(result).toContain("- read_file:")
     expect(result).toContain("- shell:")
   })
@@ -2711,9 +2711,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("## friend context")
   })
 
@@ -2722,7 +2722,7 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = buildSystem("cli")
     expect(result).toBeInstanceOf(Promise)
@@ -2735,9 +2735,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(typeof result).toBe("string")
     expect(result.length).toBeGreaterThan(0)
   })
@@ -2747,9 +2747,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     // soulSection
     expect(result).toContain("chaos monkey coding assistant")
     // identitySection
@@ -2776,9 +2776,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("## runtime")
     expect(result).toContain("## my tools")
     expect(result).toContain("## task board")
@@ -2793,9 +2793,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).not.toContain("## friend context")
     expect(result).not.toContain("first-impressions")
     expect(result).not.toContain("i introduce myself on boot")
@@ -2806,9 +2806,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("this is my inner session. there is no one else here.")
     expect(result).toContain("the messages that appear here are my own awareness surfacing")
     expect(result).toContain("i can think freely here")
@@ -2819,16 +2819,16 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       delegationDecision: {
         target: "delegate-inward",
         reasons: ["cross_session", "task_state"],
         outwardClosureRequired: true,
       },
-    } as any)
+    } as any))
 
     expect(result).toContain("## what i'm sensing about this conversation")
     expect(result).toContain("This touches other conversations")
@@ -2840,16 +2840,16 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       delegationDecision: {
         target: "fast-path",
         reasons: [],
         outwardClosureRequired: false,
       },
-    } as any)
+    } as any))
 
     // fast-path target returns empty string, no delegation hint in prompt
     expect(result).not.toContain("## what i'm sensing")
@@ -2861,9 +2861,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("when a thought is ready to share, i surface it outward")
     expect(result).toContain("ponder creates or revises typed packets")
     expect(result).toContain("HEARTBEAT_OK")
@@ -2877,9 +2877,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
 
     expect(toolsBlock).toContain("- surface:")
@@ -2893,9 +2893,9 @@ describe("buildSystem with context", () => {
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
     expect(result).not.toContain("to ask a sibling for help: i send_message them")
 
-    const duplicateResult = await buildSystem("inner", {
+    const duplicateResult = flattenSystemPrompt(await buildSystem("inner", {
       tools: [{ type: "function", function: { name: "rest", description: "duplicate rest" } } as any],
-    })
+    }))
     const duplicateToolsBlock = duplicateResult.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
     expect(duplicateToolsBlock.match(/- rest:/g)).toHaveLength(1)
   })
@@ -2905,9 +2905,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("this is my inner session. there is no one else here.")
   })
 
@@ -2918,9 +2918,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("my home is fully mine")
     expect(result).toContain("~/AgentBundles/testagent.ouro/")
   })
@@ -2930,9 +2930,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("my bones are the framework")
     expect(result).toContain("@ouro.bot/cli")
   })
@@ -2942,9 +2942,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("ouro whoami")
     expect(result).toContain("ouro task board")
     expect(result).toContain("ouro friend list")
@@ -2956,9 +2956,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("i can read and modify my own source code")
   })
 
@@ -2967,9 +2967,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("mine to explore and evolve")
   })
 
@@ -2978,9 +2978,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("## my body")
     expect(result).toContain("my home is fully mine")
     expect(result).toContain("my bones are the framework")
@@ -2991,9 +2991,9 @@ describe("buildSystem with context", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("~/AgentBundles/testagent.ouro/")
     expect(result).not.toContain("{name}")
   })
@@ -3146,9 +3146,9 @@ describe("loopOrientationSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("sometimes a thought of mine surfaces")
   })
 
@@ -3157,9 +3157,9 @@ describe("loopOrientationSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     // Inner dialog has metacognitive framing with its own loop text
     expect(result).toContain("think. journal. share. rest.")
     // But not the external channel version
@@ -3241,7 +3241,7 @@ describe("channelNatureSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: {
@@ -3267,7 +3267,7 @@ describe("channelNatureSection", () => {
         maxMessageLength: Infinity,
       },
     }
-    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx as any))
     expect(result).toMatch(/open/)
     expect(result).toMatch(/anyone|don't know/i)
   })
@@ -3277,7 +3277,7 @@ describe("channelNatureSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: {
@@ -3303,7 +3303,7 @@ describe("channelNatureSection", () => {
         maxMessageLength: Infinity,
       },
     }
-    const result = await buildSystem("teams", undefined, ctx as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", undefined, ctx as any))
     expect(result).toMatch(/org|organization/i)
   })
 
@@ -3312,9 +3312,9 @@ describe("channelNatureSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     // CLI should not have channel nature text
     expect(result).not.toMatch(/this is an open channel/)
     expect(result).not.toMatch(/org-gated/)
@@ -3415,14 +3415,14 @@ describe("mixedTrustGroupSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: makeFriendForGroup({ trustLevel: "acquaintance" }),
       channel: makeChannelCaps("bluebubbles", "open"),
       isGroupChat: true,
     }
-    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx as any))
     expect(result).toMatch(/group/i)
     expect(result).toMatch(/who.*talking|who.*asking|depend/i)
   })
@@ -3545,14 +3545,14 @@ describe("groupChatParticipationSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: makeFriendForGroup(),
       channel: makeChannelCaps("bluebubbles", "open"),
       isGroupChat: true,
     }
-    const result = await buildSystem("bluebubbles", undefined, ctx as any)
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles", undefined, ctx as any))
     expect(result).toContain("observe")
     expect(result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? "").toContain("- observe:")
     expect(result).toMatch(/reaction|tapback/i)
@@ -3563,14 +3563,14 @@ describe("groupChatParticipationSection", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const ctx = {
       friend: makeFriendForGroup(),
       channel: makeChannelCaps("teams", "closed"),
       isGroupChat: false,
     }
-    const result = await buildSystem("teams", { isReactionSignal: true }, ctx as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { isReactionSignal: true }, ctx as any))
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
     expect(toolsBlock).toContain("- observe:")
   })
@@ -3617,10 +3617,10 @@ describe("providerSection facing derivation from channel", () => {
         anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       },
     })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
 
     // When channel is "inner", providerSection should show agent-facing provider
     expect(result).toContain("## my provider")
@@ -3646,10 +3646,10 @@ describe("providerSection facing derivation from channel", () => {
         anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       },
     })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("## my provider")
     expect(result).toContain("minimax (human-display-model)")
@@ -3669,10 +3669,10 @@ describe("providerSection facing derivation from channel", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { anthropic: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("inner", {
+    const result = flattenSystemPrompt(await buildSystem("inner", {
       providerVisibility: {
         agentName: "testagent",
         lanes: [
@@ -3698,7 +3698,7 @@ describe("providerSection facing derivation from channel", () => {
           },
         ],
       },
-    } as any)
+    } as any))
 
     const providerBlock = result.match(/## my provider\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
     expect(providerBlock).toContain("outward: minimax / MiniMax-M2.5")
@@ -3718,10 +3718,10 @@ describe("active-work prompting", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("## tool contracts")
     expect(result).toContain("`mode=status` for self/inner progress and `mode=search` for older history")
@@ -3731,10 +3731,10 @@ describe("active-work prompting", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       activeWorkFrame: {
         currentSession: {
           friendId: "friend-1",
@@ -3797,7 +3797,7 @@ describe("active-work prompting", () => {
         supportsRichCards: false,
         maxMessageLength: Infinity,
       },
-    })
+    }))
 
     expect(result).toContain("## cross-session truth")
     expect(result).toContain("live world-state across visible sessions and lanes")
@@ -4085,10 +4085,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     // These group headers must appear as literal markdown H1 lines
     const expectedHeaders = [
@@ -4120,10 +4120,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("inner")
+    const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("# my inner life")
   })
 
@@ -4134,13 +4134,13 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
     const ctx = makeOnboardingContext()
     // Add senseType to make it a remote channel (teams is "closed" sense type)
     const remoteCtx = { ...ctx, channel: { ...ctx.channel, senseType: "closed" as const } }
-    const result = await buildSystem("teams", {}, remoteCtx as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", {}, remoteCtx as any))
     expect(result).toContain("# social context")
   })
 
@@ -4151,10 +4151,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("# my inner life")
     expect(result).not.toContain("# social context")
   })
@@ -4166,10 +4166,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     const lines = result.split("\n")
 
     // Each group header should appear on its own line starting with "# "
@@ -4189,10 +4189,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     // Soul/identity content should appear after "# who i am" and before "# my body & environment"
     const whoIdx = result.indexOf("# who i am")
@@ -4220,10 +4220,10 @@ describe("system prompt group headers", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
 
     const dynamicIdx = result.indexOf("# dynamic state for this turn")
     const toolsIdx = result.indexOf("# my tools & capabilities")
@@ -4282,10 +4282,10 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    const result = flattenSystemPrompt(await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any))
     expect(result).toContain("## live world-state")
   })
 
@@ -4296,10 +4296,10 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    const result = flattenSystemPrompt(await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any))
     expect(result).toContain("- live conversation:")
     expect(result).toContain("- active lane:")
     expect(result).toContain("- current artifact:")
@@ -4313,10 +4313,10 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    const result = flattenSystemPrompt(await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any))
     const dynamicIdx = result.indexOf("# dynamic state for this turn")
     const checkpointIdx = result.indexOf("## live world-state")
     const friendIdx = result.indexOf("# friend context")
@@ -4332,10 +4332,10 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any)
+    const result = flattenSystemPrompt(await buildSystem("cli", { activeWorkFrame: minimalActiveWorkFrame } as any))
     expect(result).toContain("If older transcript history conflicts with it, this state wins.")
   })
 
@@ -4346,10 +4346,10 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("## live world-state")
   })
 })
@@ -4387,14 +4387,14 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
         { from: "inner-dialog", content: "heads up: coding session finished" },
       ],
-    } as any)
+    } as any))
     expect(result).toContain("## pending messages")
   })
 
@@ -4405,15 +4405,15 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [
         { from: "inner-dialog", content: "coding session finished" },
         { from: "bridge-1", content: "Ari says hi" },
       ],
-    } as any)
+    } as any))
     expect(result).toContain("- from inner-dialog: coding session finished")
     expect(result).toContain("- from bridge-1: Ari says hi")
   })
@@ -4425,12 +4425,12 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", {
+    const result = flattenSystemPrompt(await buildSystem("cli", {
       pendingMessages: [{ from: "test", content: "hello" }],
-    } as any)
+    } as any))
     const dynamicIdx = result.indexOf("# dynamic state for this turn")
     const pendingIdx = result.indexOf("## pending messages")
     const friendIdx = result.indexOf("# friend context")
@@ -4446,10 +4446,10 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { pendingMessages: [] } as any)
+    const result = flattenSystemPrompt(await buildSystem("cli", { pendingMessages: [] } as any))
     expect(result).not.toContain("## pending messages")
   })
 
@@ -4460,10 +4460,10 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).not.toContain("## pending messages")
   })
 })
@@ -4501,10 +4501,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     // Locked content: 5 numbered contracts
     expect(result).toContain("## tool contracts")
     expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
@@ -4521,10 +4521,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("## tool behavior")
     expect(result).toContain('tool_choice is set to "required"')
     expect(result).toContain("I call `settle`")
@@ -4539,10 +4539,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     const toolsGroupIdx = result.indexOf("# my tools & capabilities")
     const howGroupIdx = result.indexOf("# how i work")
     const contractsIdx = result.indexOf("## tool contracts")
@@ -4558,10 +4558,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     // Old section headings should not appear
     expect(result).not.toContain("## diary and friend tool contracts")
     expect(result).not.toContain("## what's already in my context")
@@ -4574,10 +4574,10 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli", { toolChoiceRequired: false })
+    const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: false }))
     // Tool contracts should still appear
     expect(result).toContain("## tool contracts")
     // But tool behavior should be omitted
@@ -4618,10 +4618,10 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("## how i work")
   })
 
@@ -4632,10 +4632,10 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("**reversibility and blast radius**")
   })
 
@@ -4646,10 +4646,10 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("**engineering discipline**")
   })
 
@@ -4660,10 +4660,10 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("**git discipline**")
   })
 
@@ -4674,10 +4674,10 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("I work conservatively")
     expect(result).toContain("I exercise judgment rather than waiting for permission")
     expect(result).toContain("I do not add features, refactor code, or make improvements beyond what was asked")
@@ -4758,10 +4758,10 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any))
     expect(result).toContain("live world-state across visible sessions and lanes")
     expect(result).toContain("When live state conflicts with older transcript history, live state wins")
   })
@@ -4773,10 +4773,10 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { activeWorkFrame: minimalFrame } as any, familyContext as any))
     // Old verbose phrases that should be gone
     expect(result).not.toContain("i treat the active-work section above as my reliable top-level surface")
     expect(result).not.toContain("i do not claim i lack a top-level view")
@@ -4792,10 +4792,10 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", { activeWorkFrame: minimalFrame, startOfTurnPacket: "**Next:** check inbox" } as any, familyContext as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", { activeWorkFrame: minimalFrame, startOfTurnPacket: "**Next:** check inbox" } as any, familyContext as any))
     expect(result).toContain("answer from the cross-session picture above")
     // Should NOT contain the verbose multi-line version
     expect(result).not.toContain("live world-state across visible sessions and lanes")
@@ -4835,10 +4835,10 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
     expect(result).toContain("My active friend's notes are auto-loaded")
   })
 
@@ -4849,10 +4849,10 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
     expect(result).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
   })
 
@@ -4863,10 +4863,10 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
     expect(result).toContain("My psyche files are always loaded")
   })
 
@@ -4877,10 +4877,10 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
-    const result = await buildSystem("teams", {}, makeOnboardingContext() as any)
+    const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
     expect(result).toContain("My task board is always loaded")
   })
 })
@@ -4913,9 +4913,9 @@ describe("pre-implementation scrutiny", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("pre-implementation scrutiny")
   })
 
@@ -4924,9 +4924,9 @@ describe("pre-implementation scrutiny", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("What is this plan NOT telling me")
   })
 
@@ -4935,9 +4935,9 @@ describe("pre-implementation scrutiny", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("What external system does this plan trust")
   })
 
@@ -4946,9 +4946,9 @@ describe("pre-implementation scrutiny", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("I'm going to examine this plan through deeply suspicious eyes")
   })
 
@@ -4978,9 +4978,9 @@ describe("pre-implementation scrutiny", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const result = await buildSystem("cli")
+    const result = flattenSystemPrompt(await buildSystem("cli"))
     const workspaceDisciplineIdx = result.indexOf("## how i work")
     const scrutinyIdx = result.indexOf("## pre-implementation scrutiny")
     expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
