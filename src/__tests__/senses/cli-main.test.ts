@@ -36,9 +36,9 @@ const mocks = vi.hoisted(() => ({
     const userText = input.messages?.[0]?.content ?? ""
     const isCommand = typeof userText === "string" && userText.startsWith("/") && !userText.startsWith("//")
     const commandName = isCommand ? userText.slice(1).trim().split(" ")[0].toLowerCase() : null
-    const knownCommands = ["exit", "new", "commands", "debug", "tool-required"]
+    const knownCommands = ["exit", "commands", "debug", "tool-required"]
     if (commandName && knownCommands.includes(commandName)) {
-      const action = commandName === "exit" ? "exit" : commandName === "new" ? "new" : "response"
+      const action = commandName === "exit" ? "exit" : "response"
       return {
         resolvedContext: {
           friend: { id: "mock-uuid", name: "testuser" },
@@ -354,7 +354,7 @@ function resetMocks() {
     const userText = input.messages?.[0]?.content ?? ""
     if (typeof userText === "string" && userText.startsWith("/") && !userText.startsWith("//")) {
       const cmdName = userText.slice(1).trim().split(" ")[0].toLowerCase()
-      const knownActions: Record<string, string> = { exit: "exit", new: "new", commands: "response", debug: "response", "tool-required": "response" }
+      const knownActions: Record<string, string> = { exit: "exit", commands: "response", debug: "response", "tool-required": "response" }
       if (cmdName in knownActions) {
         const resolvedContext = await input.friendResolver.resolve()
         if (knownActions[cmdName] === "response") {
@@ -738,23 +738,6 @@ describe("agent.ts main() - session persistence", () => {
 
     const flatLogs = logCalls.flat()
     expect(flatLogs.some((l) => l.includes("bye"))).toBe(true)
-  })
-
-  it("/new clears session and prints confirmation", async () => {
-    const deleteSessionCalls: string[] = []
-    setupBasic({
-      inputSequence: ["/new", "/exit"],
-      dispatchFn: (name: string) => {
-        if (name === "exit") return { handled: true, result: { action: "exit" } }
-        if (name === "new") return { handled: true, result: { action: "new" } }
-        return { handled: false }
-      },
-    })
-    mocks.deleteSession.mockImplementation((...args: any[]) => { deleteSessionCalls.push(args[0]) })
-
-    await testMain(undefined, { pasteDebounceMs: 0 })
-
-    expect(deleteSessionCalls.length).toBeGreaterThanOrEqual(1)
   })
 
   it("/commands prints command list without calling runAgent", async () => {
