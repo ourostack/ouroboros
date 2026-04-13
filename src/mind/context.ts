@@ -370,11 +370,12 @@ export function deferPostTurnPersist(
   prepared: PostTurnPrepared,
   usage?: UsageData,
   state?: SessionContinuityState,
-): Promise<void> {
+): Promise<SessionEvent[]> {
   return new Promise((resolve) => {
     setImmediate(() => {
       try {
-        postTurnPersist(sessPath, prepared, usage, state)
+        const events = postTurnPersist(sessPath, prepared, usage, state)
+        resolve(events)
       } catch (err) {
         emitNervesEvent({
           level: "warn",
@@ -383,8 +384,8 @@ export function deferPostTurnPersist(
           message: "deferred session persist failed",
           meta: { error: err instanceof Error ? err.message : String(err) },
         })
+        resolve([])
       }
-      resolve()
     })
   })
 }
