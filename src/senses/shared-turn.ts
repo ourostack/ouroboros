@@ -20,7 +20,7 @@ import { FriendResolver } from "../mind/friends/resolver"
 import { FileFriendStore } from "../mind/friends/store-file"
 import type { IdentityProvider } from "../mind/friends/types"
 import { getPendingDir, drainPending } from "../mind/pending"
-import { postTurn } from "../mind/context"
+import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { accumulateFriendTokens } from "../mind/friends/tokens"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
@@ -103,6 +103,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessPath = sessionPath(friendId, channel, sessionKey)
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
+  let persistPromise: Promise<unknown> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: await buildSystem(channel, {}, undefined) }]
@@ -154,8 +155,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
-      postTurn(turnMessages, sessionPathArg, usage, hooks, state)
+      const prepared = postTurnTrim(turnMessages, usage, hooks)
       sessionState = state
+      persistPromise = deferPostTurnPersist(sessionPathArg, prepared, usage, state)
     },
     /* v8 ignore stop */
     accumulateFriendTokens,
@@ -167,6 +169,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let finalResponse: string
   if (responseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
+    // Await deferred persist so the session file is up-to-date before readback
+    if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
       const lastAssistant = [...postTurnSession.messages].reverse().find(m => m.role === "assistant")

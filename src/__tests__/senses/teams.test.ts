@@ -877,7 +877,8 @@ describe("Teams adapter - message handling", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
@@ -1270,7 +1271,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1366,7 +1368,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1471,7 +1474,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1561,7 +1565,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1653,7 +1658,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn().mockImplementation((path: string) => { deleteSessionCalls.push(path) }),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1778,7 +1784,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1889,7 +1896,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -1981,7 +1989,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2076,7 +2085,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2173,7 +2183,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn().mockImplementation((path: string) => { deleteSessionCalls.push(path) }),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2255,7 +2266,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2349,7 +2361,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2444,7 +2457,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2529,7 +2543,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -2683,7 +2698,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     const teams = await import("../../senses/teams")
@@ -2755,7 +2771,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     const teams = await import("../../senses/teams")
@@ -2826,7 +2843,8 @@ describe("Teams adapter - startTeamsApp (DevtoolsPlugin mode)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     const teams = await import("../../senses/teams")
@@ -3185,7 +3203,8 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     // Mock FriendResolver to capture constructor args
@@ -3268,7 +3287,8 @@ describe("Teams adapter - startTeamsApp AAD extraction (Bug 1)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     // Mock FriendResolver to capture constructor args
@@ -3799,7 +3819,7 @@ describe("Teams adapter - session persistence", () => {
     runAgentFn?: any
     loadSessionReturn?: any
     saveSessionCalls?: any[][]
-    postTurnCalls?: any[][]
+    postTurnTrimCalls?: any[][]
     deleteSessionCalls?: string[]
     trimMessagesFn?: any
     parseSlashCommandFn?: any
@@ -3810,7 +3830,7 @@ describe("Teams adapter - session persistence", () => {
       runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
       loadSessionReturn = null,
       saveSessionCalls = [],
-      postTurnCalls = [],
+      postTurnTrimCalls = [],
       deleteSessionCalls = [],
       trimMessagesFn = ((msgs: any) => [...msgs]),
       parseSlashCommandFn = (() => null),
@@ -3844,7 +3864,8 @@ describe("Teams adapter - session persistence", () => {
       deleteSession: vi.fn().mockImplementation((...args: any[]) => { deleteSessionCalls.push(args[0]) }),
       trimMessages: vi.fn().mockImplementation(trimMessagesFn),
 
-      postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
+      postTurnTrim: vi.fn().mockImplementation((...args: any[]) => { postTurnTrimCalls.push(args); return { currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 } }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     const _cmdMockRegistry = {
       register: vi.fn(),
@@ -3929,24 +3950,24 @@ describe("Teams adapter - session persistence", () => {
     expect(msgs.some((m: any) => typeof m.content === "string" && m.content.includes("new msg"))).toBe(true)
   })
 
-  it("calls postTurn after runAgent with usage", async () => {
+  it("calls postTurnTrim after runAgent with usage", async () => {
     vi.resetModules()
     const usageData = { input_tokens: 200, output_tokens: 100, reasoning_tokens: 20, total_tokens: 320 }
-    const postTurnCalls: any[][] = []
+    const postTurnTrimCalls: any[][] = []
     mockTeamsDeps({
       runAgentFn: vi.fn().mockResolvedValue({ usage: usageData }),
-      postTurnCalls,
+      postTurnTrimCalls,
     })
     const teams = await import("../../senses/teams")
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("hello", mockStream as any, "conv-123")
 
-    expect(postTurnCalls.length).toBe(1)
-    expect(postTurnCalls[0][1]).toBe("/tmp/teams-session.json")
-    expect(postTurnCalls[0][2]).toEqual(usageData)
+    expect(postTurnTrimCalls.length).toBe(1)
+    // postTurnTrim receives (turnMessages, usage, hooks)
+    expect(postTurnTrimCalls[0][1]).toEqual(usageData)
   })
 
-  it("does not call trimMessages directly (postTurn handles it)", async () => {
+  it("does not call trimMessages directly (postTurnTrim handles it)", async () => {
     vi.resetModules()
     const trimCalls: any[][] = []
     mockTeamsDeps({
@@ -3956,7 +3977,7 @@ describe("Teams adapter - session persistence", () => {
     const mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
     await teams.handleTeamsMessage("hello", mockStream as any, "conv-123")
 
-    expect(trimCalls.length).toBe(0) // trimming moved to postTurn
+    expect(trimCalls.length).toBe(0) // trimming moved to postTurnTrim
   })
 
   it("creates fresh session when no session exists", async () => {
@@ -4714,7 +4735,7 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
   function mockTeamsDeps2(overrides: {
     runAgentFn?: any
     loadSessionReturn?: any
-    postTurnCalls?: any[][]
+    postTurnTrimCalls?: any[][]
     deleteSessionCalls?: string[]
     parseSlashCommandFn?: any
     dispatchFn?: any
@@ -4722,7 +4743,7 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
     const {
       runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
       loadSessionReturn = null,
-      postTurnCalls = [],
+      postTurnTrimCalls = [],
       deleteSessionCalls = [],
       parseSlashCommandFn = (() => null),
       dispatchFn = (() => ({ handled: false })),
@@ -4754,7 +4775,8 @@ describe("Teams adapter - handleTeamsMessage unified chunked streaming", () => {
       deleteSession: vi.fn().mockImplementation((...args: any[]) => { deleteSessionCalls.push(args[0]) }),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
+      postTurnTrim: vi.fn().mockImplementation((...args: any[]) => { postTurnTrimCalls.push(args); return { currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 } }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     const _cmdMockRegistry = {
       register: vi.fn(),
@@ -4996,7 +5018,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
@@ -5141,7 +5164,8 @@ describe("Teams adapter - handleTeamsMessage with sendMessage", () => {
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
 
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
 
     vi.spyOn(console, "log").mockImplementation(() => {})
@@ -5199,7 +5223,8 @@ describe("Teams adapter - context kernel wiring (Unit 1Hc)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
@@ -5727,7 +5752,8 @@ describe("Teams adapter - GitHub token handling", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn(),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn(),
+      postTurnTrim: vi.fn().mockReturnValue({ currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     vi.doMock("../../senses/commands", () => ({
       createCommandRegistry: vi.fn().mockReturnValue({
@@ -5846,7 +5872,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
   function mockPipelineDeps(overrides: {
     runAgentFn?: any
     loadSessionReturn?: any
-    postTurnCalls?: any[][]
+    postTurnTrimCalls?: any[][]
     deleteSessionCalls?: string[]
     parseSlashCommandFn?: any
     dispatchFn?: any
@@ -5855,7 +5881,7 @@ describe("Teams adapter - pipeline integration (U7)", () => {
     const {
       runAgentFn = vi.fn().mockResolvedValue({ usage: undefined }),
       loadSessionReturn = null,
-      postTurnCalls = [],
+      postTurnTrimCalls = [],
       deleteSessionCalls = [],
       parseSlashCommandFn = (() => null),
       dispatchFn = (() => ({ handled: false })),
@@ -5918,7 +5944,8 @@ describe("Teams adapter - pipeline integration (U7)", () => {
       saveSession: vi.fn(),
       deleteSession: vi.fn().mockImplementation((...args: any[]) => { deleteSessionCalls.push(args[0]) }),
       trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
-      postTurn: vi.fn().mockImplementation((...args: any[]) => { postTurnCalls.push(args) }),
+      postTurnTrim: vi.fn().mockImplementation((...args: any[]) => { postTurnTrimCalls.push(args); return { currentMessages: [], trimmedMessages: [], currentIngressTimes: [], maxTokens: 128000, contextMargin: 0 } }),
+      deferPostTurnPersist: vi.fn().mockResolvedValue([]),
     }))
     const mockDrainDeferredReturns = vi.fn().mockReturnValue([])
     vi.doMock("../../mind/pending", () => ({
