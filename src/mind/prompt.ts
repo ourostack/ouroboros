@@ -25,6 +25,16 @@ import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 
+export interface SystemPrompt {
+  stable: string;
+  volatile: string;
+}
+
+export function flattenSystemPrompt(sp: SystemPrompt): string {
+  const parts = [sp.stable, sp.volatile].filter(Boolean);
+  return parts.join("\n\n");
+}
+
 // Lazy-loaded psyche text cache
 let _psycheCache: {
   soul: string;
