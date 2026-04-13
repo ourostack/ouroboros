@@ -164,6 +164,15 @@ describe("provider binding resolver", () => {
     writeProviderState(agentRoot, providerState())
     writeProviderCredentialPool(homeDir, providerPool())
 
+    expect(normalizeProviderLane("outward")).toEqual({ lane: "outward", warnings: [] })
+    expect(normalizeProviderLane("inner")).toEqual({ lane: "inner", warnings: [] })
+    expect(normalizeProviderLane("human")).toEqual({
+      lane: "outward",
+      warnings: [{
+        code: "legacy-lane-selector",
+        message: "human is legacy provider wording; using outward lane",
+      }],
+    })
     expect(normalizeProviderLane("humanFacing")).toEqual({
       lane: "outward",
       warnings: [{
@@ -199,6 +208,35 @@ describe("provider binding resolver", () => {
     })
   })
 
+  it("reports unknown readiness when credentials exist but no check has run", () => {
+    emitTestEvent("provider resolver unknown readiness with credential")
+    writeProviderState(agentRoot, providerState({
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, providerPool())
+
+    const result = resolveEffectiveProviderBinding({
+      agentName: "slugger",
+      agentRoot,
+      homeDir,
+      lane: "inner",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      binding: {
+        credential: {
+          status: "present",
+          revision: "cred_minimax_1",
+        },
+        readiness: {
+          status: "unknown",
+        },
+        warnings: [],
+      },
+    })
+  })
+
   it("does not fall back to agent.json provider fields when local provider state is missing", () => {
     emitTestEvent("provider resolver missing state no fallback")
     writeAgentConfigWithDifferentProviders()
@@ -229,7 +267,7 @@ describe("provider binding resolver", () => {
   })
 
   it("keeps the binding resolved but reports direct auth guidance when credentials are missing", () => {
-    emitTestEvent("provider resolver missing credential")
+    emitTestEvent("provider resolver missing credential without pool")
     writeProviderState(agentRoot, providerState({
       readiness: {},
     }))
@@ -263,6 +301,157 @@ describe("provider binding resolver", () => {
         warnings: [{
           code: "credential-missing",
           message: "minimax has no credential record in the machine credential pool.",
+        }],
+      },
+    })
+  })
+
+  it("reports missing credentials when the pool exists without the selected provider", () => {
+    emitTestEvent("provider resolver missing credential in pool")
+    writeProviderState(agentRoot, providerState({
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, providerPool({
+      providers: {
+        anthropic: {
+          provider: "anthropic",
+          revision: "cred_anthropic_1",
+          updatedAt: "2026-04-12T18:32:00.000Z",
+          credentials: { setupToken: "sk-ant-oat01-secret-token" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            contributedByAgent: "ouroboros",
+            updatedAt: "2026-04-12T18:32:00.000Z",
+          },
+        },
+      },
+    }))
+
+    const result = resolveEffectiveProviderBinding({
+      agentName: "slugger",
+      agentRoot,
+      homeDir,
+      lane: "inner",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      binding: {
+        credential: {
+          status: "missing",
+          provider: "minimax",
+        },
+        warnings: [{
+          code: "credential-missing",
+          message: "minimax has no credential record in the machine credential pool.",
+        }],
+      },
+    })
+    expect(JSON.stringify(result)).not.toContain("sk-ant-oat01-secret-token")
+  })
+
+  it("marks existing readiness stale when credentials are missing", () => {
+    emitTestEvent("provider resolver stale missing credential")
+    writeProviderState(agentRoot, providerState())
+
+    const result = resolveEffectiveProviderBinding({
+      agentName: "slugger",
+      agentRoot,
+      homeDir,
+      lane: "inner",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      binding: {
+        credential: {
+          status: "missing",
+          provider: "minimax",
+        },
+        readiness: {
+          status: "stale",
+          previousStatus: "ready",
+          reason: "credential-missing",
+          credentialRevision: "cred_minimax_1",
+        },
+        warnings: [{
+          code: "credential-missing",
+          message: "minimax has no credential record in the machine credential pool.",
+        }],
+      },
+    })
+  })
+
+  it("reports an invalid credential pool with unknown readiness when no check has run", () => {
+    emitTestEvent("provider resolver invalid pool unknown readiness")
+    writeProviderState(agentRoot, providerState({
+      readiness: {},
+    }))
+    const poolPath = path.join(homeDir, ".agentsecrets", "providers.json")
+    fs.mkdirSync(path.dirname(poolPath), { recursive: true })
+    fs.writeFileSync(poolPath, "{ broken", "utf-8")
+
+    const result = resolveEffectiveProviderBinding({
+      agentName: "slugger",
+      agentRoot,
+      homeDir,
+      lane: "inner",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      binding: {
+        credential: {
+          status: "invalid-pool",
+          provider: "minimax",
+          poolPath,
+          repair: {
+            command: "ouro auth --agent slugger --provider minimax",
+          },
+        },
+        readiness: {
+          status: "unknown",
+          reason: "credential-pool-invalid",
+        },
+        warnings: [{
+          code: "credential-pool-invalid",
+          message: "minimax cannot read credentials because the machine credential pool is invalid.",
+        }],
+      },
+    })
+  })
+
+  it("marks existing readiness stale when the credential pool is invalid", () => {
+    emitTestEvent("provider resolver invalid pool stale readiness")
+    writeProviderState(agentRoot, providerState())
+    const poolPath = path.join(homeDir, ".agentsecrets", "providers.json")
+    fs.mkdirSync(path.dirname(poolPath), { recursive: true })
+    fs.writeFileSync(poolPath, "{ broken", "utf-8")
+
+    const result = resolveEffectiveProviderBinding({
+      agentName: "slugger",
+      agentRoot,
+      homeDir,
+      lane: "inner",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      binding: {
+        credential: {
+          status: "invalid-pool",
+          provider: "minimax",
+        },
+        readiness: {
+          status: "stale",
+          previousStatus: "ready",
+          reason: "credential-pool-invalid",
+          credentialRevision: "cred_minimax_1",
+        },
+        warnings: [{
+          code: "credential-pool-invalid",
+          message: "minimax cannot read credentials because the machine credential pool is invalid.",
         }],
       },
     })
