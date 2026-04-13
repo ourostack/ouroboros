@@ -156,9 +156,10 @@ describe("provider visibility", () => {
     const agentRoot = path.join(makeTempDir("provider-visibility-configured"), "slugger.ouro")
     writeProviderState(agentRoot, providerState())
 
-    const { buildAgentProviderVisibility, formatAgentProviderVisibilityForPrompt } = await import("../../heart/provider-visibility")
+    const { buildAgentProviderVisibility, formatAgentProviderVisibilityForPrompt, providerVisibilityStatusRows } = await import("../../heart/provider-visibility")
     const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot, homeDir })
     const rendered = formatAgentProviderVisibilityForPrompt(visibility)
+    const rows = providerVisibilityStatusRows(visibility)
 
     expect(visibility.lanes[0]).toMatchObject({
       lane: "outward",
@@ -181,6 +182,33 @@ describe("provider visibility", () => {
     expect(rendered).toContain("credentials: missing")
     expect(rendered).toContain("repair: ouro auth --agent slugger --provider minimax")
     expect(rendered).toContain("warnings: minimax has no credential record in the machine credential pool.")
+    expect(rows[1]).toMatchObject({
+      agent: "slugger",
+      lane: "inner",
+      detail: "400 status code",
+    })
+  })
+
+  it("omits unchecked readiness fields instead of inventing timestamps or attempts", async () => {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.test_provider_visibility",
+      message: "provider visibility unchecked readiness test",
+      meta: { test: true },
+    })
+    const homeDir = makeTempDir("provider-visibility-unchecked-home")
+    const agentRoot = path.join(makeTempDir("provider-visibility-unchecked"), "slugger.ouro")
+    writeProviderState(agentRoot, providerState({ readiness: {} }))
+
+    const { buildAgentProviderVisibility } = await import("../../heart/provider-visibility")
+    const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot, homeDir })
+
+    expect(visibility.lanes[0].readiness).toEqual({
+      status: "unknown",
+      reason: "credential-missing",
+    })
+    expect(visibility.lanes[0].readiness).not.toHaveProperty("checkedAt")
+    expect(visibility.lanes[0].readiness).not.toHaveProperty("attempts")
   })
 
   it("formats non-ready and unconfigured edge states for status and prompts", async () => {
