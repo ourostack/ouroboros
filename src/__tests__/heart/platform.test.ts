@@ -92,6 +92,22 @@ describe("detectPlatform", () => {
     expect(result).toBe("macos")
   })
 
+  it("returns 'linux' for unknown platform (e.g., freebsd)", async () => {
+    const { detectPlatform } = await import("../../heart/platform")
+    const result = detectPlatform({ platform: "freebsd" })
+    expect(result).toBe("linux")
+  })
+
+  it("uses default readFileSync when not injected (linux platform, /proc/version not readable on test host)", async () => {
+    const { detectPlatform } = await import("../../heart/platform")
+    // On the test host (macOS/Linux), calling with platform: "linux" and no readFileSync
+    // will use the real fs.readFileSync to read /proc/version.
+    // On macOS: throws ENOENT -> returns "linux"
+    // On actual Linux: reads /proc/version -> may return "linux" or "wsl"
+    const result = detectPlatform({ platform: "linux", env: {} })
+    expect(["linux", "wsl"]).toContain(result)
+  })
+
   it("uses default deps when none provided", async () => {
     const { detectPlatform } = await import("../../heart/platform")
     // Should not throw when called with no deps — uses process.platform, process.env, fs.readFileSync
