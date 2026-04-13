@@ -67,6 +67,8 @@ export interface ProviderRuntime {
   streamTurn(request: ProviderTurnRequest): Promise<TurnResult>;
   appendToolOutput(callId: string, output: string): void;
   resetTurnState(messages: OpenAI.ChatCompletionMessageParam[]): void;
+  /** Minimal API call to verify credentials work. Throws on failure. */
+  ping(signal?: AbortSignal): Promise<void>;
   classifyError(error: Error): ProviderErrorClassification;
 }
 
