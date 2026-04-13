@@ -11,7 +11,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -32,9 +32,18 @@ import {
   loadAgentSecrets,
   resolveHatchCredentials,
   readAgentConfigForAgent,
-  writeAgentProviderSelection,
-  writeAgentModel,
 } from "../auth/auth-flow"
+import {
+  readProviderCredentialPool,
+  readLegacyAgentProviderCredentials,
+  splitProviderCredentialFields,
+  upsertProviderCredential,
+  type ProviderCredentialRecord,
+} from "../provider-credential-pool"
+import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
+import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
+import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { getDefaultModelForProvider } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 
 import type {
@@ -49,6 +58,7 @@ import type {
   AuthCliCommand,
   AuthVerifyCliCommand,
   AuthSwitchCliCommand,
+  ProviderCliCommand,
   ChangelogCliCommand,
   ConfigModelCliCommand,
   ConfigModelsCliCommand,
@@ -86,7 +96,7 @@ import { runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { UpProgress } from "./up-progress"
-import { pingGithubCopilotModel } from "../provider-ping"
+import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
 
 // ── ensureDaemonRunning ──
 
@@ -490,11 +500,6 @@ export async function listGithubCopilotModels(
 
 // ── Provider credential verification ──
 
-/* v8 ignore next 3 -- only called from auth.switch inside integration block @preserve */
-function hasStoredCredentials(provider: AgentProvider, providerSecrets: Record<string, unknown>): boolean {
-  return PROVIDER_CREDENTIALS[provider].required.every((key) => !!providerSecrets[key])
-}
-
 /* v8 ignore start -- verifyProviderCredentials: delegates to pingProvider @preserve */
 async function verifyProviderCredentials(
   provider: string,
@@ -514,7 +519,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -545,6 +550,438 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
     credentials,
     migrationPath: command.migrationPath,
   }
+}
+
+// ── Provider state CLI helpers ──
+
+function providerCliHomeDir(deps: OuroCliDeps): string {
+  if (!deps.secretsRoot) return os.homedir()
+  return path.basename(deps.secretsRoot) === ".agentsecrets"
+    ? path.dirname(deps.secretsRoot)
+    : deps.secretsRoot
+}
+
+function providerCliAgentRoot(command: { agent: string }, deps: OuroCliDeps): string {
+  return path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${command.agent}.ouro`)
+}
+
+function providerCliNow(deps: OuroCliDeps): Date {
+  return new Date((deps.now ?? Date.now)())
+}
+
+function readOrBootstrapProviderState(agentName: string, deps: OuroCliDeps): { agentRoot: string; state: ProviderState } {
+  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
+  const readResult = readProviderState(agentRoot)
+  if (readResult.ok) return { agentRoot, state: readResult.state }
+  if (readResult.reason === "invalid") {
+    throw new Error(`provider state for ${agentName} is invalid at ${readResult.statePath}: ${readResult.error}`)
+  }
+
+  const { config } = readAgentConfigForAgent(agentName, deps.bundlesRoot)
+  const homeDir = providerCliHomeDir(deps)
+  const machine = loadOrCreateMachineIdentity({
+    homeDir,
+    now: () => providerCliNow(deps),
+  })
+  const state = bootstrapProviderStateFromAgentConfig({
+    machineId: machine.machineId,
+    now: providerCliNow(deps),
+    agentConfig: {
+      humanFacing: {
+        provider: config.humanFacing.provider,
+        model: config.humanFacing.model || getDefaultModelForProvider(config.humanFacing.provider),
+      },
+      agentFacing: {
+        provider: config.agentFacing.provider,
+        model: config.agentFacing.model || getDefaultModelForProvider(config.agentFacing.provider),
+      },
+    },
+  })
+  writeProviderState(agentRoot, state)
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.provider_state_bootstrapped",
+    message: "bootstrapped local provider state from agent config",
+    meta: { agent: agentName, agentRoot },
+  })
+  return { agentRoot, state }
+}
+
+function credentialPingConfig(record: ProviderCredentialRecord): Parameters<typeof pingProvider>[1] {
+  return {
+    ...record.credentials,
+    ...record.config,
+  } as unknown as Parameters<typeof pingProvider>[1]
+}
+
+function pingAttemptCount(result: PingResult | { attempts?: unknown }): number | undefined {
+  if (typeof result.attempts === "number") return result.attempts
+  if (Array.isArray(result.attempts)) return result.attempts.length
+  return undefined
+}
+
+function providerCliLegacyRecord(agent: string, provider: AgentProvider, deps: OuroCliDeps): ReturnType<typeof splitProviderCredentialFields> | null {
+  try {
+    const legacyCandidates = readLegacyAgentProviderCredentials({
+      homeDir: providerCliHomeDir(deps),
+      agentName: agent,
+    })
+    const candidate = legacyCandidates.find((entry) => entry.provider === provider)
+    if (candidate) return { credentials: candidate.credentials, config: candidate.config }
+  } catch {
+    // Fall through to the injected/secretsRoot-aware legacy reader below.
+  }
+
+  try {
+    const { secrets } = loadAgentSecrets(agent, { secretsRoot: deps.secretsRoot })
+    const providerSecrets = secrets.providers[provider]
+    const split = splitProviderCredentialFields(provider, providerSecrets)
+    if (Object.keys(split.credentials).length === 0 && Object.keys(split.config).length === 0) return null
+    return split
+  } catch {
+    return null
+  }
+}
+
+function readProviderCredentialRecord(
+  agent: string,
+  provider: AgentProvider,
+  deps: OuroCliDeps,
+): { ok: true; record: ProviderCredentialRecord } | { ok: false; reason: "missing" | "invalid"; poolPath: string; error: string } {
+  const homeDir = providerCliHomeDir(deps)
+  const poolResult = readProviderCredentialPool(homeDir)
+  if (poolResult.ok) {
+    const existing = poolResult.pool.providers[provider]
+    if (existing) return { ok: true, record: existing }
+  } else if (poolResult.reason === "invalid") {
+    return { ok: false, reason: "invalid", poolPath: poolResult.poolPath, error: poolResult.error }
+  }
+
+  const legacy = providerCliLegacyRecord(agent, provider, deps)
+  if (legacy) {
+    const record = upsertProviderCredential({
+      homeDir,
+      provider,
+      credentials: legacy.credentials,
+      config: legacy.config,
+      provenance: {
+        source: "legacy-agent-secrets",
+        contributedByAgent: agent,
+      },
+      now: providerCliNow(deps),
+    })
+    return { ok: true, record }
+  }
+
+  return {
+    ok: false,
+    reason: "missing",
+    poolPath: poolResult.poolPath,
+    error: `no credentials stored for ${provider}`,
+  }
+}
+
+function writeProviderBinding(input: {
+  agentRoot: string
+  state: ProviderState
+  lane: ProviderLane
+  provider: AgentProvider
+  model: string
+  deps: OuroCliDeps
+  status: "ready" | "failed" | "unknown"
+  credentialRevision?: string
+  error?: string
+  attempts?: number
+}): void {
+  const updatedAt = providerCliNow(input.deps).toISOString()
+  input.state.updatedAt = updatedAt
+  input.state.lanes[input.lane] = {
+    provider: input.provider,
+    model: input.model,
+    source: "local",
+    updatedAt,
+  }
+  input.state.readiness[input.lane] = {
+    status: input.status,
+    provider: input.provider,
+    model: input.model,
+    checkedAt: updatedAt,
+    ...(input.credentialRevision ? { credentialRevision: input.credentialRevision } : {}),
+    ...(input.error ? { error: input.error } : {}),
+    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+  }
+  writeProviderState(input.agentRoot, input.state)
+}
+
+function writeProviderReadiness(input: {
+  agentRoot: string
+  state: ProviderState
+  lane: ProviderLane
+  provider: AgentProvider
+  model: string
+  deps: OuroCliDeps
+  status: "ready" | "failed"
+  credentialRevision: string
+  error?: string
+  attempts?: number
+}): void {
+  const checkedAt = providerCliNow(input.deps).toISOString()
+  input.state.updatedAt = checkedAt
+  input.state.readiness[input.lane] = {
+    status: input.status,
+    provider: input.provider,
+    model: input.model,
+    checkedAt,
+    credentialRevision: input.credentialRevision,
+    ...(input.error ? { error: input.error } : {}),
+    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+  }
+  writeProviderState(input.agentRoot, input.state)
+}
+
+async function executeProviderUse(
+  command: Extract<OuroCliCommand, { kind: "provider.use" }>,
+  deps: OuroCliDeps,
+  options: { writeStdout?: boolean } = {},
+): Promise<string> {
+  const writeMessage = (message: string): string => {
+    if (options.writeStdout !== false) deps.writeStdout(message)
+    return message
+  }
+  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
+  const credential = readProviderCredentialRecord(command.agent, command.provider, deps)
+  if (!credential.ok) {
+    if (!command.force) {
+      const message = [
+        `no credentials stored for ${command.provider}.`,
+        `Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`,
+      ].join("\n")
+      return writeMessage(message)
+    }
+    writeProviderBinding({
+      agentRoot,
+      state,
+      lane: command.lane,
+      provider: command.provider,
+      model: command.model,
+      deps,
+      status: "failed",
+      error: credential.error,
+    })
+    const message = `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`
+    return writeMessage(message)
+  }
+
+  const pingResult = await pingProvider(command.provider, credentialPingConfig(credential.record), {
+    model: command.model,
+    attemptPolicy: { baseDelayMs: 0 },
+    sleep: deps.sleep,
+  })
+  const attempts = pingAttemptCount(pingResult)
+  if (!pingResult.ok && !command.force) {
+    const message = [
+      `${command.agent} ${command.lane} ${command.provider} / ${command.model}: failed (${pingResult.message})`,
+      `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force the local binding with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
+    ].join("\n")
+    return writeMessage(message)
+  }
+
+  writeProviderBinding({
+    agentRoot,
+    state,
+    lane: command.lane,
+    provider: command.provider,
+    model: command.model,
+    deps,
+    status: pingResult.ok ? "ready" : "failed",
+    credentialRevision: credential.record.revision,
+    ...(!pingResult.ok ? { error: pingResult.message } : {}),
+    ...(attempts !== undefined ? { attempts } : {}),
+  })
+  const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
+  const message = `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.provider_use_completed",
+    message: "provider use command completed",
+    meta: { agent: command.agent, lane: command.lane, provider: command.provider, model: command.model, status: pingResult.ok ? "ready" : "failed" },
+  })
+  return writeMessage(message)
+}
+
+async function executeProviderCheck(
+  command: Extract<OuroCliCommand, { kind: "provider.check" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
+  const binding = state.lanes[command.lane]
+  const credential = readProviderCredentialRecord(command.agent, binding.provider, deps)
+  if (!credential.ok) {
+    const message = [
+      `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: unknown (${credential.error})`,
+      `Run \`ouro auth --agent ${command.agent} --provider ${binding.provider}\` first.`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  const pingResult = await pingProvider(binding.provider, credentialPingConfig(credential.record), {
+    model: binding.model,
+    attemptPolicy: { baseDelayMs: 0 },
+    sleep: deps.sleep,
+  })
+  const attempts = pingAttemptCount(pingResult)
+  writeProviderReadiness({
+    agentRoot,
+    state,
+    lane: command.lane,
+    provider: binding.provider,
+    model: binding.model,
+    deps,
+    status: pingResult.ok ? "ready" : "failed",
+    credentialRevision: credential.record.revision,
+    ...(!pingResult.ok ? { error: pingResult.message } : {}),
+    ...(attempts !== undefined ? { attempts } : {}),
+  })
+  const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
+  const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
+  deps.writeStdout(message)
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.provider_check_completed",
+    message: "provider check command completed",
+    meta: { agent: command.agent, lane: command.lane, provider: binding.provider, model: binding.model, status: pingResult.ok ? "ready" : "failed" },
+  })
+  return message
+}
+
+function renderProviderCredentialLine(credential: EffectiveProviderCredentialStatus): string {
+  if (credential.status === "present") {
+    const contributor = credential.contributedByAgent ? ` by ${credential.contributedByAgent}` : ""
+    const credentialFields = credential.credentialFields.length > 0 ? ` credentials: ${credential.credentialFields.join(", ")}` : " credentials: none"
+    const configFields = credential.configFields.length > 0 ? ` config: ${credential.configFields.join(", ")}` : " config: none"
+    return `credentials: present (${credential.source}${contributor}; ${credential.revision};${credentialFields};${configFields})`
+  }
+  if (credential.status === "invalid-pool") {
+    return `credentials: invalid pool (${credential.error}); repair: ${credential.repair.command}`
+  }
+  return `credentials: missing; repair: ${credential.repair.command}`
+}
+
+function executeProviderStatus(
+  command: Extract<OuroCliCommand, { kind: "provider.status" }>,
+  deps: OuroCliDeps,
+): string {
+  const agentRoot = providerCliAgentRoot(command, deps)
+  const homeDir = providerCliHomeDir(deps)
+  const lines = [`provider status: ${command.agent}`]
+  for (const lane of ["outward", "inner"] as ProviderLane[]) {
+    const resolved = resolveEffectiveProviderBinding({
+      agentName: command.agent,
+      agentRoot,
+      homeDir,
+      lane,
+    })
+    if (!resolved.ok) {
+      lines.push(`  ${lane}: unavailable`)
+      lines.push(`    ${resolved.reason}: ${resolved.repair.command}`)
+      continue
+    }
+    const binding = resolved.binding
+    lines.push(`  ${lane}: ${binding.provider} / ${binding.model} (${binding.source})`)
+    lines.push(`    readiness: ${binding.readiness.status}${binding.readiness.error ? ` (${binding.readiness.error})` : ""}`)
+    lines.push(`    ${renderProviderCredentialLine(binding.credential)}`)
+    for (const warning of binding.warnings) {
+      lines.push(`    warning: ${warning.message}`)
+    }
+  }
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeLegacyAuthSwitch(
+  command: Extract<OuroCliCommand, { kind: "auth.switch" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const { state } = readOrBootstrapProviderState(command.agent, deps)
+  const lanes: ProviderLane[] = command.facing
+    ? [command.facing === "human" ? "outward" : "inner"]
+    : ["outward", "inner"]
+  const messages: string[] = []
+  for (const lane of lanes) {
+    const model = state.lanes[lane].model
+    messages.push(await executeProviderUse({
+      kind: "provider.use",
+      agent: command.agent,
+      lane,
+      provider: command.provider,
+      model,
+      legacyFacing: command.facing,
+    }, deps, { writeStdout: false }))
+  }
+  const message = [
+    `deprecated: switched this machine's local provider binding. \`ouro auth switch\` no longer edits agent.json.`,
+    ...messages,
+    `Use \`ouro use --agent ${command.agent} --lane <outward|inner> --provider ${command.provider} --model <model>\` for explicit provider/model selection.`,
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeLegacyConfigModel(
+  command: Extract<OuroCliCommand, { kind: "config.model" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
+  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
+  const binding = state.lanes[lane]
+  if (binding.provider === "github-copilot") {
+    const credential = readProviderCredentialRecord(command.agent, "github-copilot", deps)
+    if (credential.ok) {
+      const ghConfig: Record<string, string | number> = {
+        ...credential.record.config,
+        ...credential.record.credentials,
+      }
+      const githubToken = ghConfig.githubToken
+      const baseUrl = ghConfig.baseUrl
+      if (typeof githubToken === "string" && typeof baseUrl === "string") {
+        const fetchFn = deps.fetchImpl ?? fetch
+        try {
+          const models = await listGithubCopilotModels(baseUrl, githubToken, fetchFn)
+          const available = models.map((m) => m.id)
+          if (available.length > 0 && !available.includes(command.modelName)) {
+            const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
+            deps.writeStdout(message)
+            return message
+          }
+        } catch {
+          // Catalog validation failed; the live ping below gives the actionable result.
+        }
+
+        const pingResult = await pingGithubCopilotModel(baseUrl, githubToken, command.modelName, fetchFn)
+        if (!pingResult.ok) {
+          const message = `model '${command.modelName}' ping failed: ${pingResult.error}\nrun \`ouro config models --agent ${command.agent}\` to see available models.`
+          deps.writeStdout(message)
+          return message
+        }
+      }
+    }
+  }
+
+  const updatedAt = providerCliNow(deps).toISOString()
+  state.updatedAt = updatedAt
+  state.lanes[lane] = {
+    ...binding,
+    model: command.modelName,
+    source: "local",
+    updatedAt,
+  }
+  delete state.readiness[lane]
+  writeProviderState(agentRoot, state)
+  const message = `deprecated: updated ${command.agent} model on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`
+  deps.writeStdout(message)
+  return message
 }
 
 // ── System setup ──
@@ -1889,6 +2326,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
+  // ── provider state commands (local, no daemon socket needed) ──
+  if (command.kind === "provider.use") {
+    return executeProviderUse(command, deps)
+  }
+
+  if (command.kind === "provider.check") {
+    return executeProviderCheck(command, deps)
+  }
+
+  if (command.kind === "provider.status") {
+    return executeProviderStatus(command, deps)
+  }
+
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
@@ -1899,6 +2349,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       provider,
       promptInput: deps.promptInput,
     })
+    const credentials = (result.credentials ?? {}) as Record<string, unknown>
+    const split = splitProviderCredentialFields(provider, credentials)
+    if (Object.keys(split.credentials).length > 0 || Object.keys(split.config).length > 0) {
+      upsertProviderCredential({
+        homeDir: providerCliHomeDir(deps),
+        provider,
+        credentials: split.credentials,
+        config: split.config,
+        provenance: {
+          source: "auth-flow",
+          contributedByAgent: command.agent,
+        },
+        now: providerCliNow(deps),
+      })
+    }
     // Behavior: ouro auth stores credentials only — does NOT switch provider.
     // Use `ouro auth switch` to change the active provider.
     deps.writeStdout(result.message)
@@ -1939,38 +2404,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── auth switch (local, no daemon socket needed) ──
   if (command.kind === "auth.switch") {
-    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
-    const providerSecrets = secrets.providers[command.provider]
-    if (!providerSecrets || !hasStoredCredentials(command.provider, providerSecrets)) {
-      const message = `no credentials stored for ${command.provider}. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`
-      deps.writeStdout(message)
-      return message
-    }
-    // Verify credentials actually work before switching
-    const status = await verifyProviderCredentials(command.provider, secrets.providers)
-    if (!status.startsWith("ok")) {
-      const message = `${command.provider}: ${status}. fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` before switching.`
-      deps.writeStdout(message)
-      return message
-    }
-    if (command.facing) {
-      writeAgentProviderSelection(command.agent, command.facing, command.provider, deps.bundlesRoot)
-    } else {
-      writeAgentProviderSelection(command.agent, "human", command.provider, deps.bundlesRoot)
-      writeAgentProviderSelection(command.agent, "agent", command.provider, deps.bundlesRoot)
-    }
-    const { config: updatedConfig } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
-    const facingSummary = command.facing
-      ? (() => {
-          const facingConfig = command.facing === "human" ? updatedConfig.humanFacing : updatedConfig.agentFacing
-          return `${command.facing} model: ${facingConfig.model}`
-        })()
-      : updatedConfig.humanFacing.model === updatedConfig.agentFacing.model
-        ? `model: ${updatedConfig.humanFacing.model}`
-        : `human model: ${updatedConfig.humanFacing.model}; agent model: ${updatedConfig.agentFacing.model}`
-    const message = `switched ${command.agent} to ${command.provider} (${facingSummary}; verified working)`
-    deps.writeStdout(message)
-    return message
+    return executeLegacyAuthSwitch(command, deps)
   }
   /* v8 ignore stop */
 
@@ -2010,42 +2444,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── config model (local, no daemon socket needed) ──
   /* v8 ignore start -- config model: tested via daemon-cli.test.ts @preserve */
   if (command.kind === "config.model") {
-    const facing = command.facing ?? "human"
-    // Validate model availability for github-copilot before writing
-    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
-    const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing
-    if (facingConfig.provider === "github-copilot") {
-      const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
-      const ghConfig = secrets.providers["github-copilot"]
-      if (ghConfig.githubToken && ghConfig.baseUrl) {
-        const fetchFn = deps.fetchImpl ?? fetch
-        try {
-          const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
-          const available = models.map((m) => m.id)
-          if (available.length > 0 && !available.includes(command.modelName)) {
-            const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
-            deps.writeStdout(message)
-            return message
-          }
-        } catch {
-          // Catalog validation failed — fall through to ping test
-        }
-
-        // Ping test: verify the model actually works before switching
-        const pingResult = await pingGithubCopilotModel(ghConfig.baseUrl, ghConfig.githubToken, command.modelName, fetchFn)
-        if (!pingResult.ok) {
-          const message = `model '${command.modelName}' ping failed: ${pingResult.error}\nrun \`ouro config models --agent ${command.agent}\` to see available models.`
-          deps.writeStdout(message)
-          return message
-        }
-      }
-    }
-    const { provider, previousModel } = writeAgentModel(command.agent, facing, command.modelName, { bundlesRoot: deps.bundlesRoot })
-    const message = previousModel
-      ? `updated ${command.agent} model on ${provider}: ${previousModel} → ${command.modelName}`
-      : `set ${command.agent} model on ${provider}: ${command.modelName}`
-    deps.writeStdout(message)
-    return message
+    return executeLegacyConfigModel(command, deps)
   }
   /* v8 ignore stop */
 
