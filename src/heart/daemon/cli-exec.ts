@@ -5,7 +5,7 @@
  * handler (local execution, daemon socket, or interactive flow).
  */
 
-import { execSync, spawn } from "child_process"
+import { execFileSync, execSync, spawn } from "child_process"
 import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
@@ -78,7 +78,7 @@ import type {
   DoctorCliCommand,
   HelpCliCommand,
 } from "./cli-types"
-import { parseOuroCommand } from "./cli-parse"
+import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
@@ -2862,7 +2862,66 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── clone: clone an agent bundle from a git remote ──
   if (command.kind === "clone") {
-    const message = "clone not yet implemented"
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.clone_start",
+      message: "starting agent bundle clone",
+      meta: { remote: command.remote, agent: command.agent },
+    })
+
+    // 1. Check git is installed
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_git_check", message: "checking git installation", meta: {} })
+    try {
+      execFileSync("git", ["--version"], { stdio: "pipe" })
+    } catch (err) {
+      const message = "git is not installed -- install it from https://git-scm.com\nOn macOS: brew install git\nOn Ubuntu/Debian: sudo apt install git\nOn Windows: download from https://git-scm.com/download/win"
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 2. Infer agent name
+    const agentName = command.agent ?? inferAgentNameFromRemote(command.remote)
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const targetPath = path.join(bundlesRoot, agentName + ".ouro")
+
+    // 3. Check target path does not exist
+    if (fs.existsSync(targetPath)) {
+      const message = `${targetPath} already exists. Remove it first or use --agent to pick a different name.`
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 4. Check remote accessible
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_remote_check", message: "checking remote accessibility", meta: { remote: command.remote } })
+    try {
+      execFileSync("git", ["ls-remote", "--exit-code", command.remote], { stdio: "pipe", timeout: 15000 })
+    } catch {
+      const message = `could not reach remote: ${command.remote}\nCheck the URL and your network connection.`
+      deps.writeStdout(message)
+      return message
+    }
+
+    // 5. Clone
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_git_clone", message: "cloning agent bundle", meta: { remote: command.remote, targetPath } })
+    execFileSync("git", ["clone", command.remote, targetPath], { stdio: "pipe" })
+
+    // 6. Create machine identity
+    loadOrCreateMachineIdentity()
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_identity_created", message: "machine identity created", meta: {} })
+
+    // 7. Enable sync in agent.json
+    const agentJsonPath = path.join(targetPath, "agent.json")
+    if (fs.existsSync(agentJsonPath)) {
+      const raw = fs.readFileSync(agentJsonPath, "utf-8")
+      const config = JSON.parse(raw) as Record<string, unknown>
+      config.sync = { enabled: true, remote: "origin" }
+      fs.writeFileSync(agentJsonPath, JSON.stringify(config, null, 2) + "\n")
+      emitNervesEvent({ component: "daemon", event: "daemon.clone_sync_enabled", message: "sync enabled in agent.json", meta: { agentName } })
+    }
+
+    // 8. Output success message
+    emitNervesEvent({ component: "daemon", event: "daemon.clone_complete", message: "clone complete", meta: { agentName, targetPath } })
+    const message = `cloned ${agentName} to ${targetPath}\nsync enabled (remote: origin)\nnext steps:\n  ouro auth run --agent ${agentName}`
     deps.writeStdout(message)
     return message
   }
