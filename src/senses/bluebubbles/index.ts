@@ -14,7 +14,7 @@ import { FileFriendStore } from "../../mind/friends/store-file"
 import { TRUSTED_LEVELS, type FriendRecord } from "../../mind/friends/types"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pending"
-import { buildSystem } from "../../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 // getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -742,7 +742,7 @@ async function handleBlueBubblesNormalizedEvent(
     const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
       existing?.messages && existing.messages.length > 0
         ? existing.messages
-        : [{ role: "system", content: await resolvedDeps.buildSystem("bluebubbles", {}, context) }]
+        : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
     if (event.kind === "message") {
       const agentName = resolvedDeps.getAgentName()

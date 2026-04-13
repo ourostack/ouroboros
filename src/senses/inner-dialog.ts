@@ -5,7 +5,7 @@ import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurn, type UsageData } from "../mind/context"
-import { buildSystem } from "../mind/prompt"
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -733,7 +733,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       // Fresh session: build system prompt
       const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
       return {
-        messages: [{ role: "system" as const, content: systemPrompt }],
+        messages: [{ role: "system" as const, content: flattenSystemPrompt(systemPrompt) }],
         sessionPath: sessionFilePath,
       }
     },

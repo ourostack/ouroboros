@@ -91,10 +91,10 @@ describe("prompt note/friend contracts", () => {
   })
 
   it("includes first-person prescriptive guidance for all five tool contracts", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("save_friend_note")
     expect(system).toContain("when I learn something about a person")
 
@@ -112,17 +112,17 @@ describe("prompt note/friend contracts", () => {
   })
 
   it("includes [diary/external] trust framing guidance in tool contracts", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const system = await buildSystem("cli")
-
+    const system = flattenSystemPrompt(await buildSystem("cli")
+)
     expect(system).toContain("[diary/external]")
     expect(system).toContain("outside sources")
     expect(system).toContain("potentially untrustworthy")
   })
 
   it("includes note-awareness lines when friend context present", async () => {
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     // Note-awareness lines are in contextSection, which requires friend context
     const context = {
@@ -147,8 +147,8 @@ describe("prompt note/friend contracts", () => {
         maxMessageLength: 28000,
       },
     }
-    const system = await buildSystem("teams", {}, context as any)
-
+    const system = flattenSystemPrompt(await buildSystem("teams", {}, context as any)
+)
     expect(system).toContain("My active friend's notes are auto-loaded")
     expect(system).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
     expect(system).toContain("My psyche files")

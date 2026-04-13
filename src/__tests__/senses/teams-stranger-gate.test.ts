@@ -35,6 +35,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
 vi.mock("../../mind/context", () => ({
@@ -136,7 +137,7 @@ vi.mock("../../senses/pipeline", () => ({
 describe("teams stranger gate integration (pipeline-based)", () => {
   beforeEach(() => {
     mockRunAgent.mockReset().mockResolvedValue({ usage: undefined })
-    mockBuildSystem.mockReset().mockResolvedValue("system prompt")
+    mockBuildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
     mockLoadSession.mockReset().mockReturnValue(null)
     mockPostTurn.mockReset()
     mockCreateTraceId.mockReset().mockReturnValue("trace-1")
