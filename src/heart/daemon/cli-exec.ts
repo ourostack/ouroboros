@@ -583,6 +583,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
     // Parse first remote name
     const firstLine = remoteOutput.split("\n")[0]
+    /* v8 ignore next -- defensive fallback: .trim() above strips leading tabs so empty-field path is unreachable @preserve */
     const remoteName = firstLine.split("\t")[0] || "origin"
 
     emitNervesEvent({

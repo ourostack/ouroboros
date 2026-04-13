@@ -302,6 +302,30 @@ describe("manual-clone detection (checkManualCloneBundles)", () => {
     expect(mockPrompt).not.toHaveBeenCalled()
   })
 
+  it("bundle has .git and remotes but no agent.json -- still prompts", async () => {
+    const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
+    const mockPrompt = vi.fn().mockResolvedValue("n")
+
+    mockReaddirSync.mockReturnValue(["myagent.ouro"])
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("myagent.ouro/.git")) return true
+      if (s.includes("myagent.ouro/agent.json")) return false // no agent.json
+      return false
+    })
+    mockExecFileSync.mockReturnValue(Buffer.from("origin\thttps://github.com/user/myagent.ouro.git (fetch)\n"))
+
+    await checkManualCloneBundles({
+      bundlesRoot: "/mock/bundles",
+      promptInput: mockPrompt,
+    })
+
+    // Should still prompt since agent.json absence means sync is not enabled
+    expect(mockPrompt).toHaveBeenCalled()
+    // User said n, so no writes
+    expect(mockWriteFileSync).not.toHaveBeenCalled()
+  })
+
   it("non-.ouro directories in bundles root are skipped", async () => {
     const { checkManualCloneBundles } = await import("../../../heart/daemon/cli-exec")
     const mockPrompt = vi.fn()
