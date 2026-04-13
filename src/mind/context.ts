@@ -223,7 +223,7 @@ export function saveSession(
   const previousMessages = existing ? projectProviderMessages(existing) : []
   const currentIngressTimes = messages.map(getIngressTime)
   const sanitized = sanitizeProviderMessages(messages)
-  const envelope = buildCanonicalSessionEnvelope({
+  const { envelope } = buildCanonicalSessionEnvelope({
     existing,
     previousMessages,
     currentMessages: sanitized,
@@ -342,7 +342,7 @@ export function postTurnPersist(
 ): SessionEvent[] {
   const existing = loadSessionEnvelopeFile(sessPath)
   const previousMessages = existing ? projectProviderMessages(existing) : []
-  const envelope = buildCanonicalSessionEnvelope({
+  const { envelope } = buildCanonicalSessionEnvelope({
     existing,
     previousMessages,
     currentMessages: prepared.currentMessages,
