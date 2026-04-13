@@ -38,6 +38,14 @@ describe("ouro clone CLI parsing", () => {
         agent: "myagent",
       })
     })
+
+    it("treats --agent without value as the remote URL", () => {
+      // --agent is the last arg with no value, so "clone --agent" => remote = "--agent"
+      // This is technically a malformed invocation, but the parser treats --agent
+      // as a positional when no value follows
+      const cmd = parseOuroCommand(["clone", "--agent"])
+      expect(cmd).toEqual({ kind: "clone", remote: "--agent" })
+    })
   })
 
   describe("help clone", () => {
