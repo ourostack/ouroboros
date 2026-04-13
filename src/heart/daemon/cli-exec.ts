@@ -34,6 +34,7 @@ import {
   readAgentConfigForAgent,
 } from "../auth/auth-flow"
 import {
+  providerCredentialHomeDirFromSecretsRoot,
   readProviderCredentialPool,
   readLegacyAgentProviderCredentials,
   splitProviderCredentialFields,
@@ -555,10 +556,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
 // ── Provider state CLI helpers ──
 
 function providerCliHomeDir(deps: OuroCliDeps): string {
-  if (!deps.secretsRoot) return os.homedir()
-  return path.basename(deps.secretsRoot) === ".agentsecrets"
-    ? path.dirname(deps.secretsRoot)
-    : deps.secretsRoot
+  return providerCredentialHomeDirFromSecretsRoot(deps.secretsRoot)
 }
 
 function providerCliAgentRoot(command: { agent: string }, deps: OuroCliDeps): string {
