@@ -103,6 +103,7 @@ export function usage(): string {
     "  ouro mcp call <server> <tool> [--args '{...}']",
     "  ouro rollback [<version>]",
     "  ouro versions",
+    "  ouro clone <remote> [--agent <name>]",
     "  ouro doctor",
   ].join("\n")
 }
@@ -695,6 +696,46 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
   throw new Error(`Usage\n${usage()}`)
 }
 
+export function inferAgentNameFromRemote(remote: string): string {
+  // Remove trailing slash
+  let name = remote.replace(/\/+$/, "")
+  // Handle SSH URLs (git@host:user/repo) — extract after last / or :
+  const lastSlash = name.lastIndexOf("/")
+  const lastColon = name.lastIndexOf(":")
+  const lastSep = Math.max(lastSlash, lastColon)
+  if (lastSep !== -1) {
+    name = name.slice(lastSep + 1)
+  }
+  // Strip .git suffix
+  name = name.replace(/\.git$/, "")
+  // Strip .ouro suffix
+  name = name.replace(/\.ouro$/, "")
+  return name
+}
+
+function parseCloneCommand(args: string[]): OuroCliCommand {
+  let remote: string | undefined
+  let agent: string | undefined
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--agent" && args[i + 1]) {
+      agent = args[++i]
+      continue
+    }
+    if (!remote) {
+      remote = args[i]
+    }
+  }
+
+  if (!remote) {
+    throw new Error("clone requires a remote URL.\nUsage: ouro clone <remote> [--agent <name>]")
+  }
+
+  return agent
+    ? { kind: "clone", remote, agent }
+    : { kind: "clone", remote }
+}
+
 export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketOverride?: string } {
   let agent: string | undefined
   let friendId: string | undefined
@@ -872,6 +913,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
+  if (head === "clone") return parseCloneCommand(args.slice(1))
   if (head === "doctor") return { kind: "doctor" }
   if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
