@@ -15,6 +15,7 @@ import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
+import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { createKeptNotesJudge, injectKeptNotes } from "./kept-notes";
@@ -78,6 +79,8 @@ export interface ProviderTurnRequest {
   toolChoiceRequired?: boolean;
   reasoningEffort?: string;
   eagerSettleStreaming?: boolean;
+  /** Structured system prompt for providers that support cache_control (e.g. Anthropic). */
+  systemPrompt?: SystemPrompt;
 }
 
 interface ProviderRegistry {
@@ -636,6 +639,7 @@ export async function runAgent(
   // Refresh system prompt at start of each turn when channel is provided.
   // If refresh fails, keep existing system prompt (or inject a minimal safe fallback)
   // so turn execution remains consistent and non-fatal.
+  let structuredSystemPrompt: SystemPrompt | undefined;
   if (channel) {
     try {
       const buildSystemOptions = {
@@ -644,6 +648,7 @@ export async function runAgent(
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
       };
       const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
+      structuredSystemPrompt = refreshed;
       upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
@@ -812,6 +817,7 @@ export async function runAgent(
             toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
             eagerSettleStreaming: true,
+            systemPrompt: structuredSystemPrompt,
           });
         } catch (error) {
           if (signal?.aborted) throw new ProviderAttemptAbortError()
