@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.345",
+      "changes": [
+        "Post-turn session persist functions now return the events array directly, eliminating a redundant `loadSession` file read after every CLI TUI turn. `postTurnPersist` returns `SessionEvent[]` and `deferPostTurnPersist` returns `Promise<SessionEvent[]>`, so the CLI sense uses the returned data instead of re-reading the file it just wrote."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.344",
       "changes": [
         "Provider readiness groundwork now has stable machine identity stored at `~/.ouro-cli/machine.json`, preserving random machine IDs across hostname changes while recording aliases for diagnostics.",
