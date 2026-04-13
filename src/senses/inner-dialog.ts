@@ -4,8 +4,8 @@ import * as path from "path"
 import { sessionPath } from "../heart/config"
 import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
-import { loadSession, postTurn, type UsageData } from "../mind/context"
-import { buildSystem } from "../mind/prompt"
+import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getToolsForChannel } from "../repertoire/tools"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -733,7 +733,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       // Fresh session: build system prompt
       const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
       return {
-        messages: [{ role: "system" as const, content: systemPrompt }],
+        messages: [{ role: "system" as const, content: flattenSystemPrompt(systemPrompt) }],
         sessionPath: sessionFilePath,
       }
     },
@@ -760,7 +760,10 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     enforceTrustGate,
     drainPending,
     runAgent,
-    postTurn,
+    postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+      const prepared = postTurnTrim(turnMessages, usage, hooks)
+      deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+    },
     accumulateFriendTokens,
     signal: options?.signal,
     /* v8 ignore start -- attention queue: callback invoked by pipeline during pending drain; tested via attention-queue unit tests @preserve */

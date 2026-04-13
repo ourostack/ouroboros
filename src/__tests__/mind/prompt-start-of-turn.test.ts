@@ -129,9 +129,8 @@ describe("start-of-turn packet prompt section", () => {
     })
     fsMock.readdirSync.mockReturnValue([])
 
-    const { buildSystem } = await import("../../mind/prompt")
-    const system = await buildSystem("cli", { startOfTurnPacket: "**Next:** check inbox" })
-
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli", { startOfTurnPacket: "**Next:** check inbox" }))
     const startOfTurnPacketIdx = system.indexOf("**Next:** check inbox")
     const liveWorldIdx = system.indexOf("# dynamic state for this turn")
 
@@ -152,8 +151,8 @@ describe("start-of-turn packet prompt section", () => {
     })
     fsMock.readdirSync.mockReturnValue([])
 
-    const { buildSystem } = await import("../../mind/prompt")
-    const system = await buildSystem("cli", { startOfTurnPacket: "**Owed:** deploy fix" })
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli", { startOfTurnPacket: "**Owed:** deploy fix" }))
     expect(system).toContain("**Owed:** deploy fix")
   })
 
@@ -168,8 +167,8 @@ describe("start-of-turn packet prompt section", () => {
     })
     fsMock.readdirSync.mockReturnValue([])
 
-    const { buildSystem } = await import("../../mind/prompt")
-    const system = await buildSystem("cli")
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli"))
     // No start-of-turn packet content should appear
     expect(system).not.toContain("**Next:**")
     expect(system).not.toContain("**Owed:**")

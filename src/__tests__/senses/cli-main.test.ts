@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 const mocks = vi.hoisted(() => ({
   applyPendingUpdates: vi.fn().mockResolvedValue(undefined),
   runAgent: vi.fn().mockResolvedValue({ usage: undefined }),
-  buildSystem: vi.fn().mockResolvedValue("system prompt"),
+  buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
   sessionPath: vi.fn().mockReturnValue("/tmp/test-session.json"),
   logPath: vi.fn().mockReturnValue("/tmp/testagent-cli-runtime.ndjson"),
   getContextConfig: vi.fn().mockReturnValue({ maxTokens: 80000, contextMargin: 20 }),
@@ -163,6 +163,7 @@ vi.mock("../../heart/config", () => ({
 }))
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...a: any[]) => mocks.buildSystem(...a),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 vi.mock("../../mind/context", () => ({
   loadSession: (...a: any[]) => mocks.loadSession(...a),
@@ -326,7 +327,7 @@ function resetMocks() {
   mocks._pendingInputSequence = []
   mocks.applyPendingUpdates.mockReset().mockResolvedValue(undefined)
   mocks.runAgent.mockReset().mockResolvedValue({ usage: undefined })
-  mocks.buildSystem.mockReset().mockReturnValue("system prompt")
+  mocks.buildSystem.mockReset().mockReturnValue({ stable: "system prompt", volatile: "" })
   mocks.sessionPath.mockReset().mockReturnValue("/tmp/test-session.json")
   mocks.logPath.mockReset().mockReturnValue("/tmp/testagent-cli-runtime.ndjson")
   mocks.getContextConfig.mockReset().mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
@@ -334,7 +335,7 @@ function resetMocks() {
   mocks.saveSession.mockReset()
   mocks.deleteSession.mockReset()
   mocks.trimMessages.mockReset().mockImplementation((msgs: any) => [...msgs])
-  mocks.buildSystem.mockReset().mockResolvedValue("system prompt")
+  mocks.buildSystem.mockReset().mockResolvedValue({ stable: "system prompt", volatile: "" })
   mocks.postTurn.mockReset()
   mocks.postTurnPersist.mockReset().mockReturnValue([{ role: "user", content: "mock-event" }])
   mocks.postTurnTrim.mockReset().mockImplementation((msgs: any) => ({
