@@ -74,6 +74,7 @@ import type {
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
+  CloneCliCommand,
   DoctorCliCommand,
   HelpCliCommand,
 } from "./cli-types"
@@ -535,7 +536,7 @@ async function verifyProviderCredentials(
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | CloneCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -2857,6 +2858,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
     })
     return output
+  }
+
+  // ── clone: clone an agent bundle from a git remote ──
+  if (command.kind === "clone") {
+    const message = "clone not yet implemented"
+    deps.writeStdout(message)
+    return message
   }
 
   const daemonCommand = toDaemonCommand(command)
