@@ -2,9 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.345",
+      "version": "0.1.0-alpha.346",
       "changes": [
         "Post-turn session persist functions now return the events array directly, eliminating a redundant `loadSession` file read after every CLI TUI turn. `postTurnPersist` returns `SessionEvent[]` and `deferPostTurnPersist` returns `Promise<SessionEvent[]>`, so the CLI sense uses the returned data instead of re-reading the file it just wrote."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.345",
+      "changes": [
+        "Machine-wide provider credentials now have a local pool at `~/.agentsecrets/providers.json` with one active record per provider, generated credential revisions, safe provenance, redacted summaries, and explicit migration from legacy per-agent `~/.agentsecrets/<agent>/secrets.json` files."
       ]
     },
     {
