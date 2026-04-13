@@ -1088,6 +1088,59 @@ describe("postTurn", () => {
   })
 })
 
+// --- postTurnPersist return value ---
+
+describe("postTurnPersist return value", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.mkdirSync).mockReset()
+  })
+
+  it("returns SessionEvent[] from the envelope it built", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { postTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+    ]
+    const usage = { input_tokens: 5000, output_tokens: 10, reasoning_tokens: 0, total_tokens: 5010 }
+    const prepared = postTurnTrim(messages, usage)
+    const result = postTurnPersist("/tmp/sess.json", prepared, usage)
+
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThan(0)
+    // Events should match what was written to disk
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(result).toEqual(written.events)
+  })
+
+  it("returns non-empty events array for a turn with messages", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { postTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "test input" },
+      { role: "assistant", content: "test reply" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const result = postTurnPersist("/tmp/sess.json", prepared)
+
+    expect(result.length).toBeGreaterThan(0)
+    // Each event should have an id and type
+    for (const event of result) {
+      expect(event).toHaveProperty("id")
+      expect(event).toHaveProperty("type")
+    }
+  })
+})
+
 describe("mind observability instrumentation", () => {
   it("trimMessages emits mind step lifecycle events", async () => {
     vi.resetModules()
