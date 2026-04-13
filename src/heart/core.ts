@@ -14,7 +14,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 import { trimMessages } from "../mind/context";
-import { buildSystem } from "../mind/prompt";
+import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { createKeptNotesJudge, injectKeptNotes } from "./kept-notes";
@@ -644,7 +644,7 @@ export async function runAgent(
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
       };
       const refreshed = await buildSystem(channel, buildSystemOptions, currentContext);
-      upsertSystemPrompt(messages, refreshed);
+      upsertSystemPrompt(messages, flattenSystemPrompt(refreshed));
     } catch (error) {
       const hadExistingSystemPrompt = messages[0]?.role === "system" && typeof messages[0].content === "string";
       const existingSystemText = hadExistingSystemPrompt ? (messages[0].content as string) : undefined;

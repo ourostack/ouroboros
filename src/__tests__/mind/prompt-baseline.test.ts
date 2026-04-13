@@ -144,7 +144,7 @@ describe("token baseline measurement", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
 
     const channels = ["cli", "teams", "bluebubbles", "inner", "mcp"] as const
     const CONTEXT_WINDOW = 80000
@@ -155,7 +155,7 @@ describe("token baseline measurement", () => {
 
     for (const channel of channels) {
       resetPsycheCache()
-      const prompt = await buildSystem(channel)
+      const prompt = flattenSystemPrompt(await buildSystem(channel))
       const chars = prompt.length
       const approxTokens = Math.ceil(chars / 4)
       const percent = ((approxTokens / CONTEXT_WINDOW) * 100).toFixed(1)
@@ -222,7 +222,7 @@ describe("token baseline measurement", () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
-    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
 
     const channels = ["cli", "teams", "bluebubbles", "inner", "mcp"] as const
     const channelDescriptions: Record<string, string> = {
@@ -246,8 +246,8 @@ describe("token baseline measurement", () => {
 
     for (const channel of channels) {
       resetPsycheCache()
-      const prompt = await buildSystem(channel)
-
+      const prompt = flattenSystemPrompt(await buildSystem(channel)
+)
       const header = [
         `# Regression Baseline: ${channel}`,
         "",

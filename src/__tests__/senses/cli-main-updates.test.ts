@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   applyPendingUpdates: vi.fn(async () => undefined),
   getPackageVersion: vi.fn(() => "0.1.0-test"),
   runCliSession: vi.fn().mockResolvedValue({ exitReason: "user_quit" }),
-  buildSystem: vi.fn().mockResolvedValue("system prompt"),
+  buildSystem: vi.fn().mockResolvedValue({ stable: "system prompt", volatile: "" }),
   resolveContext: vi.fn().mockResolvedValue({
     friend: {
       id: "mock-uuid",
@@ -67,6 +67,7 @@ vi.mock("../../heart/config", () => ({
 }))
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...a: any[]) => mocks.buildSystem(...a),
+  flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 vi.mock("../../mind/context", () => ({
   loadSession: vi.fn().mockReturnValue(null),
