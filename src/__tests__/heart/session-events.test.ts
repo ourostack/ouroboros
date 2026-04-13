@@ -72,7 +72,7 @@ describe("session events", () => {
       { role: "assistant", content: "latest answer" },
     ]
 
-    const envelope = buildCanonicalSessionEnvelope({
+    const { envelope } = buildCanonicalSessionEnvelope({
       existing: null,
       previousMessages: [],
       currentMessages: previousMessages,
@@ -87,7 +87,7 @@ describe("session events", () => {
       },
     })
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing: envelope,
       previousMessages,
       currentMessages,
@@ -102,7 +102,8 @@ describe("session events", () => {
       },
     })
 
-    expect(updated.events).toHaveLength(5)
+    // Pruned envelope only contains projected events
+    expect(updated.events).toHaveLength(3)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(trimmedMessages)
   })
@@ -689,7 +690,7 @@ describe("session events", () => {
       { role: "assistant", content: "revised answer" },
     ]
 
-    const existing = buildCanonicalSessionEnvelope({
+    const { envelope: existing } = buildCanonicalSessionEnvelope({
       existing: null,
       previousMessages: [],
       currentMessages: previousMessages,
@@ -704,7 +705,7 @@ describe("session events", () => {
       },
     })
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing,
       previousMessages,
       currentMessages,
@@ -719,7 +720,8 @@ describe("session events", () => {
       },
     })
 
-    expect(updated.events).toHaveLength(5)
+    // Pruned envelope only contains projected events (old events 2,3 evicted)
+    expect(updated.events).toHaveLength(3)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(currentMessages)
   })
@@ -1006,7 +1008,7 @@ describe("session events", () => {
       state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
     }
 
-    const updated = buildCanonicalSessionEnvelope({
+    const { envelope: updated } = buildCanonicalSessionEnvelope({
       existing,
       previousMessages: [
         { role: "system", content: "sys" },
@@ -1057,7 +1059,7 @@ describe("session events", () => {
       const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
       ;(userMsg as Record<string, unknown>)._ingressAt = ingressTime
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [userMsg],
@@ -1079,7 +1081,7 @@ describe("session events", () => {
       const batchTime = "2026-04-01T10:05:00.000Z"
       const userMsg: OpenAI.ChatCompletionMessageParam = { role: "user", content: "test" }
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [userMsg],
@@ -1101,7 +1103,7 @@ describe("session events", () => {
       const assistantMsg: OpenAI.ChatCompletionMessageParam = { role: "assistant", content: "reply" }
       ;(assistantMsg as Record<string, unknown>)._ingressAt = ingressTime
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [{ role: "user", content: "hi" }, assistantMsg],
@@ -1125,7 +1127,7 @@ describe("session events", () => {
       ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
       ;(msg2 as Record<string, unknown>)._ingressAt = "2026-04-01T10:02:00.000Z"
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [msg1, { role: "assistant", content: "ack" }, msg2],
@@ -1150,7 +1152,7 @@ describe("session events", () => {
       ;(msg1 as Record<string, unknown>)._ingressAt = "2026-04-01T10:00:00.000Z"
       const batchTime = "2026-04-01T10:05:00.000Z"
 
-      const envelope = buildCanonicalSessionEnvelope({
+      const { envelope } = buildCanonicalSessionEnvelope({
         existing: null,
         previousMessages: [],
         currentMessages: [msg1, { role: "assistant", content: "reply" }],
@@ -1167,6 +1169,727 @@ describe("session events", () => {
       const annotated = annotateMessageTimestamps(envelope, projected, nowMs)
       // User message should show 10m (from ingress time), not 5m (from batch time)
       expect((annotated[0] as any).content).toMatch(/\[-10m\]/)
+    })
+  })
+
+  describe("findCommonPrefixLength skips system messages", () => {
+    it("BUG PROOF: changing system prompt causes all messages to be re-created as new events", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Turn 1: build initial envelope
+      const previousMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system prompt v1 with weather=sunny" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi there" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: previousMessages,
+        trimmedMessages: previousMessages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(existing.events).toHaveLength(3)
+
+      // Turn 2: system prompt changes (weather update), same user/assistant messages, plus new turn
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system prompt v2 with weather=rainy" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi there" },
+        { role: "user", content: "what's new?" },
+        { role: "assistant", content: "not much" },
+      ]
+
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages,
+        currentMessages,
+        trimmedMessages: currentMessages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // With the bug: prefix match returns 0 because system content differs,
+      // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
+      // With the fix: prefix match skips system messages, matches user+assistant,
+      // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
+      // Pruned envelope: 6 total events created, 5 projected (old sys_v1 event evicted)
+      expect(updated.events).toHaveLength(5)
+    })
+
+    it("matches non-system messages correctly when system prompt changes between turns", async () => {
+      const { buildCanonicalSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+      // Turn 1
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system v1" },
+        { role: "user", content: "question A" },
+        { role: "assistant", content: "answer A" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: different system prompt, same conversation + new messages
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system v2 different" },
+        { role: "user", content: "question A" },
+        { role: "assistant", content: "answer A" },
+        { role: "user", content: "question B" },
+        { role: "assistant", content: "answer B" },
+      ]
+
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Pruned envelope: 5 projected events (old sys_v1 event evicted)
+      expect(updated.events).toHaveLength(5)
+      // Reused events first (qA, aA), then new events (sys_v2, qB, aB)
+      expect(updated.events[0]!.content).toBe("question A")
+      expect(updated.events[1]!.content).toBe("answer A")
+      expect(updated.events[2]!.role).toBe("system")
+      expect(updated.events[3]!.content).toBe("question B")
+      expect(updated.events[4]!.content).toBe("answer B")
+
+      // Projection should include the new system event + reused non-system + new non-system
+      const projected = projectProviderMessages(updated)
+      expect(projected).toHaveLength(5)
+    })
+
+    it("handles no system messages in either array", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "more" },
+      ]
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(updated.events).toHaveLength(3) // 2 existing + 1 new
+    })
+
+    it("handles multiple system messages scattered in the array", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system 1 v1" },
+        { role: "user", content: "hello" },
+        { role: "system", content: "system 2 v1" },
+        { role: "assistant", content: "hi" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Same non-system messages, different system prompts
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "system 1 v2" },
+        { role: "user", content: "hello" },
+        { role: "system", content: "system 2 v2" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "new question" },
+      ]
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Pruned envelope: 5 projected events (old sys1_v1 and sys2_v1 evicted)
+      expect(updated.events).toHaveLength(5)
+    })
+
+    it("handles all system messages with no other roles", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "only system v1" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "only system v2" },
+      ]
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages: turn2Messages,
+        recordedAt: "2026-04-13T10:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // No non-system messages to match, system changed. Pruned: only new sys event projected.
+      expect(updated.events).toHaveLength(1)
+    })
+
+    it("handles empty arrays", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const { envelope: updated } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: [],
+        trimmedMessages: [],
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(updated.events).toHaveLength(0)
+    })
+  })
+
+  describe("buildCanonicalSessionEnvelope returns evicted events", () => {
+    it("returns events not in projection as evicted", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Build initial envelope with 5 messages
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+        { role: "user", content: "q2" },
+        { role: "assistant", content: "a2" },
+      ]
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: add new messages, but trimmed window excludes old messages
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        ...turn1Messages,
+        { role: "user", content: "q3" },
+        { role: "assistant", content: "a3" },
+      ]
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q3" },
+        { role: "assistant", content: "a3" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T11:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Evicted events are those not in the projection
+      expect(result.evictedEvents.length).toBeGreaterThan(0)
+      // The pruned envelope should only contain projected events
+      expect(result.envelope.events.length).toBeLessThan(7)
+      // Evicted + remaining should account for all events
+      const allEventIds = new Set([
+        ...result.envelope.events.map((e: any) => e.id),
+        ...result.evictedEvents.map((e: any) => e.id),
+      ])
+      expect(allEventIds.size).toBe(result.envelope.events.length + result.evictedEvents.length)
+    })
+
+    it("returns empty evictedEvents when all events are in projection", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(result.evictedEvents).toEqual([])
+      expect(result.envelope.events).toHaveLength(3)
+    })
+
+    it("first-prune migration: large existing envelope with no prior pruning returns all non-projected as evicted", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Build a large existing envelope
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+      ]
+      for (let i = 0; i < 10; i++) {
+        turn1Messages.push({ role: "user", content: `q${i}` })
+        turn1Messages.push({ role: "assistant", content: `a${i}` })
+      }
+
+      const { envelope: existing } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Turn 2: same messages but trimmed to last 2 turns
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q9" },
+        { role: "assistant", content: "a9" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages: turn1Messages,
+        currentMessages: turn1Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T11:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Most events should be evicted (only sys + q9 + a9 in projection)
+      expect(result.evictedEvents.length).toBe(18) // 20 non-system events minus 2 in projection
+      expect(result.envelope.events).toHaveLength(3) // only projected events remain
+    })
+
+    it("handles no existing envelope", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "q1" },
+        { role: "assistant", content: "a1" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: [{ role: "system", content: "sys" }],
+        recordedAt: "2026-04-13T11:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Two events evicted (user and assistant not in trimmed)
+      expect(result.evictedEvents).toHaveLength(2)
+      expect(result.envelope.events).toHaveLength(1) // only system
+    })
+  })
+
+  describe("appendEvictedToArchive", () => {
+    it("writes evicted events as NDJSON lines to archive file", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+
+      const evictedEvents = [
+        { id: "evt-000001", sequence: 1, role: "user" as const, content: "hello", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+        { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "hi", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: "2026-04-13T10:01:00.000Z", authoredAtSource: "local" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "local" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+      ]
+
+      appendEvictedToArchive(sessPath, evictedEvents)
+
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const content = fs.readFileSync(archivePath, "utf-8")
+      const lines = content.trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
+      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+
+      // Cleanup
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("appends to existing archive file without overwriting", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      const event1 = { id: "evt-000001", sequence: 1, role: "user" as const, content: "first", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+      const event2 = { id: "evt-000002", sequence: 2, role: "user" as const, content: "second", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+
+      appendEvictedToArchive(sessPath, [event1])
+      appendEvictedToArchive(sessPath, [event2])
+
+      const content = fs.readFileSync(archivePath, "utf-8")
+      const lines = content.trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
+      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+
+      // Cleanup
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("does not write when evictedEvents is empty", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      appendEvictedToArchive(sessPath, [])
+
+      expect(fs.existsSync(archivePath)).toBe(false)
+
+      // Cleanup
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("does not crash when archive write fails", async () => {
+      const fs = await import("fs")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      // Use an invalid path that will cause appendFileSync to fail
+      const badPath = "/nonexistent/deeply/nested/dialog.json"
+      const event = { id: "evt-000001", sequence: 1, role: "user" as const, content: "test", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+
+      // Should not throw
+      expect(() => appendEvictedToArchive(badPath, [event])).not.toThrow()
+    })
+
+  })
+
+  describe("loadFullEventHistory", () => {
+    const mkEvent = (id: string, seq: number, role: "system" | "user" | "assistant", content: string) => ({
+      id, sequence: seq, role, content, name: null, toolCallId: null, toolCalls: [] as any[], attachments: [] as string[],
+      time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const },
+      relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
+    })
+
+    it("returns only envelope events when no archive file exists", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { loadFullEventHistory } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const envelope = {
+        version: 2 as const,
+        events: [mkEvent("evt-000003", 3, "user", "current")],
+        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+      fs.writeFileSync(sessPath, JSON.stringify(envelope))
+
+      const events = loadFullEventHistory(sessPath)
+      expect(events).toHaveLength(1)
+      expect(events[0]!.id).toBe("evt-000003")
+
+      // Cleanup
+      fs.unlinkSync(sessPath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("merges envelope events with archive events sorted by sequence", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { loadFullEventHistory } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      // Envelope with current events
+      const envelope = {
+        version: 2 as const,
+        events: [mkEvent("evt-000003", 3, "user", "current")],
+        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+      fs.writeFileSync(sessPath, JSON.stringify(envelope))
+
+      // Archive with older events
+      const archiveEvents = [
+        mkEvent("evt-000001", 1, "user", "first"),
+        mkEvent("evt-000002", 2, "assistant", "second"),
+      ]
+      fs.writeFileSync(archivePath, archiveEvents.map((e) => JSON.stringify(e)).join("\n") + "\n")
+
+      const events = loadFullEventHistory(sessPath)
+      expect(events).toHaveLength(3)
+      expect(events[0]!.id).toBe("evt-000001")
+      expect(events[1]!.id).toBe("evt-000002")
+      expect(events[2]!.id).toBe("evt-000003")
+
+      // Cleanup
+      fs.unlinkSync(sessPath)
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("deduplicates events by id", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { loadFullEventHistory } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      const sharedEvent = mkEvent("evt-000001", 1, "user", "shared")
+      const envelope = {
+        version: 2 as const,
+        events: [sharedEvent],
+        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+      fs.writeFileSync(sessPath, JSON.stringify(envelope))
+      fs.writeFileSync(archivePath, JSON.stringify(sharedEvent) + "\n")
+
+      const events = loadFullEventHistory(sessPath)
+      expect(events).toHaveLength(1) // deduplicated
+
+      // Cleanup
+      fs.unlinkSync(sessPath)
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
+    it("skips corrupted NDJSON lines gracefully", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { loadFullEventHistory } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      const envelope = {
+        version: 2 as const,
+        events: [mkEvent("evt-000002", 2, "user", "current")],
+        projection: { eventIds: ["evt-000002"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+      fs.writeFileSync(sessPath, JSON.stringify(envelope))
+
+      // Archive with one valid line, one corrupted, and blank lines
+      const validEvent = mkEvent("evt-000001", 1, "user", "archived")
+      fs.writeFileSync(archivePath, [
+        JSON.stringify(validEvent),
+        "this is not valid json{{{",
+        "",
+        "",
+      ].join("\n"))
+
+      const events = loadFullEventHistory(sessPath)
+      expect(events).toHaveLength(2) // valid archived + envelope event
+      expect(events[0]!.id).toBe("evt-000001")
+      expect(events[1]!.id).toBe("evt-000002")
+
+      // Cleanup
+      fs.unlinkSync(sessPath)
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+  })
+
+  describe("integration: full session lifecycle with pruning and archive", () => {
+    it("builds envelope, changes system prompt, prunes, archives, and reconstructs full history", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const {
+        buildCanonicalSessionEnvelope,
+        appendEvictedToArchive,
+        loadFullEventHistory,
+        projectProviderMessages,
+      } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-integ-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+
+      // Phase 1: Build initial envelope with system + 10 user/assistant turns
+      const turn1Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: sunny. Time: morning." },
+      ]
+      for (let i = 0; i < 10; i++) {
+        turn1Messages.push({ role: "user", content: `question ${i}` })
+        turn1Messages.push({ role: "assistant", content: `answer ${i}` })
+      }
+
+      const result1 = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: turn1Messages,
+        trimmedMessages: turn1Messages,
+        recordedAt: "2026-04-13T12:00:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(result1.envelope.events).toHaveLength(21) // 1 sys + 20 user/assistant
+      expect(result1.evictedEvents).toHaveLength(0)
+      fs.writeFileSync(sessPath, JSON.stringify(result1.envelope))
+
+      // Phase 2: System prompt changes, add 2 new messages, trim to keep only last 2 turns
+      const turn2Messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: rainy. Time: afternoon." },
+        ...turn1Messages.slice(1), // all non-system from turn 1
+        { role: "user", content: "new question" },
+        { role: "assistant", content: "new answer" },
+      ]
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "You are a helpful assistant. Weather: rainy. Time: afternoon." },
+        { role: "user", content: "new question" },
+        { role: "assistant", content: "new answer" },
+      ]
+
+      const result2 = buildCanonicalSessionEnvelope({
+        existing: result1.envelope,
+        previousMessages: turn1Messages,
+        currentMessages: turn2Messages,
+        trimmedMessages,
+        recordedAt: "2026-04-13T12:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      // Key assertions: only 2 new events created (not 22 as the bug would cause)
+      // Total events created = 21 original + 1 new system + 2 new messages = 24
+      // But only 3 in projection (sys_v2, new_q, new_a)
+      expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
+      expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
+
+      // Phase 3: Archive evicted events
+      appendEvictedToArchive(sessPath, result2.evictedEvents)
+      fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
+
+      // Phase 4: Reconstruct full history
+      const fullHistory = loadFullEventHistory(sessPath)
+
+      // Full history should have all unique events from both archive and envelope
+      expect(fullHistory.length).toBeGreaterThan(3) // more than just the projected events
+      // Events should be sorted by sequence
+      for (let i = 1; i < fullHistory.length; i++) {
+        expect(fullHistory[i]!.sequence).toBeGreaterThanOrEqual(fullHistory[i - 1]!.sequence)
+      }
+
+      // Phase 5: Verify projection works correctly
+      const projected = projectProviderMessages(result2.envelope)
+      expect(projected).toHaveLength(3) // sys + new_q + new_a
+      expect((projected[0] as any).content).toContain("rainy") // new system content
+      expect((projected[1] as any).content).toBe("new question")
+      expect((projected[2] as any).content).toBe("new answer")
+
+      // Cleanup
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      try { fs.unlinkSync(sessPath) } catch { /* */ }
+      try { fs.unlinkSync(archivePath) } catch { /* */ }
+      try { fs.rmdirSync(tmpDir) } catch { /* */ }
     })
   })
 })
