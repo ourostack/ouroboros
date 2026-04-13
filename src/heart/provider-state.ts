@@ -159,13 +159,11 @@ export function readProviderState(agentRoot: string): ProviderStateReadResult {
   try {
     raw = fs.readFileSync(statePath, "utf-8")
   } catch (error) {
-    const code = error && typeof error === "object" && "code" in error
-      ? (error as NodeJS.ErrnoException).code
-      : undefined
+    const code = (error as NodeJS.ErrnoException).code
     if (code === "ENOENT") {
       return { ok: false, reason: "missing", statePath, error: "provider state not found" }
     }
-    return { ok: false, reason: "invalid", statePath, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, reason: "invalid", statePath, error: String(error) }
   }
 
   try {
@@ -178,7 +176,7 @@ export function readProviderState(agentRoot: string): ProviderStateReadResult {
     })
     return { ok: true, statePath, state }
   } catch (error) {
-    return { ok: false, reason: "invalid", statePath, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, reason: "invalid", statePath, error: String(error) }
   }
 }
 

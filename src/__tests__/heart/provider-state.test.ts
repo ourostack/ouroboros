@@ -12,6 +12,7 @@ import {
   bootstrapProviderStateFromAgentConfig,
   getProviderStatePath,
   readProviderState,
+  validateProviderState,
   writeProviderState,
   type ProviderState,
 } from "../../heart/provider-state"
@@ -119,6 +120,50 @@ describe("provider state", () => {
     })
   })
 
+  it("reads readiness entries with error and attempt metadata", () => {
+    emitTestEvent("provider state readiness error metadata")
+    const state = providerState({
+      readiness: {
+        outward: {
+          status: "failed",
+          checkedAt: "2026-04-12T17:42:00.000Z",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_2",
+          error: "401",
+          attempts: 3,
+        },
+      },
+    })
+    writeProviderState(agentRoot, state)
+
+    expect(readProviderState(agentRoot)).toEqual({
+      ok: true,
+      statePath: getProviderStatePath(agentRoot),
+      state,
+    })
+  })
+
+  it("reads minimal readiness entries without optional metadata", () => {
+    emitTestEvent("provider state minimal readiness")
+    const state = providerState({
+      readiness: {
+        outward: {
+          status: "unknown",
+          provider: "azure",
+          model: "gpt-4o",
+        },
+      },
+    })
+    writeProviderState(agentRoot, state)
+
+    expect(readProviderState(agentRoot)).toEqual({
+      ok: true,
+      statePath: getProviderStatePath(agentRoot),
+      state,
+    })
+  })
+
   it("reports invalid provider state instead of accepting malformed lanes", () => {
     emitTestEvent("provider state invalid")
     const statePath = getProviderStatePath(agentRoot)
@@ -140,6 +185,91 @@ describe("provider state", () => {
       expect(result.reason).toBe("invalid")
       expect(result.error).toContain("outward.provider")
     }
+  })
+
+  it("reports invalid JSON in provider state", () => {
+    emitTestEvent("provider state invalid json")
+    const statePath = getProviderStatePath(agentRoot)
+    fs.mkdirSync(path.dirname(statePath), { recursive: true })
+    fs.writeFileSync(statePath, "not json{{{", "utf-8")
+
+    const result = readProviderState(agentRoot)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid")
+      expect(result.error).toContain("Unexpected")
+    }
+  })
+
+  it("reports read errors other than missing provider state as invalid", () => {
+    emitTestEvent("provider state read error")
+    fs.mkdirSync(getProviderStatePath(agentRoot), { recursive: true })
+
+    const result = readProviderState(agentRoot)
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid")
+      expect(result.error).not.toBe("provider state not found")
+    }
+  })
+
+  it("validates provider state root shape", () => {
+    emitTestEvent("provider state root validation")
+    expect(() => validateProviderState(null)).toThrow("provider state must be an object")
+    expect(() => validateProviderState({ schemaVersion: 2 })).toThrow("schemaVersion")
+    expect(() => validateProviderState({ schemaVersion: 1, machineId: "", updatedAt: "x" })).toThrow("machineId")
+    expect(() => validateProviderState({ schemaVersion: 1, machineId: "m", updatedAt: "" })).toThrow("updatedAt")
+    expect(() => validateProviderState({ schemaVersion: 1, machineId: "m", updatedAt: "x" })).toThrow("lanes")
+    expect(() => validateProviderState({
+      schemaVersion: 1,
+      machineId: "m",
+      updatedAt: "x",
+      lanes: {
+        outward: { provider: "anthropic", model: "claude-opus-4-6", source: "bootstrap", updatedAt: "x" },
+        inner: { provider: "minimax", model: "MiniMax-M2.5", source: "local", updatedAt: "x" },
+      },
+    })).toThrow("readiness")
+  })
+
+  it("validates provider lane binding fields", () => {
+    emitTestEvent("provider state binding validation")
+    const base = providerState()
+    expect(() => validateProviderState({
+      ...base,
+      lanes: { ...base.lanes, outward: null },
+    })).toThrow("outward must be an object")
+    expect(() => validateProviderState({
+      ...base,
+      lanes: { ...base.lanes, outward: { ...base.lanes.outward, model: "" } },
+    })).toThrow("outward.model")
+    expect(() => validateProviderState({
+      ...base,
+      lanes: { ...base.lanes, outward: { ...base.lanes.outward, source: "remote" } },
+    })).toThrow("outward.source")
+    expect(() => validateProviderState({
+      ...base,
+      lanes: { ...base.lanes, outward: { ...base.lanes.outward, updatedAt: "" } },
+    })).toThrow("outward.updatedAt")
+  })
+
+  it("validates provider readiness fields", () => {
+    emitTestEvent("provider state readiness validation")
+    const base = providerState()
+    const invalidReadiness = (readiness: Record<string, unknown>) => ({
+      ...base,
+      readiness: { outward: readiness },
+    })
+
+    expect(() => validateProviderState(invalidReadiness(null as unknown as Record<string, unknown>))).toThrow("outward.readiness")
+    expect(() => validateProviderState(invalidReadiness({ status: "sleeping", provider: "anthropic", model: "m" }))).toThrow("status")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "fake", model: "m" }))).toThrow("provider")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "anthropic", model: "" }))).toThrow("model")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "anthropic", model: "m", checkedAt: 1 }))).toThrow("checkedAt")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "anthropic", model: "m", credentialRevision: 1 }))).toThrow("credentialRevision")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "anthropic", model: "m", error: 1 }))).toThrow("error")
+    expect(() => validateProviderState(invalidReadiness({ status: "ready", provider: "anthropic", model: "m", attempts: "1" }))).toThrow("attempts")
   })
 
   it("bootstraps outward and inner lanes from legacy agent.json facings exactly once", () => {
