@@ -1,21 +1,29 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { emitNervesEvent } from "../../../nerves/runtime"
-import { runAgenticRepair } from "../../../heart/daemon/agentic-repair"
+import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "../../../heart/daemon/agentic-repair"
 import type { AgenticRepairDeps } from "../../../heart/daemon/agentic-repair"
 import type { DegradedAgent } from "../../../heart/daemon/interactive-repair"
 import type { DiscoverWorkingProviderResult } from "../../../heart/daemon/provider-discovery"
+
+const mockCreateProviderRuntimeForConfig = vi.hoisted(() => vi.fn(() => ({
+  streamTurn: vi.fn(async () => ({ content: "", toolCalls: [], outputItems: [] })),
+})))
 
 // Silence nerves events during tests
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
+vi.mock("../../../heart/provider-ping", () => ({
+  createProviderRuntimeForConfig: (...args: unknown[]) => mockCreateProviderRuntimeForConfig(...args),
+}))
+
 function makeDiscoverResult(): DiscoverWorkingProviderResult {
   return {
     provider: "anthropic",
-    credentials: { apiKey: "sk-test" },
-    providerConfig: { apiKey: "sk-test" },
+    credentials: { setupToken: "sk-test" },
+    providerConfig: { model: "claude-opus-4-6" },
   }
 }
 
@@ -103,11 +111,8 @@ describe("runAgenticRepair", () => {
     })
     const result = await runAgenticRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true, usedAgentic: true })
-    // Provider runtime was created with discovered credentials
-    expect(deps.createProviderRuntime).toHaveBeenCalledWith(
-      "anthropic",
-      { apiKey: "sk-test" },
-    )
+    // Provider runtime was created from the complete discovered provider record.
+    expect(deps.createProviderRuntime).toHaveBeenCalledWith(makeDiscoverResult())
     // streamTurn was called with system + user messages
     expect(mockStreamTurn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -298,5 +303,38 @@ describe("runAgenticRepair", () => {
     const result = await runAgenticRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
     expect(emitNervesEvent).toHaveBeenCalled()
+  })
+
+  it("creates diagnosis runtimes from explicit discovered config and model hints", () => {
+    mockCreateProviderRuntimeForConfig.mockClear()
+
+    createAgenticDiagnosisProviderRuntime({
+      provider: "minimax",
+      credentials: { apiKey: "mm-key" },
+      providerConfig: { model: "MiniMax-M2.5" },
+    })
+
+    expect(mockCreateProviderRuntimeForConfig).toHaveBeenCalledWith("minimax", {
+      model: "MiniMax-M2.5",
+      apiKey: "mm-key",
+    }, {
+      model: "MiniMax-M2.5",
+    })
+  })
+
+  it("lets the shared provider runtime factory choose the default model when discovery has no model hint", () => {
+    mockCreateProviderRuntimeForConfig.mockClear()
+
+    createAgenticDiagnosisProviderRuntime({
+      provider: "minimax",
+      credentials: { apiKey: "mm-key" },
+      providerConfig: {},
+    })
+
+    expect(mockCreateProviderRuntimeForConfig).toHaveBeenCalledWith("minimax", {
+      apiKey: "mm-key",
+    }, {
+      model: undefined,
+    })
   })
 })

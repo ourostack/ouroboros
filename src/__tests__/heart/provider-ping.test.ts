@@ -87,7 +87,7 @@ vi.mock("../../heart/providers/github-copilot", () => ({
   classifyGithubCopilotError: vi.fn(() => "unknown"),
 }))
 
-import { pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
+import { createProviderRuntimeForConfig, pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
 import type { ProviderErrorClassification } from "../../heart/core"
 import { createOpenAICodexProviderRuntime } from "../../heart/providers/openai-codex"
 import { createAzureProviderRuntime } from "../../heart/providers/azure"
@@ -135,6 +135,19 @@ describe("sanitizeErrorMessage", () => {
 describe("pingProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it("creates provider runtimes from explicit config for shared health and repair flows", () => {
+    const runtime = createProviderRuntimeForConfig("minimax", {
+      apiKey: "valid-key",
+    }, {
+      model: "MiniMax-M2.5",
+    })
+
+    expect(runtime.id).toBe("minimax")
+    expect(createMinimaxProviderRuntime).toHaveBeenCalledWith("MiniMax-M2.5", {
+      apiKey: "valid-key",
+    })
   })
 
   it("returns ok: true when ping succeeds for anthropic", async () => {
