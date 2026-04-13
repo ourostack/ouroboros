@@ -8,7 +8,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
-import { loadSession, deleteSession, postTurnPersist, postTurnTrim, deferPostTurnPersist } from "../mind/context"
+import { loadSession, postTurnPersist, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
@@ -501,8 +501,6 @@ export interface RunCliSessionOptions {
   onInput?: (input: string) => { allowed: boolean; reply?: string };
   /** Called after each agent turn completes (post-runAgent). */
   onTurnEnd?: (messages: OpenAI.ChatCompletionMessageParam[], result: { usage?: UsageData }) => void | Promise<void>;
-  /** Called when /new command resets the session. */
-  onNewSession?: () => void | Promise<void>;
   /** If true, auto-process the last user message before waiting for input (e.g. specialist greeting). */
   autoFirstTurn?: boolean;
   /** Custom banner shown at session start. Set to false to suppress entirely. */
@@ -836,13 +834,6 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           if (dispatchResult.handled && dispatchResult.result) {
             if (dispatchResult.result.action === "exit") {
               break
-            } else if (dispatchResult.result.action === "new") {
-              messages.length = 0
-              messages.push({ role: "system", content: await buildSystem("cli") })
-              await options.onNewSession?.()
-              // eslint-disable-next-line no-console -- terminal UX: session cleared
-              console.log("session cleared")
-              continue
             } else if (dispatchResult.result.action === "response") {
               display.text(dispatchResult.result.message || "")
               continue
@@ -877,13 +868,6 @@ export async function runCliSession(options: RunCliSessionOptions): Promise<RunC
           if (result?.turnOutcome === "command") {
             if (result.commandAction === "exit") {
               break
-            } else if (result.commandAction === "new") {
-              messages.length = 0
-              messages.push({ role: "system", content: await buildSystem("cli") })
-              await options.onNewSession?.()
-              // eslint-disable-next-line no-console -- terminal UX: session cleared
-              console.log("session cleared")
-              continue
             }
             // For "response" commands: the pipeline already emitted the response via onTextChunk
             cliCallbacks.flushMarkdown()
@@ -1156,9 +1140,6 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         }
 
         return { usage: result.usage, turnOutcome: result.turnOutcome, commandAction: result.commandAction }
-      },
-      onNewSession: () => {
-        deleteSession(sessPath)
       },
     })
   } finally {

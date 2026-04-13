@@ -81,12 +81,21 @@ describe("registerDefaultCommands", () => {
     expect(result).toEqual({ handled: true, result: { action: "exit" } })
   })
 
-  it("/new handler returns action:new", async () => {
+  it("/new is not dispatched on cli channel", async () => {
     const { createCommandRegistry, registerDefaultCommands } = await import("../../senses/commands")
     const registry = createCommandRegistry()
     registerDefaultCommands(registry)
 
     const result = registry.dispatch("new", { channel: "cli" })
+    expect(result).toEqual({ handled: false })
+  })
+
+  it("/new handler returns action:new on teams channel", async () => {
+    const { createCommandRegistry, registerDefaultCommands } = await import("../../senses/commands")
+    const registry = createCommandRegistry()
+    registerDefaultCommands(registry)
+
+    const result = registry.dispatch("new", { channel: "teams" })
     expect(result).toEqual({ handled: true, result: { action: "new" } })
   })
 
@@ -99,10 +108,8 @@ describe("registerDefaultCommands", () => {
     expect(result.handled).toBe(true)
     expect(result.result!.action).toBe("response")
     expect(result.result!.message).toContain("/exit")
-    expect(result.result!.message).toContain("/new")
+    expect(result.result!.message).not.toContain("/new")
     expect(result.result!.message).toContain("/commands")
-    // Each line uses em dash separator between name and description
-    expect(result.result!.message).toContain("/new \u2014 start a new conversation")
     expect(result.result!.message).toContain("/commands \u2014 list available commands")
   })
 
