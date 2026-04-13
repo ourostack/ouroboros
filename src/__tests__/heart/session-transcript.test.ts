@@ -377,6 +377,30 @@ describe("session transcript", () => {
     expect(snapshot).not.toContain("latest assistant:")
   })
 
+  it("returns empty for search when v2 envelope exists but has zero events", async () => {
+    const { searchSessionTranscript } = await import("../../heart/session-transcript")
+    const emptyV2Envelope = {
+      version: 2,
+      events: [],
+      projection: { eventIds: [] },
+      state: { lastFriendActivityAt: null, mustResolveBeforeHandoff: false },
+    }
+    vi.mocked(fs.readFileSync).mockImplementation((path: any) => {
+      if (String(path).endsWith(".ndjson")) throw new Error("ENOENT")
+      return JSON.stringify(emptyV2Envelope)
+    })
+
+    const result = await searchSessionTranscript({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+      query: "billing",
+    })
+
+    expect(result).toEqual({ kind: "empty" })
+  })
+
   it("returns empty for search when the session has no non-system messages", async () => {
     const { searchSessionTranscript } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({

@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import {
   extractEventText,
   formatSessionEventTimestamp,
+  loadFullEventHistory,
   loadSessionEnvelopeFile,
   type SessionEvent,
 } from "./session-events"
@@ -213,9 +214,14 @@ export async function searchSessionTranscript(options: SessionSearchOptions): Pr
     },
   })
 
-  const envelope = loadSessionEnvelopeFile(options.sessionPath)
-  if (!envelope) return { kind: "missing" }
-  const messages = normalizeSessionMessages(envelope.events)
+  // Use full event history (envelope + archive) for search to find older messages
+  const allEvents = loadFullEventHistory(options.sessionPath)
+  if (allEvents.length === 0) {
+    const envelope = loadSessionEnvelopeFile(options.sessionPath)
+    if (!envelope) return { kind: "missing" }
+    return { kind: "empty" }
+  }
+  const messages = normalizeSessionMessages(allEvents)
 
   if (messages.length === 0) {
     return { kind: "empty" }
