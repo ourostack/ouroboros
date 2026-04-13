@@ -278,7 +278,7 @@ describe("observe tool in runAgent", () => {
     expect(toolNames).toContain("settle")
   })
 
-  it("does NOT include observe in activeTools when isGroupChat is false", async () => {
+  it("includes observe in activeTools when isGroupChat is false (1:1 outward)", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -299,10 +299,10 @@ describe("observe tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("observe")
+    expect(toolNames).toContain("observe")
   })
 
-  it("does NOT include observe when isGroupChat is undefined", async () => {
+  it("includes observe when isGroupChat is undefined (outward channel)", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -323,7 +323,7 @@ describe("observe tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("observe")
+    expect(toolNames).toContain("observe")
   })
 
   it("emits a nerves event when observe is used", async () => {
@@ -451,7 +451,31 @@ describe("observe tool in runAgent", () => {
     expect(toolNames).toContain("observe")
   })
 
-  it("does NOT include observe when isReactionSignal is undefined + 1:1", async () => {
+  it("includes observe in activeTools for 1:1 outward chat (not group, not reaction, not inner)", async () => {
+    mockCreate.mockReturnValue(
+      makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+        ]),
+      ])
+    )
+
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: false, channel: { channel: "bluebubbles", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+      },
+    })
+
+    const params = mockCreate.mock.calls[0][0]
+    const toolNames = params.tools.map((t: any) => t.function.name)
+    expect(toolNames).toContain("observe")
+  })
+
+  it("includes observe when isReactionSignal is undefined + 1:1 (all outward channels get observe)", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
@@ -472,7 +496,7 @@ describe("observe tool in runAgent", () => {
 
     const params = mockCreate.mock.calls[0][0]
     const toolNames = params.tools.map((t: any) => t.function.name)
-    expect(toolNames).not.toContain("observe")
+    expect(toolNames).toContain("observe")
   })
 
   it("includes observe when isReactionSignal:true + group chat (still works)", async () => {

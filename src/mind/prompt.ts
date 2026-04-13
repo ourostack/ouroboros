@@ -635,6 +635,8 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
       lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
       lines.push(`- \`settle\` must be the only tool call in that turn.`)
       lines.push(`- I do not call no-op tools before \`settle\`.`)
+      lines.push(`- when told to work autonomously, I use ponder to absorb new messages and continue using tools. I settle only with the final result.`)
+      lines.push(`- if nothing calls for words, I observe.`)
     }
   }
 

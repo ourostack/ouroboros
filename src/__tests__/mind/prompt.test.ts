@@ -1208,6 +1208,30 @@ describe("buildSystem", () => {
     expect(result).toContain("`settle` must be the only tool call in that turn")
   })
 
+  it("outward channel tool behavior includes autonomous execution guidance", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    // Autonomous execution: use ponder mid-task, settle only for final result
+    expect(result).toMatch(/ponder.*absorb.*messages|ponder.*new messages/i)
+    expect(result).toMatch(/settle only.*final result/i)
+  })
+
+  it("outward channel tool behavior includes observe guidance", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = await buildSystem("cli", { toolChoiceRequired: true })
+    expect(result).toMatch(/nothing calls for words.*observe/i)
+  })
+
   it("toolsSection includes settle in tool list when options undefined (defaults on)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

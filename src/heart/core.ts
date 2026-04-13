@@ -754,8 +754,7 @@ export async function runAgent(
   while (!done) {
     // Channel-based tool filtering:
     // - Inner dialog: exclude send_message (delivery via surface), observe (no one to observe)
-    // - 1:1 sessions: exclude observe (can't ignore someone talking directly to you)
-    // - Group chats: observe available
+    // - All outward channels (1:1, group, reaction): observe available
     //
     // ponder, settle/rest, surface, and observe are always assembled based on channel context.
     // ponder is available in ALL channels (outer: think privately, inner: keep turning).
@@ -769,7 +768,7 @@ export async function runAgent(
       ...filteredBaseTools,
       ponderTool,
       ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
-      ...((currentContext?.isGroupChat || options?.isReactionSignal) && !isInnerDialog ? [observeTool] : []),
+      ...(!isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
     ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
