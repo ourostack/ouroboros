@@ -8,7 +8,7 @@ import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
-import { loadSession, deleteSession, postTurn } from "../mind/context"
+import { loadSession, deleteSession, postTurnPersist, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { getPendingDir, drainDeferredReturns, drainPending, type PendingMessage } from "../mind/pending"
 import type { UsageData } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand, getToolChoiceRequired } from "./commands"
@@ -1053,8 +1053,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
       lastActivityAt: sessionState?.lastFriendActivityAt,
       _testInputSource: options?._testInputSource,
       onAsyncAssistantMessage: async (messages, _assistantMessage) => {
-        postTurn(messages, sessPath, undefined, undefined, sessionState)
-        sessionEvents = loadSession(sessPath)?.events ?? sessionEvents
+        const prepared = postTurnTrim(messages)
+        const events = postTurnPersist(sessPath, prepared, undefined, sessionState)
+        /* v8 ignore next -- defensive: postTurnPersist always returns events in practice @preserve */
+        sessionEvents = events.length > 0 ? events : sessionEvents
       },
       runTurn: async (messages, userInput, callbacks, signal, toolContext, userContent) => {
         // Run the full per-turn pipeline: resolve -> gate -> session -> drain -> runAgent -> postTurn -> tokens
@@ -1067,9 +1069,10 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
         /* v8 ignore start -- failover-aware callback wrapper: tested via pipeline integration @preserve */
         const failoverAwareCallbacks: typeof callbacks = {
           ...callbacks,
-          // Save session after each tool result for crash recovery
+          // Save session after each tool result for crash recovery (deferred to avoid blocking)
           onToolResult: (turnMessages) => {
-            postTurn(turnMessages, sessPath, undefined, undefined, sessionState)
+            const prepared = postTurnTrim(turnMessages)
+            deferPostTurnPersist(sessPath, prepared, undefined, sessionState)
           },
           onError: (error: Error, severity: "transient" | "terminal") => {
             if (severity === "terminal" && failoverState) {
@@ -1115,9 +1118,14 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
             },
           }),
           postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
-            postTurn(turnMessages, sessionPathArg, usage, hooks, state)
+            // Trim synchronously (mutates turnMessages for next turn),
+            // then defer envelope build + disk I/O to avoid blocking the TUI.
+            const prepared = postTurnTrim(turnMessages, usage, hooks)
             sessionState = state
-            sessionEvents = loadSession(sessionPathArg)?.events ?? sessionEvents
+            deferPostTurnPersist(sessionPathArg, prepared, usage, state).then((events) => {
+              /* v8 ignore next -- defensive: deferPostTurnPersist always resolves events in practice @preserve */
+              sessionEvents = events.length > 0 ? events : sessionEvents
+            })
           },
           accumulateFriendTokens,
           signal,
