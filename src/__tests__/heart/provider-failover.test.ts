@@ -55,6 +55,56 @@ describe("buildFailoverContext", () => {
     expect(ctx.userMessage).toContain("gpt-4o-mini")
   })
 
+  it("renders machine-wide ready providers with credential provenance labels", () => {
+    const ctx = buildFailoverContext(
+      "400 status code (no body)",
+      "auth-failure",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        ready: [
+          {
+            provider: "minimax",
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "auth-flow",
+            contributedByAgent: "kicker",
+            result: { ok: true },
+          },
+        ],
+        unavailable: [
+          {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            credentialRevision: "cred_anthropic",
+            source: "legacy-agent-secrets",
+            contributedByAgent: "slugger",
+            result: { ok: false, classification: "auth-failure", message: "expired" },
+          },
+        ],
+        unconfigured: ["azure"],
+      } as any,
+      {},
+    )
+
+    expect(ctx.workingProviders).toEqual(["minimax"])
+    expect((ctx as any).readyProviders).toEqual([
+      expect.objectContaining({
+        provider: "minimax",
+        model: "MiniMax-M2.7",
+        source: "auth-flow",
+        contributedByAgent: "kicker",
+      }),
+    ])
+    expect(ctx.userMessage).toContain("Ready providers:")
+    expect(ctx.userMessage).toContain('minimax (MiniMax-M2.7; credentials from kicker via auth-flow): reply "switch to minimax"')
+    expect(ctx.userMessage).toContain("anthropic: credentials need to be refreshed")
+    expect(ctx.userMessage).not.toContain("cred_minimax")
+    expect(ctx.userMessage).not.toContain("setupToken")
+    expect(ctx.userMessage).not.toContain(".agentsecrets")
+  })
+
   it("handles no working providers", () => {
     const ctx = buildFailoverContext(
       "server error",
@@ -172,7 +222,7 @@ describe("buildFailoverContext", () => {
     expect(ctx.errorSummary).toBe("openai-codex [configured model: claude-sonnet-4.6] authentication failed")
     expect(ctx.userMessage).toContain("provider detail: 401 Provided authentication token is expired.")
     expect(ctx.userMessage).toContain("does not look like a model for OpenAI Codex")
-    expect(ctx.userMessage).toContain("ouro config model --agent slugger --facing human gpt-5.4")
+    expect(ctx.userMessage).toContain("ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.4")
     expect(ctx.userMessage).toContain("Ready providers:")
     expect(ctx.userMessage).toContain('reply "switch to anthropic"')
   })
@@ -194,6 +244,39 @@ describe("handleFailoverReply", () => {
 
   it("matches 'switch to anthropic'", () => {
     expect(handleFailoverReply("switch to anthropic", ctx)).toEqual({ action: "switch", provider: "anthropic" })
+  })
+
+  it("returns selected lane and model when matching a provenance-rich ready provider", () => {
+    const richContext = buildFailoverContext(
+      "usage limit",
+      "usage-limit",
+      "openai-codex",
+      "gpt-5.4",
+      "slugger",
+      {
+        ready: [
+          {
+            provider: "minimax",
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "manual",
+            contributedByAgent: "slugger",
+            result: { ok: true },
+          },
+        ],
+        unavailable: [],
+        unconfigured: [],
+      } as any,
+      {},
+    )
+
+    expect(handleFailoverReply("switch to minimax", richContext)).toEqual({
+      action: "switch",
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+      lane: "outward",
+      credentialRevision: "cred_minimax",
+    })
   })
 
   it("matches 'switch to azure'", () => {
