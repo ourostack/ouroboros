@@ -60,6 +60,7 @@ vi.mock("../../repertoire/coding", async () => {
 })
 
 const mockRunHealthInventory = vi.fn()
+const mockRunMachineProviderFailoverInventory = vi.fn()
 const mockWriteAgentProviderSelection = vi.fn()
 const mockLoadAgentSecrets = vi.fn().mockReturnValue({
   secretsPath: "/mock/secrets.json",
@@ -78,6 +79,14 @@ vi.mock("../../heart/provider-ping", async () => {
   return {
     ...actual,
     runHealthInventory: (...args: any[]) => mockRunHealthInventory(...args),
+  }
+})
+
+vi.mock("../../heart/provider-failover", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/provider-failover")>("../../heart/provider-failover")
+  return {
+    ...actual,
+    runMachineProviderFailoverInventory: (...args: any[]) => mockRunMachineProviderFailoverInventory(...args),
   }
 })
 
@@ -1502,20 +1511,35 @@ describe("handleInboundTurn", () => {
   describe("provider failover", () => {
     beforeEach(() => {
       mockRunHealthInventory.mockReset()
+      mockRunMachineProviderFailoverInventory.mockReset()
       mockWriteAgentProviderSelection.mockReset()
     })
 
     it("returns failoverMessage when runAgent returns errored outcome", async () => {
-      vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
-      vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeProviderState(agentRoot, providerState())
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
         version: 1,
         enabled: true,
         humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         phrases: { thinking: [], tool: [], followup: [] },
       } as any)
-      mockRunHealthInventory.mockResolvedValue({
-        anthropic: { ok: true },
+      mockRunMachineProviderFailoverInventory.mockResolvedValue({
+        ready: [{
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_anthropic",
+          source: "auth-flow",
+          contributedByAgent: "slugger",
+          result: { ok: true },
+        }],
+        unavailable: [],
+        unconfigured: [],
       })
       const failoverState = { pending: null }
       const input = makeInput({
@@ -1528,23 +1552,44 @@ describe("handleInboundTurn", () => {
         }),
       })
 
-      const result = await handleInboundTurn(input)
+      try {
+        const result = await handleInboundTurn(input)
 
-      expect(result.failoverMessage).toBeDefined()
-      expect(result.failoverMessage).toContain("openai-codex")
-      expect(result.failoverMessage).toContain("switch to anthropic")
-      expect(failoverState.pending).not.toBeNull()
+        expect(result.failoverMessage).toBeDefined()
+        expect(result.failoverMessage).toContain("openai-codex")
+        expect(result.failoverMessage).toContain("switch to anthropic")
+        expect(mockRunMachineProviderFailoverInventory).toHaveBeenCalledWith("slugger", "openai-codex")
+        expect(failoverState.pending).not.toBeNull()
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        loadConfigSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
     })
 
     it("handles failover reply to switch provider and auto-retries on new provider", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeProviderState(agentRoot, providerState())
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const failoverState = {
         pending: {
           errorSummary: "openai-codex hit its usage limit",
           classification: "usage-limit" as const,
           currentProvider: "openai-codex" as const,
+          currentLane: "outward" as const,
           agentName: "slugger",
           workingProviders: ["anthropic" as const],
+          readyProviders: [{
+            provider: "anthropic" as const,
+            model: "claude-opus-4-6",
+            credentialRevision: "cred_anthropic",
+            source: "auth-flow" as const,
+            contributedByAgent: "slugger",
+          }],
           unconfiguredProviders: [],
           userMessage: "switch available",
         },
@@ -1555,24 +1600,37 @@ describe("handleInboundTurn", () => {
         runAgent: mockRunAgent,
       })
 
-      const result = await handleInboundTurn(input)
+      try {
+        const result = await handleInboundTurn(input)
 
-      expect(result.switchedProvider).toBe("anthropic")
-      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "human", "anthropic")
-      expect(mockWriteAgentProviderSelection).toHaveBeenCalledWith("slugger", "agent", "anthropic")
-      expect(failoverState.pending).toBeNull()
-      // The pipeline should have auto-retried: runAgent was called on the new provider
-      expect(mockRunAgent).toHaveBeenCalledTimes(1)
-      // "switch to anthropic" should NOT be in the messages passed to runAgent —
-      // replaced with a context message telling the agent about the switch
-      const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
-      const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
-      expect(lastUserMsg?.content).not.toContain("switch to anthropic")
-      expect(lastUserMsg?.content).toContain("provider switch")
-      expect(lastUserMsg?.content).toContain("openai-codex")
-      expect(lastUserMsg?.content).toContain("anthropic")
-      // Turn completed successfully on the new provider
-      expect(result.turnOutcome).toBe("settled")
+        expect(result.switchedProvider).toBe("anthropic")
+        expect(mockWriteAgentProviderSelection).not.toHaveBeenCalled()
+        const stateResult = readProviderState(agentRoot)
+        expect(stateResult.ok).toBe(true)
+        if (!stateResult.ok) throw new Error(stateResult.error)
+        expect(stateResult.state.lanes.outward).toMatchObject({
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+        })
+        expect(stateResult.state.lanes.inner.provider).toBe("openai-codex")
+        expect(failoverState.pending).toBeNull()
+        // The pipeline should have auto-retried: runAgent was called on the new provider
+        expect(mockRunAgent).toHaveBeenCalledTimes(1)
+        // "switch to anthropic" should NOT be in the messages passed to runAgent —
+        // replaced with a context message telling the agent about the switch
+        const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
+        const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
+        expect(lastUserMsg?.content).not.toContain("switch to anthropic")
+        expect(lastUserMsg?.content).toContain("provider switch")
+        expect(lastUserMsg?.content).toContain("openai-codex")
+        expect(lastUserMsg?.content).toContain("outward")
+        expect(lastUserMsg?.content).toContain("anthropic")
+        // Turn completed successfully on the new provider
+        expect(result.turnOutcome).toBe("settled")
+      } finally {
+        agentRootSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
     })
 
     it("switches only the failed provider-state lane and preserves the other lane", async () => {
@@ -1667,15 +1725,20 @@ describe("handleInboundTurn", () => {
     })
 
     it("falls back to normal error handling when failover sequence throws", async () => {
-      vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
-      vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeProviderState(agentRoot, providerState())
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
         version: 1,
         enabled: true,
         humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
         phrases: { thinking: [], tool: [], followup: [] },
       } as any)
-      mockRunHealthInventory.mockRejectedValue(new Error("inventory failed"))
+      mockRunMachineProviderFailoverInventory.mockRejectedValue(new Error("inventory failed"))
       const failoverState = { pending: null }
       const input = makeInput({
         failoverState,
@@ -1687,11 +1750,18 @@ describe("handleInboundTurn", () => {
         }),
       })
 
-      const result = await handleInboundTurn(input)
+      try {
+        const result = await handleInboundTurn(input)
 
-      // Should complete without failoverMessage since the sequence failed
-      expect(result.failoverMessage).toBeUndefined()
-      expect(result.turnOutcome).toBe("errored")
+        // Should complete without failoverMessage since the sequence failed
+        expect(result.failoverMessage).toBeUndefined()
+        expect(result.turnOutcome).toBe("errored")
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        loadConfigSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
     })
 
     it("does not trigger failover when failoverState is not provided", async () => {
