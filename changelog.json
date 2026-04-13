@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.345",
+      "changes": [
+        "Machine-wide provider credentials now have a local pool at `~/.agentsecrets/providers.json` with one active record per provider, generated credential revisions, safe provenance, redacted summaries, and explicit migration from legacy per-agent `~/.agentsecrets/<agent>/secrets.json` files."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.344",
       "changes": [
         "Provider readiness groundwork now has stable machine identity stored at `~/.ouro-cli/machine.json`, preserving random machine IDs across hostname changes while recording aliases for diagnostics.",
