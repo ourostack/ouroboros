@@ -10,6 +10,7 @@ import type { OutlookIssue } from "../outlook-types"
 
 export interface OutlookReadOptions {
   bundlesRoot?: string
+  homeDir?: string
   now?: () => Date
   runtimeMetadata?: RuntimeMetadata
   agentNames?: string[]

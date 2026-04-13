@@ -210,6 +210,7 @@ export function buildOutlookAgentView(input: {
       agentRoot: input.agent.agentRoot,
       enabled: input.agent.enabled,
       provider: input.agent.provider,
+      providers: input.agent.providers ?? null,
       senses: input.agent.senses,
       freshness: input.agent.freshness,
       degraded: input.agent.degraded,

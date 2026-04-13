@@ -11,7 +11,8 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 - `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
 - `ouro dev` starts the daemon from a local repo build. It auto-builds from source, disables launchd auto-restart (so the installed daemon doesn't respawn underneath you), persists the repo path in `~/.ouro-cli/dev-config.json` for next time, and force-restarts the daemon. If you run `ouro dev` from inside the repo, it detects the CWD automatically. Run `ouro up` to return to production mode (this also cleans up `dev-config.json`).
 - Agent bundles live outside the repo at `~/AgentBundles/<agent>.ouro/`.
-- Secrets live outside the repo at `~/.agentsecrets/<agent>/secrets.json`.
+- Provider credentials live outside the repo at `~/.agentsecrets/providers.json`.
+- Sense-specific secrets live outside the repo at `~/.agentsecrets/<agent>/secrets.json`.
 - Machine-scoped test and runtime spillover lives under `~/.agentstate/...`.
 
 Current first-class senses:
@@ -90,8 +91,10 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for provider+model selection per facing (`humanFacing` and `agentFacing`), phrase pools, context settings, and enabled senses.
-- `configPath` must point to `~/.agentsecrets/<agent>/secrets.json`.
+- `agent.json` is the source of truth for phrase pools, context settings, enabled senses, and the agent's `configPath`. Legacy `humanFacing`/`agentFacing` values are bootstrap inputs, not live machine fallback.
+- `configPath` must point to `~/.agentsecrets/<agent>/secrets.json` for sense-specific secrets.
+- `state/providers.json` is the local source of truth for provider+model selection on this machine. It has two lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
+- `~/.agentsecrets/providers.json` is the machine credential pool. It stores provider credentials only, records which agent contributed them, and is shared by all agents on that machine.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
 - `bundle-meta.json` tracks the runtime version that last touched a bundle.
@@ -104,17 +107,22 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
   - `running`
   - `error`
 
-When a model provider needs first-time setup, reauth, or an explicit switch, use:
+When a model provider needs first-time setup or reauth, use:
 
 ```bash
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
-ouro auth --agent <name> --facing agent --provider <provider>
 ```
 
-The default form reauths the human-facing provider already selected in `agent.json`. The
-`--provider` form is for adding or switching providers. The `--facing` flag (values: `human`
-or `agent`) controls which facing gets updated; it defaults to `human` when omitted.
+`ouro auth` stores credentials only. It does not switch a lane or write provider/model selection.
+
+When you want this machine to use a provider/model for a lane, use:
+
+```bash
+ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
+```
+
+The outward lane handles user-facing senses. The inner lane handles the agent's private thinking. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
 
 ## Quickstart
 
@@ -159,6 +167,7 @@ ouro logs
 ouro stop
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
+ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
 ouro hatch
 ouro chat <agent>
 ouro msg --to <agent> [--session <id>] [--task <ref>] <message>

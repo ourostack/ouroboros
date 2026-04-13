@@ -38,6 +38,7 @@ import {
   ProviderAttemptAbortError,
   runProviderAttempt,
 } from "./provider-attempt";
+import type { AgentProviderVisibility } from "./provider-visibility";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -247,6 +248,8 @@ export interface RunAgentOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+  /** Safe provider/model/readiness view for this machine. */
+  providerVisibility?: AgentProviderVisibility;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
