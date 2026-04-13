@@ -117,6 +117,12 @@ export function enforceTrustGate(input: TrustGateInput): TrustGateResult {
   }
 
   // Open senses (BlueBubbles/iMessage) — enforce trust rules
+
+  // Group chat with a family member present — allow regardless of trust level
+  if (input.isGroupChat && input.groupHasFamilyMember) {
+    return { allowed: true }
+  }
+
   const trustLevel = input.friend.trustLevel ?? "friend"
 
   // Family and friend — always allow on open
@@ -141,12 +147,7 @@ function handleAcquaintance(
   bundleRoot: string,
   nowIso: string,
 ): TrustGateResult {
-  const { isGroupChat, groupHasFamilyMember, hasExistingGroupWithFamily } = input
-
-  // Group chat with family member present — allow
-  if (isGroupChat && groupHasFamilyMember) {
-    return { allowed: true }
-  }
+  const { isGroupChat, hasExistingGroupWithFamily } = input
 
   let result: TrustGateResult
   let noticeDetail: string
