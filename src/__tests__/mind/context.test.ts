@@ -1088,6 +1088,154 @@ describe("postTurn", () => {
   })
 })
 
+// --- postTurnPersist return value ---
+
+describe("postTurnPersist return value", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.mkdirSync).mockReset()
+  })
+
+  it("returns SessionEvent[] from the envelope it built", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { postTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+    ]
+    const usage = { input_tokens: 5000, output_tokens: 10, reasoning_tokens: 0, total_tokens: 5010 }
+    const prepared = postTurnTrim(messages, usage)
+    const result = postTurnPersist("/tmp/sess.json", prepared, usage)
+
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThan(0)
+    // Events should match what was written to disk
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(result).toEqual(written.events)
+  })
+
+  it("returns non-empty events array for a turn with messages", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { postTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "test input" },
+      { role: "assistant", content: "test reply" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const result = postTurnPersist("/tmp/sess.json", prepared)
+
+    expect(result.length).toBeGreaterThan(0)
+    // Each event should have an id and role
+    for (const event of result) {
+      expect(event).toHaveProperty("id")
+      expect(event).toHaveProperty("role")
+    }
+  })
+})
+
+// --- deferPostTurnPersist return value ---
+
+describe("deferPostTurnPersist return value", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.mkdirSync).mockReset()
+  })
+
+  it("resolves with SessionEvent[] on success", async () => {
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+    ]
+    const usage = { input_tokens: 5000, output_tokens: 10, reasoning_tokens: 0, total_tokens: 5010 }
+    const prepared = postTurnTrim(messages, usage)
+    const result = await deferPostTurnPersist("/tmp/sess.json", prepared, usage)
+
+    expect(Array.isArray(result)).toBe(true)
+    expect(result.length).toBeGreaterThan(0)
+    // Events should match what was written to disk
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    expect(result).toEqual(written.events)
+  })
+
+  it("resolves with empty array when postTurnPersist throws", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+
+    // Mock writeFileSync to throw on the persist write
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      throw new Error("disk failure")
+    })
+
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const result = await deferPostTurnPersist("/tmp/sess.json", prepared)
+
+    expect(Array.isArray(result)).toBe(true)
+    expect(result).toEqual([])
+    // Should have logged the error
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "mind.deferred_persist_error" }),
+    )
+  })
+
+  it("resolves with empty array when postTurnPersist throws a non-Error value", async () => {
+    vi.resetModules()
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+
+    // Mock writeFileSync to throw a string (non-Error)
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      throw "string error"  // eslint-disable-line no-throw-literal
+    })
+
+    const { getContextConfig } = await import("../../heart/config")
+    vi.mocked(getContextConfig).mockReturnValue({ maxTokens: 80000, contextMargin: 20 })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const result = await deferPostTurnPersist("/tmp/sess.json", prepared)
+
+    expect(result).toEqual([])
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "mind.deferred_persist_error",
+        meta: { error: "string error" },
+      }),
+    )
+  })
+})
+
 describe("mind observability instrumentation", () => {
   it("trimMessages emits mind step lifecycle events", async () => {
     vi.resetModules()
