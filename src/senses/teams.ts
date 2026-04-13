@@ -12,7 +12,7 @@ import { buildSystem } from "../mind/prompt"
 import { pickPhrase, getPhrases } from "../mind/phrases"
 import { formatKick, formatError } from "../mind/format"
 import { sessionPath, getTeamsConfig, getTeamsChannelConfig } from "../heart/config"
-import { loadSession, deleteSession, postTurn } from "../mind/context"
+import { loadSession, deleteSession, postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { createCommandRegistry, registerDefaultCommands, parseSlashCommand } from "./commands"
 import { createTraceId } from "../nerves"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -702,7 +702,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
           summarize: teamsToolContext.summarize,
         },
       }),
-      postTurn,
+      postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
+        const prepared = postTurnTrim(turnMessages, usage, hooks)
+        deferPostTurnPersist(sessionPathArg, prepared, usage, state)
+      },
       accumulateFriendTokens,
       signal: controller.signal,
       runAgentOptions: agentOptions,
