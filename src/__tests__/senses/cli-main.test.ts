@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   deleteSession: vi.fn(),
   trimMessages: vi.fn().mockImplementation((msgs: any) => [...msgs]),
   postTurn: vi.fn(),
-  postTurnPersist: vi.fn().mockReturnValue([]),
+  postTurnPersist: vi.fn().mockReturnValue([{ role: "user", content: "mock-event" }]),
   postTurnTrim: vi.fn().mockImplementation((msgs: any) => ({
     currentMessages: [...msgs],
     trimmedMessages: [...msgs],
@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
     maxTokens: 80000,
     contextMargin: 20,
   })),
-  deferPostTurnPersist: vi.fn().mockResolvedValue([]),
+  deferPostTurnPersist: vi.fn().mockResolvedValue([{ role: "user", content: "mock-event" }]),
   createCommandRegistry: vi.fn(),
   registerDefaultCommands: vi.fn(),
   parseSlashCommand: vi.fn().mockReturnValue(null),
@@ -336,7 +336,7 @@ function resetMocks() {
   mocks.trimMessages.mockReset().mockImplementation((msgs: any) => [...msgs])
   mocks.buildSystem.mockReset().mockResolvedValue("system prompt")
   mocks.postTurn.mockReset()
-  mocks.postTurnPersist.mockReset().mockReturnValue([])
+  mocks.postTurnPersist.mockReset().mockReturnValue([{ role: "user", content: "mock-event" }])
   mocks.postTurnTrim.mockReset().mockImplementation((msgs: any) => ({
     currentMessages: [...msgs],
     trimmedMessages: [...msgs],
@@ -344,7 +344,7 @@ function resetMocks() {
     maxTokens: 80000,
     contextMargin: 20,
   }))
-  mocks.deferPostTurnPersist.mockReset().mockResolvedValue([])
+  mocks.deferPostTurnPersist.mockReset().mockResolvedValue([{ role: "user", content: "mock-event" }])
   mocks.registerDefaultCommands.mockReset()
   mocks.parseSlashCommand.mockReset().mockReturnValue(null)
   mocks.getToolChoiceRequired.mockReset().mockReturnValue(false)
