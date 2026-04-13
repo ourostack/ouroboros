@@ -79,6 +79,14 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
         }
       },
       /* v8 ignore stop */
+      /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+      async ping(signal?: AbortSignal): Promise<void> {
+        await (this.client as OpenAI).chat.completions.create(
+          { model: this.model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+          { signal },
+        )
+      },
+      /* v8 ignore stop */
       /* v8 ignore next 3 -- delegation: classification logic tested via classifyGithubCopilotError @preserve */
       classifyError(error: Error): ProviderErrorClassification {
         return classifyGithubCopilotError(error);
@@ -132,6 +140,14 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
       } catch (error) {
         throw error instanceof Error ? error : new Error(String(error));
       }
+    },
+    /* v8 ignore stop */
+    /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+    async ping(signal?: AbortSignal): Promise<void> {
+      await (this.client as OpenAI).responses.create(
+        { model: this.model, input: "ping", max_output_tokens: 16 } as any,
+        { signal },
+      )
     },
     /* v8 ignore stop */
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyGithubCopilotError @preserve */

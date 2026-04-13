@@ -1,6 +1,4 @@
-import type Anthropic from "@anthropic-ai/sdk"
-import OpenAI from "openai"
-import type { ChannelCallbacks, ProviderErrorClassification, ProviderRuntime } from "./core"
+import type { ProviderErrorClassification, ProviderRuntime } from "./core"
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "./identity"
 import type {
   AnthropicProviderConfig,
@@ -48,17 +46,7 @@ const PING_TIMEOUT_MS = 10_000
 const PING_PROMPT = "ping"
 const CHAT_PING_MAX_TOKENS = 1
 const RESPONSE_PING_MAX_OUTPUT_TOKENS = 16
-const ANTHROPIC_SETUP_PING_MODEL = "claude-haiku-4-5-20251001"
 const DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
-const PING_CALLBACKS: ChannelCallbacks = {
-  onModelStart() {},
-  onModelStreamStart() {},
-  onTextChunk() {},
-  onReasoningChunk() {},
-  onToolStart() {},
-  onToolEnd() {},
-  onError() {},
-}
 
 type PingMessage = { role: "user"; content: string }
 
@@ -251,40 +239,7 @@ export async function pingProvider(
       /* v8 ignore next -- timeout callback: only fires after 10s, tests resolve faster @preserve */
       const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
       try {
-        // Minimal API call — no thinking, no reasoning, no tools.
-        if (provider === "anthropic") {
-          // Use haiku for the ping — setup tokens may not have access to newer
-          // models, but if haiku works, the credentials are valid.
-          // Override the beta header to exclude thinking (which requires a
-          // thinking param in the request body).
-          const client = runtime.client as Anthropic
-          await client.messages.create(
-            createChatPingRequest(ANTHROPIC_SETUP_PING_MODEL),
-            { signal: controller.signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
-          )
-        } else if (provider === "openai-codex") {
-          await runtime.streamTurn({
-            messages: createPingMessages(),
-            activeTools: [],
-            callbacks: PING_CALLBACKS,
-            signal: controller.signal,
-            toolChoiceRequired: false,
-          })
-        } else if (provider === "github-copilot" && !runtime.model.startsWith("claude")) {
-          // GPT models on Copilot use the Responses API
-          const client = runtime.client as OpenAI
-          await client.responses.create(
-            createResponsePingRequest(runtime.model),
-            { signal: controller.signal },
-          )
-        } else {
-          // OpenAI-compatible providers (azure, minimax, github-copilot claude)
-          const client = runtime.client as OpenAI
-          await client.chat.completions.create(
-            createChatPingRequest(runtime.model),
-            { signal: controller.signal },
-          )
-        }
+        await runtime.ping(controller.signal)
       } finally {
         clearTimeout(timeout)
       }

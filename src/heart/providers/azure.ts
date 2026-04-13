@@ -120,6 +120,14 @@ export function createAzureProviderRuntime(model: string, azureConfig: AzureProv
       for (const item of result.outputItems) nativeInput!.push(item);
       return result;
     },
+    /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
+    async ping(signal?: AbortSignal): Promise<void> {
+      await (this.client as OpenAI).responses.create(
+        { model: this.model, input: "ping", max_output_tokens: 16 } as any,
+        { signal },
+      )
+    },
+    /* v8 ignore stop */
     /* v8 ignore next 3 -- delegation: classification logic tested via classifyAzureError @preserve */
     classifyError(error: Error): ProviderErrorClassification {
       return classifyAzureError(error);
