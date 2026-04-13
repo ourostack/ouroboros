@@ -74,7 +74,7 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "settle",
     description:
-      "respond to the user with your message. call this tool when you are ready to deliver your response. Only call when you have a substantive response. If you're settling with 'I'll look into that,' you probably should be using a tool instead.",
+      "deliver your response and end your turn — this hands control back to the user. only settle when your work is complete, you're genuinely blocked, or the user asked a direct question that needs an answer now. do not settle with status updates mid-task. if you're settling with 'I'll look into that,' you probably should be using a tool instead.",
     parameters: {
       type: "object",
       properties: {
