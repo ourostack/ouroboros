@@ -152,7 +152,7 @@ function appendTrailingExtras(
   // 5. Stale obligations
   if (staleObligations.length > 0) {
     const lines = staleObligations.map(
-      (o) => `something for ${o.friendName} has been sitting for ${formatElapsed(o.stalenessMs)}`,
+      (o) => `[internal] obligation: ${o.friendName} — waiting ${formatElapsed(o.stalenessMs)}`,
     )
     sections.push(lines.join("\n"))
   }

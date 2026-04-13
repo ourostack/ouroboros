@@ -5535,6 +5535,44 @@ describe("drainAndSendPendingBlueBubbles", () => {
       }),
     }))
   })
+
+  it("skips pending messages that contain internal content", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const filePath = writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "heartbeat check-in: same state, nothing new",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(result.sent).toBe(0)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
 })
 
 describe("sendProactiveBlueBubblesMessageToSession", () => {
@@ -6247,6 +6285,38 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
     })
 
     expect(result).toEqual({ delivered: false, reason: "send_error" })
+  })
+
+  it("blocks proactive send when text contains internal content (heartbeat check-in)", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "heartbeat check-in: same state, nothing new",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "internal_content_blocked" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
   })
 })
 

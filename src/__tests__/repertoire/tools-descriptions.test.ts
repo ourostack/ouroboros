@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { baseToolDefinitions, ponderTool, settleTool } from "../../repertoire/tools-base"
+import { surfaceToolDef } from "../../repertoire/tools-surface"
 import { codingToolDefinitions } from "../../repertoire/coding/tools"
 import { adoSemanticToolDefinitions } from "../../repertoire/ado-semantic"
 
@@ -138,6 +139,19 @@ describe("Phase 2: tool description enrichment", () => {
     it("ado_restructure_backlog description contains preview guidance", () => {
       const desc = getAdoDescription("ado_restructure_backlog")
       expect(desc).toContain("Use ado_preview_changes first")
+    })
+  })
+
+  describe("surface tool description — interpersonal messaging", () => {
+    it("surface description frames the tool as sending a message to a person", () => {
+      const desc = surfaceToolDef.function.description ?? ""
+      expect(desc).toContain("message")
+      expect(desc).toMatch(/friend|person|someone/)
+    })
+
+    it("surface description does NOT contain 'surface progress'", () => {
+      const desc = surfaceToolDef.function.description ?? ""
+      expect(desc).not.toContain("surface progress")
     })
   })
 })

@@ -1373,11 +1373,14 @@ describe("appendSyntheticAssistantMessage", () => {
     })
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockReturnValue(sessionData)
-    const result = appendSyntheticAssistantMessage("/mock/session.json", "[surfaced from inner dialog] my reflection")
+    const result = appendSyntheticAssistantMessage("/mock/session.json", "my reflection")
     expect(result).toBe(true)
     const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
     expect(written.events).toHaveLength(3)
-    expect(written.events[2]).toMatchObject({ role: "assistant", content: "[surfaced from inner dialog] my reflection" })
+    // Content should be raw delivered text — no [surfaced from inner dialog] prefix.
+    // Provenance is tracked via captureKind: "synthetic", not content prefixes.
+    expect(written.events[2]).toMatchObject({ role: "assistant", content: "my reflection" })
+    expect(written.events[2].content).not.toContain("[surfaced from inner dialog]")
   })
 
   it("returns false for non-existent file", async () => {
