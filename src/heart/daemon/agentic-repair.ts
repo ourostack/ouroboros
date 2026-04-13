@@ -10,6 +10,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { DegradedAgent, InteractiveRepairDeps, InteractiveRepairResult } from "./interactive-repair"
 import type { DiscoverWorkingProviderResult } from "./provider-discovery"
 import type { AgentProvider } from "../identity"
+import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
 import type OpenAI from "openai"
 
 /** Minimal subset of ProviderRuntime needed for a single diagnostic call. */
@@ -35,7 +36,7 @@ export interface AgenticRepairDeps {
   runInteractiveRepair: (degraded: DegradedAgent[], deps: InteractiveRepairDeps) => Promise<InteractiveRepairResult>
   promptInput: (prompt: string) => Promise<string>
   writeStdout: (msg: string) => void
-  createProviderRuntime: (provider: AgentProvider, credentials: Record<string, string>) => AgenticProviderRuntime
+  createProviderRuntime: (provider: DiscoverWorkingProviderResult) => AgenticProviderRuntime
   readDaemonLogsTail: () => string
   /** Auth flow runner passed through to interactive repair fallback */
   runAuthFlow?: (agent: string, provider?: AgentProvider) => Promise<void>
@@ -90,13 +91,30 @@ function makeInteractiveRepairDeps(deps: AgenticRepairDeps): InteractiveRepairDe
   }
 }
 
+function discoveredProviderModel(provider: DiscoverWorkingProviderResult): string | undefined {
+  const model = provider.providerConfig.model?.trim()
+  return model ? model : undefined
+}
+
+export function createAgenticDiagnosisProviderRuntime(
+  provider: DiscoverWorkingProviderResult,
+): AgenticProviderRuntime {
+  const config = {
+    ...provider.providerConfig,
+    ...provider.credentials,
+  } as unknown as ProviderRuntimeConfig
+  return createProviderRuntimeForConfig(provider.provider, config, {
+    model: discoveredProviderModel(provider),
+  })
+}
+
 async function tryAgenticDiagnosis(
   degraded: DegradedAgent[],
   provider: DiscoverWorkingProviderResult,
   deps: AgenticRepairDeps,
 ): Promise<boolean> {
   const logsTail = deps.readDaemonLogsTail()
-  const runtime = deps.createProviderRuntime(provider.provider, provider.credentials)
+  const runtime = deps.createProviderRuntime(provider)
 
   const systemPrompt = buildSystemPrompt(degraded)
   const userMessage = buildUserMessage(degraded, logsTail)

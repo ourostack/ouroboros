@@ -72,6 +72,7 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    secretsRoot: "/tmp/ouro-test-empty-provider-secrets",
     ...overrides,
   }
 }
