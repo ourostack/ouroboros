@@ -8,7 +8,8 @@ const providerPingMock = vi.hoisted(() => vi.fn(async () => ({ ok: true }) as co
 
 vi.mock("fs")
 vi.mock("../../../heart/provider-ping", () => ({
-  pingProvider: (provider: string, config: Record<string, unknown>) => providerPingMock(provider, config),
+  pingProvider: (provider: string, config: Record<string, unknown>, options?: Record<string, unknown>) =>
+    providerPingMock(provider, config, options),
 }))
 vi.mock("../../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity")
@@ -33,6 +34,75 @@ function agentJson(overrides: Record<string, unknown> = {}): string {
 
 function secretsJson(provider: string, fields: Record<string, string>): string {
   return JSON.stringify({ providers: { [provider]: fields } })
+}
+
+function providerStateJson(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    machineId: "machine_test",
+    updatedAt: "2026-04-12T22:30:00.000Z",
+    lanes: {
+      outward: {
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        source: "bootstrap",
+        updatedAt: "2026-04-12T22:30:00.000Z",
+      },
+      inner: {
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        source: "bootstrap",
+        updatedAt: "2026-04-12T22:30:00.000Z",
+      },
+    },
+    readiness: {},
+    ...overrides,
+  })
+}
+
+function credentialPoolJson(providers: Record<string, Record<string, unknown>>): string {
+  const records: Record<string, unknown> = {}
+  for (const [provider, fields] of Object.entries(providers)) {
+    records[provider] = {
+      provider,
+      revision: `cred_${provider.replace(/[^a-z]/g, "_")}`,
+      updatedAt: "2026-04-12T22:30:00.000Z",
+      credentials: fields.credentials ?? fields,
+      config: fields.config ?? {},
+      provenance: {
+        source: "manual",
+        contributedByAgent: "myagent",
+        updatedAt: "2026-04-12T22:30:00.000Z",
+      },
+    }
+  }
+  return JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: "2026-04-12T22:30:00.000Z",
+    providers: records,
+  })
+}
+
+function mockProviderStateFiles(input: {
+  agentConfig?: string
+  providerState?: string
+  credentialPool?: string
+} = {}): void {
+  mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
+    const p = String(filePath)
+    if (p === path.join(BUNDLES, "myagent.ouro", "agent.json")) {
+      return input.agentConfig ?? agentJson()
+    }
+    if (p === path.join(BUNDLES, "myagent.ouro", "state", "providers.json")) {
+      return input.providerState ?? providerStateJson()
+    }
+    if (p === path.join(SECRETS, ".agentsecrets", "providers.json")) {
+      return input.credentialPool ?? credentialPoolJson({
+        anthropic: { setupToken: "tok" },
+      })
+    }
+    throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
+  })
 }
 
 describe("checkAgentConfig", () => {
@@ -257,51 +327,62 @@ describe("checkAgentConfig", () => {
 
   it("live-checks only selected humanFacing and agentFacing providers", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson({
+    mockProviderStateFiles({
+      agentConfig: agentJson({
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
-      }))
-      .mockReturnValueOnce(JSON.stringify({
-        providers: {
-          anthropic: { setupToken: "tok" },
-          "github-copilot": { githubToken: "gh", baseUrl: "https://copilot.example" },
-          minimax: { apiKey: "unselected" },
+      }),
+      providerState: providerStateJson({
+        lanes: {
+          outward: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "bootstrap",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+          inner: {
+            provider: "github-copilot",
+            model: "claude-sonnet-4.6",
+            source: "local",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
         },
-      }))
+      }),
+      credentialPool: credentialPoolJson({
+        anthropic: { setupToken: "tok" },
+        "github-copilot": { credentials: { githubToken: "gh" }, config: { baseUrl: "https://copilot.example" } },
+        minimax: { apiKey: "unselected" },
+      }),
+    })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
 
     expect(result).toEqual({ ok: true })
     expect(pingProvider).toHaveBeenCalledTimes(2)
-    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" })
-    expect(pingProvider).toHaveBeenCalledWith("github-copilot", { githubToken: "gh", baseUrl: "https://copilot.example" })
+    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
+    expect(pingProvider).toHaveBeenCalledWith("github-copilot", { githubToken: "gh", baseUrl: "https://copilot.example" }, expect.objectContaining({ model: "claude-sonnet-4.6" }))
     expect(pingProvider).not.toHaveBeenCalledWith("minimax", expect.anything())
   })
 
   it("dedupes live provider checks when both facings select the same provider", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson())
-      .mockReturnValueOnce(secretsJson("anthropic", { setupToken: "tok" }))
+    mockProviderStateFiles()
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
 
     expect(result).toEqual({ ok: true })
     expect(pingProvider).toHaveBeenCalledOnce()
-    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" })
+    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
 
   it("uses the default live provider ping when no ping dependency is supplied", async () => {
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson())
-      .mockReturnValueOnce(secretsJson("anthropic", { setupToken: "tok" }))
+    mockProviderStateFiles()
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS)
 
     expect(result).toEqual({ ok: true })
     expect(providerPingMock).toHaveBeenCalledOnce()
-    expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" })
+    expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
 
   it("fails live check when a selected agentFacing provider ping fails", async () => {
@@ -311,25 +392,42 @@ describe("checkAgentConfig", () => {
       }
       return { ok: true } as const
     })
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson({
+    mockProviderStateFiles({
+      agentConfig: agentJson({
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
-      }))
-      .mockReturnValueOnce(JSON.stringify({
-        providers: {
-          anthropic: { setupToken: "tok" },
-          "github-copilot": { githubToken: "gh", baseUrl: "https://copilot.example" },
+      }),
+      providerState: providerStateJson({
+        lanes: {
+          outward: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "bootstrap",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+          inner: {
+            provider: "github-copilot",
+            model: "claude-sonnet-4.6",
+            source: "local",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
         },
-      }))
+      }),
+      credentialPool: credentialPoolJson({
+        anthropic: { setupToken: "tok" },
+        "github-copilot": { credentials: { githubToken: "gh" }, config: { baseUrl: "https://copilot.example" } },
+      }),
+    })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("github-copilot")
-    expect(result.error).toContain("agentFacing")
+    expect(result.error).toContain("inner")
+    expect(result.error).toContain("claude-sonnet-4.6")
     expect(result.error).toContain("token expired")
     expect(result.fix).toContain("ouro auth --agent myagent --provider github-copilot")
+    expect(result.fix).toContain("ouro use --agent myagent --lane inner")
   })
 
   it("uses auth verify guidance for non-auth live check failures", async () => {
@@ -338,15 +436,13 @@ describe("checkAgentConfig", () => {
       classification: "usage-limit",
       message: "quota exceeded",
     }) as const)
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson())
-      .mockReturnValueOnce(secretsJson("anthropic", { setupToken: "tok" }))
+    mockProviderStateFiles()
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("quota exceeded")
-    expect(result.fix).toContain("ouro auth verify --agent myagent --provider anthropic")
+    expect(result.fix).toContain("ouro use --agent myagent --lane outward")
   })
 
   it("returns structural config errors before live health checks", async () => {
@@ -362,14 +458,14 @@ describe("checkAgentConfig", () => {
 
   it("returns credential structural errors before live health checks", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-    mockReadFileSync
-      .mockReturnValueOnce(agentJson())
-      .mockReturnValueOnce(secretsJson("anthropic", {}))
+    mockProviderStateFiles({
+      credentialPool: credentialPoolJson({}),
+    })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, SECRETS, { pingProvider })
 
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("missing required anthropic credentials")
+    expect(result.error).toContain("has no credentials in the machine provider pool")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 })
