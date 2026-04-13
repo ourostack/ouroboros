@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.354",
+      "changes": [
+        "Provider visibility now surfaces the effective local outward/inner lanes across start-of-turn context, system prompts, pulse, Outlook, and daemon status, using the shared provider binding resolver with safe credential provenance and no raw secret exposure.",
+        "Provider auth docs now state the runtime model plainly: `state/providers.json` selects provider/model per machine, `~/.agentsecrets/providers.json` stores machine credentials, `ouro use` switches lanes, and `ouro auth` stores credentials only."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.353",
       "changes": [
         "Provider failover now uses the machine-wide credential pool and local provider-state lanes: terminal errors build ready-provider choices with safe credential provenance, `switch to <provider>` carries lane/model/revision context, and the retry path updates only the failed `state/providers.json` lane instead of mutating both synced `agent.json` facings."
