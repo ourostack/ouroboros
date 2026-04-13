@@ -77,11 +77,14 @@ vi.mock("../../heart/providers/openai-codex", () => ({
   classifyOpenAICodexError: vi.fn(() => "unknown"),
 }))
 
+// Github Copilot client mock: supports both chat completions and responses API
+const copilotClient = { chat: { completions: { create: (...args: any[]) => mockOpenAICreate(...args) } }, responses: { create: (...args: any[]) => mockResponsesCreate(...args) } }
+
 vi.mock("../../heart/providers/github-copilot", () => ({
-  createGithubCopilotProviderRuntime: vi.fn(() => ({
+  createGithubCopilotProviderRuntime: vi.fn((model: string) => ({
     id: "github-copilot",
-    model: "gpt-5.4",
-    client: openaiClient,
+    model,
+    client: copilotClient,
     classifyError: mockClassifyError,
   })),
   classifyGithubCopilotError: vi.fn(() => "unknown"),
@@ -253,14 +256,36 @@ describe("pingProvider", () => {
     )
   })
 
-  it("returns ok: true when ping succeeds for github-copilot", async () => {
-    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+  it("returns ok: true when ping succeeds for github-copilot with GPT model", async () => {
+    mockResponsesCreate.mockResolvedValue({ output: [{ text: "hi" }] })
     const result = await pingProvider("github-copilot", {
-      model: "gpt-5.4",
       githubToken: "ghp_test123",
       baseUrl: "https://api.copilot.example.com",
+    }, {
+      model: "gpt-5.4",
     })
     expect(result.ok).toBe(true)
+    expect(mockResponsesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-5.4", input: "ping", max_output_tokens: 16 }),
+      expect.anything(),
+    )
+    expect(mockOpenAICreate).not.toHaveBeenCalled()
+  })
+
+  it("returns ok: true when ping succeeds for github-copilot with claude model", async () => {
+    mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: "hi" } }] })
+    const result = await pingProvider("github-copilot", {
+      githubToken: "ghp_test123",
+      baseUrl: "https://api.copilot.example.com",
+    }, {
+      model: "claude-sonnet-4-20250514",
+    })
+    expect(result.ok).toBe(true)
+    expect(mockOpenAICreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-4-20250514", max_tokens: 1 }),
+      expect.anything(),
+    )
+    expect(mockResponsesCreate).not.toHaveBeenCalled()
   })
 
   it("returns auth-failure for empty credentials (anthropic)", async () => {

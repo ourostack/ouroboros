@@ -270,8 +270,15 @@ export async function pingProvider(
             signal: controller.signal,
             toolChoiceRequired: false,
           })
+        } else if (provider === "github-copilot" && !runtime.model.startsWith("claude")) {
+          // GPT models on Copilot use the Responses API
+          const client = runtime.client as OpenAI
+          await client.responses.create(
+            createResponsePingRequest(runtime.model),
+            { signal: controller.signal },
+          )
         } else {
-          // OpenAI-compatible providers (azure, minimax, github-copilot)
+          // OpenAI-compatible providers (azure, minimax, github-copilot claude)
           const client = runtime.client as OpenAI
           await client.chat.completions.create(
             createChatPingRequest(runtime.model),

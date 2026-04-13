@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.356",
+      "changes": [
+        "Provider ping for github-copilot GPT models (e.g. gpt-5.4) now uses the Responses API instead of chat completions, fixing `400 Unsupported parameter: 'max_tokens'` errors during live checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.355",
       "changes": [
         "`ouro up` AI-assisted repair diagnosis now uses the same discovered and pinged provider credentials as provider readiness checks, including the machine-wide credential pool, instead of drifting back through the current agent's configured provider registry path."
