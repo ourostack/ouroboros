@@ -145,6 +145,44 @@ describe("provider visibility", () => {
     expect(rendered).not.toContain("humanFacing")
   })
 
+  it("renders configured lanes with missing credentials as explicit auth repairs", async () => {
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.test_provider_visibility",
+      message: "provider visibility missing credential repair test",
+      meta: { test: true },
+    })
+    const homeDir = makeTempDir("provider-visibility-empty-home")
+    const agentRoot = path.join(makeTempDir("provider-visibility-configured"), "slugger.ouro")
+    writeProviderState(agentRoot, providerState())
+
+    const { buildAgentProviderVisibility, formatAgentProviderVisibilityForPrompt } = await import("../../heart/provider-visibility")
+    const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot, homeDir })
+    const rendered = formatAgentProviderVisibilityForPrompt(visibility)
+
+    expect(visibility.lanes[0]).toMatchObject({
+      lane: "outward",
+      status: "configured",
+      credential: {
+        status: "missing",
+        repairCommand: "ouro auth --agent slugger --provider minimax",
+      },
+      warnings: ["minimax has no credential record in the machine credential pool."],
+    })
+    expect(visibility.lanes[1]).toMatchObject({
+      lane: "inner",
+      status: "configured",
+      credential: {
+        status: "missing",
+        repairCommand: "ouro auth --agent slugger --provider openai-codex",
+      },
+      warnings: ["openai-codex has no credential record in the machine credential pool."],
+    })
+    expect(rendered).toContain("credentials: missing")
+    expect(rendered).toContain("repair: ouro auth --agent slugger --provider minimax")
+    expect(rendered).toContain("warnings: minimax has no credential record in the machine credential pool.")
+  })
+
   it("formats non-ready and unconfigured edge states for status and prompts", async () => {
     emitNervesEvent({
       component: "heart",
