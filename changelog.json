@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.362",
+      "changes": [
+        "New `ouro clone <remote>` command for cross-machine agent setup: clones bundle from git remote, creates machine identity, enables sync, guides to auth flow. Infers agent name from URL.",
+        "WSL-aware `ouro setup --tool claude-code`: detects WSL2, resolves Windows-side home, calls claude.exe with wsl-prefixed MCP serve and hook commands, writes settings to Windows .claude/ directory.",
+        "Platform detection module (detectPlatform) returning macos/linux/wsl/windows-native with injectable deps.",
+        "First-run hatch-or-clone interactive choice when no bundles exist. Manual-clone detection during `ouro up` offers to enable sync on git-cloned bundles.",
+        "npx ouro.bot bootstrap now passes through to CLI on first install instead of stopping early."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.361",
       "changes": [
         "All senses (inner-dialog, BlueBubbles, Teams, shared-turn) now use deferred session persist (postTurnTrim + deferPostTurnPersist), matching the CLI pattern. Unblocks the event loop during session I/O for all channels."
