@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.349",
+      "changes": [
+        "`ouro use`, `ouro check`, provider-scoped `ouro status --agent`, and machine-pool `ouro auth` now operate on machine-local provider state and credentials, with safe provenance, explicit lane/provider/model repair guidance, and legacy `auth switch`/`config model` compatibility routed through `state/providers.json` instead of mutating synced `agent.json`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.348",
       "changes": [
         "Provider attempts now share one bounded retry runner across real runtime turns, provider pings, health inventory, working-provider discovery, and GitHub Copilot model validation, retrying every provider failure class before terminal handling while preserving attempt metadata and nerves events.",
