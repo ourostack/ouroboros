@@ -100,7 +100,46 @@ describe("buildPulseState", () => {
       fixHint: null,
       alertId: null,
       currentActivity: null,
+      providerVisibility: null,
     })
+  })
+
+  it("attaches safe provider visibility to each pulse agent when available", () => {
+    const result = buildPulseState(
+      [makeSnapshot({ name: "slugger" })],
+      "/Users/test/AgentBundles",
+      "0.1.0-alpha.354",
+      new Date("2026-04-08T22:00:00Z"),
+      () => null,
+      () => ({
+        agentName: "slugger",
+        lanes: [
+          {
+            lane: "inner",
+            status: "configured",
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            source: "local",
+            readiness: { status: "ready" },
+            credential: { status: "present", source: "auth-flow", contributedByAgent: "slugger", revision: "cred_mm" },
+            warnings: [],
+          },
+        ],
+      }),
+    )
+
+    expect(result.agents[0]!.providerVisibility).toMatchObject({
+      agentName: "slugger",
+      lanes: [
+        expect.objectContaining({
+          lane: "inner",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          readiness: { status: "ready" },
+        }),
+      ],
+    })
+    expect(JSON.stringify(result.agents[0]!.providerVisibility)).not.toContain("secret")
   })
 
   it("maps broken snapshots to PulseAgentEntry with errorReason, fixHint, and alertId", () => {

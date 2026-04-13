@@ -73,6 +73,31 @@ describe("pulseSection", () => {
           errorReason: null,
           fixHint: null,
           alertId: null,
+          providerVisibility: {
+            agentName: "ouroboros",
+            lanes: [
+              {
+                lane: "outward",
+                status: "configured",
+                provider: "minimax",
+                model: "MiniMax-M2.5",
+                source: "local",
+                readiness: { status: "ready" },
+                credential: { status: "present", source: "auth-flow", contributedByAgent: "ouroboros", revision: "cred_mm" },
+                warnings: [],
+              },
+              {
+                lane: "inner",
+                status: "configured",
+                provider: "openai-codex",
+                model: "gpt-5.4",
+                source: "local",
+                readiness: { status: "failed", error: "400 status code" },
+                credential: { status: "present", source: "legacy-agent-secrets", contributedByAgent: "slugger", revision: "cred_codex" },
+                warnings: [],
+              },
+            ],
+          },
         },
       ],
     })
@@ -81,6 +106,9 @@ describe("pulseSection", () => {
     expect(result).toContain("## the pulse")
     expect(result).toContain("ouroboros")
     expect(result).toContain("reachable siblings")
+    expect(result).toContain("outward: minimax / MiniMax-M2.5")
+    expect(result).toContain("inner: openai-codex / gpt-5.4")
+    expect(result).toContain("failed: 400 status code")
     expect(result).toContain("send_message")
     expect(result).not.toContain("broken siblings")
   })

@@ -252,6 +252,24 @@ describe("start-of-turn packet", () => {
       // Should have some structure
       expect(rendered.length).toBeGreaterThan(10)
     })
+
+    it("renders provider state as first-class start-of-turn truth", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "ship provider visibility" })],
+      })
+      const packet = buildStartOfTurnPacket(view)
+      ;(packet as StartOfTurnPacket & { providerState: string }).providerState = [
+        "- outward: minimax / MiniMax-M2.5 [ready; source: local; credentials: auth-flow from slugger]",
+        "- inner: openai-codex / gpt-5.4 [failed: 400 status code; source: local; credentials: legacy-agent-secrets from kicker]",
+      ].join("\n")
+
+      const rendered = renderStartOfTurnPacket(packet)
+
+      expect(rendered).toContain("**Provider:**")
+      expect(rendered).toContain("outward: minimax / MiniMax-M2.5")
+      expect(rendered).toContain("inner: openai-codex / gpt-5.4")
+      expect(rendered.indexOf("**Provider:**")).toBeLessThan(rendered.indexOf("**Owed:**"))
+    })
   })
 
   describe("truncation priority", () => {
