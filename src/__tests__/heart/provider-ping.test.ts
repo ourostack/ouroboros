@@ -23,6 +23,12 @@ vi.mock("../../heart/providers/anthropic", () => ({
     model: "claude-opus-4-6",
     client: anthropicClient,
     classifyError: mockClassifyError,
+    async ping(signal?: AbortSignal) {
+      await mockAnthropicCreate(
+        { model: "claude-haiku-4-5-20251001", max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+        { signal, headers: { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } },
+      )
+    },
   })),
   classifyAnthropicError: vi.fn(() => "unknown"),
 }))
@@ -33,6 +39,9 @@ vi.mock("../../heart/providers/azure", () => ({
     model,
     client: openaiClient,
     classifyError: mockClassifyError,
+    async ping(signal?: AbortSignal) {
+      await mockOpenAICreate({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }, { signal })
+    },
   })),
   classifyAzureError: vi.fn(() => "unknown"),
 }))
@@ -43,6 +52,9 @@ vi.mock("../../heart/providers/minimax", () => ({
     model,
     client: openaiClient,
     classifyError: mockClassifyError,
+    async ping(signal?: AbortSignal) {
+      await mockOpenAICreate({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }, { signal })
+    },
   })),
   classifyMinimaxError: vi.fn(() => "unknown"),
 }))
@@ -53,6 +65,12 @@ vi.mock("../../heart/providers/openai-codex", () => ({
     model: "gpt-5.4",
     client: codexClient,
     classifyError: mockClassifyError,
+    async ping(signal?: AbortSignal) {
+      await mockResponsesCreate(
+        { model: "gpt-5.4", input: [{ role: "user", content: "ping" }], instructions: "", tools: [], reasoning: { effort: "medium", summary: "detailed" }, stream: true, store: false, include: ["reasoning.encrypted_content"] },
+        signal ? { signal } : {},
+      )
+    },
     streamTurn: vi.fn(async (request: any) => {
       request.callbacks.onModelStart()
       request.callbacks.onModelStreamStart()
@@ -86,6 +104,13 @@ vi.mock("../../heart/providers/github-copilot", () => ({
     model,
     client: copilotClient,
     classifyError: mockClassifyError,
+    async ping(signal?: AbortSignal) {
+      if (model.startsWith("claude")) {
+        await mockOpenAICreate({ model, max_tokens: 1, messages: [{ role: "user", content: "ping" }] }, { signal })
+      } else {
+        await mockResponsesCreate({ model, input: "ping", max_output_tokens: 16 }, { signal })
+      }
+    },
   })),
   classifyGithubCopilotError: vi.fn(() => "unknown"),
 }))
