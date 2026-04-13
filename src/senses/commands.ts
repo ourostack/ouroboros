@@ -45,7 +45,7 @@ export function createCommandRegistry(): CommandRegistry {
     },
     dispatch(name: string, ctx: CommandContext): DispatchResult {
       const cmd = commands.get(name)
-      if (!cmd) return { handled: false }
+      if (!cmd || !cmd.channels.includes(ctx.channel)) return { handled: false }
       return { handled: true, result: cmd.handler(ctx) }
     },
   }
@@ -91,7 +91,7 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
   registry.register({
     name: "new",
     description: "start a new conversation",
-    channels: ["cli", "teams"],
+    channels: ["teams"],
     handler: () => ({ action: "new" }),
   })
 
@@ -127,7 +127,6 @@ export function registerDefaultCommands(registry: CommandRegistry): void {
         "Commands:",
         "  /help         this help",
         "  /commands     list all commands",
-        "  /new          start a new conversation",
         "  /exit         quit",
       ].join("\n"),
     }),
