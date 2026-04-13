@@ -31,7 +31,7 @@ export type GithubCopilotModelPingResult =
   | { ok: true }
   | { ok: false; error: string }
 
-type ProviderConfig =
+export type ProviderRuntimeConfig =
   | AnthropicProviderConfig
   | AzureProviderConfig
   | GithubCopilotProviderConfig
@@ -170,7 +170,7 @@ export async function pingGithubCopilotModel(
   return attempt.ok ? { ok: true } : { ok: false, error: attempt.error.message }
 }
 
-function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): boolean {
+function hasEmptyCredentials(provider: AgentProvider, config: ProviderRuntimeConfig): boolean {
   const record = config as unknown as Record<string, unknown>
   if (provider === "azure") {
     const hasManagedIdentity =
@@ -182,11 +182,15 @@ function hasEmptyCredentials(provider: AgentProvider, config: ProviderConfig): b
   return PROVIDER_CREDENTIALS[provider].required.some((key) => !record[key])
 }
 
-function createRuntimeForPing(provider: AgentProvider, config: ProviderConfig, model?: string): ProviderRuntime {
+export function createProviderRuntimeForConfig(
+  provider: AgentProvider,
+  config: ProviderRuntimeConfig,
+  options: { model?: string } = {},
+): ProviderRuntime {
   // Use the same provider defaults as auth switch and hatch so verification
   // cannot drift to stale provider/model pairings, and pass the checked
   // credentials directly so daemon-side pings do not depend on --agent globals.
-  const resolvedModel = model ?? getDefaultModelForProvider(provider)
+  const resolvedModel = options.model ?? getDefaultModelForProvider(provider)
   switch (provider) {
     case "anthropic":
       return createAnthropicProviderRuntime(resolvedModel, config as AnthropicProviderConfig)
@@ -210,7 +214,7 @@ function createRuntimeForPing(provider: AgentProvider, config: ProviderConfig, m
 
 export async function pingProvider(
   provider: AgentProvider,
-  config: ProviderConfig,
+  config: ProviderRuntimeConfig,
   options: ProviderPingOptions = {},
 ): Promise<PingResult> {
   if (hasEmptyCredentials(provider, config)) {
@@ -219,7 +223,7 @@ export async function pingProvider(
 
   let runtime: ProviderRuntime
   try {
-    runtime = createRuntimeForPing(provider, config, options.model)
+    runtime = createProviderRuntimeForConfig(provider, config, { model: options.model })
   /* v8 ignore start -- factory creation failure: tested via individual provider init tests @preserve */
   } catch (error) {
     return {
@@ -319,7 +323,7 @@ export async function runHealthInventory(
   const results = await Promise.all(
     providers.map(async (provider) => {
       const config = secrets.providers[provider as keyof typeof secrets.providers]
-      const result = await ping(provider, config as ProviderConfig)
+      const result = await ping(provider, config as ProviderRuntimeConfig)
       return [provider, result] as const
     }),
   )

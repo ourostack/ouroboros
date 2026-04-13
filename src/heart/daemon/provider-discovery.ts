@@ -1,13 +1,18 @@
 /**
  * Shared provider discovery — single path for finding a working LLM provider.
  *
- * Scans disk credentials and environment variables, deduplicates by provider
- * (disk first), then pings each candidate to validate credentials actually work.
+ * Scans machine-pool credentials, legacy disk credentials, and environment variables,
+ * deduplicates by provider, then pings each candidate to validate credentials actually work.
  */
 
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import type { PingResult } from "../provider-ping"
 import type { DiscoveredCredential } from "./cli-types"
+import {
+  providerCredentialHomeDirFromSecretsRoot,
+  readProviderCredentialPool,
+  type ProviderCredentialRecord,
+} from "../provider-credential-pool"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface DiscoverWorkingProviderDeps {
@@ -53,20 +58,57 @@ export function scanEnvVarCredentials(
   return results
 }
 
+function stringifyProviderFields(fields: Record<string, string | number>): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(fields)) {
+    result[key] = String(value)
+  }
+  return result
+}
+
+function machinePoolSource(record: ProviderCredentialRecord): string {
+  if (record.provenance.contributedByAgent) {
+    return `machine-pool:${record.provenance.contributedByAgent}`
+  }
+  return `machine-pool:${record.provenance.source}`
+}
+
+function discoverMachinePoolCredentials(secretsRoot: string): DiscoveredCredential[] {
+  const homeDir = providerCredentialHomeDirFromSecretsRoot(secretsRoot)
+  const poolResult = readProviderCredentialPool(homeDir)
+  if (!poolResult.ok) return []
+
+  const credentials: DiscoveredCredential[] = []
+  for (const [, record] of Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>) {
+    credentials.push({
+      provider: record.provider,
+      agentName: machinePoolSource(record),
+      credentials: stringifyProviderFields(record.credentials),
+      providerConfig: stringifyProviderFields(record.config),
+    })
+  }
+  return credentials
+}
+
 /**
- * Discover the first working provider by scanning disk credentials and env vars,
- * deduplicating by provider (disk first), and pinging each candidate.
+ * Discover the first working provider by scanning configured credential sources,
+ * deduplicating by provider, and pinging each candidate.
  */
 export async function discoverWorkingProvider(
   deps: DiscoverWorkingProviderDeps,
 ): Promise<DiscoverWorkingProviderResult | null> {
+  const poolCreds = discoverMachinePoolCredentials(deps.secretsRoot)
   const diskCreds = deps.discoverExistingCredentials(deps.secretsRoot)
   const envCreds = scanEnvVarCredentials(deps.env)
 
-  // Deduplicate: disk credentials first, env vars as fallback for providers not on disk
+  // Deduplicate: machine pool first, legacy per-agent disk next, env vars last.
   const seenProviders = new Set<AgentProvider>()
   const candidates: DiscoveredCredential[] = []
 
+  for (const cred of poolCreds) {
+    seenProviders.add(cred.provider)
+    candidates.push(cred)
+  }
   for (const cred of diskCreds) {
     if (!seenProviders.has(cred.provider)) {
       seenProviders.add(cred.provider)
@@ -85,7 +127,7 @@ export async function discoverWorkingProvider(
       level: "info",
       component: "daemon",
       event: "daemon.provider_discovery_none",
-      message: "no provider credentials found on disk or in environment",
+      message: "no provider credentials found in machine pool, legacy disk, or environment",
       meta: {},
     })
     return null

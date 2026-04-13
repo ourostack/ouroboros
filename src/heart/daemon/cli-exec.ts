@@ -93,7 +93,7 @@ import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { runInteractiveRepair } from "./interactive-repair"
-import { runAgenticRepair } from "./agentic-repair"
+import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { UpProgress } from "./up-progress"
@@ -1738,12 +1738,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               secretsRoot: deps.secretsRoot ?? `${process.env["HOME"]}/.agentsecrets`,
             })
           },
-          createProviderRuntime: (provider, _credentials) => {
-            const { createProviderRegistry } = require("../core") as typeof import("../core")
-            const runtime = createProviderRegistry().resolve(provider)
-            if (!runtime) throw new Error(`failed to create runtime for ${provider}`)
-            return runtime
-          },
+          createProviderRuntime: createAgenticDiagnosisProviderRuntime,
           readDaemonLogsTail: () => {
             try {
               const fs = require("node:fs") as typeof import("node:fs")
