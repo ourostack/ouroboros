@@ -466,6 +466,7 @@ function parseProviderUseCommand(args: string[]): OuroCliCommand {
       force = true
       continue
     }
+    throw new Error("Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]")
   }
 
   const resolvedLane = lane ?? (facing ? facingToProviderLane(facing) : undefined)
