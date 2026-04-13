@@ -378,6 +378,107 @@ describe("trust gate", () => {
     })
   })
 
+  // ── Open sense (BB) — group family override (any trust level) ─────
+
+  describe("open sense — group family override", () => {
+    it("allows stranger in group chat WITH family member present", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "stranger" }),
+        isGroupChat: true,
+        groupHasFamilyMember: true,
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("rejects stranger in group chat WITHOUT family member (first contact auto-reply)", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-group-no-family-1",
+        friend: makeFriend({ trustLevel: "stranger" }),
+        isGroupChat: true,
+        groupHasFamilyMember: false,
+      }))
+
+      expect(result.allowed).toBe(false)
+      if (!result.allowed) {
+        expect(result.reason).toBe("stranger_first_reply")
+        expect(result.autoReply).toBe(STRANGER_AUTO_REPLY)
+      }
+    })
+
+    it("silently drops stranger in group chat WITHOUT family member on subsequent contact", () => {
+      // First contact
+      enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-group-no-family-subsequent",
+        friend: makeFriend({ trustLevel: "stranger" }),
+        isGroupChat: true,
+        groupHasFamilyMember: false,
+      }))
+
+      // Second contact — silent drop
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-group-no-family-subsequent",
+        friend: makeFriend({ trustLevel: "stranger" }),
+        isGroupChat: true,
+        groupHasFamilyMember: false,
+      }))
+
+      expect(result).toEqual({
+        allowed: false,
+        reason: "stranger_silent_drop",
+      })
+    })
+
+    it("allows acquaintance in group chat WITH family member (regression)", () => {
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        friend: makeFriend({ trustLevel: "acquaintance" }),
+        isGroupChat: true,
+        groupHasFamilyMember: true,
+      }))
+      expect(result).toEqual({ allowed: true })
+    })
+
+    it("allows stranger with existing stranger-replies entry when group has family member", () => {
+      // Pre-seed stranger-replies.json with an existing entry for this external key
+      const repliesPath = path.join(bundleRoot, "stranger-replies.json")
+      const externalKey = "imessage-handle::stranger-with-replies-and-family"
+      fs.writeFileSync(repliesPath, JSON.stringify({ [externalKey]: "2026-03-07T00:00:00.000Z" }), "utf8")
+
+      const result = enforceTrustGate(makeInput({
+        bundleRoot,
+        senseType: "open",
+        channel: "bluebubbles",
+        provider: "imessage-handle",
+        externalId: "stranger-with-replies-and-family",
+        friend: makeFriend({ trustLevel: "stranger" }),
+        isGroupChat: true,
+        groupHasFamilyMember: true,
+      }))
+
+      // Family check should run BEFORE stranger-replies lookup, so this should be allowed
+      expect(result).toEqual({ allowed: true })
+    })
+  })
+
   // ── Edge cases ────────────────────────────────────────────────────
 
   describe("edge cases", () => {
