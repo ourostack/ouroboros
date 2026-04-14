@@ -425,4 +425,73 @@ describe("Outlook deep-tab live refresh", () => {
     ui.rerender(<RuntimeTab agentName="slugger" view={view} refreshGeneration={1} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
   })
+
+  it("renders runtime provider lanes from agent visibility", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/machine/health")) return jsonResponse({ status: "ok", mode: "dev", uptimeSeconds: 60, degradedComponents: [] })
+      if (url.endsWith("/machine/logs")) return jsonResponse({ totalLines: 0, entries: [] })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView({
+      agent: {
+        providers: {
+          agentName: "slugger",
+          lanes: [
+            {
+              lane: "outward",
+              status: "configured",
+              provider: "openai-codex",
+              model: "gpt-5.4",
+              source: "local",
+              readiness: {
+                status: "failed",
+                checkedAt: "2026-04-14T18:00:00.000Z",
+                error: "400 status code",
+                attempts: 2,
+              },
+              credential: { status: "present", source: "vault", revision: "cred_openai" },
+              warnings: ["state/providers.json is stale"],
+            },
+            {
+              lane: "inner",
+              status: "unconfigured",
+              provider: "unconfigured",
+              model: "-",
+              source: "missing",
+              readiness: {
+                status: "unknown",
+                reason: "state/providers.json is missing",
+              },
+              credential: {
+                status: "missing",
+                repairCommand: "ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5",
+              },
+              repairCommand: "ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5",
+              reason: "state/providers.json is missing",
+              warnings: [],
+            },
+          ],
+        },
+      },
+    })
+
+    const ui = render(<RuntimeTab agentName="slugger" view={view} refreshGeneration={0} />)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    const text = ui.container.textContent ?? ""
+    expect(text).toContain("Provider lanes")
+    expect(text).toContain("outward")
+    expect(text).toContain("openai-codex / gpt-5.4")
+    expect(text).toContain("failed: 400 status code")
+    expect(text).toContain("attempts: 2")
+    expect(text).toContain("credentials: vault")
+    expect(text).toContain("revision: cred_openai")
+    expect(text).toContain("state/providers.json is stale")
+    expect(text).toContain("inner")
+    expect(text).toContain("unconfigured")
+    expect(text).toContain("repair: ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5")
+  })
 })
