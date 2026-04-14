@@ -44,7 +44,8 @@ process.exit(1)
   fs.writeFileSync(fakeNpmPath, script, { mode: 0o755 })
 }
 
-function runWrapper(args: string[], version = "0.1.0-alpha.328") {
+function runWrapper(args: string[], options: { version?: string; shell?: string } = {}) {
+  const { version = "0.1.0-alpha.328", shell = "/bin/zsh" } = options
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-bot-package-test-"))
   const home = path.join(root, "home")
   const binDir = path.join(root, "bin")
@@ -57,7 +58,7 @@ function runWrapper(args: string[], version = "0.1.0-alpha.328") {
       ...process.env,
       HOME: home,
       PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
-      SHELL: "/bin/zsh",
+      SHELL: shell,
     },
     encoding: "utf-8",
   })
@@ -89,6 +90,42 @@ describe("ouro.bot package bootstrap", () => {
       // CLI is invoked — may produce output from the hatch/clone flow
       // We just verify the wrapper ran without a hard crash
       expect(result.status === 0 || result.status === 1).toBe(true)
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("shows shell-aware PATH hint on first install (zsh)", () => {
+    const result = runWrapper(["--version"], { shell: "/bin/zsh" })
+    try {
+      expect(result.stderr).toContain("source ~/.zshrc")
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("shows shell-aware PATH hint on first install (bash)", () => {
+    const result = runWrapper(["--version"], { shell: "/bin/bash" })
+    try {
+      expect(result.stderr).toContain("source ~/.bash_profile")
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("shows shell-aware PATH hint on first install (fish)", () => {
+    const result = runWrapper(["--version"], { shell: "/usr/bin/fish" })
+    try {
+      expect(result.stderr).toContain("source ~/.config/fish/config.fish")
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("shows generic PATH hint on first install (unknown shell)", () => {
+    const result = runWrapper(["--version"], { shell: "/bin/tcsh" })
+    try {
+      expect(result.stderr).toContain("restart your shell")
     } finally {
       result.cleanup()
     }

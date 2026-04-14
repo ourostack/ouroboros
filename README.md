@@ -169,6 +169,7 @@ ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
 ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
 ouro hatch
+ouro clone <remote> [--agent <name>]   # clone an existing agent from a git remote (see docs/cross-machine-setup.md)
 ouro chat <agent>
 ouro msg --to <agent> [--session <id>] [--task <ref>] <message>
 ouro poke <agent> --task <task-id>
@@ -182,6 +183,10 @@ ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a d
 ouro mcp-serve --agent <name>             # start MCP server on stdin/stdout (used by dev tools)
 ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart, Stop, PostToolUse)
 ```
+
+## Setting Up On Another Machine
+
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, run `ouro auth run`, then `ouro up`.
 
 ## The Agent's Inner Life
 

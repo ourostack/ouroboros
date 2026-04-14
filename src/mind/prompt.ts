@@ -381,6 +381,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
   lines.push(`process type: ${processTypeLabel(channel)}`);
   lines.push(`daemon: ${daemonStatus(options?.daemonRunning)}`);
   lines.push(`mcp serve: i can expose my tools to dev tools via \`ouro mcp-serve\`. see the configure-dev-tools skill for setup.`);
+  lines.push(`harness docs: the harness repo has docs/ and skills/ with guides for setup, operations, and capabilities. docs/ does NOT ship in the npm package — in production, fetch from https://github.com/ouroborosbot/ouroboros/tree/main/docs instead. in dev mode, read from ${sourceRoot}/docs/. when someone asks about setup, installation, cross-machine cloning, deployment, testing, auth, or how i work — consult the docs before guessing.`);
 
   if (channel === "cli") {
     lines.push("i introduce myself on boot with a fun random greeting.");
