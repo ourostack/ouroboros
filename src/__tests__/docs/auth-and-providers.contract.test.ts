@@ -6,6 +6,14 @@ function readRepoFile(...parts: string[]): string {
   return fs.readFileSync(path.resolve(process.cwd(), ...parts), "utf-8")
 }
 
+function readPackagedSkillCorpus(): string {
+  const skillDir = path.resolve(process.cwd(), "skills")
+  return fs.readdirSync(skillDir)
+    .filter((entry) => entry.endsWith(".md"))
+    .map((entry) => readRepoFile("skills", entry))
+    .join("\n")
+}
+
 describe("auth/provider documentation contract", () => {
   it("documents how to continue using an existing agent bundle", () => {
     const authGuide = readRepoFile("docs", "auth-and-providers.md")
@@ -39,5 +47,17 @@ describe("auth/provider documentation contract", () => {
     expect(corpus).toContain("The only Ouro-owned durable credential locations are the bundle and the agent vault.")
     expect(corpus).toContain("Local unlock material is a machine-local cache, not a credential source of truth.")
     expect(corpus).not.toContain("operator password manager")
+  })
+
+  it("keeps packaged skill credential guidance on the agent vault model", () => {
+    const corpus = readPackagedSkillCorpus()
+    const retiredCredentialDir = [".agent", "secrets"].join("")
+
+    expect(corpus).toContain("agent's Bitwarden/Vaultwarden credential vault")
+    expect(corpus).not.toContain(`~/${retiredCredentialDir}`)
+    expect(corpus).not.toContain(retiredCredentialDir)
+    expect(corpus).not.toContain("bundle vault")
+    expect(corpus).not.toContain("vault.key")
+    expect(corpus).not.toContain("Bitwarden Agent Access CLI")
   })
 })

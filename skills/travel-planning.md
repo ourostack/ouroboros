@@ -73,8 +73,8 @@ Present top 3-5 options comparing:
 ### Credential Handling
 
 Credentials are managed through the credential access layer, which stores
-agent-owned secrets encrypted in the bundle vault. Raw passwords never
-enter model context.
+agent-owned secrets in the agent's Bitwarden/Vaultwarden credential vault.
+Raw passwords never enter model context.
 
 - Use `credential_get` to check what credentials exist for a domain (metadata only, never passwords)
 - Use `credential_store` to save credentials the agent acquired (e.g., during sign-up for a service)
