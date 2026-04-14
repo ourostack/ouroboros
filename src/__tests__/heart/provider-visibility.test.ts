@@ -188,8 +188,9 @@ describe("provider visibility", () => {
     expect(rows[1]).toMatchObject({
       agent: "slugger",
       lane: "inner",
-      detail: "400 status code",
+      credential: "missing",
     })
+    expect(rows[1]).not.toHaveProperty("detail")
   })
 
   it("omits absent readiness optional fields from built visibility", async () => {
@@ -297,6 +298,41 @@ describe("provider visibility", () => {
       ],
     })
     expect(rows[0]).toMatchObject({ credential: "vault", readiness: "ready" })
+
+    const failedPresentRows = providerVisibilityStatusRows({
+      agentName: "slugger",
+      lanes: [
+        {
+          lane: "inner",
+          status: "configured",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          readiness: { status: "failed", error: "current ping failure" },
+          credential: { status: "present", source: "manual" },
+          warnings: [],
+        },
+      ],
+    })
+    expect(failedPresentRows[0]).toMatchObject({ credential: "manual", detail: "current ping failure" })
+
+    const invalidCredentialRows = providerVisibilityStatusRows({
+      agentName: "slugger",
+      lanes: [
+        {
+          lane: "inner",
+          status: "configured",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "bootstrap",
+          readiness: { status: "stale", error: "old ping failure", reason: "credential-pool-invalid" },
+          credential: { status: "invalid-pool", repairCommand: "ouro auth --agent slugger --provider openai-codex" },
+          warnings: [],
+        },
+      ],
+    })
+    expect(invalidCredentialRows[0]).toMatchObject({ credential: "vault unavailable", readiness: "stale" })
+    expect(invalidCredentialRows[0]).not.toHaveProperty("detail")
 
     expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "outward", status: "configured" }] })).toBe(true)
     expect(isAgentProviderVisibility(null)).toBe(false)
