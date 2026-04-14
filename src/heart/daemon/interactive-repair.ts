@@ -82,7 +82,7 @@ function vaultUnlockCommandFor(degraded: DegradedAgent): string {
   return command && command.length > 0 ? command : `ouro vault unlock --agent ${degraded.agent}`
 }
 
-function isAffirmativeAnswer(answer: string): boolean {
+export function isAffirmativeAnswer(answer: string): boolean {
   return /^(y|yes)$/i.test(answer.trim())
 }
 
