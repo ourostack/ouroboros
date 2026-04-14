@@ -1,6 +1,5 @@
 import { createHash } from "crypto"
 import * as fs from "fs"
-import * as os from "os"
 import * as path from "path"
 import * as childProcess from "child_process"
 import { getAgentBundlesRoot, getAgentDaemonLoggingConfigPath, getRepoRoot } from "../identity"
@@ -16,7 +15,6 @@ export interface RuntimeMetadata {
 export interface RuntimeMetadataDeps {
   repoRoot?: string
   bundlesRoot?: string
-  secretsRoot?: string
   daemonLoggingPath?: string
   readFileSync?: typeof fs.readFileSync
   statSync?: typeof fs.statSync
@@ -83,22 +81,8 @@ function readLastUpdated(
   }
 }
 
-function readHomeDir(): string | null {
-  const homedirImpl = optionalFunction<typeof os.homedir>(os, "homedir")
-  if (!homedirImpl) {
-    return null
-  }
-
-  try {
-    return homedirImpl.call(os)
-  } catch {
-    return null
-  }
-}
-
 function listConfigTargets(
   bundlesRoot: string,
-  secretsRoot: string | null,
   daemonLoggingPath: string | null,
   readdirSyncImpl: typeof fs.readdirSync | null,
 ): string[] {
@@ -117,18 +101,6 @@ function listConfigTargets(
     }
   } catch {
     // ignore unreadable bundle roots
-  }
-
-  if (secretsRoot) {
-    try {
-      const secretEntries = readdirSyncImpl(secretsRoot, { withFileTypes: true }) as fs.Dirent[]
-      for (const entry of secretEntries) {
-        if (!entry.isDirectory()) continue
-        targets.add(path.join(secretsRoot, entry.name, "secrets.json"))
-      }
-    } catch {
-      // ignore unreadable secrets roots
-    }
   }
 
   return [...targets].sort()
@@ -185,8 +157,6 @@ function readConfigFingerprint(
 export function getRuntimeMetadata(deps: RuntimeMetadataDeps = {}): RuntimeMetadata {
   const repoRoot = deps.repoRoot ?? getRepoRoot()
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const homeDir = readHomeDir()
-  const secretsRoot = deps.secretsRoot ?? (homeDir ? path.join(homeDir, ".agentsecrets") : null)
   const daemonLoggingPath = deps.daemonLoggingPath ?? getAgentDaemonLoggingConfigPath()
   const readFileSyncImpl = deps.readFileSync ?? optionalFunction<typeof fs.readFileSync>(fs, "readFileSync")?.bind(fs) ?? null
   const statSyncImpl = deps.statSync ?? optionalFunction<typeof fs.statSync>(fs, "statSync")?.bind(fs) ?? null
@@ -212,7 +182,6 @@ export function getRuntimeMetadata(deps: RuntimeMetadataDeps = {}): RuntimeMetad
     : { value: UNKNOWN_METADATA, source: "unknown" as const }
   const configTargets = listConfigTargets(
     bundlesRoot,
-    secretsRoot,
     daemonLoggingPath,
     readdirSyncImpl,
   )

@@ -70,7 +70,6 @@ vi.mock("../../../mind/friends/resolver", () => ({
 vi.mock("../../../heart/identity", () => ({
   getAgentName: vi.fn().mockReturnValue("testagent"),
   getAgentRoot: vi.fn().mockReturnValue("/mock/agent/root"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     humanFacing: { provider: "anthropic", model: "test" },

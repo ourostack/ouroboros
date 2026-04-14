@@ -2,11 +2,9 @@ import { describe, it, expect, vi } from "vitest"
 
 vi.mock("../../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     phrases: { thinking: ["thinking"], tool: ["tool"], followup: ["followup"] },
   })),

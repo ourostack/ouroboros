@@ -47,14 +47,12 @@ vi.mock("../../heart/identity", () => {
     DEFAULT_AGENT_CONTEXT,
     loadAgentConfig: vi.fn(() => ({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
       context: { ...DEFAULT_AGENT_CONTEXT },
     })),
     getAgentName: vi.fn(() => "testagent"),
-    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
@@ -108,7 +106,6 @@ function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "openai-
   }
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
     humanFacing: { provider, model: "" },
     agentFacing: { provider, model: "" },
@@ -628,7 +625,6 @@ describe("buildSystem", () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -651,21 +647,15 @@ describe("buildSystem", () => {
       if (p.endsWith("LORE.md")) return MOCK_LORE
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
-      if (p.endsWith("secrets.json")) {
-        return JSON.stringify({
-          teams: {
-            clientId: "cid",
-            clientSecret: "secret",
-            tenantId: "tenant",
-          },
-        })
-      }
       if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    patchRuntimeConfig({
+      teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
+      providers: { minimax: { apiKey: "test-key" } },
+    })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
@@ -682,7 +672,6 @@ describe("buildSystem", () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -720,15 +709,14 @@ describe("buildSystem", () => {
     expect(result).toContain("sense states:")
     expect(result).toContain("interactive = available when opened by the user")
     expect(result).toContain("disabled = turned off in agent.json")
-    expect(result).toContain("needs_config = enabled but missing required secrets.json values")
-    expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required secrets.json fields instead of guessing.")
+    expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
+    expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 
   it("falls back to needs_config when the secrets file cannot be parsed", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -770,7 +758,6 @@ describe("buildSystem", () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -793,20 +780,15 @@ describe("buildSystem", () => {
       if (p.endsWith("LORE.md")) return MOCK_LORE
       if (p.endsWith("TACIT.md")) return MOCK_TACIT_KNOWLEDGE
       if (p.endsWith("ASPIRATIONS.md")) return MOCK_ASPIRATIONS
-      if (p.endsWith("secrets.json")) {
-        return JSON.stringify({
-          bluebubbles: {
-            serverUrl: "http://localhost:1234",
-            password: "pw",
-          },
-        })
-      }
       if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
       return ""
     })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
-    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    patchRuntimeConfig({
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "pw" },
+      providers: { minimax: { apiKey: "test-key" } },
+    })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
 
@@ -932,7 +914,6 @@ describe("buildSystem", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
       humanFacing: { provider: "azure", model: "test-model" },
       agentFacing: { provider: "azure", model: "test-model" },
@@ -960,7 +941,6 @@ describe("buildSystem", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -1002,7 +982,6 @@ describe("buildSystem", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
       humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
@@ -1035,7 +1014,6 @@ describe("buildSystem", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
       humanFacing: { provider: "azure", model: "test-model" },
       agentFacing: { provider: "azure", model: "test-model" },
@@ -3603,7 +3581,6 @@ describe("providerSection facing derivation from channel", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "minimax", model: "human-display-model" },
       agentFacing: { provider: "anthropic", model: "agent-display-model" },
       context: { ...DEFAULT_AGENT_CONTEXT },
@@ -3632,7 +3609,6 @@ describe("providerSection facing derivation from channel", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "minimax", model: "human-display-model" },
       agentFacing: { provider: "anthropic", model: "agent-display-model" },
       context: { ...DEFAULT_AGENT_CONTEXT },
@@ -3660,7 +3636,6 @@ describe("providerSection facing derivation from channel", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "anthropic", model: "stale-human-agent-json-model" },
       agentFacing: { provider: "anthropic", model: "stale-agent-json-model" },
       context: { ...DEFAULT_AGENT_CONTEXT },
@@ -4058,7 +4033,6 @@ describe("system prompt group headers", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4240,7 +4214,6 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4360,7 +4333,6 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4474,7 +4446,6 @@ describe("toolContractsSection (Unit 1.5)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4591,7 +4562,6 @@ describe("workspaceDisciplineSection expanded (Unit 1.6)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4691,7 +4661,6 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -4808,7 +4777,6 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },

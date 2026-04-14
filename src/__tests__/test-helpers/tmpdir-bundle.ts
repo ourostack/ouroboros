@@ -4,7 +4,7 @@ import * as path from "path"
 
 /**
  * Test helper: create a self-contained tmpdir-rooted bundle setup so tests
- * never write to the developer's real `~/AgentBundles` or `~/.agentsecrets`.
+ * never write to the developer's real `~/AgentBundles`.
  *
  * Usage:
  *   const tmp = createTmpBundle({ agentName: "auth-test", agentJson: {...} })
@@ -12,7 +12,6 @@ import * as path from "path"
  *     await runOuroCli(["auth", "--agent", tmp.agentName], {
  *       ...deps,
  *       bundlesRoot: tmp.bundlesRoot,
- *       secretsRoot: tmp.secretsRoot,
  *     })
  *   } finally {
  *     tmp.cleanup()
@@ -21,8 +20,7 @@ import * as path from "path"
  * The helper provides EVERYTHING required to make a test self-contained:
  *   - `bundlesRoot`: the parent dir under tmpdir, structured like ~/AgentBundles
  *   - `agentRoot`: <bundlesRoot>/<agentName>.ouro (created on disk with agent.json)
- *   - `secretsRoot`: a parallel tmpdir for ~/.agentsecrets-equivalent paths
- *   - `cleanup`: removes both tmpdirs (idempotent, safe to call from finally)
+ *   - `cleanup`: removes the tmpdir (idempotent, safe to call from finally)
  *
  * Use a unique `agentName` per test (the helper does NOT enforce this) so
  * concurrent test runs don't collide.
@@ -37,11 +35,7 @@ export interface TmpBundleHandle {
   agentRoot: string
   /** `<agentRoot>/agent.json` */
   agentConfigPath: string
-  /** Tmpdir that contains `<agentName>/secrets.json` */
-  secretsRoot: string
-  /** `<secretsRoot>/<agentName>/secrets.json` */
-  secretsPath: string
-  /** Removes both tmpdirs. Safe to call multiple times. */
+  /** Removes the tmpdir. Safe to call multiple times. */
   cleanup: () => void
   /**
    * True if this handle is shared across an entire describe block via
@@ -56,8 +50,6 @@ export interface CreateTmpBundleOptions {
   agentName?: string
   /** JSON object to write into `agent.json`. Default: minimal v2 minimax config. */
   agentJson?: Record<string, unknown>
-  /** Optional secrets.json contents to seed the secrets tmpdir. */
-  secretsJson?: Record<string, unknown>
   /**
    * Set to `true` when the handle is created in a `beforeAll` hook and
    * cleaned in `afterAll` — i.e. the bundle is shared by every test in
@@ -107,11 +99,8 @@ export function __getLiveTmpBundleHandles(): ReadonlySet<TmpBundleHandle> {
 export function createTmpBundle(options: CreateTmpBundleOptions = {}): TmpBundleHandle {
   const agentName = options.agentName ?? uniqueAgentName("test")
   const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), `ouro-tmp-bundles-`))
-  const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), `ouro-tmp-secrets-`))
   const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
   const agentConfigPath = path.join(agentRoot, "agent.json")
-  const secretsDir = path.join(secretsRoot, agentName)
-  const secretsPath = path.join(secretsDir, "secrets.json")
 
   fs.mkdirSync(agentRoot, { recursive: true })
   fs.writeFileSync(
@@ -120,25 +109,17 @@ export function createTmpBundle(options: CreateTmpBundleOptions = {}): TmpBundle
     "utf-8",
   )
 
-  if (options.secretsJson) {
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(secretsPath, JSON.stringify(options.secretsJson, null, 2) + "\n", "utf-8")
-  }
-
   let cleaned = false
   const handle: TmpBundleHandle = {
     agentName,
     bundlesRoot,
     agentRoot,
     agentConfigPath,
-    secretsRoot,
-    secretsPath,
     shared: options.shared ?? false,
     cleanup: (): void => {
       if (cleaned) return
       cleaned = true
       try { fs.rmSync(bundlesRoot, { recursive: true, force: true }) } catch { /* best effort */ }
-      try { fs.rmSync(secretsRoot, { recursive: true, force: true }) } catch { /* best effort */ }
       _liveHandles.delete(handle)
     },
   }

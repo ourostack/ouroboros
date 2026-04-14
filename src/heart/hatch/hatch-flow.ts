@@ -39,7 +39,6 @@ export interface HatchFlowInput {
 
 export interface HatchFlowDeps {
   bundlesRoot?: string
-  secretsRoot?: string
   specialistIdentitySourceDir?: string
   specialistIdentityTargetDir?: string
   now?: () => Date

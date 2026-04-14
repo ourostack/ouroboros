@@ -79,6 +79,8 @@ export function usage(): string {
     "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>] [--generate-unlock-secret]",
     "  ouro vault unlock --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault status --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
+    "  ouro vault config set --agent <name> --key <path> [--value <value>]",
+    "  ouro vault config status --agent <name>",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -452,6 +454,7 @@ function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
 
 function parseVaultCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
+  if (sub === "config") return parseVaultConfigCommand(args.slice(1))
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let email: string | undefined
   let serverUrl: string | undefined
@@ -503,6 +506,42 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
     return { kind: "vault.unlock", agent, ...(store ? { store } : {}) }
   }
   return { kind: "vault.status", agent, ...(store ? { store } : {}) }
+}
+
+function parseVaultConfigCommand(args: string[]): OuroCliCommand {
+  const sub = args[0]
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let key: string | undefined
+  let value: string | undefined
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--key") {
+      key = rest[i + 1]
+      i += 1
+      continue
+    }
+    if (token === "--value") {
+      value = rest[i + 1]
+      i += 1
+      continue
+    }
+    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>] OR ouro vault config status --agent <name>")
+  }
+
+  if (!agent || (sub !== "set" && sub !== "status")) {
+    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>] OR ouro vault config status --agent <name>")
+  }
+  if (sub === "status") {
+    if (key || value) {
+      throw new Error("Usage: ouro vault config status --agent <name>")
+    }
+    return { kind: "vault.config.status", agent }
+  }
+  if (!key) {
+    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>]")
+  }
+  return { kind: "vault.config.set", agent, key, ...(value !== undefined ? { value } : {}) }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {

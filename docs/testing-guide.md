@@ -99,6 +99,7 @@ Expected:
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
+- use `ouro vault config status --agent <agent>` to inspect runtime/sense/integration credential fields without printing values
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -220,9 +221,9 @@ Check:
 
 - `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
 - `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
-- the agent's vault provider credentials, plus the integration's existing sense credentials
+- the agent's vault provider credentials, plus `runtime/config` for sense/integration credentials
 
-Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; provider credentials live in the owning agent's vault. Tool/sense credential vault migration is a follow-up.
+Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; all raw credentials live in the owning agent's vault.
 
 ### BlueBubbles or Teams behavior feels wrong
 

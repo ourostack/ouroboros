@@ -168,11 +168,9 @@ vi.mock("../../../mind/friends/resolver", () => ({
 vi.mock("../../../heart/identity", () => ({
   getAgentName: mocks.getAgentName,
   getAgentRoot: mocks.getAgentRoot,
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     phrases: {
       thinking: ["thinking"],

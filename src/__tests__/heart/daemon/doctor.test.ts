@@ -1,7 +1,17 @@
-import { describe, it, expect, vi } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
+}))
+
+const mockRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
+vi.mock("../../../heart/runtime-credentials", () => ({
+  refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => mockRuntimeConfigs.get(agentName) ?? {
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/config`,
+    error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+  }),
 }))
 
 import type { DoctorDeps, DoctorResult } from "../../../heart/daemon/doctor-types"
@@ -25,7 +35,6 @@ function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     checkSocketAlive: vi.fn().mockResolvedValue(false),
     socketPath: "/tmp/test.sock",
     bundlesRoot: "/tmp/bundles",
-    secretsRoot: "/tmp/secrets",
     homedir: "/tmp/home",
     envPath: "/tmp/home/.ouro-cli/bin:/usr/bin",
     ...overrides,
@@ -58,6 +67,20 @@ function statFor(map: Record<string, { mode: number; size: number }>): (p: strin
     throw new Error(`ENOENT: ${p}`)
   }
 }
+
+function seedRuntimeConfig(agentName: string, config: Record<string, unknown>): void {
+  mockRuntimeConfigs.set(agentName, {
+    ok: true,
+    itemPath: `vault:${agentName}:runtime/config`,
+    config,
+    revision: "runtime_test",
+    updatedAt: "2026-04-14T00:00:00.000Z",
+  })
+}
+
+afterEach(() => {
+  mockRuntimeConfigs.clear()
+})
 
 describe("runDoctorChecks", () => {
   it("returns a DoctorResult with categories and summary", async () => {
@@ -430,19 +453,17 @@ describe("checkSenses", () => {
         bluebubbles: { enabled: true },
       },
     })
-    const secrets = JSON.stringify({
+    seedRuntimeConfig("test", {
       bluebubbles: { serverUrl: "http://bluebubbles.local", password: "pw" },
     })
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/test/secrets.json": secrets,
       }),
     })
     const cat = await checkSenses(deps)
@@ -538,7 +559,7 @@ describe("checkSenses", () => {
         bluebubbles: { enabled: true },
       },
     })
-    const secrets = JSON.stringify({
+    seedRuntimeConfig("test", {
       bluebubbles: {
         serverUrl: "http://bluebubbles.local",
         password: "pw",
@@ -552,12 +573,10 @@ describe("checkSenses", () => {
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/test/secrets.json": secrets,
       }),
       fetchImpl,
     })
@@ -588,7 +607,7 @@ describe("checkSenses", () => {
         bluebubbles: { enabled: true },
       },
     })
-    const secrets = JSON.stringify({
+    seedRuntimeConfig("test", {
       bluebubbles: {
         serverUrl: "http://bluebubbles.local",
         password: "pw",
@@ -599,12 +618,10 @@ describe("checkSenses", () => {
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/test/secrets.json": secrets,
       }),
       fetchImpl,
     })
@@ -624,7 +641,7 @@ describe("checkSenses", () => {
         bluebubbles: { enabled: true },
       },
     })
-    const secrets = JSON.stringify({
+    seedRuntimeConfig("test", {
       bluebubbles: {
         serverUrl: "",
       },
@@ -634,12 +651,10 @@ describe("checkSenses", () => {
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/test/secrets.json": secrets,
       }),
       fetchImpl,
     })
@@ -654,7 +669,7 @@ describe("checkSenses", () => {
     }))
   })
 
-  it("fails enabled BlueBubbles config checks when secrets.json is missing", async () => {
+  it("fails enabled BlueBubbles config checks when runtime/config is missing", async () => {
     const config = JSON.stringify({
       senses: {
         bluebubbles: { enabled: true },
@@ -675,26 +690,30 @@ describe("checkSenses", () => {
     expect(cat.checks).toContainEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
       status: "fail",
-      detail: "missing secrets.json",
+      detail: "missing vault runtime/config",
     }))
   })
 
-  it("fails enabled BlueBubbles config checks when secrets.json is unparseable", async () => {
+  it("fails enabled BlueBubbles config checks when runtime/config is invalid", async () => {
     const config = JSON.stringify({
       senses: {
         bluebubbles: { enabled: true },
       },
     })
+    mockRuntimeConfigs.set("test", {
+      ok: false,
+      reason: "invalid",
+      itemPath: "vault:test:runtime/config",
+      error: "runtime credential payload is malformed",
+    })
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/test/secrets.json": "not json",
       }),
       fetchImpl: vi.fn(),
     })
@@ -704,7 +723,7 @@ describe("checkSenses", () => {
     expect(cat.checks).toContainEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
       status: "fail",
-      detail: "secrets.json unparseable",
+      detail: "vault runtime/config unavailable: runtime credential payload is malformed",
     }))
   })
 })
@@ -786,39 +805,36 @@ describe("checkHabits", () => {
 // ── Security checks ──
 
 describe("checkSecurity", () => {
-  it("passes when secrets.json exists with proper permissions and no leaked creds", () => {
+  it("passes when legacy secrets.json is absent and agent.json has no leaked creds", () => {
     const config = JSON.stringify({ version: 2, humanFacing: { provider: "anthropic" } })
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/secrets/test/secrets.json",
         "/tmp/bundles/test.ouro/agent.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
     const cat = checkSecurity(deps)
     expect(cat.name).toBe("Security")
-    expect(cat.checks.find((c) => c.label.includes("perms"))?.status).toBe("pass")
+    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("pass")
     expect(cat.checks.find((c) => c.label.includes("credential leak"))?.status).toBe("pass")
   })
 
-  it("warns when secrets.json is world-readable", () => {
+  it("fails when a legacy local secrets.json exists", () => {
     const config = JSON.stringify({ version: 2 })
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/secrets/test/secrets.json",
+        "/tmp/home/.agentsecrets/test/secrets.json",
         "/tmp/bundles/test.ouro/agent.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o644, size: 100 } }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
     const cat = checkSecurity(deps)
-    expect(cat.checks.find((c) => c.label.includes("perms"))?.status).toBe("warn")
-    expect(cat.checks.find((c) => c.label.includes("perms"))?.detail).toContain("world-readable")
+    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("fail")
+    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.detail).toContain("migrate values into the agent vault runtime/config item")
   })
 
   it("does not fail when legacy secrets.json is missing", () => {
@@ -841,11 +857,9 @@ describe("checkSecurity", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/secrets/test/secrets.json",
         "/tmp/bundles/test.ouro/agent.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
       readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
     const cat = checkSecurity(deps)
@@ -857,11 +871,9 @@ describe("checkSecurity", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/secrets/test/secrets.json",
         "/tmp/bundles/test.ouro/agent.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
       readFileSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
     })
     const cat = checkSecurity(deps)
@@ -873,15 +885,12 @@ describe("checkSecurity", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/secrets/test/secrets.json",
         // agent.json NOT in the set
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
     })
     const cat = checkSecurity(deps)
-    // Should have perms check but no credential leak check
-    expect(cat.checks.find((c) => c.label.includes("perms"))?.status).toBe("pass")
+    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("pass")
     expect(cat.checks.find((c) => c.label.includes("credential leak"))).toBeUndefined()
   })
 

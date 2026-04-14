@@ -114,7 +114,6 @@ vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
     provider: "minimax",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     context: { maxTokens: 80000, contextMargin: 20 },
     phrases: {
       thinking: ["thinking"],
@@ -123,7 +122,6 @@ vi.mock("../../heart/identity", () => ({
     },
   })),
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getRepoRoot: vi.fn(() => "/tmp/mock-repo"),
 }))
 

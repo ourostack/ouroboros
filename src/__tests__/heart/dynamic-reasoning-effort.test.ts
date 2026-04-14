@@ -43,12 +43,10 @@ vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.f
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "azure",
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -108,7 +106,6 @@ describe("Azure dynamic reasoning effort", () => {
     emitTestEvent("azure dynamic reasoning effort")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
       humanFacing: { provider: "azure", model: "gpt-4o" },
       agentFacing: { provider: "azure", model: "gpt-4o" },
@@ -151,7 +148,6 @@ describe("Azure dynamic reasoning effort", () => {
     emitTestEvent("azure defaults to medium")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "azure",
       humanFacing: { provider: "azure", model: "gpt-4o" },
       agentFacing: { provider: "azure", model: "gpt-4o" },
@@ -200,7 +196,6 @@ describe("Codex dynamic reasoning effort", () => {
     emitTestEvent("codex dynamic reasoning effort")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
       humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
@@ -241,7 +236,6 @@ describe("Codex dynamic reasoning effort", () => {
     emitTestEvent("codex defaults to medium")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
       humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },

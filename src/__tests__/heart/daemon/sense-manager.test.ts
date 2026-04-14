@@ -9,10 +9,9 @@ function writeAgentJson(root: string, agent: string, payload: unknown): void {
   fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify(payload, null, 2) + "\n", "utf-8")
 }
 
-function writeSecrets(root: string, agent: string, payload: unknown): void {
-  const secretsDir = path.join(root, agent)
-  fs.mkdirSync(secretsDir, { recursive: true })
-  fs.writeFileSync(path.join(secretsDir, "secrets.json"), JSON.stringify(payload, null, 2) + "\n", "utf-8")
+async function cacheRuntimeConfig(agent: string, payload: Record<string, unknown>): Promise<void> {
+  const { cacheRuntimeCredentialConfig } = await import("../../../heart/runtime-credentials")
+  cacheRuntimeCredentialConfig(agent, payload, new Date(0))
 }
 
 describe("daemon sense manager", () => {
@@ -23,7 +22,6 @@ describe("daemon sense manager", () => {
 
   it("delegates lifecycle to the injected process manager and falls back to default senses when agent config is missing", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     const processManager = {
       startAutoStartAgents: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
@@ -34,7 +32,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager,
     })
 
@@ -51,9 +48,8 @@ describe("daemon sense manager", () => {
     expect(processManager.stopAll).toHaveBeenCalledTimes(1)
   })
 
-  it("reports needs_config for enabled senses when secrets.json is missing", async () => {
+  it("reports needs_config for enabled senses when vault runtime/config is missing", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -70,7 +66,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -80,14 +75,13 @@ describe("daemon sense manager", () => {
 
     expect(manager.listSenseRows()).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
-      expect.objectContaining({ sense: "teams", status: "needs_config", detail: "missing secrets.json (slugger)" }),
-      expect.objectContaining({ sense: "bluebubbles", status: "needs_config", detail: "missing secrets.json (slugger)" }),
+      expect.objectContaining({ sense: "teams", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
+      expect.objectContaining({ sense: "bluebubbles", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
     ])
   })
 
   it("uses configured details, ignores malformed snapshot ids, and marks non-running daemon senses as error", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -99,7 +93,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       teams: {
         clientId: "cid",
         clientSecret: "secret",
@@ -122,7 +116,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -144,7 +137,6 @@ describe("daemon sense manager", () => {
 
   it("surfaces upstream BlueBubbles runtime failures even when the listener process is still running", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -157,7 +149,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -184,7 +176,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -211,7 +202,6 @@ describe("daemon sense manager", () => {
 
   it("keeps BlueBubbles marked running when runtime state reports the upstream as healthy", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -224,7 +214,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -251,7 +241,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -278,7 +267,6 @@ describe("daemon sense manager", () => {
 
   it("prefers healthy BlueBubbles runtime state over a stale crashed process snapshot", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -291,7 +279,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -318,7 +306,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -345,7 +332,6 @@ describe("daemon sense manager", () => {
 
   it("ignores healthy BlueBubbles runtime state when it lacks a freshness timestamp", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -357,7 +343,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -383,7 +369,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -410,7 +395,6 @@ describe("daemon sense manager", () => {
 
   it("ignores healthy BlueBubbles runtime state when its freshness timestamp is invalid", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -422,7 +406,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -449,7 +433,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -476,7 +459,6 @@ describe("daemon sense manager", () => {
 
   it("falls back to the BlueBubbles process snapshot when runtime state is fresh but inconclusive", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -489,7 +471,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -516,7 +498,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -544,7 +525,6 @@ describe("daemon sense manager", () => {
   it("builds managed sense processes from enabled configured senses when no process manager is injected", async () => {
     const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-home-"))
     const bundlesRoot = path.join(homeRoot, "AgentBundles")
-    const secretsRoot = path.join(homeRoot, ".agentsecrets")
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -567,7 +547,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    writeSecrets(secretsRoot, "slugger", {
+    await cacheRuntimeConfig("slugger", {
       teams: {
         clientId: "cid",
         clientSecret: "secret",
@@ -618,9 +598,8 @@ describe("daemon sense manager", () => {
     )
   })
 
-  it("treats invalid secrets payload objects as missing required config", async () => {
+  it("treats empty runtime/config objects as missing required config", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -632,15 +611,12 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    const secretsDir = path.join(secretsRoot, "slugger")
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(path.join(secretsDir, "secrets.json"), "[]\n", "utf-8")
+    await cacheRuntimeConfig("slugger", {})
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -664,7 +640,6 @@ describe("daemon sense manager", () => {
 
   it("falls back to defaults when senses blocks are malformed", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -688,7 +663,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger", "ouroboros"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -708,9 +682,8 @@ describe("daemon sense manager", () => {
     ])
   })
 
-  it("handles non-Error secrets read failures defensively", async () => {
+  it("handles missing runtime/config defensively", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
       enabled: true,
@@ -723,24 +696,10 @@ describe("daemon sense manager", () => {
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
 
-    vi.doMock("fs", async () => {
-      const actual = await vi.importActual<typeof import("fs")>("fs")
-      return {
-        ...actual,
-        readFileSync: ((target: fs.PathOrFileDescriptor, encoding?: BufferEncoding) => {
-          if (typeof target === "string" && target.endsWith(path.join("slugger", "secrets.json"))) {
-            throw "string-read-failure"
-          }
-          return actual.readFileSync(target, encoding as BufferEncoding)
-        }) as typeof fs.readFileSync,
-      }
-    })
-
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,
@@ -751,14 +710,13 @@ describe("daemon sense manager", () => {
     expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
       expect.objectContaining({
         status: "needs_config",
-        detail: "missing secrets.json (slugger)",
+        detail: "missing vault runtime/config (slugger)",
       }),
     )
   })
 
   it("handles non-Error agent config read failures defensively", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
-    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-secrets-"))
 
     vi.doMock("fs", async () => {
       const actual = await vi.importActual<typeof import("fs")>("fs")
@@ -777,7 +735,6 @@ describe("daemon sense manager", () => {
     const manager = new DaemonSenseManager({
       agents: ["slugger"],
       bundlesRoot,
-      secretsRoot,
       processManager: {
         startAutoStartAgents: async () => undefined,
         stopAll: async () => undefined,

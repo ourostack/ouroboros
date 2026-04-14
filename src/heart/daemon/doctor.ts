@@ -16,6 +16,7 @@ import type {
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
+import { refreshRuntimeCredentialConfig } from "../runtime-credentials"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
@@ -95,14 +96,6 @@ function textField(record: Record<string, unknown> | null | undefined, key: stri
 function numberField(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const value = record?.[key]
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
-}
-
-function readJsonObject(deps: DoctorDeps, filePath: string): Record<string, unknown> | null {
-  try {
-    return asRecord(JSON.parse(deps.readFileSync(filePath)) as unknown)
-  } catch {
-    return null
-  }
 }
 
 const SENSITIVE_CONFIG_KEYS = ["apiKey", "token", "secret", "password"]
@@ -221,28 +214,20 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
       }
 
       if (sense === "bluebubbles" && senseObj.enabled === true) {
-        const secretsPath = `${deps.secretsRoot}/${agentName}/secrets.json`
-        if (!deps.existsSync(secretsPath)) {
+        const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+        if (!runtimeConfig.ok) {
           checks.push({
             label: `${agentDir} bluebubbles config`,
             status: "fail",
-            detail: "missing secrets.json",
+            detail: runtimeConfig.reason === "missing"
+              ? "missing vault runtime/config"
+              : `vault runtime/config unavailable: ${runtimeConfig.error}`,
           })
           continue
         }
 
-        const secrets = readJsonObject(deps, secretsPath)
-        if (!secrets) {
-          checks.push({
-            label: `${agentDir} bluebubbles config`,
-            status: "fail",
-            detail: "secrets.json unparseable",
-          })
-          continue
-        }
-
-        const bluebubbles = asRecord(secrets.bluebubbles)
-        const bluebubblesChannel = asRecord(secrets.bluebubblesChannel)
+        const bluebubbles = asRecord(runtimeConfig.config.bluebubbles)
+        const bluebubblesChannel = asRecord(runtimeConfig.config.bluebubblesChannel)
         const serverUrl = textField(bluebubbles, "serverUrl")
         const password = textField(bluebubbles, "password")
         const missing: string[] = []
@@ -330,16 +315,16 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
 
   for (const agentDir of agents) {
     const agentName = agentDir.replace(/\.ouro$/, "")
-    const secretsPath = `${deps.secretsRoot}/${agentName}/secrets.json`
+    const legacySecretsPath = `${deps.homedir}/.agentsecrets/${agentName}/secrets.json`
 
-    if (deps.existsSync(secretsPath)) {
-      const stat = deps.statSync(secretsPath)
-      const worldReadable = (stat.mode & 0o004) !== 0
-      if (worldReadable) {
-        checks.push({ label: `${agentDir} legacy secrets.json perms`, status: "warn", detail: "world-readable — consider deleting or chmod 600" })
-      } else {
-        checks.push({ label: `${agentDir} legacy secrets.json perms`, status: "pass", detail: "not world-readable" })
-      }
+    if (deps.existsSync(legacySecretsPath)) {
+      checks.push({
+        label: `${agentDir} legacy secrets.json`,
+        status: "fail",
+        detail: "legacy local credential file exists; migrate values into the agent vault runtime/config item and remove it",
+      })
+    } else {
+      checks.push({ label: `${agentDir} legacy secrets.json`, status: "pass", detail: "absent" })
     }
 
     // Check agent.json for leaked credential keys

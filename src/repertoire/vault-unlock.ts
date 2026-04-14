@@ -122,6 +122,7 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
     "",
     `Run \`${command}\` and enter the vault unlock secret from the operator password manager.`,
+    "If nobody saved that unlock secret, Ouro cannot recover it; create or rotate the agent vault and re-enter credentials.",
   ].join("\n")
 }
 

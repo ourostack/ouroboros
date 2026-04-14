@@ -70,7 +70,6 @@ export interface SpecialistExecToolDeps {
   credentials: HatchCredentialsInput
   provider: AgentProvider
   bundlesRoot: string
-  secretsRoot?: string
   animationWriter?: (text: string) => void
   humanName?: string
 }

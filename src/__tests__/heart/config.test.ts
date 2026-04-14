@@ -24,7 +24,6 @@ vi.mock("../../heart/identity", () => ({
   })),
   getAgentName: vi.fn(() => "testagent"),
   getAgentRoot: vi.fn(() => path.join(os.homedir(), "AgentBundles", "testagent.ouro")),
-  getAgentSecretsPath: vi.fn(() => path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")),
   DEFAULT_AGENT_CONTEXT: {
     maxTokens: 80000,
     contextMargin: 20,
@@ -54,21 +53,27 @@ beforeEach(() => {
   vi.mocked((identity as any).getAgentRoot).mockReturnValue(
     path.join(os.homedir(), "AgentBundles", "testagent.ouro"),
   )
-  vi.mocked((identity as any).getAgentSecretsPath).mockReturnValue(
-    path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json"),
-  )
 })
 
 afterEach(() => {
 })
+
+async function importConfigModule(runtimeConfig?: Record<string, unknown>, agentName = "testagent") {
+  const config = await import("../../heart/config")
+  config.resetConfigCache()
+  if (runtimeConfig) {
+    config.cacheRuntimeConfigForTests(agentName, runtimeConfig)
+  }
+  return config
+}
 
 describe("loadConfig", () => {
   beforeEach(async () => {
     vi.resetModules()
   })
 
-  it("reads config from the conventional ~/.agentsecrets/<agent>/secrets.json path and ignores legacy providers", async () => {
-    const configData = {
+  it("reads config from the agent vault runtime/config cache and ignores provider blocks", async () => {
+    const runtimeConfig = {
       providers: {
         azure: {
           apiKey: "az-key",
@@ -77,163 +82,79 @@ describe("loadConfig", () => {
           modelName: "gpt-4",
         },
       },
+      teamsChannel: {
+        port: 5001,
+      },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule(runtimeConfig)
     const config = loadConfig()
 
     expect(config).not.toHaveProperty("providers")
-    // Should use conventional secrets path based on agent name.
-    const expectedPath = path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")
-    expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
+    expect(config.teamsChannel.port).toBe(5001)
+    expect(fs.readFileSync).not.toHaveBeenCalled()
   })
 
-  it("auto-creates config directory when loading", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+  it("does not create local credential directories when loading", async () => {
+    const { loadConfig } = await importConfigModule({})
     loadConfig()
 
-    const expectedDir = path.join(os.homedir(), ".agentsecrets", "testagent")
-    expect(fs.mkdirSync).toHaveBeenCalledWith(expectedDir, { recursive: true })
+    expect(fs.mkdirSync).not.toHaveBeenCalled()
   })
 
-  it("returns defaults when file is missing (ENOENT)", async () => {
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
-      const err: any = new Error("ENOENT")
-      err.code = "ENOENT"
-      throw err
-    })
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+  it("returns defaults when vault runtime/config is missing from the local cache", async () => {
+    const { loadConfig } = await importConfigModule()
     const config = loadConfig()
 
     expect(config.context.maxTokens).toBe(80000)
     expect(config.context.contextMargin).toBe(20)
-
-    const expectedPath = path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")
-    expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(fs.writeFileSync).toHaveBeenCalledWith(expectedPath, expect.any(String), "utf-8")
-    const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1]
-    const parsed = JSON.parse(String(written)) as Record<string, unknown>
-    expect(parsed).toMatchObject({
-      teams: {
-        clientId: "",
-        clientSecret: "",
-        tenantId: "",
-      },
-      oauth: {
-        graphConnectionName: "graph",
-        adoConnectionName: "ado",
-      },
-      teamsChannel: {
-        skipConfirmation: true,
-        port: 3978,
-      },
-      bluebubbles: {
-        serverUrl: "",
-        password: "",
-        accountId: "default",
-      },
-      bluebubblesChannel: {
-        port: 18790,
-        webhookPath: "/bluebubbles-webhook",
-        requestTimeoutMs: 30000,
-      },
-      vault: {
-        masterPassword: "",
-      },
-      integrations: {
-        perplexityApiKey: "",
-      },
-    })
-    expect(parsed).not.toHaveProperty("providers")
-    expect(parsed).not.toHaveProperty("context")
+    expect(config.teams.clientId).toBe("")
+    expect(config.integrations.perplexityApiKey).toBe("")
+    expect(config).not.toHaveProperty("providers")
+    expect(fs.readFileSync).not.toHaveBeenCalled()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
-  it("continues with defaults when writing default secrets config fails after ENOENT", async () => {
+  it("continues with defaults when local fs reads would fail", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => {
-      const err: any = new Error("ENOENT")
-      err.code = "ENOENT"
-      throw err
-    })
-    vi.mocked(fs.writeFileSync).mockImplementation(() => {
       throw new Error("disk full")
     })
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    const config = loadConfig()
-
-    expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(config.context.maxTokens).toBe(80000)
-    expect(config).not.toHaveProperty("providers")
-  })
-
-  it("continues with defaults when writing default secrets config throws non-Error", async () => {
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
-      const err: any = new Error("ENOENT")
-      err.code = "ENOENT"
-      throw err
-    })
-    vi.mocked(fs.writeFileSync).mockImplementation(() => {
-      throw "disk-fail"
-    })
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    const config = loadConfig()
-
-    expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(config.context.maxTokens).toBe(80000)
-    expect(config).not.toHaveProperty("providers")
-  })
-
-  it("ignores legacy context and providers blocks from secrets.json", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(
-      JSON.stringify({
-        context: { maxTokens: 1, contextMargin: 1 },
-        providers: {
-          minimax: { apiKey: "minimax-key", model: "MiniMax-M2.5" },
-        },
-      })
-    )
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    const config = loadConfig()
-
-    // context must come from agent.json defaults, not legacy secrets.json context
-    expect(config.context.maxTokens).toBe(80000)
-    expect(config.context.contextMargin).toBe(20)
-    expect(config).not.toHaveProperty("providers")
-  })
-
-  it("returns defaults when file contains invalid JSON", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("not json {{{")
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule()
     const config = loadConfig()
 
     expect(config.context.maxTokens).toBe(80000)
     expect(config).not.toHaveProperty("providers")
+    expect(fs.readFileSync).not.toHaveBeenCalled()
   })
 
-  it("returns defaults when config read throws a non-Error value", async () => {
+  it("continues with defaults when local fs reads would throw non-Error values", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw "read-failure"
     })
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule()
     const config = loadConfig()
 
     expect(config.context.maxTokens).toBe(80000)
+    expect(config).not.toHaveProperty("providers")
+    expect(fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it("ignores context and provider blocks from runtime/config", async () => {
+    const runtimeConfig = {
+      context: { maxTokens: 1, contextMargin: 1 },
+      providers: {
+        minimax: { apiKey: "minimax-key", model: "MiniMax-M2.5" },
+      },
+    }
+
+    const { loadConfig } = await importConfigModule(runtimeConfig)
+    const config = loadConfig()
+
+    // context must come from agent.json defaults, not runtime credentials.
+    expect(config.context.maxTokens).toBe(80000)
+    expect(config.context.contextMargin).toBe(20)
     expect(config).not.toHaveProperty("providers")
   })
 
@@ -248,10 +169,8 @@ describe("loadConfig", () => {
         port: 5001,
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(partial))
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule(partial)
     const config = loadConfig()
 
     expect(config).not.toHaveProperty("providers")
@@ -261,10 +180,7 @@ describe("loadConfig", () => {
   })
 
   it("defaults vault secrets to empty masterPassword", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule({})
     const config = loadConfig()
 
     expect(config.vault.masterPassword).toBe("")
@@ -273,16 +189,13 @@ describe("loadConfig", () => {
     expect(config.vault.clientSecret).toBeUndefined()
   })
 
-  it("merges partial vault config from secrets.json", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+  it("merges partial vault config from runtime/config", async () => {
+    const { loadConfig } = await importConfigModule({
       vault: {
         masterPassword: "test-master-pw",
         adminToken: "admin-tok",
       },
-    }))
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const config = loadConfig()
 
     expect(config.vault.masterPassword).toBe("test-master-pw")
@@ -291,42 +204,29 @@ describe("loadConfig", () => {
 
   it("does not use OUROBOROS_CONFIG_PATH env var", async () => {
     process.env.OUROBOROS_CONFIG_PATH = "/tmp/should-not-be-used.json"
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ providers: { azure: { apiKey: "x" } } }))
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule({ providers: { azure: { apiKey: "x" } } })
     loadConfig()
 
-    // Should NOT use the env var -- should use the conventional agent secrets path.
-    const expectedPath = path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")
-    expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
+    expect(fs.readFileSync).not.toHaveBeenCalled()
     expect(fs.readFileSync).not.toHaveBeenCalledWith("/tmp/should-not-be-used.json", "utf-8")
 
     delete process.env.OUROBOROS_CONFIG_PATH
   })
 
-  it("uses resolved secrets path from identity helper", async () => {
-    vi.mocked((identity as any).getAgentSecretsPath).mockReturnValue(
-      path.join(os.homedir(), ".agentsecrets", "myagent", "secrets.json"),
-    )
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+  it("uses the current agent name when reading cached runtime/config", async () => {
+    vi.mocked(identity.getAgentName).mockReturnValue("myagent")
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    loadConfig()
+    const { loadConfig } = await importConfigModule({ teamsChannel: { port: 5002 } }, "myagent")
+    const config = loadConfig()
 
-    const expectedPath = path.join(os.homedir(), ".agentsecrets", "myagent", "secrets.json")
-    expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
+    expect(config.teamsChannel.port).toBe(5002)
   })
 
-  it("re-reads disk-backed non-provider secrets config on each load", async () => {
-    vi.mocked(fs.readFileSync)
-      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "k1" } }))
-      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "k2" } }))
-
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+  it("re-reads cached non-provider runtime config on each load", async () => {
+    const { cacheRuntimeConfigForTests, loadConfig } = await importConfigModule({ integrations: { perplexityApiKey: "k1" } })
     const config1 = loadConfig()
+    cacheRuntimeConfigForTests("testagent", { integrations: { perplexityApiKey: "k2" } })
     const config2 = loadConfig()
 
     expect(config1).not.toBe(config2)
@@ -334,20 +234,18 @@ describe("loadConfig", () => {
     expect(config2.integrations.perplexityApiKey).toBe("k2")
     expect(config1).not.toHaveProperty("providers")
     expect(config2).not.toHaveProperty("providers")
-    expect(fs.readFileSync).toHaveBeenCalledTimes(2)
+    expect(fs.readFileSync).not.toHaveBeenCalled()
   })
 
   it("re-reads updated integrations config without resetConfigCache()", async () => {
-    vi.mocked(fs.readFileSync)
-      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "" } }))
-      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "fresh-key" } }))
-
-    const { getIntegrationsConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { cacheRuntimeConfigForTests, getIntegrationsConfig } = await importConfigModule({
+      integrations: { perplexityApiKey: "" },
+    })
 
     expect(getIntegrationsConfig().perplexityApiKey).toBe("")
+    cacheRuntimeConfigForTests("testagent", { integrations: { perplexityApiKey: "fresh-key" } })
     expect(getIntegrationsConfig().perplexityApiKey).toBe("fresh-key")
-    expect(fs.readFileSync).toHaveBeenCalledTimes(2)
+    expect(fs.readFileSync).not.toHaveBeenCalled()
   })
 
   it("emits config.load observability event when loading config", async () => {
@@ -356,10 +254,8 @@ describe("loadConfig", () => {
     vi.doMock("../../nerves/runtime", () => ({
       emitNervesEvent,
     }))
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { loadConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { loadConfig } = await importConfigModule({})
     loadConfig()
 
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -408,7 +304,7 @@ describe("getAzureConfig", () => {
     expect(azure.apiVersion).toBe("2025-04-01-preview")
   })
 
-  it("returns apiKey as empty string when secrets.json has apiKey: ''", async () => {
+  it("returns apiKey as empty string when no provider credential is cached", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       providers: { azure: { apiKey: "" } },
     }))
@@ -431,7 +327,7 @@ describe("getAzureConfig", () => {
     expect(azure.apiKey).toBe("real-key-123")
   })
 
-  it("returns apiKey as empty string from default when secrets.json omits apiKey field entirely", async () => {
+  it("returns apiKey as empty string from default when cached provider credentials omit apiKey", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       providers: { azure: { endpoint: "https://example.openai.azure.com" } },
     }))
@@ -511,7 +407,7 @@ describe("getTeamsConfig", () => {
     vi.resetModules()
   })
 
-  it("returns teams config from config.json", async () => {
+  it("returns teams config from runtime/config", async () => {
     const configData = {
       teams: {
         clientId: "cid",
@@ -519,10 +415,8 @@ describe("getTeamsConfig", () => {
         tenantId: "tid",
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { getTeamsConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { getTeamsConfig } = await importConfigModule(configData)
     const teams = getTeamsConfig()
 
     expect(teams.clientId).toBe("cid")
@@ -643,15 +537,12 @@ describe("getOpenAIEmbeddingsApiKey", () => {
     vi.resetModules()
   })
 
-  it("returns integrations.openaiEmbeddingsApiKey from secrets config", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+  it("returns integrations.openaiEmbeddingsApiKey from runtime/config", async () => {
+    const { getOpenAIEmbeddingsApiKey } = await importConfigModule({
       integrations: {
         openaiEmbeddingsApiKey: "emb-key-123",
       },
-    }))
-
-    const { getOpenAIEmbeddingsApiKey, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const key = getOpenAIEmbeddingsApiKey()
 
     expect(key).toBe("emb-key-123")
@@ -764,17 +655,15 @@ describe("getOAuthConfig", () => {
     expect(oauth.adoConnectionName).toBe("ado")
   })
 
-  it("respects config.json values", async () => {
+  it("respects runtime/config values", async () => {
     const configData = {
       oauth: {
         graphConnectionName: "custom-graph",
         adoConnectionName: "custom-ado",
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { getOAuthConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { getOAuthConfig } = await importConfigModule(configData)
     const oauth = getOAuthConfig()
 
     expect(oauth.graphConnectionName).toBe("custom-graph")
@@ -807,7 +696,7 @@ describe("getTeamsChannelConfig", () => {
     expect(tc.port).toBe(3978)
   })
 
-  it("returns teamsChannel config with flushIntervalMs from config.json", async () => {
+  it("returns teamsChannel config with flushIntervalMs from runtime/config", async () => {
     const configData = {
       teamsChannel: {
         skipConfirmation: true,
@@ -815,10 +704,8 @@ describe("getTeamsChannelConfig", () => {
         port: 4000,
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { getTeamsChannelConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { getTeamsChannelConfig } = await importConfigModule(configData)
     const tc = getTeamsChannelConfig()
 
     expect(tc.skipConfirmation).toBe(true)
@@ -844,10 +731,8 @@ describe("getTeamsChannelConfig", () => {
         port: 5000,
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { getTeamsChannelConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { getTeamsChannelConfig } = await importConfigModule(configData)
     const tc = getTeamsChannelConfig()
 
     expect(tc.skipConfirmation).toBe(true)
@@ -861,17 +746,14 @@ describe("getBlueBubblesConfig", () => {
     vi.resetModules()
   })
 
-  it("returns bluebubbles config from secrets config", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+  it("returns bluebubbles config from runtime/config", async () => {
+    const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "secret-pass",
         accountId: "personal",
       },
-    }))
-
-    const { getBlueBubblesConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const bb = getBlueBubblesConfig()
 
     expect(bb.serverUrl).toBe("http://localhost:1234")
@@ -880,16 +762,13 @@ describe("getBlueBubblesConfig", () => {
   })
 
   it("falls back to default accountId when the configured value is blank", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {
         serverUrl: " http://localhost:1234 ",
         password: " secret-pass ",
         accountId: "   ",
       },
-    }))
-
-    const { getBlueBubblesConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const bb = getBlueBubblesConfig()
 
     expect(bb.serverUrl).toBe("http://localhost:1234")
@@ -898,29 +777,23 @@ describe("getBlueBubblesConfig", () => {
   })
 
   it("fails fast when bluebubbles serverUrl is missing", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {
         serverUrl: "",
         password: "secret-pass",
       },
-    }))
-
-    const { getBlueBubblesConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
 
     expect(() => getBlueBubblesConfig()).toThrow(/bluebubbles\.serverUrl/i)
   })
 
   it("fails fast when bluebubbles password is missing", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "",
       },
-    }))
-
-    const { getBlueBubblesConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
 
     expect(() => getBlueBubblesConfig()).toThrow(/bluebubbles\.password/i)
   })
@@ -943,17 +816,14 @@ describe("getBlueBubblesChannelConfig", () => {
     expect(bb.requestTimeoutMs).toBe(30000)
   })
 
-  it("returns bluebubblesChannel config from secrets config", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+  it("returns bluebubblesChannel config from runtime/config", async () => {
+    const { getBlueBubblesChannelConfig } = await importConfigModule({
       bluebubblesChannel: {
         port: 18888,
         webhookPath: "/hooks/imessage",
         requestTimeoutMs: 12345,
       },
-    }))
-
-    const { getBlueBubblesChannelConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const bb = getBlueBubblesChannelConfig()
 
     expect(bb.port).toBe(18888)
@@ -977,16 +847,14 @@ describe("getIntegrationsConfig", () => {
     expect(ic.perplexityApiKey).toBe("")
   })
 
-  it("returns integrations config from config.json", async () => {
+  it("returns integrations config from runtime/config", async () => {
     const configData = {
       integrations: {
         perplexityApiKey: "pplx-key-123",
       },
     }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
 
-    const { getIntegrationsConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    const { getIntegrationsConfig } = await importConfigModule(configData)
     const ic = getIntegrationsConfig()
 
     expect(ic.perplexityApiKey).toBe("pplx-key-123")
@@ -1107,19 +975,16 @@ describe("patchRuntimeConfig", () => {
 })
 
 describe("getTeamsSecondaryConfig", () => {
-  it("returns secondary teams config from secrets", async () => {
+  it("returns secondary teams config from runtime/config", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { getTeamsSecondaryConfig } = await importConfigModule({
       teamsSecondary: {
         clientId: "sec-id",
         clientSecret: "sec-secret",
         tenantId: "sec-tenant",
         managedIdentityClientId: "",
       },
-    }))
-
-    const { getTeamsSecondaryConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
 
     const cfg = getTeamsSecondaryConfig()
     expect(cfg.clientId).toBe("sec-id")
@@ -1130,16 +995,13 @@ describe("getTeamsSecondaryConfig", () => {
 describe("resolveOAuthForTenant", () => {
   it("returns base oauth config when no tenantId given", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { resolveOAuthForTenant } = await importConfigModule({
       oauth: {
         graphConnectionName: "graph-conn",
         adoConnectionName: "ado-conn",
         githubConnectionName: "gh-conn",
       },
-    }))
-
-    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
 
     const result = resolveOAuthForTenant()
     expect(result.graphConnectionName).toBe("graph-conn")
@@ -1148,7 +1010,7 @@ describe("resolveOAuthForTenant", () => {
 
   it("applies tenant overrides when tenantId matches", async () => {
     vi.resetModules()
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+    const { resolveOAuthForTenant } = await importConfigModule({
       oauth: {
         graphConnectionName: "default-graph",
         adoConnectionName: "default-ado",
@@ -1159,10 +1021,7 @@ describe("resolveOAuthForTenant", () => {
           },
         },
       },
-    }))
-
-    const { resolveOAuthForTenant, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
 
     const result = resolveOAuthForTenant("tenant-x")
     expect(result.graphConnectionName).toBe("tenant-x-graph")
@@ -1220,23 +1079,13 @@ describe("provider configs are credentials-only (no model fields)", () => {
   })
 
   it("DEFAULT_LOCAL_RUNTIME_CONFIG does not write provider credentials", async () => {
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
-      const err: any = new Error("ENOENT")
-      err.code = "ENOENT"
-      throw err
-    })
+    const { loadConfig } = await importConfigModule()
+    const config = loadConfig()
 
-    const { resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
-    // Trigger a loadConfig so it writes the default template
-    const { loadConfig } = await import("../../heart/config")
-    loadConfig()
-
-    const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1]
-    const parsed = JSON.parse(String(written)) as Record<string, any>
-    expect(parsed).not.toHaveProperty("providers")
-    expect(parsed.teams).toBeDefined()
-    expect(parsed.integrations).toBeDefined()
+    expect(config).not.toHaveProperty("providers")
+    expect(config.teams).toBeDefined()
+    expect(config.integrations).toBeDefined()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 })
 
