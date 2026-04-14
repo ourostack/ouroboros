@@ -154,23 +154,6 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(false)
   })
 
-  // --- protected paths include ~/.agentsecrets/ ---
-
-  it("blocks write_file to ~/.agentsecrets/anything", async () => {
-    const { guardInvocation } = await import("../../repertoire/guardrails")
-    const home = process.env.HOME || "/Users/test"
-    const result = guardInvocation("write_file", { path: `${home}/.agentsecrets/agent/secrets.json` }, { readPaths: new Set() })
-    expect(result.allowed).toBe(false)
-    if (!result.allowed) expect(result.reason).toMatch(/protected/i)
-  })
-
-  it("blocks shell write to ~/.agentsecrets/", async () => {
-    const { guardInvocation } = await import("../../repertoire/guardrails")
-    const home = process.env.HOME || "/Users/test"
-    const result = guardInvocation("shell", { command: `cat secrets > ${home}/.agentsecrets/x` }, { readPaths: new Set() })
-    expect(result.allowed).toBe(false)
-  })
-
   // --- protected filenames (agent.json) ---
 
   it("blocks write_file to agent.json", async () => {

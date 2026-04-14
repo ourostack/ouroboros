@@ -222,7 +222,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       model: "MiniMax-M2.5",
       source: "bootstrap",
     })
-    expect(fs.existsSync(path.join(homeDir, ".agentsecrets", "slugger", "secrets.json"))).toBe(false)
     expect(pingProvider).toHaveBeenCalledWith(
       "anthropic",
       { setupToken: "anthropic-token" },

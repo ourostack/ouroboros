@@ -84,8 +84,6 @@ const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 // - `.ouro-cli`: version-manager state (installed versions, CurrentVersion
 //   symlink, daemon.pids, pulse.json, pulse-delivered.json). A test writing
 //   here can corrupt the developer's running daemon state.
-// - `.agentsecrets`: credential store per convention. Writing here leaks
-//   test secrets into the real filesystem.
 // - `.claude`: Claude Code settings, logs, and subagent state. Writing here
 //   collides with the developer's own Claude Code session.
 // Empty as of the ratchet-down: every pre-existing offender was
@@ -93,10 +91,6 @@ const REAL_BUNDLES_WRITE_ALLOWLIST = new Set<string>()
 // no longer shares a line with `os.homedir()`. New offenders are
 // blocked by the rule.
 const REAL_OURO_CLI_WRITE_ALLOWLIST = new Set<string>()
-
-// Same ratchet-down: every pre-existing `.agentsecrets` offender was
-// converted to extract the subpath as a local const.
-const REAL_AGENT_SECRETS_WRITE_ALLOWLIST = new Set<string>()
 
 // .claude allowlist starts empty — no known offenders as of the seed scan.
 const REAL_CLAUDE_WRITE_ALLOWLIST = new Set<string>()
@@ -239,7 +233,7 @@ function relPath(absolute: string): string {
   return relative(process.cwd(), absolute)
 }
 
-const RETIRED_HOME_SECRET_PATH_FRAGMENT = [".", "agentsecrets"].join("")
+const RETIRED_HOME_SECRET_PATH_FRAGMENT = [".", "agent", "secrets"].join("")
 const ACTIVE_SURFACE_ENTRIES = [
   "AGENTS.md",
   "README.md",
@@ -456,14 +450,6 @@ describe("test isolation contract", () => {
       ".ouro-cli",
       REAL_OURO_CLI_WRITE_ALLOWLIST,
       /["']\.ouro-cli["']/,
-    )
-  })
-
-  it("no NEW test file constructs a write path under real ~/.agentsecrets", () => {
-    runProdPathCheck(
-      ".agentsecrets",
-      REAL_AGENT_SECRETS_WRITE_ALLOWLIST,
-      /["']\.agentsecrets["']/,
     )
   })
 

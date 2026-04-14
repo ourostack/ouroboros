@@ -24,7 +24,6 @@ afterEach(() => {
 describe("agentConfigV2Hook", () => {
   it("migrates v1 config to v2 successfully", async () => {
     const agentRoot = createTempDir("agent-config-v2-hook-migrate-")
-    const agentName = path.basename(agentRoot).replace(/\.ouro$/, "")
     const configPath = path.join(agentRoot, "agent.json")
     fs.writeFileSync(
       configPath,
@@ -35,19 +34,6 @@ describe("agentConfigV2Hook", () => {
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       }, null, 2) + "\n",
     )
-
-    // Seed secrets so migration can read the model.
-    // Subpath const so `.agentsecrets` is not on the same line as
-    // `os.homedir()` (test-isolation.contract rule). The test uses
-    // createdDirs cleanup below to remove the seeded dir after the test.
-    const agentSecretsSubpath = ".agentsecrets"
-    const secretsBase = path.join(os.homedir(), agentSecretsSubpath, agentName)
-    fs.mkdirSync(secretsBase, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsBase, "secrets.json"),
-      JSON.stringify({ providers: { anthropic: { model: "claude-opus-4-6", setupToken: "tok" } } }),
-    )
-    createdDirs.push(secretsBase)
 
     const ctx: UpdateHookContext = {
       agentRoot,
