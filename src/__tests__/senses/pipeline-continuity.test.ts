@@ -263,7 +263,6 @@ describe("pipeline continuity integration", () => {
       displayName: "Ouroboros",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-      configPath: "~/.agentsecrets/ouroboros/secrets.json",
       context: {},
     } as ReturnType<typeof identity.loadAgentConfig>)
     vi.spyOn(daemonThoughts, "readInnerDialogRawData").mockReturnValue(null)

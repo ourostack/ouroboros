@@ -40,14 +40,12 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -84,7 +82,6 @@ function makeAnthropicSetupToken(): string {
 async function createRuntime() {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },

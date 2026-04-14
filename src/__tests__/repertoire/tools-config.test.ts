@@ -43,7 +43,6 @@ vi.mock("../../heart/identity", () => ({
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/agent/testagent.ouro"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),

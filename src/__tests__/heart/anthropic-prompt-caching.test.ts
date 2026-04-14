@@ -39,12 +39,10 @@ vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.f
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -107,7 +105,6 @@ describe("Anthropic prompt caching", () => {
     emitTestEvent("anthropic cache_control stable prefix")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -150,7 +147,6 @@ describe("Anthropic prompt caching", () => {
     emitTestEvent("anthropic fallback no systemPrompt")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -187,7 +183,6 @@ describe("Anthropic prompt caching", () => {
     emitTestEvent("anthropic cache_control empty volatile")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -223,7 +218,6 @@ describe("Anthropic prompt caching", () => {
     emitTestEvent("anthropic preamble in stable block")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },

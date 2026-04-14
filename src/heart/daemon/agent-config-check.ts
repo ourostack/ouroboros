@@ -378,15 +378,8 @@ export function checkAgentConfig(
 export async function checkAgentConfigWithProviderHealth(
   agentName: string,
   bundlesRoot: string,
-  secretsRootOrDeps: string | LiveConfigCheckDeps = {},
-  maybeDeps: LiveConfigCheckDeps = {},
+  deps: LiveConfigCheckDeps = {},
 ): Promise<ConfigCheckResult> {
-  const deps = typeof secretsRootOrDeps === "string"
-    ? {
-      ...maybeDeps,
-      homeDir: maybeDeps.homeDir ?? (path.basename(secretsRootOrDeps) === ".agentsecrets" ? path.dirname(secretsRootOrDeps) : undefined),
-    }
-    : secretsRootOrDeps
   const stateResult = readOrBootstrapProviderStateForCheck(agentName, bundlesRoot, deps)
   if (!stateResult.ok) return stateResult.result
   if (stateResult.disabled) return { ok: true }

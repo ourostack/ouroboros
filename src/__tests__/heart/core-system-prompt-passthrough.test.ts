@@ -36,10 +36,8 @@ vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
-  getAgentSecretsPath: vi.fn(() => "/mock/secrets.json"),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     humanFacing: { provider: "minimax", model: "minimax-text-01" },
     agentFacing: { provider: "minimax", model: "minimax-text-01" },

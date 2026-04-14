@@ -44,7 +44,6 @@ vi.mock("../../../heart/identity", () => ({
   HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
   loadAgentConfig: vi.fn(() => ({
     name: "test-agent",
-    configPath: "~/.agentsecrets/test-agent/secrets.json",
     provider: "anthropic",
   })),
 }))

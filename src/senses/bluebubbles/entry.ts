@@ -1,14 +1,39 @@
 // Thin entrypoint for `npm run bluebubbles` / `node dist/senses/bluebubbles/entry.js --agent <name>`.
 // Separated from index.ts so the BlueBubbles adapter stays testable.
 
-if (!process.argv.includes("--agent")) {
+const agentArgIndex = process.argv.indexOf("--agent")
+const agentName = agentArgIndex >= 0 ? process.argv[agentArgIndex + 1] : undefined
+if (!agentName) {
   // eslint-disable-next-line no-console -- pre-boot guard: --agent check before imports
   console.error("Missing required --agent <name> argument.\nUsage: node dist/senses/bluebubbles/entry.js --agent ouroboros")
   process.exit(1)
 }
 
-import { startBlueBubblesApp } from "./index"
 import { configureDaemonRuntimeLogger } from "../../heart/daemon/runtime-logging"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 configureDaemonRuntimeLogger("bluebubbles")
-startBlueBubblesApp()
+emitNervesEvent({
+  component: "senses",
+  event: "senses.entry_boot",
+  message: "booting BlueBubbles entrypoint",
+  meta: { entry: "bluebubbles", agentName },
+})
+import("../../heart/runtime-credentials")
+  .then(async ({ refreshRuntimeCredentialConfig }) => {
+    await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    const { startBlueBubblesApp } = await import("./index")
+    await startBlueBubblesApp()
+  })
+  .catch((error) => {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.entry_error",
+      message: "BlueBubbles entrypoint failed",
+      meta: { entry: "bluebubbles", agentName, error: error instanceof Error ? error.message : String(error) },
+    })
+    // eslint-disable-next-line no-console -- fatal startup guard for sense process
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })

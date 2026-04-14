@@ -792,7 +792,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
@@ -835,7 +834,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & {
       runAuthFlow: typeof runAuthFlow
@@ -933,7 +931,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
       runAuthFlow,
     } as OuroCliDeps & { runAuthFlow: typeof runAuthFlow }
     try {
@@ -964,7 +961,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       setProviderCredentialPool(tmp.agentName, {
@@ -987,9 +983,6 @@ describe("ouro CLI execution", () => {
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1000,7 +993,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
@@ -1028,9 +1020,6 @@ describe("ouro CLI execution", () => {
         agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1041,7 +1030,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       const result = await runOuroCli(["auth", "--switch", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
@@ -1069,9 +1057,6 @@ describe("ouro CLI execution", () => {
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_valid_token", baseUrl: "https://api.test.com" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1082,7 +1067,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       setProviderCredentialPool(tmp.agentName, {
@@ -1110,9 +1094,6 @@ describe("ouro CLI execution", () => {
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "github-copilot": { model: "claude-sonnet-4.6", githubToken: "ghp_expired", baseUrl: "https://api.test.com" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1123,7 +1104,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       setProviderCredentialPool(tmp.agentName, {
@@ -1148,15 +1128,6 @@ describe("ouro CLI execution", () => {
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: {
-          azure: { endpoint: "https://az.test.com", apiKey: "az-key" },
-          minimax: { apiKey: "" },
-          anthropic: { setupToken: "sk-ant-abc" },
-          "openai-codex": { oauthAccessToken: "tok" },
-          "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" },
-        },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1167,7 +1138,6 @@ describe("ouro CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       setProviderCredentialPool(tmp.agentName, {
@@ -2198,8 +2168,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Mini.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Mini/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
       if (question === "MiniMax API key: ") return "minimax-key"
@@ -2248,8 +2216,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ClaudeSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/ClaudeSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
       if (question === "Anthropic setup-token: ") return "sk-ant-oat01-test-token"
@@ -2298,8 +2264,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/CodexSprout.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/CodexSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
       if (question === "OpenAI Codex OAuth token: ") return "oauth-token-abc"
@@ -2348,14 +2312,12 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ClaudeSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/ClaudeSprout/secrets.json",
     }))
     const runAuthFlow = vi.fn(async () => ({
       agentName: "ClaudeSprout",
       provider: "anthropic",
       message: "authenticated ClaudeSprout with anthropic",
-      secretsPath: "/tmp/.agentsecrets/ClaudeSprout/secrets.json",
+      credentialPath: "vault:test:providers:test",
       credentials: {
         setupToken: `sk-ant-oat01-${"a".repeat(90)}`,
       },
@@ -2411,14 +2373,12 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/CodexSprout.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/CodexSprout/secrets.json",
     }))
     const runAuthFlow = vi.fn(async () => ({
       agentName: "CodexSprout",
       provider: "openai-codex",
       message: "authenticated CodexSprout with openai-codex",
-      secretsPath: "/tmp/.agentsecrets/CodexSprout/secrets.json",
+      credentialPath: "vault:test:providers:test",
       credentials: {
         oauthAccessToken: "oauth-token-abc",
       },
@@ -2484,8 +2444,6 @@ describe("ouro CLI execution", () => {
       runHatchFlow: vi.fn(async () => ({
         bundleRoot: "/tmp/unused",
         selectedIdentity: "unused.md",
-        specialistSecretsPath: "/tmp/unused-specialist.json",
-        hatchlingSecretsPath: "/tmp/unused-hatchling.json",
       })),
       promptInput: vi.fn(async () => ""),
     }
@@ -2507,8 +2465,6 @@ describe("ouro CLI execution", () => {
       runHatchFlow: vi.fn(async () => ({
         bundleRoot: "/tmp/unused",
         selectedIdentity: "unused.md",
-        specialistSecretsPath: "/tmp/unused-specialist.json",
-        hatchlingSecretsPath: "/tmp/unused-hatchling.json",
       })),
     }
 
@@ -2519,8 +2475,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/AzureProvided.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/AzureProvided/secrets.json",
     }))
     const promptInput = vi.fn(async () => "unexpected")
 
@@ -2585,8 +2539,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/StringInstall.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/StringInstall/secrets.json",
     }))
 
     const deps = {
@@ -2621,8 +2573,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Alive.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Alive/secrets.json",
     }))
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -2659,8 +2609,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/UnknownPid.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/UnknownPid/secrets.json",
     }))
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -2727,8 +2675,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/AzureSprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/AzureSprout/secrets.json",
     }))
     const promptInput = vi.fn(async (question: string) => {
       if (question === "Azure API key: ") return "azure-key"
@@ -2783,8 +2729,6 @@ describe("ouro CLI execution", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
     const deps = {
@@ -3166,8 +3110,6 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
     const deps = {
@@ -3208,8 +3150,6 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
     const deps = {
@@ -3249,8 +3189,6 @@ describe("hatch → auto-chat", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/Sprout.ouro",
       selectedIdentity: "medusa.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/Sprout/secrets.json",
     }))
 
     const deps = {
@@ -4486,8 +4424,6 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
       selectedIdentity: "python.md",
-      specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
-      hatchlingSecretsPath: "/tmp/.agentsecrets/ExplicitBot/secrets.json",
       vaultUnlockSecret: "generated-unlock-material",
     }))
 
@@ -6679,7 +6615,6 @@ describe("ouro config model", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       const result = await runOuroCli(["config", "model", "--agent", tmp.agentName, "--facing", "human", "claude-sonnet-4.6"], deps)
@@ -6709,9 +6644,6 @@ describe("auth.switch with facing", () => {
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "github-copilot": { githubToken: "ghp_test", baseUrl: "https://api.test.com" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -6722,7 +6654,6 @@ describe("auth.switch with facing", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "github-copilot", "--facing", "human"], deps)
@@ -6750,9 +6681,6 @@ describe("auth.switch with facing", () => {
         agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
       },
-      secretsJson: {
-        providers: { "minimax": { apiKey: "mm-key" } },
-      },
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -6763,7 +6691,6 @@ describe("auth.switch with facing", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       bundlesRoot: tmp.bundlesRoot,
-      secretsRoot: tmp.secretsRoot,
     }
     try {
       const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "minimax"], deps)

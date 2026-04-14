@@ -82,14 +82,10 @@ enter model context.
 - Use browser-navigation skill form patterns for entering credentials during interactive sessions
 
 **How credentials work:**
-- Agent-owned credentials are AES-256-GCM encrypted in `~/AgentBundles/<agent>.ouro/vault/`
-- The master key lives at `~/.agentsecrets/<agent>/vault.key` (auto-generated on first use)
+- Agent-owned credentials live in the agent's Bitwarden/Vaultwarden vault
+- Travel credentials such as Duffel and Stripe are ordinary vault credential items
 - The agent can sign up for services and store its own credentials
 - Stored passwords are never returned to the model — only metadata (domain, username, notes)
-
-**Upgrade path:** Install `aac` (Bitwarden Agent Access CLI) for vault-backed credentials.
-When `aac` is available, the harness can read credentials from Bitwarden directly,
-enabling access to human-managed vault items without storing them locally.
 
 ### Post-Booking
 - Save confirmation details (confirmation number, dates, hotel name, airline, booking reference)

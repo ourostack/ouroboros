@@ -4,8 +4,8 @@
 # Architecture:
 #   - Harness code: installed from npm (@ouro.bot/cli@alpha) into /home/ouro-harness/
 #   - Agent bundle: manually uploaded to /home/AgentBundles/ouroboros.ouro/
-#   - Secrets: written from OUROBOROS_SECRETS env var to ~/.agentsecrets/ouroboros/secrets.json
-#   - Auth: Azure OpenAI via managed identity (DefaultAzureCredential), no API key
+#   - Credentials: read from the agent's Bitwarden/Vaultwarden vault after the
+#     host has been explicitly unlocked with `ouro vault unlock`.
 #
 # This script is idempotent and safe for frequent Azure App Service restarts.
 
@@ -14,20 +14,9 @@ set -euo pipefail
 HARNESS_DIR="/home/ouro-harness"
 BUNDLE_DIR="/home/AgentBundles/ouroboros.ouro"
 LEGACY_STATE_DIR="/home/.agentstate/ouroboros"
-SECRETS_DIR="$HOME/.agentsecrets/ouroboros"
-SECRETS_FILE="$SECRETS_DIR/secrets.json"
 ENTRY="$HARNESS_DIR/node_modules/@ouro.bot/cli/dist/senses/teams-entry.js"
 
-# --- 1. Write secrets to disk ---
-if [ -n "${OUROBOROS_SECRETS:-}" ]; then
-  mkdir -p "$SECRETS_DIR"
-  echo "$OUROBOROS_SECRETS" > "$SECRETS_FILE"
-  echo "Wrote secrets to $SECRETS_FILE"
-else
-  echo "WARNING: OUROBOROS_SECRETS not set — bot will use defaults"
-fi
-
-# --- 2. Bootstrap bundle from wwwroot if not yet in persistent storage ---
+# --- 1. Bootstrap bundle from wwwroot if not yet in persistent storage ---
 # On first deploy, the bundle is included in the wwwroot zip. We copy it to
 # /home/AgentBundles/ (persistent) so it survives future deploys that wipe wwwroot.
 WWWROOT_BUNDLE="/home/site/wwwroot/AgentBundles/ouroboros.ouro"
@@ -37,7 +26,7 @@ if [ -d "$WWWROOT_BUNDLE" ] && [ ! -f "$BUNDLE_DIR/agent.json" ]; then
   cp -r "$WWWROOT_BUNDLE" "$BUNDLE_DIR"
 fi
 
-# --- 3. One-time state migration from legacy paths ---
+# --- 2. One-time state migration from legacy paths ---
 if [ -d "$LEGACY_STATE_DIR/friends" ] && [ ! -d "$BUNDLE_DIR/friends" ]; then
   echo "Migrating friends from $LEGACY_STATE_DIR/friends to $BUNDLE_DIR/friends"
   cp -r "$LEGACY_STATE_DIR/friends" "$BUNDLE_DIR/friends"
@@ -49,7 +38,7 @@ if [ -d "$LEGACY_STATE_DIR/sessions" ] && [ ! -d "$BUNDLE_DIR/state/sessions" ];
   cp -r "$LEGACY_STATE_DIR/sessions" "$BUNDLE_DIR/state/sessions"
 fi
 
-# --- 4. Install/update harness from npm ---
+# --- 3. Install/update harness from npm ---
 mkdir -p "$HARNESS_DIR"
 cd "$HARNESS_DIR"
 
@@ -75,7 +64,7 @@ else
   echo "Harness up to date (v$INSTALLED_VERSION)"
 fi
 
-# --- 5. Symlink ouro CLI into PATH so the agent can use it via shell ---
+# --- 4. Symlink ouro CLI into PATH so the agent can use it via shell ---
 ln -sf "$HARNESS_DIR/node_modules/.bin/ouro" /usr/local/bin/ouro
 
 # --- 6. Start the bot ---

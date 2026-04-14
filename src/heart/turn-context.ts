@@ -24,7 +24,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
-import { getAgentName, getAgentRoot, getAgentSecretsPath, loadAgentConfig, type SenseName } from "./identity"
+import { getAgentName, getAgentRoot, loadAgentConfig, type SenseName } from "./identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
@@ -34,7 +34,7 @@ import { readPendingObligations, listActiveReturnObligations } from "../arc/obli
 import { listTargetSessionCandidates } from "./target-resolution"
 import { readRecentEpisodes, type EpisodeRecord } from "../arc/episodes"
 import { readActiveCares, type CareRecord } from "../arc/cares"
-import { getSyncConfig } from "./config"
+import { getSyncConfig, loadConfig } from "./config"
 import { readHealth, getDefaultHealthPath } from "./daemon/daemon-health"
 import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
@@ -200,17 +200,7 @@ function readSenseStatusLines(): string[] {
     teams: { enabled: false },
     bluebubbles: { enabled: false },
   }
-  let payload: Record<string, unknown> = {}
-  try {
-    const raw = fs.readFileSync(getAgentSecretsPath(), "utf-8")
-    const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      payload = parsed as Record<string, unknown>
-    }
-  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
-    payload = {}
-  /* v8 ignore stop */
-  }
+  const payload = loadConfig() as unknown as Record<string, unknown>
 
   const teams = payload.teams as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined

@@ -3,7 +3,6 @@ import * as path from "path"
 import {
   loadAgentConfig,
   getAgentRoot,
-  getAgentSecretsPath,
   DEFAULT_AGENT_CONTEXT,
   getAgentName,
   type AgentProvider,
@@ -15,6 +14,12 @@ import {
   resetProviderCredentialCache,
   splitProviderCredentialFields,
 } from "./provider-credentials"
+import {
+  cacheRuntimeCredentialConfig,
+  readRuntimeCredentialConfig,
+  resetRuntimeCredentialConfigCache,
+  type RuntimeCredentialConfig,
+} from "./runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface AzureProviderConfig {
@@ -110,7 +115,7 @@ type RuntimeConfigPatch = DeepPartial<OuroborosConfig> & {
    * Test/runtime injection for provider credentials. Production provider
    * credentials live in the agent vault; this patch shape seeds the same
    * in-memory provider credential cache instead of resurrecting providers in
-   * secrets.json.
+   * runtime config.
    */
   providers?: ProviderConfigPatch
 }
@@ -174,10 +179,6 @@ let _runtimeConfigOverride: DeepPartial<OuroborosConfig> | null = null
 let _testContextOverride: ContextConfig | null = null
 let _providerConfigOverride: ProviderConfigPatch | null = null
 
-function resolveConfigPath(): string {
-  return getAgentSecretsPath()
-}
-
 function deepMerge(defaults: Record<string, unknown>, partial: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = { ...defaults }
   for (const key of Object.keys(partial)) {
@@ -196,88 +197,18 @@ function deepMerge(defaults: Record<string, unknown>, partial: Record<string, un
   return result
 }
 
+function localRuntimeFields(config: RuntimeCredentialConfig): RuntimeCredentialConfig {
+  const { providers: _providers, context: _context, ...localFields } = config
+  return localFields
+}
+
 export function loadConfig(): OuroborosConfig {
-  const configPath = resolveConfigPath()
-
-  // Auto-create config directory if it doesn't exist
-  const configDir = path.dirname(configPath)
-  fs.mkdirSync(configDir, { recursive: true })
-
-  let fileData: Record<string, unknown> = {}
-  try {
-    const raw = fs.readFileSync(configPath, "utf-8")
-    fileData = JSON.parse(raw) as Record<string, unknown>
-  } catch (error) {
-    const errorCode =
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      typeof (error as NodeJS.ErrnoException).code === "string"
-        ? (error as NodeJS.ErrnoException).code
-        : undefined
-
-    if (errorCode === "ENOENT") {
-      try {
-        fs.writeFileSync(configPath, JSON.stringify(DEFAULT_LOCAL_RUNTIME_CONFIG, null, 2) + "\n", "utf-8")
-      } catch (writeError) {
-        emitNervesEvent({
-          level: "warn",
-          event: "config_identity.error",
-          component: "config/identity",
-          message: "failed writing default secrets config",
-          meta: {
-            phase: "loadConfig",
-            path: configPath,
-            reason: writeError instanceof Error ? writeError.message : String(writeError),
-          },
-        })
-      }
-    }
-
-    emitNervesEvent({
-      level: "warn",
-      event: "config_identity.error",
-      component: "config/identity",
-      message: "config read failed; defaults applied",
-      meta: {
-        phase: "loadConfig",
-        reason: error instanceof Error ? error.message : String(error),
-      },
-    })
-    // ENOENT or parse error -- use defaults
-  }
-
-  const sanitizedFileData = { ...fileData }
-  if ("providers" in sanitizedFileData) {
-    delete sanitizedFileData.providers
-    emitNervesEvent({
-      level: "warn",
-      event: "config_identity.error",
-      component: "config/identity",
-      message: "ignored legacy providers block in secrets config",
-      meta: {
-        phase: "loadConfig",
-        path: configPath,
-      },
-    })
-  }
-  if ("context" in sanitizedFileData) {
-    delete sanitizedFileData.context
-    emitNervesEvent({
-      level: "warn",
-      event: "config_identity.error",
-      component: "config/identity",
-      message: "ignored legacy context block in secrets config",
-      meta: {
-        phase: "loadConfig",
-        path: configPath,
-      },
-    })
-  }
+  const runtimeResult = readRuntimeCredentialConfig(getAgentName())
+  const vaultData = runtimeResult.ok ? localRuntimeFields(runtimeResult.config) : {}
 
   const mergedConfig = deepMerge(
     defaultRuntimeConfig() as unknown as Record<string, unknown>,
-    sanitizedFileData,
+    vaultData as Record<string, unknown>,
   ) as unknown as OuroborosConfig
   const config = _runtimeConfigOverride
     ? deepMerge(
@@ -288,11 +219,12 @@ export function loadConfig(): OuroborosConfig {
   emitNervesEvent({
     event: "config.load",
     component: "config/identity",
-    message: "config loaded from disk",
+    message: "config loaded from runtime credential cache",
     meta: {
-      source: "disk",
-      used_defaults_only: Object.keys(fileData).length === 0,
+      source: runtimeResult.ok ? "vault-cache" : "defaults",
+      used_defaults_only: !runtimeResult.ok,
       override_applied: _runtimeConfigOverride !== null,
+      runtime_credentials: runtimeResult.ok ? "available" : runtimeResult.reason,
     },
   })
   return config
@@ -303,10 +235,15 @@ export function resetConfigCache(): void {
   _testContextOverride = null
   _providerConfigOverride = null
   resetProviderCredentialCache()
+  resetRuntimeCredentialConfigCache()
 }
 
 export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P]
+}
+
+export function cacheRuntimeConfigForTests(agentName: string, config: RuntimeCredentialConfig): void {
+  cacheRuntimeCredentialConfig(agentName, config, new Date(0))
 }
 
 function seedProviderCredentialCache(providers?: ProviderConfigPatch): void {
@@ -438,10 +375,10 @@ export function getBlueBubblesConfig(): BlueBubblesConfig {
   const { serverUrl, password, accountId } = config.bluebubbles
 
   if (!serverUrl.trim()) {
-    throw new Error("bluebubbles.serverUrl is required in secrets.json to run the BlueBubbles sense.")
+    throw new Error("bluebubbles.serverUrl is required in the agent vault runtime/config item to run the BlueBubbles sense.")
   }
   if (!password.trim()) {
-    throw new Error("bluebubbles.password is required in secrets.json to run the BlueBubbles sense.")
+    throw new Error("bluebubbles.password is required in the agent vault runtime/config item to run the BlueBubbles sense.")
   }
 
   return {

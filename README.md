@@ -11,7 +11,7 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 - `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
 - `ouro dev` starts the daemon from a local repo build. It auto-builds from source, disables launchd auto-restart (so the installed daemon doesn't respawn underneath you), persists the repo path in `~/.ouro-cli/dev-config.json` for next time, and force-restarts the daemon. If you run `ouro dev` from inside the repo, it detects the CWD automatically. Run `ouro up` to return to production mode (this also cleans up `dev-config.json`).
 - Agent bundles live outside the repo at `~/AgentBundles/<agent>.ouro/`.
-- Provider credentials live in the owning agent's Bitwarden/Vaultwarden vault. Tool/sense credential vault migration is a follow-up.
+- Credentials live in the owning agent's Bitwarden/Vaultwarden vault. Provider credentials use `providers/<provider>`, runtime/sense/integration credentials use `runtime/config`, and travel/tool credentials use ordinary vault credential items.
 - Vault coordinates and local runtime state live in the agent bundle; raw credentials do not.
 - Machine-scoped test and runtime spillover lives under `~/.agentstate/...`.
 
@@ -93,9 +93,9 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 - `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, and vault coordinates. Legacy `humanFacing`/`agentFacing` values are bootstrap inputs, not live machine fallback.
 - `state/providers.json` is the local source of truth for provider+model selection on this machine. It has two lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
-- Each agent has one credential vault for provider credentials. There is no machine-wide provider credential pool.
+- Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
-- Provider credentials are loaded into daemon memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model request.
+- Provider and runtime credentials are loaded into process memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model or sense request.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
 - `bundle-meta.json` tracks the runtime version that last touched a bundle.
@@ -170,6 +170,8 @@ ouro logs
 ouro stop
 ouro vault unlock --agent <name>
 ouro vault status --agent <name>
+ouro vault config set --agent <name> --key bluebubbles.password
+ouro vault config status --agent <name>
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
 ouro auth verify --agent <name> [--provider <provider>]

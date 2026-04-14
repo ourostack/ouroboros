@@ -28,7 +28,6 @@ vi.mock("../../heart/identity", () => ({
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
   })),
 }))
 

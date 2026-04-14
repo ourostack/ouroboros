@@ -43,7 +43,6 @@ vi.mock("../../repertoire/skills", () => ({
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
   })),
   DEFAULT_AGENT_CONTEXT: {
@@ -51,7 +50,6 @@ vi.mock("../../heart/identity", () => ({
     contextMargin: 20,
   },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -97,7 +95,6 @@ import type { ChannelCallbacks, RunAgentOutcome } from "../../heart/core"
 async function setupMinimax() {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     humanFacing: { provider: "minimax", model: "minimax-text-01" },
     agentFacing: { provider: "minimax", model: "minimax-text-01" },

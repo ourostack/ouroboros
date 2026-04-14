@@ -181,7 +181,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
@@ -206,7 +205,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result).toEqual({ ok: true })
     const stateResult = readProviderState(agentRoot)
@@ -223,7 +222,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       model: "MiniMax-M2.5",
       source: "bootstrap",
     })
-    expect(fs.existsSync(path.join(secretsRoot, "slugger", "secrets.json"))).toBe(false)
+    expect(fs.existsSync(path.join(homeDir, ".agentsecrets", "slugger", "secrets.json"))).toBe(false)
     expect(pingProvider).toHaveBeenCalledWith(
       "anthropic",
       { setupToken: "anthropic-token" },
@@ -241,7 +240,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "minimax" },
       agentFacing: { provider: "minimax" },
@@ -260,7 +258,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result).toEqual({ ok: true })
     const expectedModel = getDefaultModelForProvider("minimax")
@@ -282,14 +280,13 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: {},
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("humanFacing.provider")
@@ -302,14 +299,13 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: {},
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("agentFacing.provider")
@@ -322,7 +318,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       enabled: false,
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -330,7 +325,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result).toEqual({ ok: true })
     expect(fs.existsSync(getProviderStatePath(agentRoot))).toBe(false)
@@ -342,14 +337,13 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = path.join(bundlesRoot, "slugger.ouro")
     const agentJsonPath = path.join(agentRoot, "agent.json")
     fs.mkdirSync(agentRoot, { recursive: true })
     fs.writeFileSync(agentJsonPath, "{bad-json", "utf-8")
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain(`agent.json at ${agentJsonPath} contains invalid JSON`)
@@ -363,7 +357,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -377,7 +370,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     })
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result).toEqual({ ok: true })
     expect(pingProvider).toHaveBeenCalledTimes(1)
@@ -394,7 +387,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
@@ -402,7 +394,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     writeProviderState(agentRoot, providerState())
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("slugger's vault at vault:slugger:providers/*")
@@ -416,7 +408,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
@@ -425,7 +416,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     writeUnavailableProviderCredentialPool("slugger", "vault locked")
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials because slugger's credential vault is locked on this machine")
@@ -440,7 +431,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
@@ -485,7 +475,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       return { ok: true, attempts: [{ attempt: 1 }] } as const
     })
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("inner")
@@ -513,7 +503,6 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
@@ -522,7 +511,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     fs.writeFileSync(getProviderStatePath(agentRoot), "{bad-json", "utf-8")
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("provider state for slugger is invalid")

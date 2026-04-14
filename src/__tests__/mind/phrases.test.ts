@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     humanFacing: { provider: "minimax", model: "minimax-text-01" },
     agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -81,7 +80,6 @@ describe("phrases - getPhrases from agent.json", () => {
     const identity = await import("../../heart/identity")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -116,7 +114,6 @@ describe("phrases - getPhrases from agent.json", () => {
     const identity = await import("../../heart/identity")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },

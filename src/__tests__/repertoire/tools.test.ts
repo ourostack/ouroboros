@@ -68,12 +68,10 @@ vi.mock("../../heart/identity", () => {
     DEFAULT_AGENT_CONTEXT,
     loadAgentConfig: vi.fn(() => ({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       context: { ...DEFAULT_AGENT_CONTEXT },
     })),
     getAgentName: vi.fn(() => "testagent"),
-    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
@@ -306,17 +304,9 @@ describe("execTool", () => {
   })
 
   it("web_search picks up updated integrations config between calls without resetConfigCache()", async () => {
-    let secretsReads = 0
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
-      if (String(filePath).endsWith("/tmp/.agentsecrets/testagent/secrets.json")) {
-        secretsReads += 1
-        return JSON.stringify({
-          integrations: {
-            perplexityApiKey: secretsReads === 1 ? "" : "fresh-key",
-          },
-        })
-      }
-      return ""
+    const config = await import("../../heart/config")
+    config.cacheRuntimeConfigForTests("testagent", {
+      integrations: { perplexityApiKey: "" },
     })
 
     const mockFetch = vi.fn().mockResolvedValue({
@@ -330,12 +320,13 @@ describe("execTool", () => {
     vi.stubGlobal("fetch", mockFetch)
 
     try {
-      const tools = await import("../../repertoire/tools")
-
-      const firstResult = await tools.execTool("web_search", { query: "test" })
+      const firstResult = await execTool("web_search", { query: "test" })
       expect(firstResult).toContain("perplexityApiKey not configured")
 
-      const secondResult = await tools.execTool("web_search", { query: "test" })
+      config.cacheRuntimeConfigForTests("testagent", {
+        integrations: { perplexityApiKey: "fresh-key" },
+      })
+      const secondResult = await execTool("web_search", { query: "test" })
       expect(secondResult).toContain("Result 1")
       expect(mockFetch).toHaveBeenCalledWith(
         "https://api.perplexity.ai/search",
@@ -345,7 +336,6 @@ describe("execTool", () => {
           }),
         }),
       )
-      expect(secretsReads).toBe(2)
     } finally {
       vi.unstubAllGlobals()
     }

@@ -77,7 +77,7 @@ export function formatBlueBubblesHealthcheckFailure(
     case "network-error":
       return `Cannot reach BlueBubbles at ${serverUrl}. Check \`bluebubbles.serverUrl\`, confirm the BlueBubbles app/API is running, and verify this machine can reach it. Raw error: ${rawReason}`
     case "auth-failure":
-      return `BlueBubbles auth failed at ${serverUrl} (HTTP ${status}). Check \`bluebubbles.password\` in secrets.json and confirm the server accepts it. Raw error: ${rawReason}`
+      return `BlueBubbles auth failed at ${serverUrl} (HTTP ${status}). Check \`bluebubbles.password\` in the agent vault runtime/config item and confirm the server accepts it. Raw error: ${rawReason}`
     case "server-error":
       return `BlueBubbles upstream returned HTTP ${status} at ${serverUrl}. Check the BlueBubbles app/server logs and confirm the upstream API is healthy. Raw error: ${rawReason}`
     default:

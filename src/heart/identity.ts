@@ -286,13 +286,6 @@ export function getAgentToolsRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "tools")
 }
 
-/**
- * Returns the conventional secrets path: `~/.agentsecrets/<agentName>/secrets.json`
- */
-export function getAgentSecretsPath(agentName: string = getAgentName()): string {
-  return path.join(os.homedir(), ".agentsecrets", agentName, "secrets.json")
-}
-
 const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
 
 function isValidProvider(value: unknown): value is AgentProvider {

@@ -1,33 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-describe("agent entrypoint", () => {
+describe("teams entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it("starts unified agent runtime when --agent is present", async () => {
+  it("starts the Teams sense when --agent is present", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => undefined)
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    const startTeamsApp = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+      refreshRuntimeCredentialConfig,
     }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "teams-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/teams-entry")
 
-    expect(configureCliRuntimeLogger).toHaveBeenCalledWith("self")
     await vi.waitFor(() => {
-      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(startTeamsApp).toHaveBeenCalledTimes(1)
     })
     argvSpy.mockRestore()
   })
@@ -35,29 +34,27 @@ describe("agent entrypoint", () => {
   it("continues startup when runtime config refresh is unavailable", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => undefined)
-    const configureCliRuntimeLogger = vi.fn()
+    const startTeamsApp = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("vault locked")
     })
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig,
     }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "teams-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/teams-entry")
 
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
-      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+      expect(startTeamsApp).toHaveBeenCalledTimes(1)
     })
     argvSpy.mockRestore()
   })
@@ -65,11 +62,16 @@ describe("agent entrypoint", () => {
   it("fails fast when --agent is missing", async () => {
     vi.resetModules()
 
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp: vi.fn() }))
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    }))
+
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
-    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "agent-entry.js"])
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "teams-entry.js"])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/teams-entry")
     await vi.waitFor(() => {
       expect(exitSpy).toHaveBeenCalledWith(1)
       expect(consoleError).toHaveBeenCalledWith(
@@ -82,15 +84,13 @@ describe("agent entrypoint", () => {
     consoleError.mockRestore()
   })
 
-  it("prints worker startup errors and exits", async () => {
+  it("prints Teams startup errors and exits", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => {
-      throw new Error("worker failed")
+    const startTeamsApp = vi.fn(() => {
+      throw new Error("teams failed")
     })
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
@@ -99,14 +99,14 @@ describe("agent entrypoint", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "teams-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/teams-entry")
     await vi.waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith("worker failed")
+      expect(consoleError).toHaveBeenCalledWith("teams failed")
       expect(exitSpy).toHaveBeenCalledWith(1)
     })
 
@@ -115,15 +115,13 @@ describe("agent entrypoint", () => {
     consoleError.mockRestore()
   })
 
-  it("stringifies non-Error worker startup failures", async () => {
+  it("stringifies non-Error Teams startup failures", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => {
-      throw "worker string failure"
+    const startTeamsApp = vi.fn(() => {
+      throw "teams string failure"
     })
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/teams", () => ({ startTeamsApp }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
@@ -132,14 +130,14 @@ describe("agent entrypoint", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "teams-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/teams-entry")
     await vi.waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith("worker string failure")
+      expect(consoleError).toHaveBeenCalledWith("teams string failure")
       expect(exitSpy).toHaveBeenCalledWith(1)
     })
 
