@@ -314,19 +314,6 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
   const agents = discoverAgents(deps)
 
   for (const agentDir of agents) {
-    const agentName = agentDir.replace(/\.ouro$/, "")
-    const legacySecretsPath = `${deps.homedir}/.agentsecrets/${agentName}/secrets.json`
-
-    if (deps.existsSync(legacySecretsPath)) {
-      checks.push({
-        label: `${agentDir} legacy secrets.json`,
-        status: "fail",
-        detail: "legacy local credential file exists; migrate values into the agent vault runtime/config item and remove it",
-      })
-    } else {
-      checks.push({ label: `${agentDir} legacy secrets.json`, status: "pass", detail: "absent" })
-    }
-
     // Check agent.json for leaked credential keys
     const configPath = `${deps.bundlesRoot}/${agentDir}/agent.json`
     if (deps.existsSync(configPath)) {

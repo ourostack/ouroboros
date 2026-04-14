@@ -805,7 +805,7 @@ describe("checkHabits", () => {
 // ── Security checks ──
 
 describe("checkSecurity", () => {
-  it("passes when legacy secrets.json is absent and agent.json has no leaked creds", () => {
+  it("passes when agent.json has no leaked creds", () => {
     const config = JSON.stringify({ version: 2, humanFacing: { provider: "anthropic" } })
     const deps = createMockDeps({
       existsSync: existsFor([
@@ -817,38 +817,23 @@ describe("checkSecurity", () => {
     })
     const cat = checkSecurity(deps)
     expect(cat.name).toBe("Security")
-    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("pass")
     expect(cat.checks.find((c) => c.label.includes("credential leak"))?.status).toBe("pass")
   })
 
-  it("fails when a legacy local secrets.json exists", () => {
+  it("does not inspect removed local credential files", () => {
     const config = JSON.stringify({ version: 2 })
-    const deps = createMockDeps({
-      existsSync: existsFor([
-        "/tmp/bundles",
-        "/tmp/home/.agentsecrets/test/secrets.json",
-        "/tmp/bundles/test.ouro/agent.json",
-      ]),
-      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
-    })
-    const cat = checkSecurity(deps)
-    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("fail")
-    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.detail).toContain("migrate values into the agent vault runtime/config item")
-  })
-
-  it("does not fail when legacy secrets.json is missing", () => {
-    const config = JSON.stringify({ version: 2 })
+    const readFileSync = vi.fn(readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }))
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
+        "/tmp/home/retired/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
+      readFileSync,
     })
     const cat = checkSecurity(deps)
-    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json perms"))).toBeUndefined()
+    expect(readFileSync).toHaveBeenCalledTimes(1)
     expect(cat.checks.find((c) => c.label.includes("credential leak"))?.status).toBe("pass")
   })
 
@@ -890,7 +875,6 @@ describe("checkSecurity", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkSecurity(deps)
-    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json"))?.status).toBe("pass")
     expect(cat.checks.find((c) => c.label.includes("credential leak"))).toBeUndefined()
   })
 

@@ -177,7 +177,7 @@ Zero redaction in the nerves system. `cli-logging.ts` formats and rotates but ne
 
 ### 7. AGENT.JSON NOT PROTECTED (MEDIUM)
 
-`agent.json` is NOT in the protected paths list in `guardrails.ts`. The structural guardrails protect `.git/` and `~/.agentsecrets/`, and block destructive commands — but an agent could theoretically modify its own `agent.json` (changing provider, model, context settings) through shell commands. Lobster explicitly denies write/edit of config files.
+`agent.json` is now in the protected paths list in `guardrails.ts`. The structural guardrails protect `.git/`, current local vault unlock-file stores, and direct `agent.json` edits, while also blocking destructive commands. Lobster still goes further by denying broad config-file write/edit operations.
 
 ---
 
