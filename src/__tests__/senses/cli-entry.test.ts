@@ -1,33 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-describe("agent entrypoint", () => {
+describe("cli entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it("starts unified agent runtime when --agent is present", async () => {
+  it("starts the CLI sense when --agent is present", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => undefined)
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    const main = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
+    vi.doMock("../../senses/cli", () => ({ main }))
     vi.doMock("../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+      refreshRuntimeCredentialConfig,
     }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "cli-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/cli-entry")
 
-    expect(configureCliRuntimeLogger).toHaveBeenCalledWith("self")
     await vi.waitFor(() => {
-      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(main).toHaveBeenCalledTimes(1)
     })
     argvSpy.mockRestore()
   })
@@ -35,29 +34,27 @@ describe("agent entrypoint", () => {
   it("continues startup when runtime config refresh is unavailable", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => undefined)
-    const configureCliRuntimeLogger = vi.fn()
+    const main = vi.fn()
     const refreshRuntimeCredentialConfig = vi.fn(async () => {
       throw new Error("vault locked")
     })
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/cli", () => ({ main }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig,
     }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "cli-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/cli-entry")
 
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
-      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+      expect(main).toHaveBeenCalledTimes(1)
     })
     argvSpy.mockRestore()
   })
@@ -65,11 +62,16 @@ describe("agent entrypoint", () => {
   it("fails fast when --agent is missing", async () => {
     vi.resetModules()
 
+    vi.doMock("../../senses/cli", () => ({ main: vi.fn() }))
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    }))
+
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
-    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "agent-entry.js"])
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "cli-entry.js"])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/cli-entry")
     await vi.waitFor(() => {
       expect(exitSpy).toHaveBeenCalledWith(1)
       expect(consoleError).toHaveBeenCalledWith(
@@ -82,15 +84,13 @@ describe("agent entrypoint", () => {
     consoleError.mockRestore()
   })
 
-  it("prints worker startup errors and exits", async () => {
+  it("prints CLI startup errors and exits", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => {
-      throw new Error("worker failed")
+    const main = vi.fn(() => {
+      throw new Error("cli failed")
     })
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/cli", () => ({ main }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
@@ -99,14 +99,14 @@ describe("agent entrypoint", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "cli-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/cli-entry")
     await vi.waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith("worker failed")
+      expect(consoleError).toHaveBeenCalledWith("cli failed")
       expect(exitSpy).toHaveBeenCalledWith(1)
     })
 
@@ -115,15 +115,13 @@ describe("agent entrypoint", () => {
     consoleError.mockRestore()
   })
 
-  it("stringifies non-Error worker startup failures", async () => {
+  it("stringifies non-Error CLI startup failures", async () => {
     vi.resetModules()
 
-    const startInnerDialogWorker = vi.fn(async () => {
-      throw "worker string failure"
+    const main = vi.fn(() => {
+      throw "cli string failure"
     })
-    const configureCliRuntimeLogger = vi.fn()
-    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
-    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/cli", () => ({ main }))
     vi.doMock("../../heart/runtime-credentials", () => ({
       refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
     }))
@@ -132,14 +130,14 @@ describe("agent entrypoint", () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
-      "agent-entry.js",
+      "cli-entry.js",
       "--agent",
       "slugger",
     ])
 
-    await import("../../heart/agent-entry")
+    await import("../../senses/cli-entry")
     await vi.waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith("worker string failure")
+      expect(consoleError).toHaveBeenCalledWith("cli string failure")
       expect(exitSpy).toHaveBeenCalledWith(1)
     })
 

@@ -9,8 +9,16 @@ if (!agentName) {
 }
 
 import { configureCliRuntimeLogger } from "../nerves/cli-logging"
+import { emitNervesEvent } from "../nerves/runtime"
 
 configureCliRuntimeLogger("self")
+
+emitNervesEvent({
+  component: "senses",
+  event: "senses.entry_boot",
+  message: "booting inner-dialog entrypoint",
+  meta: { entry: "inner-dialog", agentName },
+})
 
 // Dynamic import: agent-entry is boot-time wiring that starts a sense process.
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
@@ -21,6 +29,13 @@ import("./runtime-credentials")
     await startInnerDialogWorker()
   })
   .catch((error) => {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.entry_error",
+      message: "inner-dialog entrypoint failed",
+      meta: { entry: "inner-dialog", agentName, error: error instanceof Error ? error.message : String(error) },
+    })
     // eslint-disable-next-line no-console -- fatal startup guard for worker process
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)

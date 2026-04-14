@@ -176,10 +176,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "teams") {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
   }
-  if (sense === "bluebubbles") {
-    return `Run 'ouro vault config set --agent ${agent} --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.`
-  }
-  return `Run 'ouro vault status --agent ${agent}'.`
+  return `Run 'ouro vault config set --agent ${agent} --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.`
 }
 
 function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName } | null {

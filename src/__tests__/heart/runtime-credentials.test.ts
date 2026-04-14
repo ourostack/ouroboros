@@ -93,12 +93,13 @@ describe("runtime credentials vault config", () => {
 
     const result = cacheRuntimeCredentialConfig("slugger", {
       bluebubbles: { password: "bb-secret" },
+      enabledSenses: ["bluebubbles"],
     }, new Date("2026-04-14T12:00:00.000Z"))
 
     expect(result).toMatchObject({
       ok: true,
       itemPath: "vault:slugger:runtime/config",
-      config: { bluebubbles: { password: "bb-secret" } },
+      config: { bluebubbles: { password: "bb-secret" }, enabledSenses: ["bluebubbles"] },
       updatedAt: "2026-04-14T12:00:00.000Z",
     })
     expect(result.ok ? result.revision : "").toMatch(/^runtime_/)
@@ -160,6 +161,37 @@ describe("runtime credentials vault config", () => {
     })
     expect(invalid.error).toContain("kind must be runtime-config")
     expect(invalid.error).not.toContain("nope")
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, {
+      username: "runtime/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "runtime-config", updatedAt: "   ", config: {} }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    const blankUpdatedAt = await refreshRuntimeCredentialConfig("slugger")
+    expect(blankUpdatedAt).toMatchObject({
+      ok: false,
+      reason: "invalid",
+      itemPath: "vault:slugger:runtime/config",
+    })
+    expect(blankUpdatedAt.error).toContain("updatedAt must be non-empty")
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, {
+      username: "runtime/config",
+      password: JSON.stringify(null),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    const nonObject = await refreshRuntimeCredentialConfig("slugger")
+    expect(nonObject).toMatchObject({ ok: false, reason: "invalid" })
+    expect(nonObject.error).toContain("payload must be an object")
+
+    mockCredentialStore.items.set(RUNTIME_CONFIG_ITEM_NAME, {
+      username: "runtime/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "runtime-config", updatedAt: "2026-04-14T12:00:00.000Z", config: [] }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+    const nonObjectConfig = await refreshRuntimeCredentialConfig("slugger")
+    expect(nonObjectConfig).toMatchObject({ ok: false, reason: "invalid" })
+    expect(nonObjectConfig.error).toContain("config must be an object")
   })
 
   it("can preserve a cached runtime/config snapshot when the vault is temporarily unavailable", async () => {
@@ -181,5 +213,14 @@ describe("runtime credentials vault config", () => {
       error: "vault locked",
     })
     expect(readRuntimeCredentialConfig("slugger")).toEqual(unavailable)
+
+    mockCredentialStore.setRawFailure("vault string failure")
+    const stringFailure = await refreshRuntimeCredentialConfig("slugger")
+    expect(stringFailure).toEqual({
+      ok: false,
+      reason: "unavailable",
+      itemPath: "vault:slugger:runtime/config",
+      error: "vault string failure",
+    })
   })
 })
