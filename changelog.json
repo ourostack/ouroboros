@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.373",
+      "changes": [
+        "SerpentGuide bootstrap now discovers provider credentials from unlockable installed agent vaults, so a new hatch can reuse sources such as `minimax from slugger's vault` without creating persistent SerpentGuide credentials.",
+        "SerpentGuide credential options now preserve provenance for installed-agent vault sources and env sources while keeping secret values out of terminal labels.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the SerpentGuide installed-agent credential discovery release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.372",
       "changes": [
         "Locked-vault errors now explain that provider credentials are still stored in the agent vault and that this computer is missing usable local unlock material.",
