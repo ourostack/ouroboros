@@ -323,10 +323,7 @@ function invalidPoolResult(
 
 function isVaultLockedError(error: string): boolean {
   const normalized = error.toLowerCase()
-  return normalized.includes("ouro credential vault is locked")
-    || normalized.includes("credential vault is locked")
-    || normalized.includes("vault is locked")
-    || normalized.includes("vault locked")
+  return /(?:ouro )?credential vault is locked|vault(?: is)? locked/.test(normalized)
 }
 
 function failedPingResult(

@@ -33,10 +33,7 @@ function isCredentialIssue(degraded: DegradedAgent): boolean {
 
 function isVaultUnlockIssue(degraded: DegradedAgent): boolean {
   const text = `${degraded.errorReason}\n${degraded.fixHint}`.toLowerCase()
-  return text.includes("ouro vault unlock")
-    || text.includes("credential vault is locked")
-    || text.includes("vault is locked")
-    || text.includes("vault locked")
+  return /ouro vault unlock|credential vault is locked|vault(?: is)? locked/.test(text)
 }
 
 function isConfigError(degraded: DegradedAgent): boolean {

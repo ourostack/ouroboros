@@ -129,6 +129,71 @@ describe("runInteractiveRepair", () => {
     )
   })
 
+  it("reports non-Error vault unlock failures", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runVaultUnlock: vi.fn(async () => {
+        throw "operator cancelled unlock"
+      }),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "vault locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("vault unlock error for slugger: operator cancelled unlock"),
+    )
+  })
+
+  it("shows the vault unlock fix hint when no unlock runner is available", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "vault locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      "fix hint for slugger: Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+    )
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
+  })
+
+  it("falls back to an agent-scoped vault unlock command when the hint has no command", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "vault locked",
+        fixHint: "Unlock the vault before retrying.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      expect.stringContaining("ouro vault unlock --agent slugger"),
+    )
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
+  })
+
   it("skips auth flow when user says n for missing credentials", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "n"),
