@@ -1,8 +1,6 @@
 import OpenAI from "openai";
 import {
-  getAzureConfig,
   getContextConfig,
-  getProviderConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel } from "../repertoire/tools";
@@ -35,6 +33,12 @@ import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-l
 import { createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
+import {
+  readProviderCredentialRecord,
+  refreshProviderCredentialPool,
+  type ProviderCredentialRecord,
+} from "./provider-credentials";
+import { readProviderState, type ProviderLane } from "./provider-state";
 import {
   ProviderAttemptAbortError,
   runProviderAttempt,
@@ -86,7 +90,7 @@ export interface ProviderTurnRequest {
 }
 
 interface ProviderRegistry {
-  resolve(provider?: ProviderId, model?: string): ProviderRuntime | null;
+  resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null;
 }
 
 const _providerRuntimes: Record<Facing, { fingerprint: string; runtime: ProviderRuntime } | null> = {
@@ -94,41 +98,84 @@ const _providerRuntimes: Record<Facing, { fingerprint: string; runtime: Provider
   agent: null,
 };
 
-function getProviderRuntimeFingerprint(facing: Facing): string {
+interface RuntimeProviderBinding {
+  lane: ProviderLane;
+  provider: ProviderId;
+  model: string;
+}
+
+function providerLaneForFacing(facing: Facing): ProviderLane {
+  return facing === "human" ? "outward" : "inner";
+}
+
+function resolveRuntimeProviderBinding(facing: Facing): RuntimeProviderBinding {
+  const agentName = getAgentName();
+  const lane = providerLaneForFacing(facing);
+  const stateResult = readProviderState(getAgentRoot(agentName));
+  if (stateResult.ok) {
+    const binding = stateResult.state.lanes[lane];
+    return { lane, provider: binding.provider, model: binding.model };
+  }
+  if (stateResult.reason === "invalid") {
+    throw new Error(`provider state for ${agentName} is invalid at ${stateResult.statePath}: ${stateResult.error}`);
+  }
+
+  // First-run and SerpentGuide bootstrap path. Daemon startup normally
+  // bootstraps state/providers.json from agent.json before model calls.
   const config = loadAgentConfig();
   const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
-  const provider = facingConfig.provider;
-  const model = facingConfig.model;
-  const providerConfig = getProviderConfig(provider);
-  return JSON.stringify({ provider, model, ...providerConfig });
+  return { lane, provider: facingConfig.provider, model: facingConfig.model };
+}
+
+async function getProviderRuntimeFingerprint(facing: Facing): Promise<{ binding: RuntimeProviderBinding; fingerprint: string; credential: ProviderCredentialRecord }> {
+  const agentName = getAgentName();
+  const binding = resolveRuntimeProviderBinding(facing);
+  const credential = await readProviderCredentialRecord(agentName, binding.provider);
+  if (!credential.ok) {
+    throw new Error([
+      `${binding.lane} provider ${binding.provider} (${binding.model}) has no credentials for ${agentName}.`,
+      credential.error,
+      `Run \`ouro auth --agent ${agentName} --provider ${binding.provider}\`.`,
+    ].join("\n"));
+  }
+  return {
+    binding,
+    fingerprint: JSON.stringify({
+      lane: binding.lane,
+      provider: binding.provider,
+      model: binding.model,
+      credentialRevision: credential.record.revision,
+    }),
+    credential: credential.record,
+  };
 }
 
 export function createProviderRegistry(): ProviderRegistry {
-  const factories: Record<ProviderId, (model: string) => ProviderRuntime> = {
-    azure: createAzureProviderRuntime,
-    anthropic: createAnthropicProviderRuntime,
-    minimax: createMinimaxProviderRuntime,
-    "openai-codex": createOpenAICodexProviderRuntime,
-    "github-copilot": createGithubCopilotProviderRuntime,
-  };
-
   return {
-    resolve(provider?: ProviderId, model?: string): ProviderRuntime | null {
-      const resolvedProvider = provider ?? loadAgentConfig().humanFacing.provider;
-      const resolvedModel = model ?? loadAgentConfig().humanFacing.model;
-      return factories[resolvedProvider](resolvedModel);
+    resolve(provider: ProviderId, model: string, credential: ProviderCredentialRecord): ProviderRuntime | null {
+      const providerConfig = { ...credential.config, ...credential.credentials };
+      switch (provider) {
+        case "azure":
+          return createAzureProviderRuntime(model, providerConfig as unknown as Parameters<typeof createAzureProviderRuntime>[1]);
+        case "anthropic":
+          return createAnthropicProviderRuntime(model, providerConfig as unknown as Parameters<typeof createAnthropicProviderRuntime>[1]);
+        case "minimax":
+          return createMinimaxProviderRuntime(model, providerConfig as unknown as Parameters<typeof createMinimaxProviderRuntime>[1]);
+        case "openai-codex":
+          return createOpenAICodexProviderRuntime(model, providerConfig as unknown as Parameters<typeof createOpenAICodexProviderRuntime>[1]);
+        case "github-copilot":
+          return createGithubCopilotProviderRuntime(model, providerConfig as unknown as Parameters<typeof createGithubCopilotProviderRuntime>[1]);
+      }
     },
   };
 }
 
-function getProviderRuntime(facing: Facing = "human"): ProviderRuntime {
+async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRuntime> {
   try {
-    const fingerprint = getProviderRuntimeFingerprint(facing);
+    const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing);
     const cached = _providerRuntimes[facing];
     if (!cached || cached.fingerprint !== fingerprint) {
-      const config = loadAgentConfig();
-      const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
-      const runtime = createProviderRegistry().resolve(facingConfig.provider, facingConfig.model);
+      const runtime = createProviderRegistry().resolve(binding.provider, binding.model, credential);
       _providerRuntimes[facing] = runtime ? { fingerprint, runtime } : null;
     }
   } catch (error) {
@@ -171,16 +218,16 @@ export function resetProviderRuntime(): void {
 }
 
 export function getModel(facing: Facing = "human"): string {
-  return getProviderRuntime(facing).model;
+  return resolveRuntimeProviderBinding(facing).model;
 }
 
 export function getProvider(facing: Facing = "human"): ProviderId {
-  return getProviderRuntime(facing).id;
+  return resolveRuntimeProviderBinding(facing).provider;
 }
 
 export function createSummarize(facing: Facing = "human"): (transcript: string, instruction: string) => Promise<string> {
   return async (transcript: string, instruction: string): Promise<string> => {
-    const runtime = getProviderRuntime(facing)
+    const runtime = await getProviderRuntime(facing)
     const client = runtime.client as OpenAI
     const response = await client.chat.completions.create({
       model: runtime.model,
@@ -195,14 +242,12 @@ export function createSummarize(facing: Facing = "human"): (transcript: string, 
 }
 
 export function getProviderDisplayLabel(facing: Facing = "human"): string {
-  const config = loadAgentConfig();
-  const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
-  const provider = facingConfig.provider;
-  const model = facingConfig.model || "unknown";
+  const binding = resolveRuntimeProviderBinding(facing);
+  const provider = binding.provider;
+  const model = binding.model || "unknown";
   const providerLabelBuilders: Record<ProviderId, () => string> = {
     azure: () => {
-      const azureCfg = getAzureConfig();
-      return `azure openai (${azureCfg.deployment || "default"}, model: ${model})`
+      return `azure openai (model: ${model})`
     },
     anthropic: () => `anthropic (${model})`,
     minimax: () => `minimax (${model})`,
@@ -614,7 +659,7 @@ export async function runAgent(
   options?: RunAgentOptions,
 ): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const facing = channelToFacing(channel);
-  const providerRuntime = getProviderRuntime(facing);
+  let providerRuntime = await getProviderRuntime(facing);
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
@@ -676,7 +721,7 @@ export async function runAgent(
     await injectKeptNotes(messages, {
       channel,
       friend: currentContext?.friend,
-      judge: async (input) => createKeptNotesJudge(getProviderRuntime("agent"), signal)(input),
+      judge: async (input) => createKeptNotesJudge(await getProviderRuntime("agent"), signal)(input),
       signal,
       traceId,
     });
@@ -852,10 +897,24 @@ export async function runAgent(
         model: providerRuntime.model,
         run: callProviderTurnWithOverflowRecovery,
         classifyError: (error) => providerRuntime.classifyError(error),
-        onRetry: (record, maxAttempts) => {
+        onRetry: async (record, maxAttempts) => {
           const delayMs = record.delayMs as number
           const seconds = delayMs / 1000
           const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
+          try {
+            await refreshProviderCredentialPool(getAgentName(), { preserveCachedOnFailure: true })
+            _providerRuntimes[facing] = null
+            providerRuntime = await getProviderRuntime(facing)
+            providerRuntime.resetTurnState(messages)
+          } catch (refreshError) {
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.provider_retry_refresh_failed",
+              message: "provider credential refresh failed during retry",
+              meta: { provider: record.provider, model: record.model, reason: refreshError instanceof Error ? refreshError.message : String(refreshError) },
+            })
+          }
           callbacks.onError(new Error(`${cause}, retrying in ${seconds}s (${record.attempt}/${maxAttempts})...`), "transient");
         },
         sleep: async (delayMs) => {

@@ -66,7 +66,7 @@ export function buildSpecialistSystemPrompt(
       `Provider: ${context.provider}`,
       `Temp directory: ${context.tempDir}`,
       "Final home: ~/AgentBundles/<Name>.ouro/",
-      "Secrets: ~/.agentsecrets/<name>/secrets.json",
+      "Provider credentials: the hatch tool stores them in the agent's vault.",
     ].join("\n"),
   )
 

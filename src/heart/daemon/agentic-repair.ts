@@ -32,7 +32,7 @@ export interface AgenticProviderRuntime {
 }
 
 export interface AgenticRepairDeps {
-  discoverWorkingProvider: () => Promise<DiscoverWorkingProviderResult | null>
+  discoverWorkingProvider: (agentName: string) => Promise<DiscoverWorkingProviderResult | null>
   runInteractiveRepair: (degraded: DegradedAgent[], deps: InteractiveRepairDeps) => Promise<InteractiveRepairResult>
   promptInput: (prompt: string) => Promise<string>
   writeStdout: (msg: string) => void
@@ -172,7 +172,7 @@ export async function runAgenticRepair(
   // Try to discover a working provider for agentic diagnosis
   let discoveredProvider: DiscoverWorkingProviderResult | null = null
   try {
-    discoveredProvider = await deps.discoverWorkingProvider()
+    discoveredProvider = await deps.discoverWorkingProvider(degraded[0].agent)
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
     emitNervesEvent({

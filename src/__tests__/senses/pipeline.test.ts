@@ -1535,7 +1535,6 @@ describe("handleInboundTurn", () => {
           model: "claude-opus-4-6",
           credentialRevision: "cred_anthropic",
           source: "auth-flow",
-          contributedByAgent: "slugger",
           result: { ok: true },
         }],
         unavailable: [],
@@ -1640,7 +1639,6 @@ describe("handleInboundTurn", () => {
             model: "claude-opus-4-6",
             credentialRevision: "cred_anthropic",
             source: "auth-flow" as const,
-            contributedByAgent: "slugger",
           }],
           unconfiguredProviders: [],
           userMessage: "switch available",
@@ -1704,7 +1702,6 @@ describe("handleInboundTurn", () => {
             model: "MiniMax-M2.7",
             credentialRevision: "cred_minimax",
             source: "auth-flow" as const,
-            contributedByAgent: "kicker",
           }],
           unconfiguredProviders: [],
           userMessage: "switch available",
@@ -1798,7 +1795,6 @@ describe("handleInboundTurn", () => {
             model: "MiniMax-M2.7",
             credentialRevision: "cred_minimax",
             source: "auth-flow" as const,
-            contributedByAgent: "kicker",
           }],
           unconfiguredProviders: [],
           userMessage: "switch available",
@@ -1836,7 +1832,7 @@ describe("handleInboundTurn", () => {
         const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
         const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
         expect(lastUserMsg?.content).toContain("outward")
-        expect(lastUserMsg?.content).toContain("credentials from kicker via auth-flow")
+        expect(lastUserMsg?.content).toContain("credentials in vault via auth-flow")
       } finally {
         agentRootSpy.mockRestore()
         fs.rmSync(tmp, { recursive: true, force: true })

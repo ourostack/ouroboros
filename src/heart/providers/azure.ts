@@ -36,9 +36,9 @@ export function createAzureTokenProvider(managedIdentityClientId?: string): () =
       throw new Error(
         `Azure OpenAI authentication failed: ${detail}\n` +
         "To fix this, either:\n" +
-        "  1. Set providers.azure.apiKey in secrets.json, or\n" +
+        "  1. Run `ouro auth --agent <agent> --provider azure`, or\n" +
         "  2. Run 'az login' to authenticate with your Azure account (for local dev), or\n" +
-        "  3. Attach a managed identity to your App Service and set providers.azure.managedIdentityClientId in secrets.json (for deployed environments)",
+        "  3. Attach a managed identity to your App Service and store azure.managedIdentityClientId in the agent vault.",
       );
     }
   };
@@ -57,7 +57,7 @@ export function createAzureProviderRuntime(model: string, azureConfig: AzureProv
 
   if (!(azureConfig.endpoint && azureConfig.deployment)) {
     throw new Error(
-      "provider 'azure' is selected in agent.json but providers.azure is incomplete in secrets.json.",
+      "provider 'azure' is selected but azure endpoint/deployment is incomplete in the agent vault. Run `ouro auth --agent <agent> --provider azure`.",
     );
   }
   const modelCaps = getModelCapabilities(model);

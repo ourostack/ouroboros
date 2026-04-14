@@ -44,6 +44,11 @@ import { DEFAULT_PROVIDER_MODELS } from "../provider-models"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
 import { scanEnvVarCredentials } from "./provider-discovery"
+import {
+  cacheProviderCredentialRecords,
+  createProviderCredentialRecord,
+  splitProviderCredentialFields,
+} from "../provider-credentials"
 
 // ── Default implementations ──
 
@@ -210,63 +215,11 @@ export function defaultListDiscoveredAgents(): string[] {
   })
 }
 
-// ── Credential discovery ──
-
-export function discoverExistingCredentials(secretsRoot: string): DiscoveredCredential[] {
-  const found: DiscoveredCredential[] = []
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(secretsRoot, { withFileTypes: true })
-  } catch {
-    return found
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const secretsPath = path.join(secretsRoot, entry.name, "secrets.json")
-    let raw: string
-    try {
-      raw = fs.readFileSync(secretsPath, "utf-8")
-    } catch {
-      continue
-    }
-    let parsed: { providers?: Record<string, Record<string, string>> }
-    try {
-      parsed = JSON.parse(raw) as typeof parsed
-    } catch {
-      continue
-    }
-    if (!parsed.providers) continue
-
-    for (const [provName, provConfig] of Object.entries(parsed.providers)) {
-      const desc = PROVIDER_CREDENTIALS[provName as AgentProvider]
-      /* v8 ignore next -- guard: unknown provider names in stored secrets @preserve */
-      if (!desc) continue
-      const hasRequired = desc.required.every((key) => !!provConfig[key])
-      if (hasRequired) {
-        const credentials: Record<string, string> = {}
-        for (const key of Object.keys(provConfig)) credentials[key] = provConfig[key]
-        found.push({ agentName: entry.name, provider: provName as AgentProvider, credentials, providerConfig: { ...provConfig } })
-      }
-    }
-  }
-
-  // Deduplicate by provider+credential value (keep first seen)
-  const seen = new Set<string>()
-  return found.filter((cred) => {
-    const key = `${cred.provider}:${JSON.stringify(cred.credentials)}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
 // ── Serpent guide (interactive hatch) ──
 
 /* v8 ignore start -- integration: interactive terminal specialist session @preserve */
 export async function defaultRunSerpentGuide(): Promise<string | null> {
   const { runCliSession } = await import("../../senses/cli")
-  const { patchRuntimeConfig } = await import("../config")
   const { setAgentName, setAgentConfigOverride } = await import("../identity")
   const readlinePromises = await import("readline/promises")
   const crypto = await import("crypto")
@@ -285,8 +238,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
   const tempDir = path.join(os.tmpdir(), `ouro-hatch-${crypto.randomUUID()}`)
 
   try {
-    const secretsRoot = path.join(os.homedir(), ".agentsecrets")
-    const discovered = discoverExistingCredentials(secretsRoot)
+    const discovered: DiscoveredCredential[] = []
     const existingBundleCount = listExistingBundles(getAgentBundlesRoot()).length
     const hatchVerb = existingBundleCount > 0 ? "let's hatch a new agent." : "let's hatch your first agent."
 
@@ -360,12 +312,22 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     coldRl.close()
     process.stdout.write("\n")
 
+    const selectedCredentialPayload = { ...providerConfig, ...credentials }
+    const split = splitProviderCredentialFields(providerRaw, selectedCredentialPayload)
+    cacheProviderCredentialRecords("SerpentGuide", [
+      createProviderCredentialRecord({
+        provider: providerRaw,
+        credentials: split.credentials,
+        config: split.config,
+        provenance: { source: "manual" },
+      }),
+    ])
+
     // Phase 2: configure runtime for serpent guide
     const bundleSourceDir = path.resolve(__dirname, "..", "..", "..", "SerpentGuide.ouro")
     const bundlesRoot = getAgentBundlesRoot()
-    const secretsRoot2 = path.join(os.homedir(), ".agentsecrets")
 
-    // Suppress non-critical log noise during hatch (no secrets.json, etc.)
+    // Suppress non-critical log noise during hatch.
     const { setRuntimeLogger } = await import("../../nerves/runtime")
     const { createLogger } = await import("../../nerves")
     setRuntimeLogger(createLogger({ level: "error" }))
@@ -391,17 +353,11 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       agentFacing: { provider: providerRaw, model: resolvedModel },
       phrases,
     })
-    patchRuntimeConfig({
-      providers: {
-        [providerRaw]: { ...providerConfig, ...credentials },
-      },
-    })
-
     // Ping-verify credentials before entering the serpent guide session
     const { pingProvider } = await import("../provider-ping")
     const pingResult = await pingProvider(
       providerRaw,
-      { ...providerConfig, ...credentials } as Parameters<typeof pingProvider>[1],
+      selectedCredentialPayload as Parameters<typeof pingProvider>[1],
     )
     if (!pingResult.ok) {
       process.stdout.write(`credentials didn't work (${pingResult.message}). run 'ouro hatch' to try again.\n`)
@@ -419,10 +375,9 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     const specialistTools = getSpecialistTools()
     const specialistExecTool = createSpecialistExecTool({
       tempDir,
-      credentials,
+      credentials: selectedCredentialPayload,
       provider: providerRaw,
       bundlesRoot,
-      secretsRoot: secretsRoot2,
       animationWriter: (text: string) => process.stdout.write(text),
     })
 

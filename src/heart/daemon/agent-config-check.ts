@@ -13,14 +13,11 @@ import {
   type ProviderState,
 } from "../provider-state"
 import {
-  providerCredentialHomeDirFromSecretsRoot,
-  readProviderCredentialPool,
-  splitProviderCredentialFields,
-  upsertProviderCredential,
+  providerCredentialMachineHomeDir,
+  refreshProviderCredentialPool,
   type ProviderCredentialPool,
-  type ProviderCredentialPoolReadResult,
   type ProviderCredentialRecord,
-} from "../provider-credential-pool"
+} from "../provider-credentials"
 
 export interface ConfigCheckResult {
   ok: boolean
@@ -36,21 +33,11 @@ export type ProviderPing = (
 
 export interface LiveConfigCheckDeps {
   pingProvider?: ProviderPing
+  homeDir?: string
 }
 
 type FacingName = "humanFacing" | "agentFacing"
-type SelectedProvider = { facing: FacingName | "provider"; provider: AgentProvider }
-
-interface ConfigCheckContext {
-  agentJsonPath: string
-  secretsJsonPath: string
-  providers: Record<string, Record<string, unknown>>
-  selectedProviders: SelectedProvider[]
-}
-
-type ConfigCheckContextResult =
-  | { ok: true; context: ConfigCheckContext }
-  | { ok: false; result: ConfigCheckResult }
+type SelectedProvider = { facing: FacingName; provider: AgentProvider }
 
 function isAgentProvider(value: string): value is AgentProvider {
   return Object.prototype.hasOwnProperty.call(PROVIDER_CREDENTIALS, value)
@@ -62,21 +49,6 @@ function agentRootFor(agentName: string, bundlesRoot: string): string {
 
 function configPathFor(agentName: string, bundlesRoot: string): string {
   return path.join(agentRootFor(agentName, bundlesRoot), "agent.json")
-}
-
-function formatFacingList(facings: Array<FacingName | "provider">): string {
-  if (facings.length === 1) return facings[0]!
-  return `${facings.slice(0, -1).join(", ")} and ${facings[facings.length - 1]}`
-}
-
-function selectedProviderMap(selectedProviders: SelectedProvider[]): Map<AgentProvider, Array<FacingName | "provider">> {
-  const byProvider = new Map<AgentProvider, Array<FacingName | "provider">>()
-  for (const selected of selectedProviders) {
-    const facings = byProvider.get(selected.provider) ?? []
-    facings.push(selected.facing)
-    byProvider.set(selected.provider, facings)
-  }
-  return byProvider
 }
 
 function resolveFacingProvider(
@@ -121,128 +93,6 @@ function resolveFacingProvider(
   }
 
   return { ok: true, selected: { facing, provider } }
-}
-
-function resolveSelectedProviders(
-  parsed: Record<string, unknown>,
-  agentName: string,
-  agentJsonPath: string,
-): { ok: true; selectedProviders: SelectedProvider[] } | { ok: false; result: ConfigCheckResult } {
-  const hasHumanFacing = parsed.humanFacing !== undefined
-  const hasAgentFacing = parsed.agentFacing !== undefined
-
-  if (!hasHumanFacing && !hasAgentFacing && typeof parsed.provider === "string") {
-    if (!isAgentProvider(parsed.provider)) {
-      return {
-        ok: false,
-        result: {
-          ok: false,
-          error: `Unknown provider '${parsed.provider}' in agent.json for '${agentName}'`,
-          fix: `Set provider to one of: ${Object.keys(PROVIDER_CREDENTIALS).join(", ")}`,
-        },
-      }
-    }
-    return { ok: true, selectedProviders: [{ facing: "provider", provider: parsed.provider }] }
-  }
-
-  const human = resolveFacingProvider(parsed, "humanFacing", agentName, agentJsonPath)
-  if (!human.ok) return human
-  const agent = resolveFacingProvider(parsed, "agentFacing", agentName, agentJsonPath)
-  if (!agent.ok) return agent
-
-  return { ok: true, selectedProviders: [human.selected, agent.selected] }
-}
-
-function readConfigCheckContext(
-  agentName: string,
-  bundlesRoot: string,
-  secretsRoot: string,
-): ConfigCheckContextResult {
-  const agentJsonPath = path.join(bundlesRoot, `${agentName}.ouro`, "agent.json")
-
-  let raw: string
-  try {
-    raw = fs.readFileSync(agentJsonPath, "utf-8")
-  } catch {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: `agent.json not found at ${agentJsonPath}`,
-        fix: `Run 'ouro hatch ${agentName}' to create the agent bundle, or verify that ${bundlesRoot}/${agentName}.ouro/ exists.`,
-      },
-    }
-  }
-
-  let parsed: Record<string, unknown>
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: `agent.json at ${agentJsonPath} contains invalid JSON`,
-        fix: `Open ${agentJsonPath} and fix the JSON syntax.`,
-      },
-    }
-  }
-
-  // Disabled agents are valid — they just won't run
-  if (parsed.enabled === false) {
-    return {
-      ok: true,
-      context: {
-        agentJsonPath,
-        secretsJsonPath: path.join(secretsRoot, agentName, "secrets.json"),
-        providers: {},
-        selectedProviders: [],
-      },
-    }
-  }
-
-  const selected = resolveSelectedProviders(parsed, agentName, agentJsonPath)
-  if (!selected.ok) return selected
-
-  const secretsJsonPath = path.join(secretsRoot, agentName, "secrets.json")
-  let secrets: Record<string, unknown>
-  try {
-    const secretsRaw = fs.readFileSync(secretsJsonPath, "utf-8")
-    secrets = JSON.parse(secretsRaw) as Record<string, unknown>
-  } catch {
-    const firstProvider = selected.selectedProviders[0].provider
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: `secrets.json not found or unreadable at ${secretsJsonPath}`,
-        fix: `Run 'ouro auth --agent ${agentName} --provider ${firstProvider}' to configure credentials, or create ${secretsJsonPath} with providers.${firstProvider} credentials.`,
-      },
-    }
-  }
-
-  const providers = secrets.providers as Record<string, Record<string, unknown>> | undefined
-  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
-    const firstProvider = selected.selectedProviders[0].provider
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: `secrets.json for '${agentName}' is missing providers object`,
-        fix: `Run 'ouro auth --agent ${agentName} --provider ${firstProvider}' to configure credentials.`,
-      },
-    }
-  }
-
-  return {
-    ok: true,
-    context: {
-      agentJsonPath,
-      secretsJsonPath,
-      providers,
-      selectedProviders: selected.selectedProviders,
-    },
-  }
 }
 
 type AgentConfigReadResult =
@@ -321,9 +171,9 @@ function readFacingForBootstrap(
 function bootstrapMissingProviderState(input: {
   agentName: string
   bundlesRoot: string
-  secretsRoot: string
   parsed: Record<string, unknown>
   agentJsonPath: string
+  homeDir?: string
 }): BootstrapProviderStateResult {
   const outward = readFacingForBootstrap(input.parsed, "humanFacing", input.agentName, input.agentJsonPath)
   if (!outward.ok) return { ok: false, error: outward.result.error, fix: outward.result.fix }
@@ -331,7 +181,7 @@ function bootstrapMissingProviderState(input: {
   if (!inner.ok) return { ok: false, error: inner.result.error, fix: inner.result.fix }
 
   const now = new Date()
-  const homeDir = providerCredentialHomeDirFromSecretsRoot(input.secretsRoot)
+  const homeDir = providerCredentialMachineHomeDir(input.homeDir)
   const machine = loadOrCreateMachineIdentity({ homeDir, now: () => now })
   const state = bootstrapProviderStateFromAgentConfig({
     machineId: machine.machineId,
@@ -360,7 +210,7 @@ type ProviderStateSetupResult =
 function readOrBootstrapProviderStateForCheck(
   agentName: string,
   bundlesRoot: string,
-  secretsRoot: string,
+  deps: LiveConfigCheckDeps = {},
 ): ProviderStateSetupResult {
   const configResult = readAgentConfigForProviderState(agentName, bundlesRoot)
   if (!configResult.ok) return { ok: false, result: configResult.result }
@@ -385,66 +235,12 @@ function readOrBootstrapProviderStateForCheck(
   const bootstrap = bootstrapMissingProviderState({
     agentName,
     bundlesRoot,
-    secretsRoot,
     parsed: configResult.parsed,
     agentJsonPath: configResult.agentJsonPath,
+    homeDir: deps.homeDir,
   })
   if (!bootstrap.ok) return { ok: false, result: bootstrap }
   return { ok: true, disabled: false, agentRoot: bootstrap.agentRoot, state: bootstrap.state }
-}
-
-function validateSelectedProviderSecrets(agentName: string, context: ConfigCheckContext): ConfigCheckResult {
-  for (const [provider, facings] of selectedProviderMap(context.selectedProviders)) {
-    const desc = PROVIDER_CREDENTIALS[provider]
-    const providerSecrets = context.providers[provider]
-    const selectedBy = formatFacingList(facings)
-
-    if (!providerSecrets) {
-      return {
-        ok: false,
-        error: `secrets.json for '${agentName}' is missing providers.${provider} section selected by ${selectedBy}`,
-        fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to configure ${provider} credentials.`,
-      }
-    }
-
-    // Azure special case: managed identity only needs endpoint + deployment.
-    if (provider === "azure") {
-      const hasEndpoint = typeof providerSecrets.endpoint === "string" && providerSecrets.endpoint.length > 0
-      const hasDeployment = typeof providerSecrets.deployment === "string" && providerSecrets.deployment.length > 0
-      const hasManagedId = typeof providerSecrets.managedIdentityClientId === "string" && providerSecrets.managedIdentityClientId.length > 0
-      if (hasEndpoint && hasDeployment && hasManagedId) {
-        continue
-      }
-    }
-
-    const missing = desc.required.filter((field: string) => {
-      const val = providerSecrets[field]
-      return typeof val !== "string" || val.length === 0
-    })
-
-    if (missing.length > 0) {
-      return {
-        ok: false,
-        error: `secrets.json for '${agentName}' is missing required ${provider} credentials selected by ${selectedBy}: ${missing.join(", ")}`,
-        fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to set up ${provider} credentials, or add the missing fields to providers.${provider} in ${context.secretsJsonPath}.`,
-      }
-    }
-  }
-
-  return { ok: true }
-}
-
-function emitConfigValid(agentName: string, context: ConfigCheckContext, liveProviderCheck: boolean): void {
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.agent_config_valid",
-    message: "agent config validation passed",
-    meta: {
-      agent: agentName,
-      providers: [...selectedProviderMap(context.selectedProviders).keys()],
-      liveProviderCheck,
-    },
-  })
 }
 
 function providerCredentialConfig(record: ProviderCredentialRecord): Record<string, unknown> {
@@ -483,75 +279,16 @@ function writeLaneReadiness(input: {
   writeProviderState(input.agentRoot, input.state)
 }
 
-function legacyProviderCredentialCandidates(
-  agentName: string,
-  secretsRoot: string,
-): Array<{
-  provider: AgentProvider
-  credentials: Record<string, string | number>
-  config: Record<string, string | number>
-}> {
-  const secretsPath = path.join(secretsRoot, agentName, "secrets.json")
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(fs.readFileSync(secretsPath, "utf-8")) as unknown
-  } catch {
-    return []
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return []
-  const providers = (parsed as Record<string, unknown>).providers
-  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return []
-
-  const candidates: Array<{
-    provider: AgentProvider
-    credentials: Record<string, string | number>
-    config: Record<string, string | number>
-  }> = []
-  for (const [providerKey, rawConfig] of Object.entries(providers as Record<string, unknown>)) {
-    if (!isAgentProvider(providerKey) || !rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
-      continue
-    }
-    const split = splitProviderCredentialFields(providerKey, rawConfig as Record<string, unknown>)
-    if (Object.keys(split.credentials).length === 0 && Object.keys(split.config).length === 0) continue
-    candidates.push({ provider: providerKey, credentials: split.credentials, config: split.config })
-  }
-  return candidates
-}
-
-function readPoolWithLegacyMigration(
-  agentName: string,
-  homeDir: string,
-  secretsRoot: string,
-): ProviderCredentialPoolReadResult {
-  const initial = readProviderCredentialPool(homeDir)
-  if (initial.ok || initial.reason === "invalid") return initial
-
-  const candidates = legacyProviderCredentialCandidates(agentName, secretsRoot)
-  for (const candidate of candidates) {
-    upsertProviderCredential({
-      homeDir,
-      provider: candidate.provider,
-      credentials: candidate.credentials,
-      config: candidate.config,
-      provenance: {
-        source: "legacy-agent-secrets",
-        contributedByAgent: agentName,
-      },
-    })
-  }
-  return candidates.length > 0 ? readProviderCredentialPool(homeDir) : initial
-}
-
 function missingCredentialResult(
   agentName: string,
   lane: ProviderLane,
   provider: AgentProvider,
   model: string,
-  poolPath: string,
+  credentialPath: string,
 ): ConfigCheckResult {
   return {
     ok: false,
-    error: `${lane} provider ${provider} model ${model} has no credentials in the machine provider pool at ${poolPath}`,
+    error: `${lane} provider ${provider} model ${model} has no credentials in ${agentName}'s vault at ${credentialPath}`,
     fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate this machine, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to choose a working provider/model.`,
   }
 }
@@ -561,12 +298,12 @@ function invalidPoolResult(
   lane: ProviderLane,
   provider: AgentProvider,
   model: string,
-  pool: { ok: false; reason: "invalid"; poolPath: string; error: string },
+  pool: { ok: false; reason: "invalid" | "unavailable"; poolPath: string; error: string },
 ): ConfigCheckResult {
   return {
     ok: false,
-    error: `${lane} provider ${provider} model ${model} cannot read machine provider credentials at ${pool.poolPath}: ${pool.error}`,
-    fix: `Fix ${pool.poolPath}, then run 'ouro auth --agent ${agentName} --provider ${provider}' or 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model> --force'.`,
+    error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault at ${pool.poolPath}: ${pool.error}`,
+    fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro auth --agent ${agentName} --provider ${provider}' if the credential is missing or stale.`,
   }
 }
 
@@ -592,37 +329,51 @@ function credentialRecordForLane(
 }
 
 /**
- * Pre-spawn validation: ensures agent.json exists and required secrets are present.
- * Returns `{ ok: true }` when the agent is ready to run, or a descriptive error
- * with an actionable fix message when something is missing.
+ * Structural validation only. Live provider credential validation belongs to
+ * checkAgentConfigWithProviderHealth(), which reads the agent vault and pings.
  */
 export function checkAgentConfig(
   agentName: string,
   bundlesRoot: string,
-  secretsRoot: string,
 ): ConfigCheckResult {
-  const contextResult = readConfigCheckContext(agentName, bundlesRoot, secretsRoot)
-  if (!contextResult.ok) return contextResult.result
-  const context = contextResult.context
-  const structural = validateSelectedProviderSecrets(agentName, context)
-  if (!structural.ok) return structural
-  emitConfigValid(agentName, context, false)
+  const configResult = readAgentConfigForProviderState(agentName, bundlesRoot)
+  if (!configResult.ok) return configResult.result
+  if (configResult.disabled) return { ok: true }
+  const outward = readFacingForBootstrap(configResult.parsed, "humanFacing", agentName, configResult.agentJsonPath)
+  if (!outward.ok) return outward.result
+  const inner = readFacingForBootstrap(configResult.parsed, "agentFacing", agentName, configResult.agentJsonPath)
+  if (!inner.ok) return inner.result
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.agent_config_valid",
+    message: "agent config validation passed",
+    meta: {
+      agent: agentName,
+      providers: [...new Set([outward.provider, inner.provider])],
+      liveProviderCheck: false,
+    },
+  })
   return { ok: true }
 }
 
 export async function checkAgentConfigWithProviderHealth(
   agentName: string,
   bundlesRoot: string,
-  secretsRoot: string,
-  deps: LiveConfigCheckDeps = {},
+  secretsRootOrDeps: string | LiveConfigCheckDeps = {},
+  maybeDeps: LiveConfigCheckDeps = {},
 ): Promise<ConfigCheckResult> {
-  const stateResult = readOrBootstrapProviderStateForCheck(agentName, bundlesRoot, secretsRoot)
+  const deps = typeof secretsRootOrDeps === "string"
+    ? {
+      ...maybeDeps,
+      homeDir: maybeDeps.homeDir ?? (path.basename(secretsRootOrDeps) === ".agentsecrets" ? path.dirname(secretsRootOrDeps) : undefined),
+    }
+    : secretsRootOrDeps
+  const stateResult = readOrBootstrapProviderStateForCheck(agentName, bundlesRoot, deps)
   if (!stateResult.ok) return stateResult.result
   if (stateResult.disabled) return { ok: true }
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
-  const homeDir = providerCredentialHomeDirFromSecretsRoot(secretsRoot)
-  const poolResult = readPoolWithLegacyMigration(agentName, homeDir, secretsRoot)
+  const poolResult = await refreshProviderCredentialPool(agentName)
 
   const pingGroups = new Map<string, {
     provider: AgentProvider

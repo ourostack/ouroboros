@@ -3,11 +3,13 @@ import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { baseToolDefinitions, settleTool } from "../../repertoire/tools-base"
-import { writeSecretsFile, type HatchCredentialsInput } from "./hatch-flow"
+import { storeHatchlingProviderCredentials, type HatchCredentialsInput } from "./hatch-flow"
 import { playHatchAnimation } from "./hatch-animation"
 import { createBundleMeta } from "../../mind/bundle-manifest"
-import type { AgentProvider } from "../identity"
+import { resolveVaultConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { createVaultAccount } from "../../repertoire/vault-setup"
+import { storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
 
 const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
@@ -68,7 +70,7 @@ export interface SpecialistExecToolDeps {
   credentials: HatchCredentialsInput
   provider: AgentProvider
   bundlesRoot: string
-  secretsRoot: string
+  secretsRoot?: string
   animationWriter?: (text: string) => void
   humanName?: string
 }
@@ -169,8 +171,17 @@ async function execCompleteAdoption(
   moveDir(deps.tempDir, targetBundle)
 
   // Write secrets
+  let generatedVaultUnlockSecret: string | null = null
   try {
-    writeSecretsFile(name, deps.provider, deps.credentials, deps.secretsRoot)
+    const vault = resolveVaultConfig(name)
+    const vaultUnlockSecret = crypto.randomBytes(32).toString("base64")
+    const vaultResult = await createVaultAccount(name, vault.serverUrl, vault.email, vaultUnlockSecret)
+    if (!vaultResult.success) {
+      throw new Error(`failed to create vault: ${vaultResult.error}`)
+    }
+    storeVaultUnlockSecret({ agentName: name, email: vault.email, serverUrl: vault.serverUrl }, vaultUnlockSecret)
+    generatedVaultUnlockSecret = vaultUnlockSecret
+    await storeHatchlingProviderCredentials(name, deps.provider, deps.credentials)
   } catch (e) {
     // Rollback: remove the moved bundle
     try {
@@ -215,6 +226,14 @@ async function execCompleteAdoption(
   /* v8 ignore next -- UI-only: handoff message display, covered by integration @preserve */
   if (handoffMessage && deps.animationWriter) {
     deps.animationWriter(`\n${handoffMessage}\n`)
+  }
+  if (generatedVaultUnlockSecret && deps.animationWriter) {
+    deps.animationWriter([
+      "",
+      `Vault unlock secret for ${name}: ${generatedVaultUnlockSecret}`,
+      `Use this with \`ouro vault unlock --agent ${name}\` on another machine.`,
+      "",
+    ].join("\n"))
   }
 
   emitNervesEvent({

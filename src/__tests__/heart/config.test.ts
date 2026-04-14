@@ -67,7 +67,7 @@ describe("loadConfig", () => {
     vi.resetModules()
   })
 
-  it("reads config from the conventional ~/.agentsecrets/<agent>/secrets.json path", async () => {
+  it("reads config from the conventional ~/.agentsecrets/<agent>/secrets.json path and ignores legacy providers", async () => {
     const configData = {
       providers: {
         azure: {
@@ -84,8 +84,7 @@ describe("loadConfig", () => {
     resetConfigCache()
     const config = loadConfig()
 
-    expect(config.providers.azure.apiKey).toBe("az-key")
-    expect(config.providers.azure.endpoint).toBe("https://example.openai.azure.com")
+    expect(config).not.toHaveProperty("providers")
     // Should use conventional secrets path based on agent name.
     const expectedPath = path.join(os.homedir(), ".agentsecrets", "testagent", "secrets.json")
     expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
@@ -113,8 +112,6 @@ describe("loadConfig", () => {
     resetConfigCache()
     const config = loadConfig()
 
-    expect(config.providers.azure.apiKey).toBe("")
-    expect(config.providers.minimax.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
     expect(config.context.contextMargin).toBe(20)
 
@@ -123,16 +120,7 @@ describe("loadConfig", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(expectedPath, expect.any(String), "utf-8")
     const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1]
     const parsed = JSON.parse(String(written)) as Record<string, unknown>
-    expect(parsed).toHaveProperty("providers")
     expect(parsed).toMatchObject({
-      providers: {
-        anthropic: {
-          setupToken: "",
-        },
-        "openai-codex": {
-          oauthAccessToken: "",
-        },
-      },
       teams: {
         clientId: "",
         clientSecret: "",
@@ -163,6 +151,7 @@ describe("loadConfig", () => {
         perplexityApiKey: "",
       },
     })
+    expect(parsed).not.toHaveProperty("providers")
     expect(parsed).not.toHaveProperty("context")
   })
 
@@ -181,8 +170,8 @@ describe("loadConfig", () => {
     const config = loadConfig()
 
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(config.providers.minimax.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
+    expect(config).not.toHaveProperty("providers")
   })
 
   it("continues with defaults when writing default secrets config throws non-Error", async () => {
@@ -200,11 +189,11 @@ describe("loadConfig", () => {
     const config = loadConfig()
 
     expect(fs.writeFileSync).toHaveBeenCalledTimes(1)
-    expect(config.providers.azure.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
+    expect(config).not.toHaveProperty("providers")
   })
 
-  it("ignores legacy context block from secrets.json", async () => {
+  it("ignores legacy context and providers blocks from secrets.json", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue(
       JSON.stringify({
         context: { maxTokens: 1, contextMargin: 1 },
@@ -221,7 +210,7 @@ describe("loadConfig", () => {
     // context must come from agent.json defaults, not legacy secrets.json context
     expect(config.context.maxTokens).toBe(80000)
     expect(config.context.contextMargin).toBe(20)
-    expect(config.providers.minimax.apiKey).toBe("minimax-key")
+    expect(config).not.toHaveProperty("providers")
   })
 
   it("returns defaults when file contains invalid JSON", async () => {
@@ -231,8 +220,8 @@ describe("loadConfig", () => {
     resetConfigCache()
     const config = loadConfig()
 
-    expect(config.providers.azure.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
+    expect(config).not.toHaveProperty("providers")
   })
 
   it("returns defaults when config read throws a non-Error value", async () => {
@@ -244,16 +233,19 @@ describe("loadConfig", () => {
     resetConfigCache()
     const config = loadConfig()
 
-    expect(config.providers.azure.apiKey).toBe("")
     expect(config.context.maxTokens).toBe(80000)
+    expect(config).not.toHaveProperty("providers")
   })
 
-  it("merges partial config with defaults", async () => {
+  it("ignores provider credentials while merging non-provider config with defaults", async () => {
     const partial = {
       providers: {
         azure: {
           apiKey: "my-key",
         },
+      },
+      teamsChannel: {
+        port: 5001,
       },
     }
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(partial))
@@ -262,9 +254,8 @@ describe("loadConfig", () => {
     resetConfigCache()
     const config = loadConfig()
 
-    expect(config.providers.azure.apiKey).toBe("my-key")
-    expect(config.providers.azure.endpoint).toBe("")
-    expect(config.providers.minimax.apiKey).toBe("")
+    expect(config).not.toHaveProperty("providers")
+    expect(config.teamsChannel.port).toBe(5001)
     expect(config.context.maxTokens).toBe(80000)
     expect(config.context.contextMargin).toBe(20)
   })
@@ -328,10 +319,10 @@ describe("loadConfig", () => {
     expect(fs.readFileSync).toHaveBeenCalledWith(expectedPath, "utf-8")
   })
 
-  it("re-reads disk-backed secrets config on each load", async () => {
+  it("re-reads disk-backed non-provider secrets config on each load", async () => {
     vi.mocked(fs.readFileSync)
-      .mockReturnValueOnce(JSON.stringify({ providers: { minimax: { apiKey: "k1" } } }))
-      .mockReturnValueOnce(JSON.stringify({ providers: { minimax: { apiKey: "k2" } } }))
+      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "k1" } }))
+      .mockReturnValueOnce(JSON.stringify({ integrations: { perplexityApiKey: "k2" } }))
 
     const { loadConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -339,8 +330,10 @@ describe("loadConfig", () => {
     const config2 = loadConfig()
 
     expect(config1).not.toBe(config2)
-    expect(config1.providers.minimax.apiKey).toBe("k1")
-    expect(config2.providers.minimax.apiKey).toBe("k2")
+    expect(config1.integrations.perplexityApiKey).toBe("k1")
+    expect(config2.integrations.perplexityApiKey).toBe("k2")
+    expect(config1).not.toHaveProperty("providers")
+    expect(config2).not.toHaveProperty("providers")
     expect(fs.readFileSync).toHaveBeenCalledTimes(2)
   })
 
@@ -381,8 +374,12 @@ describe("getAzureConfig", () => {
     vi.resetModules()
   })
 
-  it("returns azure config from config.json (credentials only, no modelName)", async () => {
-    const configData = {
+  it("returns azure config from the provider credential cache (credentials only, no modelName)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+
+    const { getAzureConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({
       providers: {
         azure: {
           apiKey: "az-key",
@@ -391,11 +388,7 @@ describe("getAzureConfig", () => {
           apiVersion: "2025-01-01",
         },
       },
-    }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
-
-    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
-    resetConfigCache()
+    })
     const azure = getAzureConfig()
 
     expect(azure.apiKey).toBe("az-key")
@@ -427,13 +420,12 @@ describe("getAzureConfig", () => {
     expect(azure.apiKey).toBe("")
   })
 
-  it("returns apiKey as populated when secrets.json has a real key", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      providers: { azure: { apiKey: "real-key-123" } },
-    }))
+  it("returns apiKey as populated when provider credentials have a real key", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    const { getAzureConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
+    patchRuntimeConfig({ providers: { azure: { apiKey: "real-key-123" } } })
     const azure = getAzureConfig()
 
     expect(azure.apiKey).toBe("real-key-123")
@@ -451,13 +443,12 @@ describe("getAzureConfig", () => {
     expect(azure.apiKey).toBe("")
   })
 
-  it("returns managedIdentityClientId when present in azure config", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      providers: { azure: { managedIdentityClientId: "c404d5a9-1234-5678-abcd-ef0123456789" } },
-    }))
+  it("returns managedIdentityClientId when present in provider credentials", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { getAzureConfig, resetConfigCache } = await import("../../heart/config")
+    const { getAzureConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
+    patchRuntimeConfig({ providers: { azure: { managedIdentityClientId: "c404d5a9-1234-5678-abcd-ef0123456789" } } })
     const azure = getAzureConfig()
 
     expect(azure.managedIdentityClientId).toBe("c404d5a9-1234-5678-abcd-ef0123456789")
@@ -482,18 +473,12 @@ describe("getMinimaxConfig", () => {
     vi.resetModules()
   })
 
-  it("returns minimax config from config.json (credentials only, no model)", async () => {
-    const configData = {
-      providers: {
-        minimax: {
-          apiKey: "mm-key",
-        },
-      },
-    }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
+  it("returns minimax config from the provider credential cache (credentials only, no model)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
-    const { getMinimaxConfig, resetConfigCache } = await import("../../heart/config")
+    const { getMinimaxConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key" } } })
     const mm = getMinimaxConfig()
 
     expect(mm.apiKey).toBe("mm-key")
@@ -507,17 +492,12 @@ describe("getOpenAICodexConfig", () => {
     vi.resetModules()
   })
 
-  it("exports openai-codex config getter and returns oauth config from secrets.json (credentials only, no model)", async () => {
-    const configData = {
-      providers: {
-        "openai-codex": {
-          oauthAccessToken: "oauth-token-123",
-        },
-      },
-    }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
+  it("exports openai-codex config getter and returns oauth config from provider credentials (credentials only, no model)", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
 
     const config = await import("../../heart/config")
+    config.resetConfigCache()
+    config.patchRuntimeConfig({ providers: { "openai-codex": { oauthAccessToken: "oauth-token-123" } } })
     expect(typeof (config as any).getOpenAICodexConfig).toBe("function")
     const codex = (config as any).getOpenAICodexConfig()
 
@@ -1045,7 +1025,11 @@ describe("patchRuntimeConfig", () => {
   })
 
   it("overrides specific fields while leaving others untouched", async () => {
-    const configData = {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({}))
+
+    const { patchRuntimeConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({
       providers: {
         azure: {
           apiKey: "original-key",
@@ -1055,11 +1039,7 @@ describe("patchRuntimeConfig", () => {
           apiVersion: "2025-01-01",
         },
       },
-    }
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(configData))
-
-    const { patchRuntimeConfig, resetConfigCache, getAzureConfig } = await import("../../heart/config")
-    resetConfigCache()
+    })
     patchRuntimeConfig({ providers: { azure: { apiKey: "overridden-key" } } })
     const azure = getAzureConfig()
 
@@ -1239,7 +1219,7 @@ describe("provider configs are credentials-only (no model fields)", () => {
     expect(cfg).not.toHaveProperty("model")
   })
 
-  it("DEFAULT_SECRETS_TEMPLATE providers have no model/modelName fields", async () => {
+  it("DEFAULT_LOCAL_RUNTIME_CONFIG does not write provider credentials", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       const err: any = new Error("ENOENT")
       err.code = "ENOENT"
@@ -1254,12 +1234,9 @@ describe("provider configs are credentials-only (no model fields)", () => {
 
     const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1]
     const parsed = JSON.parse(String(written)) as Record<string, any>
-    const providers = parsed.providers as Record<string, any>
-    expect(providers.anthropic).not.toHaveProperty("model")
-    expect(providers.azure).not.toHaveProperty("modelName")
-    expect(providers.minimax).not.toHaveProperty("model")
-    expect(providers["openai-codex"]).not.toHaveProperty("model")
-    expect(providers["github-copilot"]).not.toHaveProperty("model")
+    expect(parsed).not.toHaveProperty("providers")
+    expect(parsed.teams).toBeDefined()
+    expect(parsed.integrations).toBeDefined()
   })
 })
 

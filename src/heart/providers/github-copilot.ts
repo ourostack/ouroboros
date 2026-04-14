@@ -21,12 +21,12 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
   });
   if (!config.githubToken) {
     throw new Error(
-      "provider 'github-copilot' is selected in agent.json but providers.github-copilot.githubToken is missing in secrets.json.",
+      "provider 'github-copilot' is selected but github-copilot.githubToken is missing in the agent vault. Run `ouro auth --agent <agent> --provider github-copilot`.",
     );
   }
   if (!config.baseUrl) {
     throw new Error(
-      "provider 'github-copilot' is selected in agent.json but providers.github-copilot.baseUrl is missing in secrets.json.",
+      "provider 'github-copilot' is selected but github-copilot.baseUrl is missing in the agent vault. Run `ouro auth --agent <agent> --provider github-copilot`.",
     );
   }
 

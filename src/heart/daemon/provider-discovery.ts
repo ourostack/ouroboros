@@ -1,25 +1,23 @@
 /**
- * Shared provider discovery — single path for finding a working LLM provider.
+ * Shared provider discovery for repair.
  *
- * Scans machine-pool credentials, legacy disk credentials, and environment variables,
- * deduplicates by provider, then pings each candidate to validate credentials actually work.
+ * Runtime repair only trusts the agent vault. First-run conveniences may still
+ * inspect env vars before credentials are stored, but once an agent exists the
+ * vault is the source of truth.
  */
 
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import type { PingResult } from "../provider-ping"
 import type { DiscoveredCredential } from "./cli-types"
 import {
-  providerCredentialHomeDirFromSecretsRoot,
-  readProviderCredentialPool,
+  refreshProviderCredentialPool,
   type ProviderCredentialRecord,
-} from "../provider-credential-pool"
+} from "../provider-credentials"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface DiscoverWorkingProviderDeps {
-  discoverExistingCredentials: (secretsRoot: string) => DiscoveredCredential[]
+  agentName: string
   pingProvider: (provider: AgentProvider, config: Record<string, string>) => Promise<PingResult>
-  env: Record<string, string | undefined>
-  secretsRoot: string
 }
 
 export interface DiscoverWorkingProviderResult {
@@ -29,8 +27,8 @@ export interface DiscoverWorkingProviderResult {
 }
 
 /**
- * Scan environment variables for API keys using the canonical PROVIDER_CREDENTIALS descriptor.
- * Returns one DiscoveredCredential per provider that has at least one required field set.
+ * Scan environment variables for API keys during first-run bootstrap.
+ * This does not participate in runtime provider repair.
  */
 export function scanEnvVarCredentials(
   env: Record<string, string | undefined>,
@@ -44,7 +42,6 @@ export function scanEnvVarCredentials(
         cred[credKey] = value
       }
     }
-    // Only register if at least one required field was found
     const hasRequired = desc.required.some((key) => !!cred[key])
     if (hasRequired) {
       results.push({
@@ -66,69 +63,40 @@ function stringifyProviderFields(fields: Record<string, string | number>): Recor
   return result
 }
 
-function machinePoolSource(record: ProviderCredentialRecord): string {
-  if (record.provenance.contributedByAgent) {
-    return `machine-pool:${record.provenance.contributedByAgent}`
+function discoveredFromVaultRecord(record: ProviderCredentialRecord): DiscoveredCredential {
+  return {
+    provider: record.provider,
+    agentName: "vault",
+    credentials: stringifyProviderFields(record.credentials),
+    providerConfig: stringifyProviderFields(record.config),
   }
-  return `machine-pool:${record.provenance.source}`
 }
 
-function discoverMachinePoolCredentials(secretsRoot: string): DiscoveredCredential[] {
-  const homeDir = providerCredentialHomeDirFromSecretsRoot(secretsRoot)
-  const poolResult = readProviderCredentialPool(homeDir)
-  if (!poolResult.ok) return []
-
-  const credentials: DiscoveredCredential[] = []
-  for (const [, record] of Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>) {
-    credentials.push({
-      provider: record.provider,
-      agentName: machinePoolSource(record),
-      credentials: stringifyProviderFields(record.credentials),
-      providerConfig: stringifyProviderFields(record.config),
-    })
-  }
-  return credentials
-}
-
-/**
- * Discover the first working provider by scanning configured credential sources,
- * deduplicating by provider, and pinging each candidate.
- */
 export async function discoverWorkingProvider(
   deps: DiscoverWorkingProviderDeps,
 ): Promise<DiscoverWorkingProviderResult | null> {
-  const poolCreds = discoverMachinePoolCredentials(deps.secretsRoot)
-  const diskCreds = deps.discoverExistingCredentials(deps.secretsRoot)
-  const envCreds = scanEnvVarCredentials(deps.env)
+  const poolResult = await refreshProviderCredentialPool(deps.agentName)
+  if (!poolResult.ok) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.provider_discovery_none",
+      message: "provider discovery could not read agent vault",
+      meta: { agentName: deps.agentName, reason: poolResult.error },
+    })
+    return null
+  }
 
-  // Deduplicate: machine pool first, legacy per-agent disk next, env vars last.
-  const seenProviders = new Set<AgentProvider>()
-  const candidates: DiscoveredCredential[] = []
-
-  for (const cred of poolCreds) {
-    seenProviders.add(cred.provider)
-    candidates.push(cred)
-  }
-  for (const cred of diskCreds) {
-    if (!seenProviders.has(cred.provider)) {
-      seenProviders.add(cred.provider)
-      candidates.push(cred)
-    }
-  }
-  for (const cred of envCreds) {
-    if (!seenProviders.has(cred.provider)) {
-      seenProviders.add(cred.provider)
-      candidates.push(cred)
-    }
-  }
+  const candidates = (Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>)
+    .map(([, record]) => discoveredFromVaultRecord(record))
 
   if (candidates.length === 0) {
     emitNervesEvent({
       level: "info",
       component: "daemon",
       event: "daemon.provider_discovery_none",
-      message: "no provider credentials found in machine pool, legacy disk, or environment",
-      meta: {},
+      message: "no provider credentials found in agent vault",
+      meta: { agentName: deps.agentName },
     })
     return null
   }
@@ -140,7 +108,7 @@ export async function discoverWorkingProvider(
       component: "daemon",
       event: "daemon.provider_discovery_ping",
       message: `pinging provider: ${candidate.provider}`,
-      meta: { provider: candidate.provider, source: candidate.agentName },
+      meta: { agentName: deps.agentName, provider: candidate.provider, source: candidate.agentName },
     })
 
     const result = await deps.pingProvider(candidate.provider, config)
@@ -150,7 +118,7 @@ export async function discoverWorkingProvider(
         component: "daemon",
         event: "daemon.provider_discovery_ok",
         message: `provider discovery succeeded: ${candidate.provider}`,
-        meta: { provider: candidate.provider, source: candidate.agentName },
+        meta: { agentName: deps.agentName, provider: candidate.provider, source: candidate.agentName },
       })
       return {
         provider: candidate.provider,
@@ -164,8 +132,8 @@ export async function discoverWorkingProvider(
     level: "warn",
     component: "daemon",
     event: "daemon.provider_discovery_all_failed",
-    message: "all provider candidates failed ping",
-    meta: { candidateCount: candidates.length },
+    message: "all vault provider candidates failed ping",
+    meta: { agentName: deps.agentName, candidateCount: candidates.length },
   })
   return null
 }
