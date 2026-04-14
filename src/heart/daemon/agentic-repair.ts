@@ -1,13 +1,13 @@
 /**
  * Agentic repair flow for degraded agents detected during `ouro up`.
  *
- * When a working LLM provider is available, offers AI-assisted diagnosis
- * of degraded agents before falling through to deterministic repair prompts.
+ * Runs known local repair prompts first, then offers AI-assisted diagnosis
+ * when no local repair was attempted and a working LLM provider is available.
  * This is a lightweight integration: one diagnostic LLM call, not a chat loop.
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { DegradedAgent, InteractiveRepairDeps, InteractiveRepairResult } from "./interactive-repair"
+import { hasRunnableInteractiveRepair, type DegradedAgent, type InteractiveRepairDeps, type InteractiveRepairResult } from "./interactive-repair"
 import type { DiscoverWorkingProviderResult } from "./provider-discovery"
 import type { AgentProvider } from "../identity"
 import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
@@ -94,6 +94,13 @@ function makeInteractiveRepairDeps(deps: AgenticRepairDeps): InteractiveRepairDe
   }
 }
 
+async function runDeterministicRepair(
+  degraded: DegradedAgent[],
+  deps: AgenticRepairDeps,
+): Promise<InteractiveRepairResult> {
+  return deps.runInteractiveRepair(degraded, makeInteractiveRepairDeps(deps))
+}
+
 function discoveredProviderModel(provider: DiscoverWorkingProviderResult): string | undefined {
   const model = provider.providerConfig.model?.trim()
   return model ? model : undefined
@@ -172,6 +179,14 @@ export async function runAgenticRepair(
     return { repairsAttempted: false, usedAgentic: false }
   }
 
+  const hasLocalRepair = degraded.some(hasRunnableInteractiveRepair)
+  if (hasLocalRepair) {
+    const interactiveResult = await runDeterministicRepair(degraded, deps)
+    if (interactiveResult.repairsAttempted) {
+      return { repairsAttempted: true, usedAgentic: false }
+    }
+  }
+
   // Try to discover a working provider for agentic diagnosis
   let discoveredProvider: DiscoverWorkingProviderResult | null = null
   try {
@@ -196,7 +211,10 @@ export async function runAgenticRepair(
       message: "no working provider found, falling back to deterministic repair",
       meta: {},
     })
-    const interactiveResult = await deps.runInteractiveRepair(degraded, makeInteractiveRepairDeps(deps))
+    if (hasLocalRepair) {
+      return { repairsAttempted: false, usedAgentic: false }
+    }
+    const interactiveResult = await runDeterministicRepair(degraded, deps)
     return { repairsAttempted: interactiveResult.repairsAttempted, usedAgentic: false }
   }
 
@@ -212,7 +230,10 @@ export async function runAgenticRepair(
       message: "user declined agentic diagnosis",
       meta: {},
     })
-    const interactiveResult = await deps.runInteractiveRepair(degraded, makeInteractiveRepairDeps(deps))
+    if (hasLocalRepair) {
+      return { repairsAttempted: false, usedAgentic: false }
+    }
+    const interactiveResult = await runDeterministicRepair(degraded, deps)
     return { repairsAttempted: interactiveResult.repairsAttempted, usedAgentic: false }
   }
 
@@ -241,7 +262,9 @@ export async function runAgenticRepair(
   }
 
   // Always fall through to deterministic repair for actionable fixes
-  const interactiveResult = await deps.runInteractiveRepair(degraded, makeInteractiveRepairDeps(deps))
+  const interactiveResult = hasLocalRepair
+    ? { repairsAttempted: false }
+    : await runDeterministicRepair(degraded, deps)
 
   emitNervesEvent({
     level: "info",

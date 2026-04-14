@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.369",
+      "changes": [
+        "`ouro up` now offers runnable local repairs such as `ouro vault unlock` or `ouro auth` before optional AI-assisted diagnosis, avoiding a model call when the deterministic fix is already known.",
+        "Agentic repair no longer repeats the deterministic repair prompt after diagnosis when that prompt was already offered first.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the deterministic-before-AI repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.368",
       "changes": [
         "`ouro up` interactive repair prompts now treat `yes`, `YES`, and whitespace-padded affirmative answers as yes for both provider auth and vault unlock repairs.",

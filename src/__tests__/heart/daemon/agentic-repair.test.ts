@@ -57,7 +57,7 @@ describe("runAgenticRepair", () => {
 
   it("falls back to deterministic repair when no working provider found", async () => {
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
     ]
     const deps = makeDeps({
       discoverWorkingProvider: vi.fn(async () => null),
@@ -76,7 +76,7 @@ describe("runAgenticRepair", () => {
 
   it("falls back to deterministic repair when user declines agentic ('n')", async () => {
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
     ]
     const deps = makeDeps({
       promptInput: vi.fn(async () => "n"),
@@ -100,7 +100,7 @@ describe("runAgenticRepair", () => {
       outputItems: [],
     }))
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
     ]
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
@@ -133,9 +133,62 @@ describe("runAgenticRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("runs deterministic repair before AI diagnosis for runnable local repairs", async () => {
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger'.",
+      },
+    ]
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: true })),
+    })
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true, usedAgentic: false })
+    expect(deps.runInteractiveRepair).toHaveBeenCalledTimes(1)
+    expect(deps.discoverWorkingProvider).not.toHaveBeenCalled()
+    expect(deps.createProviderRuntime).not.toHaveBeenCalled()
+    expect(deps.promptInput).not.toHaveBeenCalledWith("would you like AI-assisted diagnosis? [y/n] ")
+  })
+
+  it("does not repeat deterministic repair after offering AI diagnosis for a declined local repair", async () => {
+    const mockStreamTurn = vi.fn(async () => ({
+      content: "The vault is locked. Unlock it before retrying.",
+      toolCalls: [],
+      outputItems: [],
+    }))
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "missing credentials for provider",
+        fixHint: "Run 'ouro auth --agent slugger'.",
+      },
+    ]
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      createProviderRuntime: vi.fn(() => ({
+        streamTurn: mockStreamTurn,
+      })),
+      runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: false })),
+    })
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: true })
+    expect(deps.runInteractiveRepair).toHaveBeenCalledTimes(1)
+    expect(mockStreamTurn).toHaveBeenCalled()
+    const repairOrder = (deps.runInteractiveRepair as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    const promptOrder = (deps.promptInput as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    expect(repairOrder).toBeLessThan(promptOrder)
+  })
+
   it("falls back to deterministic repair when discoverWorkingProvider throws", async () => {
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
     ]
     const deps = makeDeps({
       discoverWorkingProvider: vi.fn(async () => { throw new Error("discovery exploded") }),
@@ -150,7 +203,7 @@ describe("runAgenticRepair", () => {
 
   it("falls back to deterministic repair when streamTurn throws", async () => {
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
     ]
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
