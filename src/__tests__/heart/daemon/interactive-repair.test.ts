@@ -57,6 +57,20 @@ describe("runInteractiveRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("treats yes as affirmative for auth repairs", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "yes"),
+    })
+    const degraded: DegradedAgent[] = [
+      { agent: "slugger", errorReason: "missing credentials", fixHint: "ouro auth slugger" },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger")
+  })
+
   it("preserves provider-specific auth repair commands from fix hints", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
@@ -123,6 +137,27 @@ describe("runInteractiveRepair", () => {
     expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
+
+  it("trims affirmative answers for vault unlock repairs", async () => {
+    const runVaultUnlock = vi.fn(async () => undefined)
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => " YES "),
+      runVaultUnlock,
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "vault locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger'.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
+  })
+
 
   it("reports vault unlock errors without relabeling them as auth flow errors", async () => {
     const deps = makeDeps({
