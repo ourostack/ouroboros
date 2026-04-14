@@ -234,6 +234,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
   let providerRaw: AgentProvider
   let credentials: HatchCredentialsInput = {}
   let providerConfig: Record<string, string> = {}
+  let selectedCredentialPayload: HatchCredentialsInput = {}
 
   const tempDir = path.join(os.tmpdir(), `ouro-hatch-${crypto.randomUUID()}`)
 
@@ -245,6 +246,8 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
 
     // Default models per provider (used when entering new credentials)
     const defaultModels = DEFAULT_PROVIDER_MODELS
+
+    const { pingProvider } = await import("../provider-ping")
 
     const installedAgentCreds = await discoverInstalledAgentCredentials(existingBundles)
     for (const cred of installedAgentCreds) {
@@ -268,26 +271,51 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       discovered.push(enriched)
     }
 
-    if (discovered.length > 0) {
-      process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
-      process.stdout.write("i found existing API credentials:\n\n")
-      const credentialOptions = discovered
-      for (let i = 0; i < credentialOptions.length; i++) {
-        const model = credentialOptions[i].providerConfig.model || credentialOptions[i].providerConfig.deployment || ""
-        const modelLabel = model ? `, ${model}` : ""
-        const envMatch = envDiscovered.find((e) => e.provider === credentialOptions[i].provider && credentialOptions[i].agentName === "env")
-        const sourceLabel = describeDiscoveredCredentialSource(credentialOptions[i], envMatch?.envVar)
-        process.stdout.write(`  ${i + 1}. ${credentialOptions[i].provider}${modelLabel} (${sourceLabel})\n`)
+    let welcomed = false
+    while (true) {
+      if (!welcomed) {
+        process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
+        welcomed = true
       }
-      process.stdout.write("\n")
-      const choice = await coldPrompt("use one of these? enter number, or 'new' for a different key: ")
 
-      const idx = parseInt(choice, 10) - 1
-      if (idx >= 0 && idx < credentialOptions.length) {
-        providerRaw = credentialOptions[idx].provider
-        credentials = credentialOptions[idx].credentials
-        providerConfig = credentialOptions[idx].providerConfig
+      if (discovered.length > 0) {
+        process.stdout.write("i found existing API credentials:\n\n")
+        const credentialOptions = discovered
+        for (let i = 0; i < credentialOptions.length; i++) {
+          const model = credentialOptions[i].providerConfig.model || credentialOptions[i].providerConfig.deployment || ""
+          const modelLabel = model ? `, ${model}` : ""
+          const envMatch = envDiscovered.find((e) => e.provider === credentialOptions[i].provider && credentialOptions[i].agentName === "env")
+          const sourceLabel = describeDiscoveredCredentialSource(credentialOptions[i], envMatch?.envVar)
+          process.stdout.write(`  ${i + 1}. ${credentialOptions[i].provider}${modelLabel} (${sourceLabel})\n`)
+        }
+        process.stdout.write("\n")
+        const choice = await coldPrompt("use one of these? enter number, or 'new' for a different key, or 'q' to cancel: ")
+        if (["q", "quit", "cancel"].includes(choice.toLowerCase())) {
+          coldRl.close()
+          return null
+        }
+
+        const idx = parseInt(choice, 10) - 1
+        if (idx >= 0 && idx < credentialOptions.length) {
+          providerRaw = credentialOptions[idx].provider
+          credentials = credentialOptions[idx].credentials
+          providerConfig = credentialOptions[idx].providerConfig
+        } else {
+          const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
+          if (!isAgentProvider(pRaw)) {
+            process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
+            coldRl.close()
+            return null
+          }
+          providerRaw = pRaw
+          providerConfig = { model: defaultModels[providerRaw] }
+          credentials = await collectRuntimeAuthCredentials(
+            { agentName: "SerpentGuide", provider: providerRaw, promptInput: coldPrompt },
+            {},
+          )
+        }
       } else {
+        process.stdout.write("i need an API key to power our conversation.\n\n")
         const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
         if (!isAgentProvider(pRaw)) {
           process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
@@ -301,28 +329,28 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
           {},
         )
       }
-    } else {
-      process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
-      process.stdout.write("i need an API key to power our conversation.\n\n")
-      const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
-      if (!isAgentProvider(pRaw)) {
-        process.stdout.write("unknown provider. run `ouro hatch` to try again.\n")
-        coldRl.close()
-        return null
-      }
-      providerRaw = pRaw
-      providerConfig = { model: defaultModels[providerRaw] }
-      credentials = await collectRuntimeAuthCredentials(
-        { agentName: "SerpentGuide", provider: providerRaw, promptInput: coldPrompt },
-        {},
+
+      selectedCredentialPayload = { ...providerConfig, ...credentials } as HatchCredentialsInput
+      const pingResult = await pingProvider(
+        providerRaw,
+        selectedCredentialPayload as Parameters<typeof pingProvider>[1],
       )
+      if (pingResult.ok) {
+        break
+      }
+
+      process.stdout.write(`credentials didn't work (${pingResult.message}). `)
+      if (discovered.length > 0) {
+        process.stdout.write("choose another saved credential or enter 'new'.\n\n")
+      } else {
+        process.stdout.write("let's try again.\n\n")
+      }
     }
 
     coldRl.close()
     process.stdout.write("\n")
 
-    const selectedCredentialPayload = { ...providerConfig, ...credentials }
-    const split = splitProviderCredentialFields(providerRaw, selectedCredentialPayload)
+    const split = splitProviderCredentialFields(providerRaw, selectedCredentialPayload as Record<string, unknown>)
     cacheProviderCredentialRecords("SerpentGuide", [
       createProviderCredentialRecord({
         provider: providerRaw,
@@ -362,17 +390,6 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       agentFacing: { provider: providerRaw, model: resolvedModel },
       phrases,
     })
-    // Ping-verify credentials before entering the serpent guide session
-    const { pingProvider } = await import("../provider-ping")
-    const pingResult = await pingProvider(
-      providerRaw,
-      selectedCredentialPayload as Parameters<typeof pingProvider>[1],
-    )
-    if (!pingResult.ok) {
-      process.stdout.write(`credentials didn't work (${pingResult.message}). run 'ouro hatch' to try again.\n`)
-      return null
-    }
-
     const systemPrompt = buildSpecialistSystemPrompt(soulText, identity.content, existingBundles, {
       tempDir,
       provider: providerRaw,
