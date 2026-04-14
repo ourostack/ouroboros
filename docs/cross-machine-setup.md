@@ -56,9 +56,11 @@ The agent name is inferred from the URL. Override with `--agent <name>` if neede
 
 **Already cloned manually?** If you `git clone`d the bundle yourself before running `ouro up`, the daemon will detect it and offer to enable sync.
 
+**Guided flow:** After cloning, the CLI offers to continue with provider auth, daemon start, and dev tool setup — all inline. You can accept each step or skip it and run the commands yourself later.
+
 ## Step 3: Set up provider auth
 
-The agent needs model provider credentials on each machine. These are never synced — you set them up per machine:
+If you skipped the guided prompt, or need to re-run auth later:
 
 ```bash
 ouro auth run --agent <name>
@@ -67,6 +69,8 @@ ouro auth run --agent <name>
 This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.).
 
 ## Step 4: Start the daemon
+
+If you skipped the guided prompt:
 
 ```bash
 ouro up
@@ -124,11 +128,17 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Skills | |
 | Agent config (`agent.json`) | |
 
+## For agents reading this doc
+
+If someone asks you "how do I set you up on another computer?", you don't need to ask what OS they're on — you can check `detectPlatform()` (from `src/heart/platform.ts`) or just tell them the full picture and let them skip what doesn't apply. The platform detection module returns `"macos" | "linux" | "wsl" | "windows-native"` and is available at runtime via `process.platform` plus WSL detection.
+
+The guided flow handles platform differences automatically: `ouro clone` works on all Unix-like platforms, and `ouro setup --tool claude-code` detects WSL and bridges to Windows-side Claude Code without the user needing to know the mechanics.
+
 ## Troubleshooting
 
 **"git is not installed"** — Install git for your platform. The error message includes instructions.
 
-**Clone fails with auth error** — Make sure you can access the remote. Run `gh auth login` or set up git credentials for the account that owns the bundle repo.
+**Clone fails with auth error** — Make sure you can access the remote. Run `gh auth login` or set up git credentials for the account that owns the bundle repo. If the bundle is on an Enterprise Managed User (EMU) GitHub account, you may need to switch accounts first: `gh auth switch` (or `gh auth login` with the EMU account if not yet added).
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
