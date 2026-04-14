@@ -25,6 +25,10 @@ export interface InteractiveRepairResult {
   repairsAttempted: boolean
 }
 
+type RunnableRepairAction =
+  | { kind: "vault-unlock"; label: "vault unlock"; command: string }
+  | { kind: "provider-auth"; label: "provider auth"; command: string; provider?: AgentProvider }
+
 function isCredentialIssue(degraded: DegradedAgent): boolean {
   const reason = degraded.errorReason.toLowerCase()
   const hint = degraded.fixHint.toLowerCase()
@@ -90,6 +94,37 @@ function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: Int
   deps.writeStdout(`repair skipped for ${degraded.agent}; run \`${command}\` later.`)
 }
 
+function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction | undefined {
+  if (isVaultUnlockIssue(degraded)) {
+    return { kind: "vault-unlock", label: "vault unlock", command: vaultUnlockCommandFor(degraded) }
+  }
+
+  if (isCredentialIssue(degraded)) {
+    return {
+      kind: "provider-auth",
+      label: "provider auth",
+      command: authCommandFor(degraded),
+      provider: extractProviderFromFixHint(degraded.fixHint),
+    }
+  }
+
+  return undefined
+}
+
+function writeRepairQueueSummary(degraded: DegradedAgent[], deps: InteractiveRepairDeps): void {
+  const repairable = degraded
+    .map((entry) => ({ entry, action: runnableRepairActionFor(entry) }))
+    .filter((item): item is { entry: DegradedAgent; action: RunnableRepairAction } => item.action !== undefined)
+
+  if (repairable.length < 2) return
+
+  const lines = [
+    "repair queue:",
+    ...repairable.map(({ entry, action }) => `  - ${entry.agent}: ${action.label}: \`${action.command}\``),
+  ]
+  deps.writeStdout(lines.join("\n"))
+}
+
 export async function runInteractiveRepair(
   degraded: DegradedAgent[],
   deps: InteractiveRepairDeps,
@@ -107,12 +142,14 @@ export async function runInteractiveRepair(
   }
 
   let repairsAttempted = false
+  writeRepairQueueSummary(degraded, deps)
 
   for (const entry of degraded) {
-    if (isVaultUnlockIssue(entry)) {
-      const unlockCommand = vaultUnlockCommandFor(entry)
+    const action = runnableRepairActionFor(entry)
+
+    if (action?.kind === "vault-unlock") {
       const answer = await deps.promptInput(
-        `run \`${unlockCommand}\` now? [y/n] `,
+        `run \`${action.command}\` now? [y/n] `,
       )
       if (isAffirmativeAnswer(answer)) {
         try {
@@ -135,18 +172,16 @@ export async function runInteractiveRepair(
           })
         }
       } else {
-        writeDeclinedRepair(entry, unlockCommand, deps)
+        writeDeclinedRepair(entry, action.command, deps)
       }
-    } else if (isCredentialIssue(entry)) {
-      const provider = extractProviderFromFixHint(entry.fixHint)
-      const authCommand = authCommandFor(entry)
+    } else if (action?.kind === "provider-auth") {
       const answer = await deps.promptInput(
-        `run \`${authCommand}\` now? [y/n] `,
+        `run \`${action.command}\` now? [y/n] `,
       )
       if (isAffirmativeAnswer(answer)) {
         try {
-          if (provider) {
-            await deps.runAuthFlow(entry.agent, provider)
+          if (action.provider) {
+            await deps.runAuthFlow(entry.agent, action.provider)
           } else {
             await deps.runAuthFlow(entry.agent)
           }
@@ -164,7 +199,7 @@ export async function runInteractiveRepair(
           })
         }
       } else {
-        writeDeclinedRepair(entry, authCommand, deps)
+        writeDeclinedRepair(entry, action.command, deps)
       }
     } else if (isConfigError(entry)) {
       deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)

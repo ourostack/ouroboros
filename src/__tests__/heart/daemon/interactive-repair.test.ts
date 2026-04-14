@@ -369,6 +369,42 @@ describe("runInteractiveRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("prints a grouped repair queue before prompting for multiple runnable repairs", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "ouroboros",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+      },
+      {
+        agent: "slugger",
+        errorReason: "provider credentials failed",
+        fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.writeStdout).toHaveBeenNthCalledWith(
+      1,
+      [
+        "repair queue:",
+        "  - ouroboros: vault unlock: `ouro vault unlock --agent ouroboros`",
+        "  - slugger: provider auth: `ouro auth --agent slugger --provider openai-codex`",
+      ].join("\n"),
+    )
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      "run `ouro vault unlock --agent ouroboros` now? [y/n] ",
+    )
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      "run `ouro auth --agent slugger --provider openai-codex` now? [y/n] ",
+    )
+  })
+
   it("catches auth flow errors and continues to next agent", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
