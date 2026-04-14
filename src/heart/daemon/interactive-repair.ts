@@ -78,6 +78,10 @@ function vaultUnlockCommandFor(degraded: DegradedAgent): string {
   return command && command.length > 0 ? command : `ouro vault unlock --agent ${degraded.agent}`
 }
 
+function isAffirmativeAnswer(answer: string): boolean {
+  return /^(y|yes)$/i.test(answer.trim())
+}
+
 export async function runInteractiveRepair(
   degraded: DegradedAgent[],
   deps: InteractiveRepairDeps,
@@ -102,7 +106,7 @@ export async function runInteractiveRepair(
       const answer = await deps.promptInput(
         `run \`${unlockCommand}\` now? [y/n] `,
       )
-      if (answer.toLowerCase() === "y") {
+      if (isAffirmativeAnswer(answer)) {
         try {
           if (!deps.runVaultUnlock) {
             deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)
@@ -129,7 +133,7 @@ export async function runInteractiveRepair(
       const answer = await deps.promptInput(
         `run \`${authCommand}\` now? [y/n] `,
       )
-      if (answer.toLowerCase() === "y") {
+      if (isAffirmativeAnswer(answer)) {
         try {
           if (provider) {
             await deps.runAuthFlow(entry.agent, provider)
