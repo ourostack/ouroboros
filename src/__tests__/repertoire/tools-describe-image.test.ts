@@ -8,7 +8,6 @@ vi.mock("../../heart/identity", async () => {
     getAgentName: vi.fn(() => "testagent"),
     getAgentRoot: vi.fn(() => "/tmp/agents/testagent"),
     getAgentToolsRoot: vi.fn(() => "/tmp/agents/testagent/state/tools"),
-    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   }
 })
 

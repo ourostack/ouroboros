@@ -2,7 +2,7 @@
 
 This is the locked runtime contract for credentials, provider selection, repair, and hatch bootstrap.
 
-The short version: each agent owns one vault. Provider/model choice is local to each machine. The daemon loads provider credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, and secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
+The short version: each agent owns one vault. Provider/model choice is local to each machine. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
 
 ## Sources Of Truth
 
@@ -10,12 +10,13 @@ The short version: each agent owns one vault. Provider/model choice is local to 
 | --- | --- | --- |
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
 | Provider/model selection on this machine | `~/AgentBundles/<agent>.ouro/state/providers.json` | Two lanes: `outward` and `inner`. There is no silent fallback between lanes. |
-| Provider credentials | The agent's Bitwarden/Vaultwarden vault | One vault per agent. No machine-wide provider credential pool. |
-| Tool and sense credentials | Existing integration config until the follow-up vault migration lands | Do not add new provider-secret paths here. |
+| Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No machine-wide provider credential pool. |
+| Runtime/sense/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, BlueBubbles, OAuth connection names, Perplexity, embeddings, and similar runtime credentials. |
+| Travel/tool credentials | Ordinary items in the agent's Bitwarden/Vaultwarden vault | Examples: `duffel.com`, `stripe.com`, or other service domains. |
 | Vault unlock material on this machine | Local unlock store | Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service. Plaintext fallback is allowed only by explicit human choice. |
-| Hot provider runtime | Daemon process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
+| Hot runtime | Process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
 
-Do not introduce a second provider-credential source of truth. Provider credentials belong in the owning agent's vault. Bundle files may contain references, configuration, and vault coordinates, but not raw provider credentials.
+Do not introduce a second credential source of truth. Raw credentials belong in the owning agent's vault. Bundle files may contain references, configuration, state, and vault coordinates, but not raw credentials.
 
 ## Provider Selection
 
@@ -59,6 +60,15 @@ ouro provider refresh --agent <agent>
 ```
 
 Refresh means: read the latest provider credential snapshot from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
+
+Runtime/sense/integration credentials are stored field by field with:
+
+```bash
+ouro vault config set --agent <agent> --key bluebubbles.password
+ouro vault config set --agent <agent> --key teams.clientSecret
+```
+
+The values are written into the `runtime/config` vault item and are not printed back.
 
 ## Runtime Caching
 
@@ -194,11 +204,12 @@ ouro vault unlock --agent <agent>
 ```
 
 4. The harness stores the vault unlock material in the local unlock store.
-5. Provider credentials can then be refreshed and verified:
+5. Provider and runtime credentials can then be refreshed and verified:
 
 ```bash
 ouro provider refresh --agent <agent>
 ouro auth verify --agent <agent>
+ouro vault config status --agent <agent>
 ```
 
 Windows DPAPI means a CurrentUser-protected encrypted local unlock file. Windows keeps the protection keys; Ouro stores only the encrypted blob. This fits local unlock caching because the blob is usable by the same Windows user on the same machine, not as a portable credential source.
@@ -207,6 +218,16 @@ Linux Secret Service is the freedesktop desktop-secret API usually backed by GNO
 
 If the machine has no usable local secret store, the harness may offer an explicit plaintext unlock fallback in ignored local state. That fallback must be opt-in, clearly labeled, and never selected silently.
 
+## Existing Agents
+
+There is no hidden recovery path for a lost vault unlock secret.
+
+For an existing agent with no vault locator, run `ouro vault create --agent <agent>` or `ouro vault create --agent <agent> --generate-unlock-secret`. The command writes vault coordinates to `agent.json`, stores local unlock material for this machine, and prints a generated unlock secret only when the human requested generation. The human must save that secret in the operator password manager.
+
+For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the unlock secret from the operator password manager. Ouro stores only local unlock material for that machine.
+
+For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create or rotate a vault and re-auth/re-enter credentials into the new vault.
+
 ## Command Vocabulary
 
 Keep the core auth/provider vocabulary small:
@@ -214,6 +235,8 @@ Keep the core auth/provider vocabulary small:
 ```bash
 ouro vault unlock --agent <agent>
 ouro vault status --agent <agent>
+ouro vault config set --agent <agent> --key <field>
+ouro vault config status --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
 ouro provider refresh --agent <agent>

@@ -47,10 +47,8 @@ vi.mock("../../heart/identity", () => ({
     name: "ouroboros",
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
-    configPath: "~/.agentsecrets/ouroboros/secrets.json",
     context: {},
   })),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/ouroboros/secrets.json"),
   getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/ouroboros/state/workspaces"),
   HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
 }))

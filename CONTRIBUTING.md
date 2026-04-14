@@ -119,9 +119,8 @@ This points the MCP server at your local build so your agent uses your dev code,
 ## Config Expectations
 
 - `agent.json` is the agent-facing source of truth, with `humanFacing: { provider, model }` and `agentFacing: { provider, model }` for provider+model selection per facing.
-- `configPath` must point to `~/.agentsecrets/<agent>/secrets.json`.
-- `secrets.json` stores credentials only (API keys, tokens, endpoints) — model selection lives in `agent.json`.
-- Secrets do not belong in the repo.
+- Each agent has one credential vault. Provider credentials live in `providers/<provider>` vault items, runtime/sense/integration credentials live in the `runtime/config` vault item, and travel/tool credentials live as ordinary vault credential items.
+- Secrets do not belong in the repo, bundle files, app settings, or local JSON credential stores.
 - Agent durable continuity state (episodes, obligations, cares, intentions) lives under `~/AgentBundles/<agent>.ouro/arc/`.
 - Agent diary lives at `~/AgentBundles/<agent>.ouro/diary/`; older bundles were migrated from the previous psyche note store.
 - Agent journal (thinking-in-progress) lives at `~/AgentBundles/<agent>.ouro/journal/`.

@@ -71,7 +71,6 @@ vi.mock("child_process", () => ({
 vi.mock("../../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "azure",
   })),
   DEFAULT_AGENT_CONTEXT: {
@@ -79,7 +78,6 @@ vi.mock("../../../heart/identity", () => ({
     contextMargin: 20,
   },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),

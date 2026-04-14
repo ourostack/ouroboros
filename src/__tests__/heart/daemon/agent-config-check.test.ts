@@ -248,15 +248,6 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
 
-  it("accepts legacy secrets-root arguments that are not named .agentsecrets", async () => {
-    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-
-    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, "/tmp/legacy-secrets", { pingProvider })
-
-    expect(result).toEqual({ ok: true })
-    expect(pingProvider).toHaveBeenCalledOnce()
-  })
-
   it("fails before pinging when selected credentials are missing from the agent vault", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
     refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({}))

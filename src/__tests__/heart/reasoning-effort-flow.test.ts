@@ -51,14 +51,12 @@ vi.mock("../../repertoire/skills", () => ({
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     humanFacing: { provider: "minimax", model: "minimax-text-01" },
     agentFacing: { provider: "minimax", model: "minimax-text-01" },
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -124,7 +122,6 @@ describe("reasoning effort flow in runAgent", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       humanFacing: { provider: "minimax", model: "minimax-text-01" },
       agentFacing: { provider: "minimax", model: "minimax-text-01" },
@@ -290,7 +287,6 @@ describe("reasoning effort flow in runAgent", () => {
     const id = await import("../../heart/identity")
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -341,7 +337,6 @@ describe("reasoning effort flow in runAgent", () => {
     const id = await import("../../heart/identity")
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
       humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
@@ -401,7 +396,6 @@ describe("reasoning effort flow in runAgent", () => {
     const id = await import("../../heart/identity")
     vi.mocked(id.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "openai-codex",
       humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
       agentFacing: { provider: "openai-codex", model: "gpt-5.4" },

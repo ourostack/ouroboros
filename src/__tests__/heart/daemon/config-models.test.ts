@@ -107,10 +107,7 @@ function writeAgentConfig(
   fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8")
 }
 
-function seedSecrets(homeDir: string, agentName: string, secrets: Record<string, unknown>): void {
-  const secretsDir = path.join(homeDir, ".agentsecrets", agentName)
-  fs.mkdirSync(secretsDir, { recursive: true })
-  fs.writeFileSync(path.join(secretsDir, "secrets.json"), JSON.stringify(secrets), "utf8")
+function seedCredentials(_homeDir: string, agentName: string, secrets: Record<string, unknown>): void {
   const providers = (secrets.providers && typeof secrets.providers === "object")
     ? secrets.providers as Record<string, Record<string, string>>
     : {}
@@ -218,7 +215,7 @@ describe("ouro config models execution", () => {
     const bundlesRoot = makeTempDir("config-models-ghc")
     const homeDir = makeTempDir("config-models-home")
     writeAgentConfig(bundlesRoot, "TestAgent", "github-copilot")
-    seedSecrets(homeDir, "TestAgent", {
+    seedCredentials(homeDir, "TestAgent", {
       providers: {
         "github-copilot": {
           model: "claude-sonnet-4.6",
@@ -229,14 +226,12 @@ describe("ouro config models execution", () => {
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "TestAgent", "secrets.json"))
 
     const body = [
       { id: "gpt-4o", name: "GPT-4o", capabilities: ["chat", "embeddings"] },
       { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
     ]
-    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets"), fetchImpl: makeMockFetch(body) })
+    const deps = makeCliDeps({ bundlesRoot, fetchImpl: makeMockFetch(body) })
     const result = await runOuroCli(["config", "models", "--agent", "TestAgent"], deps)
 
     expect(result).toContain("available models:")
@@ -245,7 +240,6 @@ describe("ouro config models execution", () => {
     expect(result).toContain("chat, embeddings")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 
   it("shows static message for non-github-copilot providers", async () => {
@@ -271,8 +265,6 @@ describe("ouro config models execution", () => {
     writeAgentConfig(bundlesRoot, "NoCreds", "github-copilot")
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "NoCreds", "secrets.json"))
 
     const deps = makeCliDeps()
     await expect(
@@ -280,7 +272,6 @@ describe("ouro config models execution", () => {
     ).rejects.toThrow("github-copilot credentials not configured")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 })
 
@@ -290,7 +281,7 @@ describe("ouro config model validation for github-copilot", () => {
     const bundlesRoot = makeTempDir("config-model-validate")
     const homeDir = makeTempDir("config-model-validate-home")
     writeAgentConfig(bundlesRoot, "ValidAgent", "github-copilot")
-    seedSecrets(homeDir, "ValidAgent", {
+    seedCredentials(homeDir, "ValidAgent", {
       providers: {
         "github-copilot": {
           model: "claude-sonnet-4.6",
@@ -301,8 +292,6 @@ describe("ouro config model validation for github-copilot", () => {
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "ValidAgent", "secrets.json"))
 
     const body = [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }]
     const deps = makeCliDeps({ fetchImpl: makeMockFetch(body) })
@@ -313,7 +302,6 @@ describe("ouro config model validation for github-copilot", () => {
     expect(result).toContain("claude-sonnet-4.6")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 
   it("allows model that is in the available list and ping succeeds", async () => {
@@ -321,7 +309,7 @@ describe("ouro config model validation for github-copilot", () => {
     const bundlesRoot = makeTempDir("config-model-valid")
     const homeDir = makeTempDir("config-model-valid-home")
     writeAgentConfig(bundlesRoot, "ValidAgent2", "github-copilot", "old-model")
-    seedSecrets(homeDir, "ValidAgent2", {
+    seedCredentials(homeDir, "ValidAgent2", {
       providers: {
         "github-copilot": {
           githubToken: "ghp_test",
@@ -331,13 +319,10 @@ describe("ouro config model validation for github-copilot", () => {
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "ValidAgent2", "secrets.json"))
 
     const catalogBody = [{ id: "gpt-4o", name: "GPT-4o" }, { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6" }]
     const deps = makeCliDeps({
       bundlesRoot,
-      secretsRoot: path.join(homeDir, ".agentsecrets"),
       fetchImpl: makeMockFetchSequence([
         { body: catalogBody },       // catalog GET /models
         { body: { id: "resp-1" } },  // ping POST succeeds
@@ -349,7 +334,6 @@ describe("ouro config model validation for github-copilot", () => {
     expect(result).toContain("claude-sonnet-4.6")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 
   it("rejects when ping fails with network error", async () => {
@@ -357,7 +341,7 @@ describe("ouro config model validation for github-copilot", () => {
     const bundlesRoot = makeTempDir("config-model-fetchfail")
     const homeDir = makeTempDir("config-model-fetchfail-home")
     writeAgentConfig(bundlesRoot, "FetchFail", "github-copilot")
-    seedSecrets(homeDir, "FetchFail", {
+    seedCredentials(homeDir, "FetchFail", {
       providers: {
         "github-copilot": {
           model: "old-model",
@@ -368,11 +352,9 @@ describe("ouro config model validation for github-copilot", () => {
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "FetchFail", "secrets.json"))
 
     const failingFetch = (async () => { throw new Error("network error") }) as unknown as typeof fetch
-    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets"), fetchImpl: failingFetch })
+    const deps = makeCliDeps({ bundlesRoot, fetchImpl: failingFetch })
     const result = await runOuroCli(["config", "model", "--agent", "FetchFail", "any-model"], deps)
 
     // Ping fails — model switch is rejected
@@ -380,7 +362,6 @@ describe("ouro config model validation for github-copilot", () => {
     expect(result).toContain("network error")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 
   it("rejects when ping returns HTTP error", async () => {
@@ -388,7 +369,7 @@ describe("ouro config model validation for github-copilot", () => {
     const bundlesRoot = makeTempDir("config-model-ping-http")
     const homeDir = makeTempDir("config-model-ping-http-home")
     writeAgentConfig(bundlesRoot, "PingFail", "github-copilot")
-    seedSecrets(homeDir, "PingFail", {
+    seedCredentials(homeDir, "PingFail", {
       providers: {
         "github-copilot": {
           model: "old-model",
@@ -399,12 +380,9 @@ describe("ouro config model validation for github-copilot", () => {
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "PingFail", "secrets.json"))
 
     const deps = makeCliDeps({
       bundlesRoot,
-      secretsRoot: path.join(homeDir, ".agentsecrets"),
       fetchImpl: makeMockFetchSequence([
         { body: [{ id: "gpt-4o", name: "GPT-4o" }] },                              // catalog OK
         { body: { error: { message: "model not supported" } }, status: 403 },       // ping 403
@@ -417,7 +395,6 @@ describe("ouro config model validation for github-copilot", () => {
     expect(result).toContain("ouro config models")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 
   it("skips validation for non-github-copilot providers", async () => {
@@ -425,23 +402,20 @@ describe("ouro config model validation for github-copilot", () => {
     const bundlesRoot = makeTempDir("config-model-azure")
     const homeDir = makeTempDir("config-model-azure-home")
     writeAgentConfig(bundlesRoot, "AzModel", "anthropic", "claude-opus-4-6")
-    seedSecrets(homeDir, "AzModel", {
+    seedCredentials(homeDir, "AzModel", {
       providers: {
         anthropic: { setupToken: "tok" },
       },
     })
 
     const bundlesSpy = vi.spyOn(identity, "getAgentBundlesRoot").mockReturnValue(bundlesRoot)
-    const secretsSpy = vi.spyOn(identity, "getAgentSecretsPath")
-      .mockReturnValue(path.join(homeDir, ".agentsecrets", "AzModel", "secrets.json"))
 
-    const deps = makeCliDeps({ bundlesRoot, secretsRoot: path.join(homeDir, ".agentsecrets") })
+    const deps = makeCliDeps({ bundlesRoot })
     const result = await runOuroCli(["config", "model", "--agent", "AzModel", "claude-sonnet-4.6"], deps)
 
     expect(result).toContain("updated AzModel model")
 
     bundlesSpy.mockRestore()
-    secretsSpy.mockRestore()
   })
 })
 

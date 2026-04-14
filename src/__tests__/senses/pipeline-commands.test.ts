@@ -120,7 +120,6 @@ vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   getAgentRoot: vi.fn(() => "/tmp/AgentBundles/testagent.ouro"),
   getAgentBundlesRoot: vi.fn(() => "/tmp/AgentBundles"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   loadAgentConfig: vi.fn(() => ({
     version: 1,
     enabled: true,
@@ -429,7 +428,6 @@ describe("/debug command", () => {
   it("toggles debug mode on and off", async () => {
     vi.doMock("../../heart/identity", () => ({
       getAgentName: vi.fn(() => "testagent"),
-      getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     }))
     const { getDebugMode, resetDebugMode, createCommandRegistry, registerDefaultCommands } = await import("../../senses/commands")
     resetDebugMode()
@@ -452,7 +450,6 @@ describe("/debug command", () => {
   it("is available on all channels", async () => {
     vi.doMock("../../heart/identity", () => ({
       getAgentName: vi.fn(() => "testagent"),
-      getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     }))
     const { createCommandRegistry, registerDefaultCommands } = await import("../../senses/commands")
     const registry = createCommandRegistry()

@@ -93,11 +93,9 @@ vi.mock("../../heart/identity", async (importOriginal) => {
     ...actual,
     loadAgentConfig: vi.fn(() => ({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
     })),
     getAgentName: vi.fn(() => "testagent"),
-    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     resetIdentity: vi.fn(),
@@ -168,7 +166,6 @@ import type { ChannelCallbacks } from "../../heart/core"
 async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "openai-codex") {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
     humanFacing: { provider, model: "" },
     agentFacing: { provider, model: "" },
@@ -178,7 +175,6 @@ async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "o
 async function setupMinimax(apiKey = "test-key", model = "test-model") {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     humanFacing: { provider: "minimax", model },
     agentFacing: { provider: "minimax", model },
@@ -196,7 +192,6 @@ async function setupAzure(
 ) {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "azure",
     humanFacing: { provider: "azure", model: modelName },
     agentFacing: { provider: "azure", model: modelName },
@@ -252,7 +247,6 @@ async function setupConfig(partial: Record<string, unknown>) {
   }
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
     humanFacing: { provider, model },
     agentFacing: { provider, model },
@@ -8741,7 +8735,6 @@ describe("facing-aware provider runtime", () => {
   }) {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: opts.humanProvider, model: opts.humanModel },
       agentFacing: { provider: opts.agentProvider, model: opts.agentModel },
     })
@@ -8957,7 +8950,6 @@ describe("runAgent facing derivation from channel", () => {
     // Set up different models for human and agent facing
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "minimax", model: "human-only-model" },
       agentFacing: { provider: "minimax", model: "agent-only-model" },
     })
@@ -8996,7 +8988,6 @@ describe("runAgent facing derivation from channel", () => {
   it("runAgent with channel cli uses human-facing provider runtime", async () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "minimax", model: "human-only-model" },
       agentFacing: { provider: "minimax", model: "agent-only-model" },
     })
@@ -9032,7 +9023,6 @@ describe("runAgent facing derivation from channel", () => {
   it("runAgent with no channel defaults to human-facing provider", async () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       humanFacing: { provider: "minimax", model: "human-default" },
       agentFacing: { provider: "minimax", model: "agent-default" },
     })

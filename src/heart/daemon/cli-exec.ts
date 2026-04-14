@@ -42,6 +42,11 @@ import {
   summarizeProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
+import {
+  refreshRuntimeCredentialConfig,
+  upsertRuntimeCredentialConfig,
+  type RuntimeCredentialConfig,
+} from "../runtime-credentials"
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
 import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
@@ -804,7 +809,7 @@ async function executeVaultCreate(
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
-    "Provider credentials will be stored in this agent's Ouro credential vault.",
+    "All raw credentials for this agent will be stored in this Ouro credential vault.",
     ...(command.generateUnlockSecret
       ? [
         "",
@@ -838,11 +843,21 @@ async function executeVaultStatus(
   const lines = [
     `agent: ${command.agent}`,
     `vault: ${vault.email} at ${vault.serverUrl}`,
+    `vault locator: ${config.vault ? "agent.json" : "default"}`,
     `local unlock store: ${status.store ? `${status.store.kind}${status.store.secure ? "" : " (explicit plaintext fallback)"}` : "unavailable"}`,
     `local unlock: ${status.stored ? "available" : "missing"}`,
   ]
 
   if (status.stored) {
+    const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+    if (runtime.ok) {
+      lines.push(`runtime credentials: ${summarizeRuntimeConfigFields(runtime.config).join(", ") || "none stored"} (${runtime.revision})`)
+    } else {
+      lines.push(`runtime credentials: ${runtime.reason} (${runtime.error})`)
+      if (runtime.reason === "missing") {
+        lines.push(`  fix: Run 'ouro vault config set --agent ${command.agent} --key <field>' to store sense/integration credentials.`)
+      }
+    }
     const pool = await refreshProviderCredentialPool(command.agent)
     if (pool.ok) {
       const summary = summarizeProviderCredentialPool(pool.pool)
@@ -858,6 +873,110 @@ async function executeVaultStatus(
     lines.push(status.fix)
   }
 
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+const RUNTIME_CONFIG_KEY_SEGMENT = /^[A-Za-z][A-Za-z0-9_-]*$/
+const FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS = new Set(["__proto__", "prototype", "constructor"])
+
+function parseRuntimeConfigKey(key: string): string[] {
+  const segments = key.split(".").map((segment) => segment.trim()).filter(Boolean)
+  if (segments.length < 2) {
+    throw new Error("runtime config key must be a dotted path such as bluebubbles.password")
+  }
+  for (const segment of segments) {
+    if (!RUNTIME_CONFIG_KEY_SEGMENT.test(segment) || FORBIDDEN_RUNTIME_CONFIG_KEY_SEGMENTS.has(segment)) {
+      throw new Error(`invalid runtime config key segment '${segment}'`)
+    }
+  }
+  return segments
+}
+
+function setRuntimeConfigValue(
+  config: RuntimeCredentialConfig,
+  key: string,
+  value: string,
+): RuntimeCredentialConfig {
+  const segments = parseRuntimeConfigKey(key)
+  const next: RuntimeCredentialConfig = JSON.parse(JSON.stringify(config)) as RuntimeCredentialConfig
+  let cursor: Record<string, unknown> = next
+  for (const segment of segments.slice(0, -1)) {
+    const existing = cursor[segment]
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+      cursor[segment] = {}
+    }
+    cursor = cursor[segment] as Record<string, unknown>
+  }
+  cursor[segments[segments.length - 1]!] = value
+  return next
+}
+
+function summarizeRuntimeConfigFields(config: RuntimeCredentialConfig): string[] {
+  const fields: string[] = []
+  const visit = (prefix: string, value: unknown): void => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      fields.push(prefix)
+      return
+    }
+    for (const [key, child] of Object.entries(value)) {
+      visit(prefix ? `${prefix}.${key}` : key, child)
+    }
+  }
+  visit("", config)
+  return fields.filter(Boolean).sort()
+}
+
+async function executeVaultConfigSet(
+  command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide does not have persistent runtime credentials. Store credentials in the hatchling agent vault.")
+  }
+  const prompt = deps.promptInput
+  const value = command.value ?? (prompt ? await prompt(`Value for ${command.key}: `) : "")
+  if (!value) {
+    throw new Error("vault config set requires --value <value> or an interactive prompt")
+  }
+  const current = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+  if (!current.ok && current.reason !== "missing") {
+    throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+  }
+  const nextConfig = setRuntimeConfigValue(current.ok ? current.config : {}, command.key, value)
+  const stored = await upsertRuntimeCredentialConfig(command.agent, nextConfig, providerCliNow(deps))
+  const message = [
+    `stored ${command.key} for ${command.agent} in the agent vault runtime/config item`,
+    `runtime credentials: ${stored.revision}`,
+    "value was not printed",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultConfigStatus(
+  command: Extract<OuroCliCommand, { kind: "vault.config.status" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent runtime credentials. Hatch bootstrap stores selected credentials in the hatchling vault."
+    deps.writeStdout(message)
+    return message
+  }
+  const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+  const lines = [`agent: ${command.agent}`, `runtime config item: ${runtime.itemPath}`]
+  if (runtime.ok) {
+    lines.push(`status: available (${runtime.revision})`)
+    const fields = summarizeRuntimeConfigFields(runtime.config)
+    lines.push(`fields: ${fields.length === 0 ? "none stored" : fields.join(", ")}`)
+  } else {
+    lines.push(`status: ${runtime.reason}`)
+    lines.push(`error: ${runtime.error}`)
+    lines.push(runtime.reason === "missing"
+      ? `fix: Run 'ouro vault config set --agent ${command.agent} --key <field>' to store runtime credentials.`
+      : `fix: Run 'ouro vault unlock --agent ${command.agent}', then retry.`)
+  }
   const message = lines.join("\n")
   deps.writeStdout(message)
   return message
@@ -2731,6 +2850,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeVaultStatus(command, deps)
   }
 
+  if (command.kind === "vault.config.set") {
+    return executeVaultConfigSet(command, deps)
+  }
+
+  if (command.kind === "vault.config.status") {
+    return executeVaultConfigStatus(command, deps)
+  }
+
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
@@ -3232,7 +3359,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       fetchImpl: deps.fetchImpl ?? fetch,
       socketPath: deps.socketPath,
       bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
-      secretsRoot: deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets"),
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
     }

@@ -134,13 +134,6 @@ describe("agent paths", () => {
     expect(getAgentStateRoot()).toBe(path.join("/home", "AgentBundles", "slugger.ouro", "state"))
   })
 
-  it("resolves conventional secrets path", async () => {
-    process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
-    const { getAgentSecretsPath, resetIdentity } = await import("../../heart/identity")
-    resetIdentity()
-    expect(getAgentSecretsPath()).toBe(path.join(os.homedir(), ".agentsecrets", "slugger", "secrets.json"))
-  })
-
   it("derives bundle-local daemon, tool, and workspace roots", async () => {
     process.argv = ["node", "cli-entry.js", "--agent", "slugger"]
     const {
@@ -162,10 +155,6 @@ describe("agent paths", () => {
     expect(getAgentToolsRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "tools"))
   })
 
-  it("accepts explicit agent name for secrets path", async () => {
-    const { getAgentSecretsPath } = await import("../../heart/identity")
-    expect(getAgentSecretsPath("ouroboros")).toBe(path.join(os.homedir(), ".agentsecrets", "ouroboros", "secrets.json"))
-  })
 })
 
 describe("buildDefaultAgentTemplate", () => {

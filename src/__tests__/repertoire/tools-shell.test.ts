@@ -72,12 +72,10 @@ vi.mock("../../heart/identity", () => {
     DEFAULT_AGENT_CONTEXT,
     loadAgentConfig: vi.fn(() => ({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       context: { ...DEFAULT_AGENT_CONTEXT },
     })),
     getAgentName: vi.fn(() => "testagent"),
-    getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
     getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
     getRepoRoot: vi.fn(() => "/mock/repo"),
     getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/testagent/state/workspaces"),
@@ -104,7 +102,6 @@ describe("shell tool", () => {
     vi.mocked(execSync).mockReset()
     vi.mocked(loadAgentConfig).mockReset().mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "minimax",
       context: { maxTokens: 80000, contextMargin: 20 },
     } as any)
@@ -176,7 +173,6 @@ describe("shell tool", () => {
     it("uses agent config shell.defaultTimeout when set", async () => {
       vi.mocked(loadAgentConfig).mockReturnValue({
         name: "testagent",
-        configPath: "~/.agentsecrets/testagent/secrets.json",
         provider: "minimax",
         context: { maxTokens: 80000, contextMargin: 20 },
         shell: { defaultTimeout: 45000 },
@@ -194,7 +190,6 @@ describe("shell tool", () => {
     it("timeout_ms overrides agent config default", async () => {
       vi.mocked(loadAgentConfig).mockReturnValue({
         name: "testagent",
-        configPath: "~/.agentsecrets/testagent/secrets.json",
         provider: "minimax",
         context: { maxTokens: 80000, contextMargin: 20 },
         shell: { defaultTimeout: 45000 },
@@ -211,7 +206,6 @@ describe("shell tool", () => {
     it("agent config defaultTimeout is also capped at 600000ms", async () => {
       vi.mocked(loadAgentConfig).mockReturnValue({
         name: "testagent",
-        configPath: "~/.agentsecrets/testagent/secrets.json",
         provider: "minimax",
         context: { maxTokens: 80000, contextMargin: 20 },
         shell: { defaultTimeout: 900000 },

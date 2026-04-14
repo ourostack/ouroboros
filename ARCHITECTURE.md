@@ -67,11 +67,13 @@ Canonical paths:
 - `senses/`
 - `senses/teams/`
 
-### Secrets
+### Credentials
 
-`~/.agentsecrets/<agent>/secrets.json`
+Each agent has one Bitwarden/Vaultwarden credential vault. Raw provider,
+sense, integration, travel, and tool credentials stay in that vault. Bundle
+files carry non-secret configuration, state, and vault coordinates only.
 
-Secrets stay out of bundles and out of the repo.
+Vault unlock material is machine-local cache, not a second credential source.
 
 ### Machine-scoped runtime/test spillover
 
@@ -340,7 +342,8 @@ The serpent guide:
 - interviews the human
 - helps define the new agent
 - scaffolds a canonical bundle with `humanFacing` and `agentFacing` provider configs
-- writes credentials to `~/.agentsecrets/<agent>/secrets.json`
+- creates the hatchling's vault, stores selected provider credentials there,
+  and prints the generated unlock secret once for the human to save
 - hands the new agent off into the normal bundle/runtime model
 
 ## Repository Layout

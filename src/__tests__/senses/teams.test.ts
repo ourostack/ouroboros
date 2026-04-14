@@ -26,13 +26,11 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 
 vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => mockIdentityPaths.agentRoot),
   getAgentStateRoot: vi.fn(() => path.join(mockIdentityPaths.agentRoot, "state")),
   resetAgentConfigCache: vi.fn(),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     phrases: {
       thinking: ["test thinking"],

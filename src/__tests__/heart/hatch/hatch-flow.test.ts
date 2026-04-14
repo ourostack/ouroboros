@@ -36,10 +36,9 @@ describe("hatch flow", () => {
 
   it("creates a canonical hatchling bundle with family imprint and heartbeat habit", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles")
-    const secretsRoot = makeTempDir("hatch-secrets")
     const specialistSource = makeTempDir("hatch-specialist")
     const specialistTarget = makeTempDir("hatch-specialist-target")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
 
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
     fs.writeFileSync(path.join(specialistSource, "python.md"), "# Python\n", "utf-8")
@@ -55,7 +54,6 @@ describe("hatch flow", () => {
       },
       {
         bundlesRoot,
-        secretsRoot,
         specialistIdentitySourceDir: specialistSource,
         specialistIdentityTargetDir: specialistTarget,
         now: () => new Date("2026-03-07T00:00:00.000Z"),
@@ -119,7 +117,6 @@ describe("hatch flow", () => {
   it("creates bootstrapped local provider state for the hatchling machine", async () => {
     const homeDir = makeTempDir("hatch-provider-state-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const specialistSource = makeTempDir("hatch-provider-state-specialist")
     const specialistTarget = makeTempDir("hatch-provider-state-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
@@ -137,7 +134,6 @@ describe("hatch flow", () => {
       },
       {
         bundlesRoot,
-        secretsRoot,
         specialistIdentitySourceDir: specialistSource,
         specialistIdentityTargetDir: specialistTarget,
         now: () => new Date("2026-04-12T22:15:00.000Z"),
@@ -170,7 +166,6 @@ describe("hatch flow", () => {
   it("creates a machine identity while bootstrapping provider state from the default provider credential home", async () => {
     const homeDir = makeTempDir("hatch-provider-state-default-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
     const specialistSource = makeTempDir("hatch-provider-state-default-specialist")
     const specialistTarget = makeTempDir("hatch-provider-state-default-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
@@ -196,7 +191,6 @@ describe("hatch flow", () => {
         },
         {
           bundlesRoot,
-          secretsRoot,
           specialistIdentitySourceDir: specialistSource,
           specialistIdentityTargetDir: specialistTarget,
           now: () => new Date("2026-04-12T22:16:00.000Z"),
@@ -217,10 +211,9 @@ describe("hatch flow", () => {
 
   it("fails fast when required provider credentials are missing", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-missing")
-    const secretsRoot = makeTempDir("hatch-secrets-missing")
     const specialistSource = makeTempDir("hatch-specialist-missing")
     const specialistTarget = makeTempDir("hatch-specialist-target-missing")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     await expect(() =>
@@ -233,7 +226,6 @@ describe("hatch flow", () => {
         },
         {
           bundlesRoot,
-          secretsRoot,
           specialistIdentitySourceDir: specialistSource,
           specialistIdentityTargetDir: specialistTarget,
           random: () => 0,
@@ -244,10 +236,9 @@ describe("hatch flow", () => {
 
   it("writes provider-specific secrets for azure hatch flows", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-azure")
-    const secretsRoot = makeTempDir("hatch-secrets-azure")
     const specialistSource = makeTempDir("hatch-specialist-azure")
     const specialistTarget = makeTempDir("hatch-specialist-target-azure")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     const result = await runHatchFlow(
@@ -263,7 +254,6 @@ describe("hatch flow", () => {
       },
       {
         bundlesRoot,
-        secretsRoot,
         specialistIdentitySourceDir: specialistSource,
         specialistIdentityTargetDir: specialistTarget,
         random: () => 0,
@@ -283,10 +273,9 @@ describe("hatch flow", () => {
 
   it("writes provider-specific secrets for openai-codex hatch flows", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-codex")
-    const secretsRoot = makeTempDir("hatch-secrets-codex")
     const specialistSource = makeTempDir("hatch-specialist-codex")
     const specialistTarget = makeTempDir("hatch-specialist-target-codex")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     const result = await runHatchFlow(
@@ -300,7 +289,6 @@ describe("hatch flow", () => {
       },
       {
         bundlesRoot,
-        secretsRoot,
         specialistIdentitySourceDir: specialistSource,
         specialistIdentityTargetDir: specialistTarget,
         random: () => 0,
@@ -319,10 +307,9 @@ describe("hatch flow", () => {
 
   it("writes provider-specific secrets for minimax hatch flows", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-minimax")
-    const secretsRoot = makeTempDir("hatch-secrets-minimax")
     const specialistSource = makeTempDir("hatch-specialist-minimax")
     const specialistTarget = makeTempDir("hatch-specialist-target-minimax")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "python.md"), "# Python\n", "utf-8")
 
     const result = await runHatchFlow(
@@ -336,7 +323,6 @@ describe("hatch flow", () => {
       },
       {
         bundlesRoot,
-        secretsRoot,
         specialistIdentitySourceDir: specialistSource,
         specialistIdentityTargetDir: specialistTarget,
         random: () => 0,
@@ -351,10 +337,9 @@ describe("hatch flow", () => {
 
   it("preserves existing README files and falls back to friend slug when human name is blank", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-readme")
-    const secretsRoot = makeTempDir("hatch-secrets-readme")
     const specialistSource = makeTempDir("hatch-specialist-readme")
     const specialistTarget = makeTempDir("hatch-specialist-target-readme")
-    cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
+    cleanup.push(bundlesRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     const baseInput = {
@@ -367,7 +352,6 @@ describe("hatch flow", () => {
     }
     const deps = {
       bundlesRoot,
-      secretsRoot,
       specialistIdentitySourceDir: specialistSource,
       specialistIdentityTargetDir: specialistTarget,
       random: () => 0,
@@ -397,8 +381,7 @@ describe("hatch flow", () => {
 
     const agentName = `DefaultsBot-${Date.now()}`
     const bundleRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
-    const specialistSecretsDir = path.join(homeDir, ".agentsecrets", "SerpentGuide")
-    cleanup.push(bundleRoot, specialistBundleDir, specialistSecretsDir)
+    cleanup.push(bundleRoot, specialistBundleDir)
 
     const originalCwd = process.cwd()
     try {

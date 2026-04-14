@@ -97,7 +97,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
     handler: async (a) => {
       try {
         const key = getIntegrationsConfig().perplexityApiKey;
-        if (!key) return "error: perplexityApiKey not configured in secrets.json";
+        if (!key) return "error: perplexityApiKey not configured in the agent vault runtime/config item";
         const res = await fetch("https://api.perplexity.ai/search", {
           method: "POST",
           headers: {
