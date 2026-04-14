@@ -121,7 +121,7 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     "This computer does not currently have usable local unlock material for that vault.",
     "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
     "",
-    `Run \`${command}\` and enter the vault unlock secret from the operator password manager.`,
+    `Run \`${command}\` and enter the saved agent vault unlock secret from the human/operator who controls that vault.`,
     "If nobody saved that unlock secret, Ouro cannot recover it; create or rotate the agent vault and re-enter credentials.",
   ].join("\n")
 }
