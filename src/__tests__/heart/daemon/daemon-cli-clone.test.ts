@@ -129,7 +129,9 @@ describe("ouro clone execution", () => {
       .join("\n")
     expect(output).toContain("cloned agent to")
     expect(output).toContain("sync enabled")
-    expect(output).toContain("ouro auth run")
+    expect(output).toContain("ouro vault unlock --agent agent")
+    expect(output).toContain("ouro provider refresh --agent agent")
+    expect(output).toContain("ouro auth verify --agent agent")
   })
 
   it("interactive clone: chains auth, up, and setup when user says yes", async () => {
