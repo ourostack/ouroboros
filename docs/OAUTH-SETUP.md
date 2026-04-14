@@ -6,9 +6,11 @@ This guide covers the manual Azure/Entra setup required for Ouroboros to call Mi
 
 - An Azure subscription with access to Azure Portal
 - An existing Azure Bot resource (the one used by Ouroboros)
-- The app registration for the bot (matching `teams.clientId` in `secrets.json`)
+- The app registration for the bot (matching `teams.clientId` in the agent's vault-backed Teams config)
 - Admin access to the Azure AD (Entra ID) tenant
 - A dev tunnel for local testing
+
+Credential location truth: Teams and OAuth secrets belong in the owning agent's vault. Do not put raw Teams/OAuth secrets in bundle files, repo files, chat, or a machine-wide provider pool. See `docs/auth-and-providers.md` for the locked credential contract.
 
 ## 1. Configure the App Registration
 
@@ -20,7 +22,7 @@ This guide covers the manual Azure/Entra setup required for Ouroboros to call Mi
    ```
    api://botid-{your-bot-id}
    ```
-   where `{your-bot-id}` is the bot's app ID (same as `teams.clientId` in secrets.json).
+   where `{your-bot-id}` is the bot's app ID (same as `teams.clientId` in the agent's vault-backed Teams config).
 4. Add a scope:
    - **Scope name**: `access_as_user`
    - **Who can consent**: Admins and users
@@ -60,7 +62,7 @@ After adding all permissions, click **Grant admin consent for {tenant}** if you 
 
 ### 1.4 Add a Client Secret (if not already present)
 
-Go to **Certificates & secrets** > **Client secrets** > **New client secret**. Copy the value and set it as `teams.clientSecret` in your `secrets.json`.
+Go to **Certificates & secrets** > **Client secrets** > **New client secret**. Copy the value and store it as `teams.clientSecret` in the agent's vault-backed Teams config.
 
 ### 1.5 Authentication Redirect URI
 
@@ -77,7 +79,7 @@ You need **two** OAuth connection settings on the Azure Bot resource -- one for 
 
 1. Go to **Azure Portal** > **Azure Bot** resource > **Configuration** > **OAuth Connection Settings** > **Add Setting**.
 2. Fill in:
-   - **Name**: `graph` (must match `oauth.graphConnectionName` in secrets.json, default: `graph`)
+   - **Name**: `graph` (must match `oauth.graphConnectionName` in the agent's vault-backed OAuth config, default: `graph`)
    - **Service Provider**: Azure Active Directory v2
    - **Client ID**: your bot's app ID (`teams.clientId`)
    - **Client Secret**: your bot's client secret (`teams.clientSecret`)
@@ -89,7 +91,7 @@ You need **two** OAuth connection settings on the Azure Bot resource -- one for 
 
 1. Same as above, add another OAuth connection setting.
 2. Fill in:
-   - **Name**: `ado` (must match `oauth.adoConnectionName` in secrets.json, default: `ado`)
+   - **Name**: `ado` (must match `oauth.adoConnectionName` in the agent's vault-backed OAuth config, default: `ado`)
    - **Service Provider**: Azure Active Directory v2
    - **Client ID**: your bot's app ID (`teams.clientId`)
    - **Client Secret**: your bot's client secret (`teams.clientSecret`)
@@ -119,7 +121,7 @@ Unlike Graph and ADO, GitHub uses its own OAuth provider (not AAD v2). You need 
 Via Azure Portal:
 1. Go to **Azure Bot** resource > **Configuration** > **OAuth Connection Settings** > **Add Setting**.
 2. Fill in:
-   - **Name**: `github` (must match `oauth.githubConnectionName` in `~/.agentsecrets/<agent>/secrets.json`)
+   - **Name**: `github` (must match `oauth.githubConnectionName` in the agent's vault-backed OAuth config)
    - **Service Provider**: GitHub
    - **Client ID**: from the GitHub OAuth App
    - **Client Secret**: from the GitHub OAuth App
@@ -137,7 +139,7 @@ az bot authsetting create \
   --service "github"
 ```
 
-#### 2.3.3 Update secrets.json
+#### 2.3.3 Update Agent OAuth Config
 
 Add the connection name to the `oauth` section:
 ```json
@@ -184,7 +186,7 @@ This tells Teams to enable SSO token exchange with the app registration. The `id
 
 ## 5. Required Configuration
 
-Add these to `~/.agentsecrets/<agent>/secrets.json`:
+Store these entries in the owning agent's vault-backed Teams/OAuth config:
 
 ```json
 {
@@ -227,7 +229,7 @@ After completing the setup:
    - After signin, the bot should create the issue and return its URL.
 
 If signin fails, check:
-- OAuth connection names match between Azure Bot config and `~/.agentsecrets/<agent>/secrets.json`
+- OAuth connection names match between Azure Bot config and the agent's vault-backed OAuth config
 - Client secret is valid and not expired
 - Scopes are correctly configured
 - Admin consent has been granted

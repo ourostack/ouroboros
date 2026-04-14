@@ -12,7 +12,6 @@ import { createAzureProviderRuntime } from "./providers/azure"
 import { createMinimaxProviderRuntime } from "./providers/minimax"
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
 import { classifyGithubCopilotError, createGithubCopilotProviderRuntime } from "./providers/github-copilot"
-import { loadAgentSecrets } from "./auth/auth-flow"
 import { getDefaultModelForProvider } from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -20,6 +19,7 @@ import {
   type ProviderAttemptPolicy,
   type ProviderAttemptRecord,
 } from "./provider-attempt"
+import { refreshProviderCredentialPool } from "./provider-credentials"
 
 export type PingResult =
   | { ok: true; attempts?: ProviderAttemptRecord[] }
@@ -279,13 +279,23 @@ export async function runHealthInventory(
 ): Promise<HealthInventoryResult> {
   /* v8 ignore next -- default: tests inject ping dep @preserve */
   const ping = deps.ping ?? pingProvider
-  const { secrets } = loadAgentSecrets(agentName)
+  const poolResult = await refreshProviderCredentialPool(agentName)
   const providers = PINGABLE_PROVIDERS.filter((p) => p !== currentProvider)
+  if (!poolResult.ok) {
+    return Object.fromEntries(providers.map((provider) => [
+      provider,
+      { ok: false, classification: "auth-failure", message: poolResult.error },
+    ])) as HealthInventoryResult
+  }
 
   const results = await Promise.all(
     providers.map(async (provider) => {
-      const config = secrets.providers[provider as keyof typeof secrets.providers]
-      const result = await ping(provider, config as ProviderRuntimeConfig)
+      const record = poolResult.pool.providers[provider]
+      if (!record) {
+        return [provider, { ok: false, classification: "auth-failure", message: "no credentials configured" } as PingResult] as const
+      }
+      const config = { ...record.config, ...record.credentials }
+      const result = await ping(provider, config as unknown as ProviderRuntimeConfig)
       return [provider, result] as const
     }),
   )

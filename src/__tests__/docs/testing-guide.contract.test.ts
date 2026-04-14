@@ -19,7 +19,7 @@ describe("docs/testing-guide contract", () => {
     expect(content).toContain("Expected:")
     expect(content).toContain("Troubleshooting")
     expect(content).toContain("state/providers.json")
-    expect(content).toContain("~/.agentsecrets/providers.json")
+    expect(content).toContain("owning agent's vault")
     expect(content).toContain("ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>")
     expect(content).toContain("`ouro auth` stores credentials only")
   })

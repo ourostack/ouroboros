@@ -4,13 +4,59 @@ import * as path from "path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+const providerCredentialWrites = vi.hoisted(() => [] as Array<{
+  agentName: string
+  provider: string
+  credentials: Record<string, string | number>
+  config: Record<string, string | number>
+}>)
+const mockRefreshProviderCredentialPool = vi.hoisted(() => vi.fn(async (agentName: string) => ({
+  ok: true,
+  poolPath: `vault:${agentName}:providers/*`,
+  pool: {
+    schemaVersion: 1,
+    updatedAt: "2026-04-13T00:00:00.000Z",
+    providers: {},
+  },
+})))
+const mockUpsertProviderCredential = vi.hoisted(() => vi.fn(async (input: {
+  agentName: string
+  provider: string
+  credentials: Record<string, string | number>
+  config: Record<string, string | number>
+}) => {
+  providerCredentialWrites.push({
+    agentName: input.agentName,
+    provider: input.provider,
+    credentials: input.credentials,
+    config: input.config,
+  })
+  return {
+    provider: input.provider,
+    revision: `test_${input.provider}`,
+    updatedAt: "2026-04-13T00:00:00.000Z",
+    credentials: input.credentials,
+    config: input.config,
+    provenance: { source: "auth-flow", updatedAt: "2026-04-13T00:00:00.000Z" },
+  }
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockRefreshProviderCredentialPool,
+    upsertProviderCredential: mockUpsertProviderCredential,
+  }
+})
+
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   collectRuntimeAuthCredentials,
   readAgentConfigForAgent,
   resolveHatchCredentials,
+  storeProviderCredentials,
   writeAgentModel,
-  writeProviderCredentials,
   runRuntimeAuthFlow,
   writeAgentProviderSelection,
 } from "../../../heart/auth/auth-flow"
@@ -68,8 +114,17 @@ function readSecrets(homeDir: string, agentName: string): Record<string, any> {
   ) as Record<string, any>
 }
 
+function expectProviderCredentialWrite(agentName: string, provider: string) {
+  const write = providerCredentialWrites.find((entry) => entry.agentName === agentName && entry.provider === provider)
+  expect(write).toBeDefined()
+  return write!
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
+  providerCredentialWrites.splice(0)
+  mockRefreshProviderCredentialPool.mockClear()
+  mockUpsertProviderCredential.mockClear()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue
@@ -78,6 +133,37 @@ afterEach(() => {
 })
 
 describe("runtime auth flow", () => {
+  it("rejects persistent provider auth for SerpentGuide", async () => {
+    emitTestEvent("serpent guide persistent auth unsupported")
+
+    await expect(() =>
+      runRuntimeAuthFlow({
+        agentName: "SerpentGuide",
+        provider: "minimax",
+        promptInput: async () => "minimax-key",
+      }),
+    ).rejects.toThrow("persistent SerpentGuide auth is not supported")
+    expect(mockRefreshProviderCredentialPool).not.toHaveBeenCalled()
+  })
+
+  it("asks the operator to unlock the agent vault before auth when the vault is unavailable", async () => {
+    emitTestEvent("auth flow vault unavailable")
+    mockRefreshProviderCredentialPool.mockResolvedValueOnce({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:MiniBot:providers/*",
+      error: "vault locked",
+    })
+
+    await expect(() =>
+      runRuntimeAuthFlow({
+        agentName: "MiniBot",
+        provider: "minimax",
+        promptInput: async () => "minimax-key",
+      }),
+    ).rejects.toThrow("Run `ouro vault unlock --agent MiniBot`, then retry auth.")
+  })
+
   it("reads agent config and rewrites provider selection", () => {
     emitTestEvent("reads and rewrites agent config")
     const bundlesRoot = makeTempDir("auth-flow-bundles")
@@ -122,7 +208,7 @@ describe("runtime auth flow", () => {
     expect(() => readAgentConfigForAgent(agentName, bundlesRoot)).toThrow("unsupported provider 'not-real'")
   })
 
-  it("always runs codex login and deep-merges secrets defaults", async () => {
+  it("always runs codex login and writes the OpenAI Codex credential to the provider vault", async () => {
     emitTestEvent("always refreshes codex token")
     const homeDir = makeTempDir("auth-flow-home-codex-existing")
     const agentName = "CodexExisting"
@@ -157,11 +243,13 @@ describe("runtime auth flow", () => {
     expect(result.message).toBe(`authenticated ${agentName} with openai-codex`)
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))
 
-    const secrets = readSecrets(homeDir, agentName)
-    expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-refreshed")
-    expect(secrets.providers.minimax.model).toBe("custom-minimax")
-    expect(secrets.oauth.graphConnectionName).toBe("graph")
-    expect(secrets.oauth.githubConnectionName).toBe("github-oauth")
+    expect(result.credentialPath).toBe("providers/openai-codex")
+    const write = expectProviderCredentialWrite(agentName, "openai-codex")
+    expect(write.credentials.oauthAccessToken).toBe("oauth-token-refreshed")
+    const legacySecrets = readSecrets(homeDir, agentName)
+    expect(legacySecrets.providers["openai-codex"]).toBeUndefined()
+    expect(legacySecrets.providers.minimax.model).toBe("custom-minimax")
+    expect(legacySecrets.oauth.githubConnectionName).toBe("github-oauth")
   })
 
   it("treats non-string Codex auth tokens as missing and re-runs login", async () => {
@@ -195,7 +283,9 @@ describe("runtime auth flow", () => {
     )
 
     expect(spawnSync).toHaveBeenCalledOnce()
-    expect(readSecrets(homeDir, agentName).providers["openai-codex"].oauthAccessToken).toBe("oauth-token-after-relogin")
+    expect(
+      expectProviderCredentialWrite(agentName, "openai-codex").credentials.oauthAccessToken,
+    ).toBe("oauth-token-after-relogin")
   })
 
   it("runs codex login when no existing token is present", async () => {
@@ -224,8 +314,10 @@ describe("runtime auth flow", () => {
     )
 
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], { stdio: "inherit" })
-    expect(result.secretsPath).toBe(path.join(homeDir, ".agentsecrets", agentName, "secrets.json"))
-    expect(readSecrets(homeDir, agentName).providers["openai-codex"].oauthAccessToken).toBe("oauth-token-from-login")
+    expect(result.credentialPath).toBe("providers/openai-codex")
+    expect(
+      expectProviderCredentialWrite(agentName, "openai-codex").credentials.oauthAccessToken,
+    ).toBe("oauth-token-from-login")
   })
 
   it("surfaces codex login execution failures", async () => {
@@ -302,7 +394,9 @@ describe("runtime auth flow", () => {
 
     expect(spawnSync).toHaveBeenCalledWith("claude", ["setup-token"], { stdio: "inherit" })
     expect(result.message).toBe("authenticated AnthropicBot with anthropic")
-    expect(readSecrets(homeDir, "AnthropicBot").providers.anthropic.setupToken).toBe(setupToken)
+    expect(expectProviderCredentialWrite("AnthropicBot", "anthropic").credentials.setupToken).toBe(
+      setupToken,
+    )
   })
 
   it("requires prompt input for Anthropics setup-token flow", async () => {
@@ -397,7 +491,7 @@ describe("runtime auth flow", () => {
     })
 
     expect(result.message).toBe("authenticated MiniBot with minimax")
-    expect(readSecrets(homeDir, "MiniBot").providers.minimax.apiKey).toBe("minimax-key")
+    expect(expectProviderCredentialWrite("MiniBot", "minimax").credentials.apiKey).toBe("minimax-key")
   })
 
   it("rejects blank MiniMax API keys", async () => {
@@ -427,8 +521,8 @@ describe("runtime auth flow", () => {
       promptInput: async () => "minimax-default-home-key",
     })
 
-    expect(result.secretsPath).toBe(path.join(homeDir, ".agentsecrets", agentName, "secrets.json"))
-    expect(readSecrets(homeDir, agentName).providers.minimax.apiKey).toBe("minimax-default-home-key")
+    expect(result.credentialPath).toBe("providers/minimax")
+    expect(expectProviderCredentialWrite(agentName, "minimax").credentials.apiKey).toBe("minimax-default-home-key")
   })
 
   it("writes Azure credentials", async () => {
@@ -449,10 +543,10 @@ describe("runtime auth flow", () => {
     })
 
     expect(result.message).toBe("authenticated AzureBot with azure")
-    const secrets = readSecrets(homeDir, "AzureBot")
-    expect(secrets.providers.azure.apiKey).toBe("azure-api-key")
-    expect(secrets.providers.azure.endpoint).toBe("https://example.openai.azure.com")
-    expect(secrets.providers.azure.deployment).toBe("gpt-4o-mini")
+    const write = expectProviderCredentialWrite("AzureBot", "azure")
+    expect(write.credentials.apiKey).toBe("azure-api-key")
+    expect(write.config.endpoint).toBe("https://example.openai.azure.com")
+    expect(write.config.deployment).toBe("gpt-4o-mini")
   })
 
   it("rejects incomplete Azure credentials", async () => {
@@ -471,39 +565,33 @@ describe("runtime auth flow", () => {
     ).rejects.toThrow("Azure endpoint is required.")
   })
 
-  it("fails fast when an existing secrets file is unreadable", async () => {
-    emitTestEvent("invalid secrets file")
+  it("does not read legacy secrets files when writing provider credentials", async () => {
+    emitTestEvent("legacy secrets ignored by provider auth")
     const homeDir = makeTempDir("auth-flow-home-bad-secrets")
     const agentName = "BadSecrets"
     fs.mkdirSync(path.join(homeDir, ".agentsecrets", agentName), { recursive: true })
     fs.writeFileSync(path.join(homeDir, ".agentsecrets", agentName, "secrets.json"), "{not-json}\n", "utf8")
 
-    await expect(() =>
-      runRuntimeAuthFlow({
-        agentName,
-        provider: "minimax",
-        promptInput: async () => "minimax-key",
-      }, {
-        homeDir,
-      }),
-    ).rejects.toThrow("Failed to read secrets config")
+    const result = await runRuntimeAuthFlow({
+      agentName,
+      provider: "minimax",
+      promptInput: async () => "minimax-key",
+    }, {
+      homeDir,
+    })
+
+    expect(result.credentialPath).toBe("providers/minimax")
+    expect(expectProviderCredentialWrite(agentName, "minimax").credentials.apiKey).toBe("minimax-key")
   })
 
-  it("defaults provider secret writes to os.homedir when no deps are provided", () => {
-    emitTestEvent("write provider credentials default path")
+  it("stores provider credentials through the provider vault path", async () => {
+    emitTestEvent("store provider credentials direct")
     const agentName = `DirectWriteBot-${Date.now()}`
-    // Subpath extracted to a const so the literal `.agentsecrets` is not
-    // on the same line as `os.homedir()` (test-isolation.contract rule).
-    const agentSecretsSubpath = ".agentsecrets"
-    const homeDir = os.homedir()
-    cleanup.push(path.join(homeDir, agentSecretsSubpath, agentName))
 
-    const result = writeProviderCredentials(agentName, "minimax", { apiKey: "direct-minimax-key" })
+    const result = await storeProviderCredentials(agentName, "minimax", { apiKey: "direct-minimax-key" })
 
-    expect(result.secretsPath).toBe(path.join(homeDir, agentSecretsSubpath, agentName, "secrets.json"))
-    const secrets = readSecrets(homeDir, agentName)
-    expect(secrets.providers.minimax.apiKey).toBe("direct-minimax-key")
-    expect(secrets.providers.minimax.model).toBeUndefined()
+    expect(result.credentialPath).toBe("providers/minimax")
+    expect(expectProviderCredentialWrite(agentName, "minimax").credentials.apiKey).toBe("direct-minimax-key")
   })
 
   it("uses shared runtime auth to resolve missing anthropic hatch credentials", async () => {
@@ -513,7 +601,7 @@ describe("runtime auth flow", () => {
       agentName: "SharedAnthropic",
       provider: "anthropic",
       message: "authenticated SharedAnthropic with anthropic",
-      secretsPath: "/tmp/shared-anthropic.json",
+      credentialPath: "providers/anthropic",
       credentials: {
         setupToken: `sk-ant-oat01-${"b".repeat(90)}`,
       },
@@ -748,19 +836,17 @@ describe("github-copilot auth flow", () => {
     }
   })
 
-  it("applyCredentials and writeProviderCredentials for github-copilot", () => {
-    emitTestEvent("github-copilot writeProviderCredentials")
-    const homeDir = makeTempDir("auth-flow-home-ghcopilot-write")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
-    const { secretsPath, secrets } = writeProviderCredentials(
+  it("storeProviderCredentials splits github-copilot credential and config fields", async () => {
+    emitTestEvent("github-copilot storeProviderCredentials")
+    const result = await storeProviderCredentials(
       "CopilotWrite",
       "github-copilot",
       { githubToken: "ghp_written", baseUrl: "https://api.written.com" },
-      { secretsRoot },
     )
-    expect(secretsPath).toBeTruthy()
-    expect(secrets.providers["github-copilot"].githubToken).toBe("ghp_written")
-    expect(secrets.providers["github-copilot"].baseUrl).toBe("https://api.written.com")
+    expect(result.credentialPath).toBe("providers/github-copilot")
+    const write = expectProviderCredentialWrite("CopilotWrite", "github-copilot")
+    expect(write.credentials.githubToken).toBe("ghp_written")
+    expect(write.config.baseUrl).toBe("https://api.written.com")
   })
 
   it("resolveHatchCredentials for github-copilot delegates to runAuthFlow", async () => {
@@ -768,7 +854,7 @@ describe("github-copilot auth flow", () => {
     const mockRunAuthFlow = vi.fn().mockResolvedValue({
       agentName: "CopilotHatch",
       provider: "github-copilot",
-      secretsPath: "/mock/secrets.json",
+      credentialPath: "providers/github-copilot",
       message: "ok",
       credentials: { githubToken: "ghp_hatched", baseUrl: "https://api.hatched.com" },
     })

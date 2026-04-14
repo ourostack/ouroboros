@@ -7,6 +7,7 @@
 
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-state"
+import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
@@ -67,6 +68,7 @@ export function usage(): string {
     "  ouro status --agent <name>",
     "  ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]",
     "  ouro check --agent <name> --lane outward|inner",
+    "  ouro provider refresh --agent <name>",
     "  ouro outlook [--json]",
     "  ouro -v|--version",
     "  ouro config model --agent <name> <model-name>",
@@ -74,6 +76,9 @@ export function usage(): string {
     "  ouro auth --agent <name> [--provider <provider>]",
     "  ouro auth verify --agent <name> [--provider <provider>]",
     "  ouro auth switch --agent <name> --provider <provider>",
+    "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>] [--generate-unlock-secret]",
+    "  ouro vault unlock --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
+    "  ouro vault status --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -441,6 +446,65 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
   return provider ? { kind: "auth.run", agent, provider } : { kind: "auth.run", agent }
 }
 
+function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
+  return value === "auto" || value === "macos-keychain" || value === "windows-dpapi" || value === "linux-secret-service" || value === "plaintext-file"
+}
+
+function parseVaultCommand(args: string[]): OuroCliCommand {
+  const sub = args[0]
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let email: string | undefined
+  let serverUrl: string | undefined
+  let store: VaultUnlockStoreKind | undefined
+  let generateUnlockSecret = false
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--email") {
+      email = rest[i + 1]
+      i += 1
+      continue
+    }
+    if (token === "--server") {
+      serverUrl = rest[i + 1]
+      i += 1
+      continue
+    }
+    if (token === "--store") {
+      const value = rest[i + 1]
+      if (!isVaultUnlockStoreKind(value)) {
+        throw new Error("vault --store must be auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file")
+      }
+      store = value
+      i += 1
+      continue
+    }
+    if (token === "--generate-unlock-secret") {
+      generateUnlockSecret = true
+      continue
+    }
+    throw new Error("Usage: ouro vault create|unlock|status --agent <name>")
+  }
+
+  if (!agent || (sub !== "create" && sub !== "unlock" && sub !== "status")) {
+    throw new Error("Usage: ouro vault create|unlock|status --agent <name>")
+  }
+  if (sub === "create") {
+    return {
+      kind: "vault.create",
+      agent,
+      ...(email ? { email } : {}),
+      ...(serverUrl ? { serverUrl } : {}),
+      ...(store ? { store } : {}),
+      ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+    }
+  }
+  if (sub === "unlock") {
+    return { kind: "vault.unlock", agent, ...(store ? { store } : {}) }
+  }
+  return { kind: "vault.status", agent, ...(store ? { store } : {}) }
+}
+
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const { facing, rest: afterFacing } = extractFacingFlag(afterAgent)
@@ -499,6 +563,15 @@ function parseProviderCheckCommand(args: string[]): OuroCliCommand {
     lane: resolvedLane,
     ...(facing ? { legacyFacing: facing } : {}),
   }
+}
+
+function parseProviderCommand(args: string[]): OuroCliCommand {
+  const sub = args[0]
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  if (sub === "refresh" && agent && rest.length === 0) {
+    return { kind: "provider.refresh", agent }
+  }
+  throw new Error("Usage: ouro provider refresh --agent <name>")
 }
 
 function parseReminderCommand(args: string[]): OuroCliCommand {
@@ -870,6 +943,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "use") return parseProviderUseCommand(args.slice(1))
   if (head === "check") return parseProviderCheckCommand(args.slice(1))
+  if (head === "provider") return parseProviderCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }
@@ -877,6 +951,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
+  if (head === "vault") return parseVaultCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "habit") return parseHabitCommand(args.slice(1))

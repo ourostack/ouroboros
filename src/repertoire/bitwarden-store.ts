@@ -1,14 +1,14 @@
 /**
  * Bitwarden CLI credential store — wraps `bw` CLI for the agent's own vault.
  *
- * Unlike AacCredentialStore (which accesses someone else's vault via approval),
- * this store authenticates directly as the agent using its own master password.
+ * This store authenticates directly as the agent using its own master password.
  * The agent owns the vault, so no human-in-the-loop is needed.
  *
  * Requires the `bw` CLI to be installed. Session tokens are cached process-local.
  */
 
 import { execFile as execFileCb } from "node:child_process"
+import * as fs from "node:fs"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 import { ensureBwCli } from "./bw-installer"
@@ -17,10 +17,12 @@ import { ensureBwCli } from "./bw-installer"
 // bw CLI wrapper
 // ---------------------------------------------------------------------------
 
-function execBw(args: string[], sessionToken?: string): Promise<string> {
-  const env = sessionToken
-    ? { ...process.env, BW_SESSION: sessionToken }
-    : process.env
+function execBw(args: string[], sessionToken?: string, appDataDir?: string): Promise<string> {
+  const env = {
+    ...process.env,
+    ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
+    ...(appDataDir ? { BITWARDENCLI_APPDATA_DIR: appDataDir } : {}),
+  }
 
   return new Promise((resolve, reject) => {
     execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout) => {
@@ -88,12 +90,19 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly serverUrl: string
   private readonly email: string
   private readonly masterPassword: string
+  private readonly appDataDir?: string
   private sessionToken: string | null = null
 
-  constructor(serverUrl: string, email: string, masterPassword: string) {
+  constructor(
+    serverUrl: string,
+    email: string,
+    masterPassword: string,
+    options: { appDataDir?: string } = {},
+  ) {
     this.serverUrl = serverUrl
     this.email = email
     this.masterPassword = masterPassword
+    this.appDataDir = options.appDataDir
   }
 
   isReady(): boolean {
@@ -108,6 +117,9 @@ export class BitwardenCredentialStore implements CredentialStore {
   async login(): Promise<void> {
     // Ensure bw CLI is installed before any bw commands
     await ensureBwCli()
+    if (this.appDataDir) {
+      fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
+    }
 
     let lastError: Error | undefined
 
@@ -147,7 +159,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Check current status
     let status: { status?: string; serverUrl?: string; userEmail?: string } = {}
     try {
-      const raw = await execBw(["status"])
+      const raw = await execBw(["status"], undefined, this.appDataDir)
       status = JSON.parse(raw)
     } catch (err) {
       // If bw CLI is not installed or a transient error, propagate it for retry
@@ -160,7 +172,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Configure server URL if needed (only works when logged out)
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
-        await execBw(["config", "server", this.serverUrl])
+        await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
       } catch {
         // "Logout required" means already logged in — that's fine, skip config
       }
@@ -168,11 +180,11 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     if (status.status === "locked") {
       // Already logged in, just needs unlock
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"])
+      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
       this.sessionToken = unlockOutput.trim()
     } else if (status.status === "unauthenticated" || !status.status) {
       // Not logged in — full login
-      const loginOutput = await execBw(["login", this.email, this.masterPassword, "--raw"])
+      const loginOutput = await execBw(["login", this.email, this.masterPassword, "--raw"], undefined, this.appDataDir)
       try {
         const parsed = JSON.parse(loginOutput)
         this.sessionToken = parsed.access_token ?? loginOutput.trim()
@@ -181,7 +193,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     } else {
       // Status is "unlocked" — already good, just need the session token
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"])
+      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
       this.sessionToken = unlockOutput.trim()
     }
   }
@@ -268,8 +280,9 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     const session = await this.ensureSession()
 
-    // Create a new login item
+    const existing = await this.findItemByDomain(domain, session)
     const item = {
+      ...(existing ?? {}),
       type: 1, // Login type
       name: domain,
       login: {
@@ -281,7 +294,11 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
 
     const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
-    await execBw(["create", "item", encoded], session)
+    if (existing) {
+      await execBw(["edit", "item", existing.id, encoded], session, this.appDataDir)
+    } else {
+      await execBw(["create", "item", encoded], session, this.appDataDir)
+    }
 
     emitNervesEvent({
       event: "repertoire.bw_credential_store_end",
@@ -302,7 +319,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     const session = await this.ensureSession()
 
     try {
-      const stdout = await execBw(["list", "items"], session)
+      const stdout = await execBw(["list", "items"], session, this.appDataDir)
       const items: BwLoginItem[] = JSON.parse(stdout)
 
       const results: CredentialMeta[] = items.map((item) => ({
@@ -352,7 +369,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await execBw(["delete", "item", item.id], session)
+    await execBw(["delete", "item", item.id], session, this.appDataDir)
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -368,7 +385,7 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
     try {
-      const stdout = await execBw(["list", "items", "--search", domain], session)
+      const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
       const items: BwLoginItem[] = JSON.parse(stdout)
 
       // Find exact match by name

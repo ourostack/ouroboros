@@ -26,7 +26,7 @@ export function createMinimaxProviderRuntime(model: string, minimaxConfig: Minim
   });
   if (!minimaxConfig.apiKey) {
     throw new Error(
-      "provider 'minimax' is selected in agent.json but providers.minimax.apiKey is missing in secrets.json.",
+      "provider 'minimax' is selected but minimax.apiKey is missing in the agent vault. Run `ouro auth --agent <agent> --provider minimax`.",
     );
   }
   // Registry consulted; MiniMax models return empty defaults (no capabilities to derive)

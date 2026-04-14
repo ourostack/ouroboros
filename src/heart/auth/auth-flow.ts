@@ -3,111 +3,20 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, getAgentSecretsPath, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
 import type { Facing } from "../../mind/friends/channel"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
+import {
+  providerCredentialItemName,
+  refreshProviderCredentialPool,
+  splitProviderCredentialFields,
+  upsertProviderCredential,
+} from "../provider-credentials"
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-"
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80
-
-interface SecretsTemplate {
-  providers: {
-    azure: {
-      apiKey: string
-      endpoint: string
-      deployment: string
-      apiVersion: string
-    }
-    minimax: {
-      apiKey: string
-    }
-    anthropic: {
-      setupToken: string
-      refreshToken?: string
-      expiresAt?: number
-    }
-    "openai-codex": {
-      oauthAccessToken: string
-    }
-    "github-copilot": {
-      githubToken: string
-      baseUrl: string
-    }
-  }
-  teams: {
-    clientId: string
-    clientSecret: string
-    tenantId: string
-  }
-  oauth: {
-    graphConnectionName: string
-    adoConnectionName: string
-    githubConnectionName: string
-  }
-  teamsChannel: {
-    skipConfirmation: boolean
-    port: number
-  }
-  vault: {
-    masterPassword: string
-    adminToken?: string
-    clientId?: string
-    clientSecret?: string
-  }
-  integrations: {
-    perplexityApiKey: string
-    openaiEmbeddingsApiKey: string
-  }
-}
-
-const DEFAULT_SECRETS_TEMPLATE: SecretsTemplate = {
-  providers: {
-    azure: {
-      apiKey: "",
-      endpoint: "",
-      deployment: "",
-      apiVersion: "2025-04-01-preview",
-    },
-    minimax: {
-      apiKey: "",
-    },
-    anthropic: {
-      setupToken: "",
-      refreshToken: "",
-      expiresAt: 0,
-    },
-    "openai-codex": {
-      oauthAccessToken: "",
-    },
-    "github-copilot": {
-      githubToken: "",
-      baseUrl: "",
-    },
-  },
-  teams: {
-    clientId: "",
-    clientSecret: "",
-    tenantId: "",
-  },
-  oauth: {
-    graphConnectionName: "graph",
-    adoConnectionName: "ado",
-    githubConnectionName: "",
-  },
-  teamsChannel: {
-    skipConfirmation: true,
-    port: 3978,
-  },
-  vault: {
-    masterPassword: "",
-  },
-  integrations: {
-    perplexityApiKey: "",
-    openaiEmbeddingsApiKey: "",
-  },
-}
 
 export interface RuntimeAuthInput {
   agentName: string
@@ -121,16 +30,11 @@ export interface RuntimeAuthDeps {
   spawnSync?: typeof defaultSpawnSync
 }
 
-export interface ProviderSecretsDeps {
-  homeDir?: string
-  secretsRoot?: string
-}
-
 export interface RuntimeAuthResult {
   agentName: string
   provider: AgentProvider
   message: string
-  secretsPath: string
+  credentialPath: string
   credentials: HatchCredentialsInput
 }
 
@@ -142,25 +46,10 @@ export interface HatchCredentialResolutionInput {
   runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>
 }
 
-function deepMerge<T>(defaults: T, partial: Record<string, unknown>): T {
-  const result = { ...(defaults as Record<string, unknown>) }
-  for (const key of Object.keys(partial)) {
-    const left = result[key]
-    const right = partial[key]
-    if (
-      right !== null &&
-      typeof right === "object" &&
-      !Array.isArray(right) &&
-      left !== null &&
-      typeof left === "object" &&
-      !Array.isArray(left)
-    ) {
-      result[key] = deepMerge(left as Record<string, unknown>, right as Record<string, unknown>)
-      continue
-    }
-    result[key] = right
+function assertPersistentProviderCredentialsAllowed(agentName: string): void {
+  if (agentName === "SerpentGuide") {
+    throw new Error("SerpentGuide uses provider credentials in memory during hatch bootstrap; persistent SerpentGuide auth is not supported.")
   }
-  return result as T
 }
 
 function readJsonRecord(filePath: string, label: string): Record<string, unknown> {
@@ -260,48 +149,23 @@ export function writeAgentProviderSelection(
   return configPath
 }
 
-function resolveAgentSecretsPath(agentName: string, deps: ProviderSecretsDeps = {}): string {
-  if (deps.secretsRoot) return path.join(deps.secretsRoot, agentName, "secrets.json")
-  const homeDir = deps.homeDir ?? os.homedir()
-  return getAgentSecretsPath(agentName).replace(os.homedir(), homeDir)
-}
-
-export function loadAgentSecrets(
-  agentName: string,
-  deps: ProviderSecretsDeps = {},
-): { secretsPath: string; secrets: SecretsTemplate } {
-  const secretsPath = resolveAgentSecretsPath(agentName, deps)
-  const secretsDir = path.dirname(secretsPath)
-  fs.mkdirSync(secretsDir, { recursive: true })
-
-  let onDisk: Record<string, unknown> = {}
-  try {
-    onDisk = readJsonRecord(secretsPath, "secrets config")
-  } catch (error) {
-    const message = (error as Error).message
-    if (!message.includes("ENOENT")) throw error
-  }
-
-  return {
-    secretsPath,
-    secrets: deepMerge(DEFAULT_SECRETS_TEMPLATE, onDisk),
-  }
-}
-
-function writeSecrets(secretsPath: string, secrets: SecretsTemplate): void {
-  fs.writeFileSync(secretsPath, `${JSON.stringify(secrets, null, 2)}\n`, "utf8")
-}
-
-export function writeProviderCredentials(
+export async function storeProviderCredentials(
   agentName: string,
   provider: AgentProvider,
   credentials: HatchCredentialsInput,
-  deps: ProviderSecretsDeps = {},
-): { secretsPath: string; secrets: SecretsTemplate } {
-  const { secretsPath, secrets } = loadAgentSecrets(agentName, deps)
-  applyCredentials(secrets, provider, credentials)
-  writeSecrets(secretsPath, secrets)
-  return { secretsPath, secrets }
+  deps: { now?: Date } = {},
+): Promise<{ credentialPath: string }> {
+  assertPersistentProviderCredentialsAllowed(agentName)
+  const split = splitProviderCredentialFields(provider, credentials as Record<string, unknown>)
+  await upsertProviderCredential({
+    agentName,
+    provider,
+    credentials: split.credentials,
+    config: split.config,
+    provenance: { source: "auth-flow" },
+    now: deps.now,
+  })
+  return { credentialPath: providerCredentialItemName(provider) }
 }
 
 export function writeAgentModel(
@@ -522,25 +386,11 @@ export async function resolveHatchCredentials(
   return credentials
 }
 
-function applyCredentials(
-  secrets: SecretsTemplate,
-  provider: AgentProvider,
-  credentials: HatchCredentialsInput,
-): void {
-  const target = secrets.providers[provider] as Record<string, unknown>
-  // Copy all non-empty credential fields to the provider's secrets block
-  for (const [key, value] of Object.entries(credentials)) {
-    /* v8 ignore next -- guard: skip null/empty fields from partial credential objects @preserve */
-    if (value != null && value !== "") {
-      target[key] = typeof value === "string" ? value.trim() : value
-    }
-  }
-}
-
 export async function runRuntimeAuthFlow(
   input: RuntimeAuthInput,
   deps: RuntimeAuthDeps = {},
 ): Promise<RuntimeAuthResult> {
+  assertPersistentProviderCredentialsAllowed(input.agentName)
   emitNervesEvent({
     component: "daemon",
     event: "daemon.auth_flow_start",
@@ -548,21 +398,25 @@ export async function runRuntimeAuthFlow(
     meta: { agentName: input.agentName, provider: input.provider },
   })
 
-  const homeDir = deps.homeDir ?? os.homedir()
+  const vault = await refreshProviderCredentialPool(input.agentName)
+  if (!vault.ok && vault.reason === "unavailable") {
+    throw new Error(`${vault.error}\nRun \`ouro vault unlock --agent ${input.agentName}\`, then retry auth.`)
+  }
+
   const credentials = await collectRuntimeAuthCredentials(input, deps)
-  const { secretsPath } = writeProviderCredentials(input.agentName, input.provider, credentials, { homeDir })
+  const { credentialPath } = await storeProviderCredentials(input.agentName, input.provider, credentials)
 
   emitNervesEvent({
     component: "daemon",
     event: "daemon.auth_flow_end",
     message: "completed runtime auth flow",
-    meta: { agentName: input.agentName, provider: input.provider, secretsPath },
+    meta: { agentName: input.agentName, provider: input.provider, credentialPath },
   })
 
   return {
     agentName: input.agentName,
     provider: input.provider,
-    secretsPath,
+    credentialPath,
     message: `authenticated ${input.agentName} with ${input.provider}`,
     credentials,
   }

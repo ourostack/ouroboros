@@ -120,6 +120,39 @@ describe("provider state", () => {
     })
   })
 
+  it("treats a disappeared provider state file as missing", async () => {
+    emitTestEvent("provider state disappeared during read")
+    const statePath = getProviderStatePath(agentRoot)
+    vi.resetModules()
+    vi.doMock("fs", async () => {
+      const actual = await vi.importActual<typeof import("fs")>("fs")
+      return {
+        ...actual,
+        existsSync: (filePath: fs.PathLike) => String(filePath) === statePath,
+        readFileSync: (filePath: fs.PathOrFileDescriptor, ...args: any[]) => {
+          if (String(filePath) === statePath) {
+            throw Object.assign(new Error("gone"), { code: "ENOENT" })
+          }
+          return actual.readFileSync(filePath as never, ...(args as never[]))
+        },
+      }
+    })
+
+    try {
+      const { readProviderState: readRacingProviderState } = await import("../../heart/provider-state")
+      const result = readRacingProviderState(agentRoot)
+      expect(result).toEqual({
+        ok: false,
+        reason: "missing",
+        statePath,
+        error: "provider state not found",
+      })
+    } finally {
+      vi.doUnmock("fs")
+      vi.resetModules()
+    }
+  })
+
   it("reads readiness entries with error and attempt metadata", () => {
     emitTestEvent("provider state readiness error metadata")
     const state = providerState({

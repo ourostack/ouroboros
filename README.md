@@ -11,8 +11,8 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 - `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
 - `ouro dev` starts the daemon from a local repo build. It auto-builds from source, disables launchd auto-restart (so the installed daemon doesn't respawn underneath you), persists the repo path in `~/.ouro-cli/dev-config.json` for next time, and force-restarts the daemon. If you run `ouro dev` from inside the repo, it detects the CWD automatically. Run `ouro up` to return to production mode (this also cleans up `dev-config.json`).
 - Agent bundles live outside the repo at `~/AgentBundles/<agent>.ouro/`.
-- Provider credentials live outside the repo at `~/.agentsecrets/providers.json`.
-- Sense-specific secrets live outside the repo at `~/.agentsecrets/<agent>/secrets.json`.
+- Provider credentials live in the owning agent's Bitwarden/Vaultwarden vault. Tool/sense credential vault migration is a follow-up.
+- Vault coordinates and local runtime state live in the agent bundle; raw credentials do not.
 - Machine-scoped test and runtime spillover lives under `~/.agentstate/...`.
 
 Current first-class senses:
@@ -91,10 +91,11 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for phrase pools, context settings, enabled senses, and the agent's `configPath`. Legacy `humanFacing`/`agentFacing` values are bootstrap inputs, not live machine fallback.
-- `configPath` must point to `~/.agentsecrets/<agent>/secrets.json` for sense-specific secrets.
+- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, and vault coordinates. Legacy `humanFacing`/`agentFacing` values are bootstrap inputs, not live machine fallback.
 - `state/providers.json` is the local source of truth for provider+model selection on this machine. It has two lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
-- `~/.agentsecrets/providers.json` is the machine credential pool. It stores provider credentials only, records which agent contributed them, and is shared by all agents on that machine.
+- Each agent has one credential vault for provider credentials. There is no machine-wide provider credential pool.
+- Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
+- Provider credentials are loaded into daemon memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model request.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
 - `bundle-meta.json` tracks the runtime version that last touched a bundle.
@@ -114,7 +115,7 @@ ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
 ```
 
-`ouro auth` stores credentials only. It does not switch a lane or write provider/model selection.
+`ouro auth` stores credentials in the owning agent's vault. It does not switch a lane or write provider/model selection.
 
 When you want this machine to use a provider/model for a lane, use:
 
@@ -123,6 +124,8 @@ ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <mo
 ```
 
 The outward lane handles user-facing senses. The inner lane handles the agent's private thinking. `ouro use` performs the provider/model check before committing the lane, so a broken local choice fails fast with a repair path instead of surprising the next turn.
+
+For the full locked auth/provider contract, including refresh, repair actors, caching, and SerpentGuide hatch bootstrap, see `docs/auth-and-providers.md`.
 
 ## Quickstart
 
@@ -165,8 +168,12 @@ ouro dev --clone                 # clone repo to ~/Projects/ouroboros, build, st
 ouro status
 ouro logs
 ouro stop
+ouro vault unlock --agent <name>
+ouro vault status --agent <name>
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
+ouro auth verify --agent <name> [--provider <provider>]
+ouro provider refresh --agent <name>
 ouro use --agent <name> --lane <outward|inner> --provider <provider> --model <model>
 ouro hatch
 ouro clone <remote> [--agent <name>]   # clone an existing agent from a git remote (see docs/cross-machine-setup.md)
@@ -233,6 +240,8 @@ See `skills/configure-dev-tools.md` for the full tool inventory and troubleshoot
   Current daemon, bundle, sense, and update model.
 - `docs/testing-guide.md`
   Operator smoke flow for bootstrap, daemon, hatch, chat, and messaging.
+- `docs/auth-and-providers.md`
+  Locked credential, provider selection, refresh, repair, and hatch bootstrap contract.
 
 ## A Note To Future Maintainers
 

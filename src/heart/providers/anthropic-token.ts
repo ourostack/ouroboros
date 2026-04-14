@@ -1,7 +1,6 @@
 /* v8 ignore start -- OAuth token lifecycle: requires live API calls, tested via integration @preserve */
-import * as fs from "fs"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentSecretsPath } from "../identity"
+import { upsertProviderCredential } from "../provider-credentials"
 
 const OAUTH_TOKEN_ENDPOINT = "https://console.anthropic.com/v1/oauth/token"
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -96,19 +95,21 @@ export async function refreshAnthropicToken(
 }
 
 /**
- * Persist refreshed token state back to secrets.json.
+ * Persist refreshed token state back to the agent vault.
  */
-export function persistTokenState(agentName: string, state: AnthropicTokenState): void {
+export async function persistTokenState(agentName: string, state: AnthropicTokenState): Promise<void> {
   try {
-    const secretsPath = getAgentSecretsPath(agentName)
-    const raw = fs.readFileSync(secretsPath, "utf-8")
-    const secrets = JSON.parse(raw)
-    secrets.providers = secrets.providers ?? {}
-    secrets.providers.anthropic = secrets.providers.anthropic ?? {}
-    secrets.providers.anthropic.setupToken = state.accessToken
-    secrets.providers.anthropic.refreshToken = state.refreshToken
-    secrets.providers.anthropic.expiresAt = state.expiresAt
-    fs.writeFileSync(secretsPath, JSON.stringify(secrets, null, 2) + "\n", "utf-8")
+    await upsertProviderCredential({
+      agentName,
+      provider: "anthropic",
+      credentials: {
+        setupToken: state.accessToken,
+        refreshToken: state.refreshToken,
+        expiresAt: state.expiresAt,
+      },
+      config: {},
+      provenance: { source: "auth-flow" },
+    })
   /* v8 ignore start -- defensive: persistence failure must not crash the provider @preserve */
   } catch (error) {
     emitNervesEvent({
@@ -148,7 +149,7 @@ export async function ensureFreshToken(
     return currentToken // refresh failed — try the old token
   }
 
-  persistTokenState(agentName, newState)
+  await persistTokenState(agentName, newState)
   return newState.accessToken
 }
 /* v8 ignore stop */

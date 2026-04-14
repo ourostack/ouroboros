@@ -306,7 +306,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
             model: failoverAction.model,
             credentialRevision: failoverAction.credentialRevision,
             source: failoverAction.source,
-            contributedByAgent: failoverAction.contributedByAgent,
           },
         })
         // Replace "switch to <provider>" with a context message for the agent.

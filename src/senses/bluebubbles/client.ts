@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { getBlueBubblesChannelConfig, getBlueBubblesConfig, getMinimaxConfig } from "../../heart/config"
-import { loadAgentConfig } from "../../heart/identity"
+import { getBlueBubblesChannelConfig, getBlueBubblesConfig } from "../../heart/config"
+import { getAgentName, loadAgentConfig } from "../../heart/identity"
 import {
   probeBlueBubblesHealth,
   redactBlueBubblesHealthDetailForNerves,
@@ -651,15 +651,17 @@ export function createBlueBubblesClient(
                 "configure one or switch to a vision-capable chat model",
               )
             }
-            const { apiKey } = getMinimaxConfig()
+            const { readProviderCredentialRecord } = await import("../../heart/provider-credentials")
+            const credential = await readProviderCredentialRecord(getAgentName(), "minimax")
+            const apiKey = credential.ok ? credential.record.credentials.apiKey : undefined
             if (!apiKey) {
               throw new Error(
-                "VLM fallback: minimax API key not found in secrets.json — " +
-                "re-run credential setup or ask the user to add a minimax key",
+                "VLM fallback: minimax API key not found in the agent vault — " +
+                "run `ouro auth --agent <agent> --provider minimax`",
               )
             }
             return minimaxVlmDescribe({
-              apiKey,
+              apiKey: String(apiKey),
               prompt: params.prompt,
               imageDataUrl: params.imageDataUrl,
               baseURL: MINIMAX_PROVIDER_BASE_URL,

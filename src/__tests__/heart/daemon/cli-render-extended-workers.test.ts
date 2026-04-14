@@ -190,7 +190,7 @@ describe("parseStatusPayload extended worker fields", () => {
             source: "local",
             readiness: "failed",
             detail: "400 status code",
-            credential: "legacy-agent-secrets from kicker",
+            credential: "manual",
           },
         ],
       },
@@ -203,7 +203,7 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(output).toContain("inner")
     expect(output).toContain("openai-codex / gpt-5.4")
     expect(output).toContain("400 status code")
-    expect(output).toContain("legacy-agent-secrets from kicker")
+    expect(output).toContain("manual")
     expect(output).not.toContain("secret-value")
   })
 

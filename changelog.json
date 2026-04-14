@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.365",
+      "changes": [
+        "Provider credentials now live in the owning agent's Bitwarden/Vaultwarden vault instead of a machine-wide provider pool; runtime uses daemon-memory credential snapshots and machine-local `state/providers.json` provider/model lanes.",
+        "`ouro auth`, `ouro use`, provider status/check/refresh, startup health checks, interactive repair, and failover guidance now share the same agent-vault/local-lane contract with clearer human repair paths.",
+        "SerpentGuide bootstrap no longer persists its own provider credentials; hatch flows keep bootstrap credentials in memory and store them only in the hatchling agent vault.",
+        "Vault unlock bootstrap supports macOS Keychain, Windows DPAPI, Linux Secret Service, and explicit plaintext fallback, with docs aligned across AGENTS, README, OAuth setup, testing guide, and auth/provider reference."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.364",
       "changes": [
         "Cross-machine polish: bash PATH writes to .bashrc on Linux/WSL instead of .bash_profile (which non-login shells skip on Debian/Ubuntu). Shell hint message matches.",
