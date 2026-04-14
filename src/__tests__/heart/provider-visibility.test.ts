@@ -192,6 +192,33 @@ describe("provider visibility", () => {
     })
   })
 
+  it("omits absent readiness optional fields from built visibility", async () => {
+    emitTestEvent("provider visibility absent readiness optionals")
+    const agentRoot = path.join(makeTempDir("provider-visibility-optionals"), "slugger.ouro")
+    writeProviderState(agentRoot, providerState({
+      readiness: {
+        outward: {
+          status: "ready",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          credentialRevision: "vault_minimax_1",
+        },
+        inner: {
+          status: "failed",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          credentialRevision: "vault_codex_1",
+        },
+      },
+    }))
+
+    const { buildAgentProviderVisibility } = await import("../../heart/provider-visibility")
+    const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot })
+
+    expect(visibility.lanes[0].readiness).toEqual({ status: "ready" })
+    expect(visibility.lanes[1].readiness).toEqual({ status: "failed" })
+  })
+
   it("formats readiness and credential edge states without exposing credentials", async () => {
     emitTestEvent("provider visibility formatting edge states")
     const {
