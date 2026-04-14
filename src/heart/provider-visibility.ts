@@ -176,6 +176,11 @@ function readinessLabel(readiness: ProviderVisibilityReadiness): string {
   return readiness.status
 }
 
+function providerStatusDetail(lane: ProviderVisibilityConfiguredLane): string | undefined {
+  if (lane.credential.status !== "present") return undefined
+  return lane.readiness.error
+}
+
 export function formatProviderVisibilityLine(lane: ProviderVisibilityLane): string {
   if (lane.status === "unconfigured") {
     return `${lane.lane}: unconfigured (${lane.reason}); repair: ${lane.repairCommand}`
@@ -229,6 +234,7 @@ export function providerVisibilityStatusRows(visibility: AgentProviderVisibility
       }
     }
 
+    const detail = providerStatusDetail(lane)
     return {
       agent: visibility.agentName,
       lane: lane.lane,
@@ -236,7 +242,7 @@ export function providerVisibilityStatusRows(visibility: AgentProviderVisibility
       model: lane.model,
       source: lane.source,
       readiness: lane.readiness.status,
-      ...(lane.readiness.error ? { detail: lane.readiness.error } : {}),
+      ...(detail ? { detail } : {}),
       credential: credentialLabel(lane.credential),
     }
   })
