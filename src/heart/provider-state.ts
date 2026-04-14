@@ -157,6 +157,13 @@ export function readProviderState(agentRoot: string): ProviderStateReadResult {
   const statePath = getProviderStatePath(agentRoot)
   let raw: string
   try {
+    if (!fs.existsSync(statePath)) {
+      return { ok: false, reason: "missing", statePath, error: "provider state not found" }
+    }
+  } catch (error) {
+    return { ok: false, reason: "invalid", statePath, error: String(error) }
+  }
+  try {
     raw = fs.readFileSync(statePath, "utf-8")
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code

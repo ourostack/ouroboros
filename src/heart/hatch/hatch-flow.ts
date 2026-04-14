@@ -4,11 +4,11 @@ import * as path from "path"
 import { buildDefaultAgentTemplate, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { slugify } from "../config"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { writeProviderCredentials } from "../auth/auth-flow"
+import { storeProviderCredentials } from "../auth/auth-flow"
 import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { providerCredentialHomeDirFromSecretsRoot } from "../provider-credential-pool"
+import { providerCredentialMachineHomeDir } from "../provider-credentials"
 import { bootstrapProviderStateFromAgentConfig, writeProviderState } from "../provider-state"
 import {
   getRepoSpecialistIdentitiesDir,
@@ -27,10 +27,6 @@ export interface HatchCredentialsInput {
   deployment?: string
   githubToken?: string
   baseUrl?: string
-  vaultMasterPassword?: string
-  vaultAdminToken?: string
-  vaultClientId?: string
-  vaultClientSecret?: string
 }
 
 export interface HatchFlowInput {
@@ -53,8 +49,8 @@ export interface HatchFlowDeps {
 export interface HatchFlowResult {
   bundleRoot: string
   selectedIdentity: string
-  specialistSecretsPath: string
-  hatchlingSecretsPath: string
+  credentialPath: string
+  vaultUnlockSecret?: string
 }
 
 function requiredCredentialKeys(provider: AgentProvider): string[] {
@@ -78,13 +74,12 @@ function validateCredentials(provider: AgentProvider, credentials: HatchCredenti
   }
 }
 
-export function writeSecretsFile(
+export async function storeHatchlingProviderCredentials(
   agentName: string,
   provider: AgentProvider,
   credentials: HatchCredentialsInput,
-  secretsRoot: string,
-): string {
-  return writeProviderCredentials(agentName, provider, credentials, { secretsRoot }).secretsPath
+): Promise<string> {
+  return (await storeProviderCredentials(agentName, provider, credentials)).credentialPath
 }
 
 function writeReadme(dir: string, purpose: string): void {
@@ -160,10 +155,10 @@ function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): v
   fs.writeFileSync(path.join(bundleRoot, "agent.json"), `${JSON.stringify(template, null, 2)}\n`, "utf-8")
 }
 
-function writeHatchlingProviderState(bundleRoot: string, input: HatchFlowInput, secretsRoot: string, now: Date): void {
+function writeHatchlingProviderState(bundleRoot: string, input: HatchFlowInput, now: Date): void {
   const model = getDefaultModelForProvider(input.provider)
   const machine = loadOrCreateMachineIdentity({
-    homeDir: providerCredentialHomeDirFromSecretsRoot(secretsRoot),
+    homeDir: providerCredentialMachineHomeDir(),
     now: () => now,
   })
   const state = bootstrapProviderStateFromAgentConfig({
@@ -188,7 +183,6 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   validateCredentials(input.provider, input.credentials)
 
   const bundlesRoot = deps.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
-  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
   const sourceIdentities = deps.specialistIdentitySourceDir ?? getSpecialistIdentitySourceDir()
   const targetIdentities = deps.specialistIdentityTargetDir ?? getRepoSpecialistIdentitiesDir()
   const now = deps.now ? deps.now() : new Date()
@@ -202,9 +196,6 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
     identitiesDir: targetIdentities,
     random,
   })
-
-  const specialistSecretsPath = writeSecretsFile("SerpentGuide", input.provider, input.credentials, secretsRoot)
-  const hatchlingSecretsPath = writeSecretsFile(input.agentName, input.provider, input.credentials, secretsRoot)
 
   const bundleRoot = path.join(bundlesRoot, `${input.agentName}.ouro`)
   fs.mkdirSync(bundleRoot, { recursive: true })
@@ -222,7 +213,8 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
   writeHatchlingAgentConfig(bundleRoot, input)
-  writeHatchlingProviderState(bundleRoot, input, secretsRoot, now)
+  const credentialPath = await storeHatchlingProviderCredentials(input.agentName, input.provider, input.credentials)
+  writeHatchlingProviderState(bundleRoot, input, now)
   writeDiaryScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatHabit(bundleRoot, now)
@@ -237,7 +229,6 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   return {
     bundleRoot,
     selectedIdentity: selected.fileName,
-    specialistSecretsPath,
-    hatchlingSecretsPath,
+    credentialPath,
   }
 }

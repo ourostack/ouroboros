@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { getAnthropicConfig, type AnthropicProviderConfig } from "../config";
-import { getAgentName, getAgentSecretsPath } from "../identity";
+import { getAgentName } from "../identity";
 import type { UsageData } from "../../mind/context";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
@@ -25,10 +25,6 @@ interface AnthropicCredential {
 
 interface HttpError extends Error { status?: number }
 
-function getAnthropicSecretsPathForGuidance(): string {
-  return getAgentSecretsPath();
-}
-
 function getAnthropicAgentNameForGuidance(): string {
   return getAgentName();
 }
@@ -37,10 +33,8 @@ function getAnthropicSetupTokenInstructions(): string {
   const agentName = getAnthropicAgentNameForGuidance();
   return [
     "Fix:",
-    `  1. Run \`ouro auth --agent ${agentName}\``,
-    `  2. Open ${getAnthropicSecretsPathForGuidance()}`,
-    "  3. Confirm providers.anthropic.setupToken is set",
-    "  4. After reauth, retry the failed ouro command or reconnect this session.",
+    `  1. Run \`ouro auth --agent ${agentName} --provider anthropic\``,
+    "  2. After reauth, retry the failed ouro command or reconnect this session.",
   ].join("\n");
 }
 
@@ -52,7 +46,7 @@ function getAnthropicReauthGuidance(reason: string): string {
   ].join("\n");
 }
 
-function resolveAnthropicSetupTokenCredential(anthropicConfig: AnthropicProviderConfig = getAnthropicConfig()): AnthropicCredential {
+function resolveAnthropicSetupTokenCredential(anthropicConfig: AnthropicProviderConfig): AnthropicCredential {
   const token = anthropicConfig.setupToken?.trim();
   if (!token) {
     throw new Error(
@@ -436,7 +430,7 @@ export function createAnthropicProviderRuntime(model: string, anthropicConfig: A
   if (!anthropicConfig.setupToken) {
     throw new Error(
       getAnthropicReauthGuidance(
-        "provider 'anthropic' is selected in agent.json but providers.anthropic.setupToken is missing in secrets.json.",
+        "provider 'anthropic' is selected but anthropic.setupToken is missing in the agent vault.",
       ),
     );
   }

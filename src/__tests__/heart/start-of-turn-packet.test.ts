@@ -259,8 +259,8 @@ describe("start-of-turn packet", () => {
       })
       const packet = buildStartOfTurnPacket(view)
       ;(packet as StartOfTurnPacket & { providerState: string }).providerState = [
-        "- outward: minimax / MiniMax-M2.5 [ready; source: local; credentials: auth-flow from slugger]",
-        "- inner: openai-codex / gpt-5.4 [failed: 400 status code; source: local; credentials: legacy-agent-secrets from kicker]",
+        "- outward: minimax / MiniMax-M2.5 [ready; source: local; credentials: auth-flow]",
+        "- inner: openai-codex / gpt-5.4 [failed: 400 status code; source: local; credentials: manual]",
       ].join("\n")
 
       const rendered = renderStartOfTurnPacket(packet)

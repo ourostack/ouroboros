@@ -8,7 +8,15 @@ const mockAnthropicCreate = vi.fn()
 const mockOpenAICreate = vi.fn()
 const mockResponsesCreate = vi.fn()
 const mockClassifyError = vi.fn()
+const mockRefreshProviderCredentialPool = vi.hoisted(() => vi.fn())
 
+vi.mock("../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/provider-credentials")>("../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockRefreshProviderCredentialPool,
+  }
+})
 
 // Anthropic client mock: client.messages.create(...)
 const anthropicClient = { messages: { create: (...args: any[]) => mockAnthropicCreate(...args) } }
@@ -118,7 +126,7 @@ vi.mock("../../heart/providers/github-copilot", () => ({
   classifyGithubCopilotError: vi.fn(() => "unknown"),
 }))
 
-import { createProviderRuntimeForConfig, pingProvider, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
+import { createProviderRuntimeForConfig, pingProvider, runHealthInventory, sanitizeErrorMessage, type PingResult } from "../../heart/provider-ping"
 import type { ProviderErrorClassification } from "../../heart/core"
 import { createOpenAICodexProviderRuntime } from "../../heart/providers/openai-codex"
 import { createAzureProviderRuntime } from "../../heart/providers/azure"
@@ -166,6 +174,7 @@ describe("sanitizeErrorMessage", () => {
 describe("pingProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockRefreshProviderCredentialPool.mockReset()
   })
 
   it("creates provider runtimes from explicit config for shared health and repair flows", () => {
@@ -314,6 +323,24 @@ describe("pingProvider", () => {
       expect.anything(),
     )
     expect(mockResponsesCreate).not.toHaveBeenCalled()
+  })
+
+  it("marks all alternate providers unavailable when the agent vault cannot refresh", async () => {
+    mockRefreshProviderCredentialPool.mockResolvedValueOnce({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:slugger:providers/*",
+      error: "vault locked",
+    })
+    const ping = vi.fn()
+
+    const result = await runHealthInventory("slugger", "minimax", { ping: ping as never })
+
+    expect(ping).not.toHaveBeenCalled()
+    expect(result.anthropic).toMatchObject({ ok: false, classification: "auth-failure", message: "vault locked" })
+    expect(result.azure).toMatchObject({ ok: false, classification: "auth-failure", message: "vault locked" })
+    expect(result["openai-codex"]).toMatchObject({ ok: false, classification: "auth-failure", message: "vault locked" })
+    expect(result["github-copilot"]).toMatchObject({ ok: false, classification: "auth-failure", message: "vault locked" })
   })
 
   it("returns auth-failure for empty credentials (anthropic)", async () => {

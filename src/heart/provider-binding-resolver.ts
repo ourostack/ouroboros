@@ -5,7 +5,7 @@ import {
   type ProviderCredentialPoolReadResult,
   type ProviderCredentialRecord,
   type ProviderCredentialProvenanceSource,
-} from "./provider-credential-pool"
+} from "./provider-credentials"
 import {
   readProviderState,
   type ProviderBindingSource,
@@ -37,7 +37,6 @@ export type EffectiveProviderCredentialStatus =
     provider: AgentProvider
     revision: string
     source: ProviderCredentialProvenanceSource
-    contributedByAgent?: string
     updatedAt: string
     credentialFields: string[]
     configFields: string[]
@@ -130,7 +129,7 @@ function buildUseRepair(agentName: string, lane: ProviderLane, force = false): E
 function buildAuthRepair(agentName: string, provider: AgentProvider): EffectiveProviderRepair {
   return {
     command: `ouro auth --agent ${agentName} --provider ${provider}`,
-    message: `Authenticate ${provider} once for this machine's shared credential pool.`,
+    message: `Store ${provider} credentials in ${agentName}'s vault.`,
   }
 }
 
@@ -151,14 +150,14 @@ function invalidProviderStateWarning(agentName: string): EffectiveProviderBindin
 function missingCredentialWarning(provider: AgentProvider): EffectiveProviderBindingWarning {
   return {
     code: "credential-missing",
-    message: `${provider} has no credential record in the machine credential pool.`,
+    message: `${provider} has no credential record in the agent vault.`,
   }
 }
 
 function invalidCredentialPoolWarning(provider: AgentProvider): EffectiveProviderBindingWarning {
   return {
     code: "credential-pool-invalid",
-    message: `${provider} cannot read credentials because the machine credential pool is invalid.`,
+    message: `${provider} cannot read credentials from the agent vault.`,
   }
 }
 
@@ -168,7 +167,6 @@ function presentCredential(record: ProviderCredentialRecord): EffectiveProviderC
     provider: record.provider,
     revision: record.revision,
     source: record.provenance.source,
-    contributedByAgent: record.provenance.contributedByAgent,
     updatedAt: record.updatedAt,
     credentialFields: Object.keys(record.credentials).sort(),
     configFields: Object.keys(record.config).sort(),
@@ -194,7 +192,7 @@ function resolveCredential(
     }
   }
 
-  if (poolResult.reason === "invalid") {
+  if (poolResult.reason === "invalid" || poolResult.reason === "unavailable") {
     return {
       credential: {
         status: "invalid-pool",
@@ -326,7 +324,7 @@ export function resolveEffectiveProviderBinding(
   }
 
   const laneBinding = stateResult.state.lanes[laneResolution.lane]
-  const poolResult = readProviderCredentialPool(input.homeDir)
+  const poolResult = readProviderCredentialPool(input.agentName)
   const credentialResult = resolveCredential(poolResult, laneBinding.provider, input.agentName)
   const readinessResult = resolveReadiness({
     provider: laneBinding.provider,

@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises"
 import type OpenAI from "openai"
-import { getMinimaxConfig } from "../heart/config"
 import { getAgentName } from "../heart/identity"
+import { readProviderCredentialRecord } from "../heart/provider-credentials"
 import { MINIMAX_PROVIDER_BASE_URL } from "../heart/providers/minimax"
 import { minimaxVlmDescribe } from "../heart/providers/minimax-vlm"
 import { listRecentAttachments } from "../heart/attachments/store"
@@ -258,7 +258,8 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
       try {
         const materialized = await materializeAttachment(agentName, attachmentId, { variant: "vision_safe" })
         const imageDataUrl = await buildImageDataUrl(materialized.path, materialized.mimeType)
-        const { apiKey } = getMinimaxConfig()
+        const credential = await readProviderCredentialRecord(agentName, "minimax")
+        const apiKey = credential.ok ? credential.record.credentials.apiKey : undefined
         if (!apiKey) {
           return frictionToolResult("describe_image", {
             kind: "external_blocker",
@@ -268,14 +269,14 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
             suggested_next_actions: [
               {
                 kind: "message",
-                message: "Repair the minimax credentials for this agent, then retry describe_image.",
+                message: "Run `ouro auth --agent <agent> --provider minimax`, then retry describe_image.",
               },
             ],
           })
         }
 
         const description = await minimaxVlmDescribe({
-          apiKey,
+          apiKey: String(apiKey),
           prompt,
           imageDataUrl,
           baseURL: MINIMAX_PROVIDER_BASE_URL,

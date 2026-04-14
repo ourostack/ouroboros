@@ -953,7 +953,7 @@ describe("buildSystem", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
-    expect(result).toContain("azure openai (gpt-4o-deploy, model: test-model)")
+    expect(result).toContain("azure openai (model: test-model)")
   })
 
   it("includes anthropic provider string when Anthropic model is configured with Claude setup-token credentials", async () => {
@@ -1065,7 +1065,7 @@ describe("buildSystem", () => {
       },
     })
     const result = flattenSystemPrompt(await buildSystem())
-    expect(result).toContain("azure openai (default, model: test-model)")
+    expect(result).toContain("azure openai (model: test-model)")
   })
 
   it("reads soul content from SOUL.md file", async () => {
@@ -3683,7 +3683,7 @@ describe("providerSection facing derivation from channel", () => {
             model: "MiniMax-M2.5",
             source: "local",
             readiness: { status: "ready", checkedAt: "2026-04-12T23:22:00.000Z" },
-            credential: { status: "present", source: "auth-flow", contributedByAgent: "slugger", revision: "cred_mm" },
+            credential: { status: "present", source: "auth-flow", revision: "cred_mm" },
             warnings: [],
           },
           {
@@ -3693,7 +3693,7 @@ describe("providerSection facing derivation from channel", () => {
             model: "gpt-5.4",
             source: "local",
             readiness: { status: "failed", error: "400 status code" },
-            credential: { status: "present", source: "legacy-agent-secrets", contributedByAgent: "kicker", revision: "cred_codex" },
+            credential: { status: "present", source: "manual", revision: "cred_codex" },
             warnings: [],
           },
         ],

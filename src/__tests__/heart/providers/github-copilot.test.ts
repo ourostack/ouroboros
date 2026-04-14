@@ -140,11 +140,11 @@ describe("github-copilot config", () => {
     expect(config.provider).toBe("github-copilot")
   })
 
-  it("default secrets template includes providers['github-copilot'] (credentials only, no model)", async () => {
+  it("getGithubCopilotConfig defaults credentials locally without a secrets providers block", async () => {
     await setupConfig({})
-    const { loadConfig } = await import("../../../heart/config")
-    const config = loadConfig()
-    expect(config.providers["github-copilot"]).toEqual({
+    const { getGithubCopilotConfig, loadConfig } = await import("../../../heart/config")
+    expect(loadConfig()).not.toHaveProperty("providers")
+    expect(getGithubCopilotConfig()).toEqual({
       githubToken: "",
       baseUrl: "",
     })

@@ -1,25 +1,37 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as fs from "fs"
-import * as os from "os"
-import * as path from "path"
+import type { AgentProvider } from "../../heart/identity"
+import type { ProviderCredentialPoolReadResult, ProviderCredentialRecord } from "../../heart/provider-credentials"
+import type { ProviderLaneReadiness, ProviderState } from "../../heart/provider-state"
 
-const mockEmitNervesEvent = vi.fn()
+const mockProviderCredentials = vi.hoisted(() => ({
+  readProviderCredentialPool: vi.fn(),
+}))
+
+vi.mock("../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/provider-credentials")>("../../heart/provider-credentials")
+  return {
+    ...actual,
+    readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
+  }
+})
+
+const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
+  emitNervesEvent: (...args: unknown[]) => mockEmitNervesEvent(...args),
 }))
 
 import {
   normalizeProviderLane,
   resolveEffectiveProviderBinding,
 } from "../../heart/provider-binding-resolver"
-import {
-  writeProviderCredentialPool,
-  type ProviderCredentialPool,
-} from "../../heart/provider-credential-pool"
-import {
-  writeProviderState,
-  type ProviderState,
-} from "../../heart/provider-state"
+import { getProviderStatePath, writeProviderState } from "../../heart/provider-state"
+
+const timestamp = "2026-04-13T12:00:00.000Z"
+const agentName = "slugger"
+const createdDirs: string[] = []
 
 function emitTestEvent(testName: string): void {
   mockEmitNervesEvent({
@@ -30,596 +42,278 @@ function emitTestEvent(testName: string): void {
   })
 }
 
-describe("provider binding resolver", () => {
-  let tempRoot: string
-  let homeDir: string
-  let agentRoot: string
+function tempAgentRoot(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-binding-"))
+  createdDirs.push(dir)
+  return dir
+}
 
+function record(provider: AgentProvider, revision = `vault_${provider}`): ProviderCredentialRecord {
+  return {
+    provider,
+    revision,
+    updatedAt: timestamp,
+    credentials: provider === "azure" ? { apiKey: "azure-key" } : { apiKey: `${provider}-key` },
+    config: provider === "azure" ? { endpoint: "https://example.openai.azure.com" } : {},
+    provenance: { source: "manual", updatedAt: timestamp },
+  }
+}
+
+function okPool(providers: Partial<Record<AgentProvider, ProviderCredentialRecord>>): ProviderCredentialPoolReadResult {
+  return {
+    ok: true,
+    poolPath: "vault:slugger:providers/*",
+    pool: {
+      schemaVersion: 1,
+      updatedAt: timestamp,
+      providers,
+    },
+  }
+}
+
+function invalidPool(reason: "invalid" | "unavailable" | "missing" = "invalid"): ProviderCredentialPoolReadResult {
+  return {
+    ok: false,
+    reason,
+    poolPath: "vault:slugger:providers/*",
+    error: `${reason} pool`,
+  }
+}
+
+function baseState(readiness: Partial<Record<"outward" | "inner", ProviderLaneReadiness>> = {}): ProviderState {
+  return {
+    schemaVersion: 1,
+    machineId: "machine-local",
+    updatedAt: timestamp,
+    lanes: {
+      outward: {
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        source: "bootstrap",
+        updatedAt: timestamp,
+      },
+      inner: {
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        source: "local",
+        updatedAt: timestamp,
+      },
+    },
+    readiness,
+  }
+}
+
+describe("effective provider binding resolver", () => {
   beforeEach(() => {
-    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-resolver-"))
-    homeDir = path.join(tempRoot, "home")
-    agentRoot = path.join(tempRoot, "bundles", "slugger.ouro")
-    fs.mkdirSync(agentRoot, { recursive: true })
-    fs.mkdirSync(homeDir, { recursive: true })
-    mockEmitNervesEvent.mockClear()
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
-    fs.rmSync(tempRoot, { recursive: true, force: true })
+    for (const dir of createdDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
-  function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
-    return {
-      schemaVersion: 1,
-      machineId: "machine_random_abc123",
-      updatedAt: "2026-04-12T18:30:00.000Z",
-      lanes: {
-        outward: {
-          provider: "anthropic",
-          model: "claude-opus-4-6",
-          source: "bootstrap",
-          updatedAt: "2026-04-12T18:30:00.000Z",
-        },
-        inner: {
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          source: "local",
-          updatedAt: "2026-04-12T18:31:00.000Z",
-        },
-      },
-      readiness: {
-        inner: {
-          status: "ready",
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          checkedAt: "2026-04-12T18:32:00.000Z",
-          credentialRevision: "cred_minimax_1",
-          attempts: 2,
-        },
-      },
-      ...overrides,
-    }
-  }
+  it("normalizes current and legacy lane selectors", () => {
+    emitTestEvent("provider binding lane normalization")
 
-  function providerPool(overrides: Partial<ProviderCredentialPool> = {}): ProviderCredentialPool {
-    return {
-      schemaVersion: 1,
-      updatedAt: "2026-04-12T18:32:00.000Z",
-      providers: {
-        minimax: {
-          provider: "minimax",
-          revision: "cred_minimax_1",
-          updatedAt: "2026-04-12T18:32:00.000Z",
-          credentials: { apiKey: "minimax-secret-key" },
-          config: {},
-          provenance: {
-            source: "legacy-agent-secrets",
-            contributedByAgent: "slugger",
-            updatedAt: "2026-04-12T18:32:00.000Z",
-          },
-        },
+    expect(normalizeProviderLane("outward")).toEqual({ lane: "outward", warnings: [] })
+    expect(normalizeProviderLane("inner")).toEqual({ lane: "inner", warnings: [] })
+    expect(normalizeProviderLane("human")).toMatchObject({ lane: "outward", warnings: [{ code: "legacy-lane-selector" }] })
+    expect(normalizeProviderLane("humanFacing")).toMatchObject({ lane: "outward", warnings: [{ code: "legacy-lane-selector" }] })
+    expect(normalizeProviderLane("agent")).toMatchObject({ lane: "inner", warnings: [{ code: "legacy-lane-selector" }] })
+    expect(normalizeProviderLane("agentFacing")).toMatchObject({ lane: "inner", warnings: [{ code: "legacy-lane-selector" }] })
+  })
+
+  it("returns repair guidance for missing and invalid local provider state", () => {
+    emitTestEvent("provider binding state guards")
+    const missingRoot = tempAgentRoot()
+
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: missingRoot,
+      lane: "humanFacing",
+    })).toMatchObject({
+      ok: false,
+      lane: "outward",
+      reason: "provider-state-missing",
+      warnings: [
+        { code: "legacy-lane-selector" },
+        { code: "provider-state-missing" },
+      ],
+      repair: {
+        command: "ouro use --agent slugger --lane outward --provider <provider> --model <model>",
       },
-      ...overrides,
-    }
-  }
+    })
 
-  function writeAgentConfigWithDifferentProviders(): void {
-    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
-      name: "slugger",
-      provider: "anthropic",
-      humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
-      agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
-      configPath: path.join(homeDir, ".agentsecrets", "slugger", "secrets.json"),
-    }, null, 2), "utf-8")
-  }
+    const invalidRoot = tempAgentRoot()
+    fs.mkdirSync(path.dirname(getProviderStatePath(invalidRoot)), { recursive: true })
+    fs.writeFileSync(getProviderStatePath(invalidRoot), "{\"schemaVersion\":2}\n", "utf8")
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: invalidRoot,
+      lane: "inner",
+    })).toMatchObject({
+      ok: false,
+      lane: "inner",
+      reason: "provider-state-invalid",
+      repair: {
+        command: "ouro use --agent slugger --lane inner --provider <provider> --model <model> --force",
+      },
+    })
+  })
 
-  it("resolves the effective lane binding from local provider state with credential provenance and readiness", () => {
-    emitTestEvent("provider resolver effective binding")
-    writeAgentConfigWithDifferentProviders()
-    writeProviderState(agentRoot, providerState())
-    writeProviderCredentialPool(homeDir, providerPool())
+  it("resolves a present credential with readiness and legacy lane warnings", () => {
+    emitTestEvent("provider binding present credential")
+    const root = tempAgentRoot()
+    writeProviderState(root, baseState({
+      outward: {
+        status: "ready",
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        credentialRevision: "vault_minimax",
+        checkedAt: timestamp,
+        attempts: 2,
+      },
+    }))
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
+      minimax: record("minimax", "vault_minimax"),
+    }))
 
     const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
+      agentName,
+      agentRoot: root,
+      lane: "human",
     })
 
     expect(result).toMatchObject({
       ok: true,
       binding: {
-        lane: "inner",
+        lane: "outward",
         provider: "minimax",
         model: "MiniMax-M2.5",
-        source: "local",
-        machineId: "machine_random_abc123",
-        statePath: path.join(agentRoot, "state", "providers.json"),
+        machineId: "machine-local",
         credential: {
           status: "present",
-          provider: "minimax",
-          revision: "cred_minimax_1",
-          source: "legacy-agent-secrets",
-          contributedByAgent: "slugger",
-          updatedAt: "2026-04-12T18:32:00.000Z",
+          revision: "vault_minimax",
           credentialFields: ["apiKey"],
           configFields: [],
         },
         readiness: {
           status: "ready",
-          checkedAt: "2026-04-12T18:32:00.000Z",
-          credentialRevision: "cred_minimax_1",
+          credentialRevision: "vault_minimax",
           attempts: 2,
         },
-        warnings: [],
+        warnings: [{ code: "legacy-lane-selector" }],
       },
     })
-    expect(JSON.stringify(result)).not.toContain("minimax-secret-key")
-    expect(JSON.stringify(result)).not.toContain("openai-codex")
-    expect(JSON.stringify(result)).not.toContain("gpt-5.4")
   })
 
-  it("maps legacy facing names to lane names with structured warnings", () => {
-    emitTestEvent("provider resolver legacy lane names")
-    writeProviderState(agentRoot, providerState())
-    writeProviderCredentialPool(homeDir, providerPool())
+  it("marks readiness unknown when no prior readiness exists", () => {
+    emitTestEvent("provider binding unknown readiness")
+    const root = tempAgentRoot()
+    writeProviderState(root, baseState())
 
-    expect(normalizeProviderLane("outward")).toEqual({ lane: "outward", warnings: [] })
-    expect(normalizeProviderLane("inner")).toEqual({ lane: "inner", warnings: [] })
-    expect(normalizeProviderLane("human")).toEqual({
-      lane: "outward",
-      warnings: [{
-        code: "legacy-lane-selector",
-        message: "human is legacy provider wording; using outward lane",
-      }],
-    })
-    expect(normalizeProviderLane("humanFacing")).toEqual({
-      lane: "outward",
-      warnings: [{
-        code: "legacy-lane-selector",
-        message: "humanFacing is legacy provider wording; using outward lane",
-      }],
-    })
-    expect(normalizeProviderLane("agent")).toEqual({
-      lane: "inner",
-      warnings: [{
-        code: "legacy-lane-selector",
-        message: "agent is legacy provider wording; using inner lane",
-      }],
-    })
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "agentFacing",
-    })
-
-    expect(result).toMatchObject({
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(okPool({}))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
-        lane: "inner",
-        provider: "minimax",
-        warnings: [{
-          code: "legacy-lane-selector",
-          message: "agentFacing is legacy provider wording; using inner lane",
-        }],
+        credential: { status: "missing" },
+        readiness: { status: "unknown", reason: "credential-missing" },
+        warnings: [{ code: "credential-missing" }],
+      },
+    })
+
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool("unavailable"))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        credential: { status: "invalid-pool", error: "unavailable pool" },
+        readiness: { status: "unknown", reason: "credential-pool-invalid" },
+        warnings: [{ code: "credential-pool-invalid" }],
+      },
+    })
+
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool("missing"))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        credential: { status: "missing" },
+        readiness: { status: "unknown", reason: "credential-missing" },
       },
     })
   })
 
-  it("reports unknown readiness when credentials exist but no check has run", () => {
-    emitTestEvent("provider resolver unknown readiness with credential")
-    writeProviderState(agentRoot, providerState({
-      readiness: {},
+  it("marks prior readiness stale when bindings or vault revisions change", () => {
+    emitTestEvent("provider binding stale readiness")
+    const root = tempAgentRoot()
+    writeProviderState(root, baseState({
+      outward: {
+        status: "ready",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+        credentialRevision: "vault_old",
+        checkedAt: timestamp,
+      },
     }))
-    writeProviderCredentialPool(homeDir, providerPool())
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
+      minimax: record("minimax", "vault_minimax"),
+    }))
 
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
-        credential: {
-          status: "present",
-          revision: "cred_minimax_1",
-        },
         readiness: {
-          status: "unknown",
+          status: "stale",
+          previousStatus: "ready",
+          reason: "provider-model-changed",
         },
-        warnings: [],
+        warnings: [{ code: "readiness-stale" }],
       },
     })
-  })
 
-  it("does not fall back to agent.json provider fields when local provider state is missing", () => {
-    emitTestEvent("provider resolver missing state no fallback")
-    writeAgentConfigWithDifferentProviders()
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toEqual({
-      ok: false,
-      lane: "inner",
-      reason: "provider-state-missing",
-      statePath: path.join(agentRoot, "state", "providers.json"),
-      warnings: [{
-        code: "provider-state-missing",
-        message: "No local provider binding exists for slugger on this machine.",
-      }],
-      repair: {
-        command: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
-        message: "Choose the provider/model this machine should use for slugger's inner lane.",
-      },
-    })
-    expect(JSON.stringify(result)).not.toContain("openai-codex")
-    expect(JSON.stringify(result)).not.toContain("gpt-5.4")
-  })
-
-  it("keeps the binding resolved but reports direct auth guidance when credentials are missing", () => {
-    emitTestEvent("provider resolver missing credential without pool")
-    writeProviderState(agentRoot, providerState({
-      readiness: {},
-    }))
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      binding: {
-        lane: "inner",
+    writeProviderState(root, baseState({
+      outward: {
+        status: "ready",
         provider: "minimax",
         model: "MiniMax-M2.5",
-        credential: {
-          status: "missing",
-          provider: "minimax",
-          poolPath: path.join(homeDir, ".agentsecrets", "providers.json"),
-          repair: {
-            command: "ouro auth --agent slugger --provider minimax",
-            message: "Authenticate minimax once for this machine's shared credential pool.",
-          },
-        },
-        readiness: {
-          status: "unknown",
-          reason: "credential-missing",
-        },
-        warnings: [{
-          code: "credential-missing",
-          message: "minimax has no credential record in the machine credential pool.",
-        }],
-      },
-    })
-  })
-
-  it("reports missing credentials when the pool exists without the selected provider", () => {
-    emitTestEvent("provider resolver missing credential in pool")
-    writeProviderState(agentRoot, providerState({
-      readiness: {},
-    }))
-    writeProviderCredentialPool(homeDir, providerPool({
-      providers: {
-        anthropic: {
-          provider: "anthropic",
-          revision: "cred_anthropic_1",
-          updatedAt: "2026-04-12T18:32:00.000Z",
-          credentials: { setupToken: "sk-ant-oat01-secret-token" },
-          config: {},
-          provenance: {
-            source: "auth-flow",
-            contributedByAgent: "ouroboros",
-            updatedAt: "2026-04-12T18:32:00.000Z",
-          },
-        },
+        credentialRevision: "vault_old",
+        checkedAt: timestamp,
       },
     }))
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
-        credential: {
-          status: "missing",
-          provider: "minimax",
-        },
-        warnings: [{
-          code: "credential-missing",
-          message: "minimax has no credential record in the machine credential pool.",
-        }],
-      },
-    })
-    expect(JSON.stringify(result)).not.toContain("sk-ant-oat01-secret-token")
-  })
-
-  it("marks existing readiness stale when credentials are missing", () => {
-    emitTestEvent("provider resolver stale missing credential")
-    writeProviderState(agentRoot, providerState())
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      binding: {
-        credential: {
-          status: "missing",
-          provider: "minimax",
-        },
-        readiness: {
-          status: "stale",
-          previousStatus: "ready",
-          reason: "credential-missing",
-          credentialRevision: "cred_minimax_1",
-        },
-        warnings: [{
-          code: "credential-missing",
-          message: "minimax has no credential record in the machine credential pool.",
-        }],
-      },
-    })
-  })
-
-  it("reports an invalid credential pool with unknown readiness when no check has run", () => {
-    emitTestEvent("provider resolver invalid pool unknown readiness")
-    writeProviderState(agentRoot, providerState({
-      readiness: {},
-    }))
-    const poolPath = path.join(homeDir, ".agentsecrets", "providers.json")
-    fs.mkdirSync(path.dirname(poolPath), { recursive: true })
-    fs.writeFileSync(poolPath, "{ broken", "utf-8")
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      binding: {
-        credential: {
-          status: "invalid-pool",
-          provider: "minimax",
-          poolPath,
-          repair: {
-            command: "ouro auth --agent slugger --provider minimax",
-          },
-        },
-        readiness: {
-          status: "unknown",
-          reason: "credential-pool-invalid",
-        },
-        warnings: [{
-          code: "credential-pool-invalid",
-          message: "minimax cannot read credentials because the machine credential pool is invalid.",
-        }],
-      },
-    })
-  })
-
-  it("marks existing readiness stale when the credential pool is invalid", () => {
-    emitTestEvent("provider resolver invalid pool stale readiness")
-    writeProviderState(agentRoot, providerState())
-    const poolPath = path.join(homeDir, ".agentsecrets", "providers.json")
-    fs.mkdirSync(path.dirname(poolPath), { recursive: true })
-    fs.writeFileSync(poolPath, "{ broken", "utf-8")
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      binding: {
-        credential: {
-          status: "invalid-pool",
-          provider: "minimax",
-        },
-        readiness: {
-          status: "stale",
-          previousStatus: "ready",
-          reason: "credential-pool-invalid",
-          credentialRevision: "cred_minimax_1",
-        },
-        warnings: [{
-          code: "credential-pool-invalid",
-          message: "minimax cannot read credentials because the machine credential pool is invalid.",
-        }],
-      },
-    })
-  })
-
-  it("marks readiness stale when the binding has a newer credential revision than the last check", () => {
-    emitTestEvent("provider resolver credential revision stale")
-    writeProviderState(agentRoot, providerState({
-      readiness: {
-        inner: {
-          status: "ready",
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          checkedAt: "2026-04-12T18:32:00.000Z",
-          credentialRevision: "cred_minimax_old",
-          attempts: 1,
-        },
-      },
-    }))
-    writeProviderCredentialPool(homeDir, providerPool({
-      providers: {
-        minimax: {
-          provider: "minimax",
-          revision: "cred_minimax_new",
-          updatedAt: "2026-04-12T18:35:00.000Z",
-          credentials: { apiKey: "minimax-new-secret" },
-          config: {},
-          provenance: {
-            source: "auth-flow",
-            contributedByAgent: "ouroboros",
-            updatedAt: "2026-04-12T18:35:00.000Z",
-          },
-        },
-      },
-    }))
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      binding: {
-        credential: {
-          status: "present",
-          revision: "cred_minimax_new",
-          source: "auth-flow",
-          contributedByAgent: "ouroboros",
-        },
         readiness: {
           status: "stale",
           previousStatus: "ready",
           reason: "credential-revision-changed",
-          checkedAt: "2026-04-12T18:32:00.000Z",
-          credentialRevision: "cred_minimax_old",
         },
-        warnings: [{
-          code: "readiness-stale",
-          message: "minimax/MiniMax-M2.5 readiness is stale because credential revision changed from cred_minimax_old to cred_minimax_new.",
-        }],
+        warnings: [{ code: "readiness-stale" }],
       },
     })
-    expect(JSON.stringify(result)).not.toContain("minimax-new-secret")
-  })
 
-  it("marks readiness stale when provider state changed after the last readiness check", () => {
-    emitTestEvent("provider resolver provider model stale")
-    writeProviderState(agentRoot, providerState({
-      lanes: {
-        outward: {
-          provider: "anthropic",
-          model: "claude-opus-4-6",
-          source: "bootstrap",
-          updatedAt: "2026-04-12T18:30:00.000Z",
-        },
-        inner: {
-          provider: "openai-codex",
-          model: "gpt-5.4",
-          source: "local",
-          updatedAt: "2026-04-12T18:36:00.000Z",
-        },
-      },
-      readiness: {
-        inner: {
-          status: "failed",
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          checkedAt: "2026-04-12T18:33:00.000Z",
-          credentialRevision: "cred_minimax_1",
-          error: "400 status code",
-          attempts: 3,
-        },
-      },
-    }))
-    writeProviderCredentialPool(homeDir, providerPool({
-      providers: {
-        "openai-codex": {
-          provider: "openai-codex",
-          revision: "cred_codex_1",
-          updatedAt: "2026-04-12T18:35:00.000Z",
-          credentials: { oauthAccessToken: "codex-secret" },
-          config: {},
-          provenance: {
-            source: "auth-flow",
-            contributedByAgent: "slugger",
-            updatedAt: "2026-04-12T18:35:00.000Z",
-          },
-        },
-      },
-    }))
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "inner",
-    })
-
-    expect(result).toMatchObject({
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(okPool({}))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
-        provider: "openai-codex",
-        model: "gpt-5.4",
+        credential: { status: "missing" },
         readiness: {
           status: "stale",
-          previousStatus: "failed",
-          reason: "provider-model-changed",
-          checkedAt: "2026-04-12T18:33:00.000Z",
-          error: "400 status code",
-          attempts: 3,
+          reason: "credential-missing",
         },
-        warnings: [{
-          code: "readiness-stale",
-          message: "openai-codex/gpt-5.4 readiness is stale because the last check was for minimax/MiniMax-M2.5.",
-        }],
       },
     })
-    expect(JSON.stringify(result)).not.toContain("codex-secret")
-  })
 
-  it("fails with structured repair guidance when provider state is invalid", () => {
-    emitTestEvent("provider resolver invalid state")
-    const statePath = path.join(agentRoot, "state", "providers.json")
-    fs.mkdirSync(path.dirname(statePath), { recursive: true })
-    fs.writeFileSync(statePath, "{ nope", "utf-8")
-
-    const result = resolveEffectiveProviderBinding({
-      agentName: "slugger",
-      agentRoot,
-      homeDir,
-      lane: "outward",
-    })
-
-    expect(result).toMatchObject({
-      ok: false,
-      lane: "outward",
-      reason: "provider-state-invalid",
-      statePath,
-      warnings: [{
-        code: "provider-state-invalid",
-        message: "Local provider binding state for slugger is invalid.",
-      }],
-      repair: {
-        command: "ouro use --agent slugger --lane outward --provider <provider> --model <model> --force",
-        message: "Rewrite this machine's outward provider binding for slugger.",
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool())
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        credential: { status: "invalid-pool" },
+        readiness: {
+          status: "stale",
+          reason: "credential-pool-invalid",
+        },
       },
     })
   })

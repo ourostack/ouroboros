@@ -37,6 +37,7 @@ describe("BlueBubbles client", () => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../senses/bluebubbles/media")
     vi.doUnmock("../../../senses/bluebubbles/model")
+    vi.doUnmock("../../../heart/provider-credentials")
     vi.resetModules()
   })
 
@@ -2881,8 +2882,11 @@ describe("BlueBubbles client", () => {
         minimaxVlmDescribe,
       }))
 
-      vi.doMock("../../../heart/config", () => ({
-        getMinimaxConfig: () => ({ apiKey: "sk-test" }),
+      vi.doMock("../../../heart/provider-credentials", () => ({
+        readProviderCredentialRecord: vi.fn(async () => ({
+          ok: true,
+          record: { credentials: { apiKey: "sk-test" }, config: {} },
+        })),
       }))
 
       global.fetch = vi.fn().mockResolvedValueOnce(
@@ -2951,7 +2955,7 @@ describe("BlueBubbles client", () => {
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
-      vi.doUnmock("../../../heart/config")
+      vi.doUnmock("../../../heart/provider-credentials")
     })
 
     it("vlmDescribe closure throws AX-2 error when provider is not minimax", async () => {
@@ -2975,8 +2979,11 @@ describe("BlueBubbles client", () => {
         minimaxVlmDescribe,
       }))
 
-      vi.doMock("../../../heart/config", () => ({
-        getMinimaxConfig: () => ({ apiKey: "sk-test" }),
+      vi.doMock("../../../heart/provider-credentials", () => ({
+        readProviderCredentialRecord: vi.fn(async () => ({
+          ok: true,
+          record: { credentials: { apiKey: "sk-test" }, config: {} },
+        })),
       }))
 
       global.fetch = vi.fn().mockResolvedValueOnce(
@@ -3035,7 +3042,7 @@ describe("BlueBubbles client", () => {
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
-      vi.doUnmock("../../../heart/config")
+      vi.doUnmock("../../../heart/provider-credentials")
     })
 
     it("vlmDescribe closure throws AX-2 error when minimax credential is missing", async () => {
@@ -3059,8 +3066,13 @@ describe("BlueBubbles client", () => {
         minimaxVlmDescribe,
       }))
 
-      vi.doMock("../../../heart/config", () => ({
-        getMinimaxConfig: () => ({ apiKey: "" }),
+      vi.doMock("../../../heart/provider-credentials", () => ({
+        readProviderCredentialRecord: vi.fn(async () => ({
+          ok: false,
+          reason: "missing",
+          poolPath: "vault:slugger:providers/*",
+          error: "minimax credential missing",
+        })),
       }))
 
       global.fetch = vi.fn().mockResolvedValueOnce(
@@ -3113,7 +3125,7 @@ describe("BlueBubbles client", () => {
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
-      vi.doUnmock("../../../heart/config")
+      vi.doUnmock("../../../heart/provider-credentials")
     })
 
     it("VLM prompt userText defaults to empty string when data.text is not a string", async () => {
@@ -3136,8 +3148,11 @@ describe("BlueBubbles client", () => {
         minimaxVlmDescribe: vi.fn(),
       }))
 
-      vi.doMock("../../../heart/config", () => ({
-        getMinimaxConfig: () => ({ apiKey: "sk-test" }),
+      vi.doMock("../../../heart/provider-credentials", () => ({
+        readProviderCredentialRecord: vi.fn(async () => ({
+          ok: true,
+          record: { credentials: { apiKey: "sk-test" }, config: {} },
+        })),
       }))
 
       // data.text is a number (not a string) — the client should treat it as empty.
@@ -3195,7 +3210,7 @@ describe("BlueBubbles client", () => {
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
-      vi.doUnmock("../../../heart/config")
+      vi.doUnmock("../../../heart/provider-credentials")
     })
 
     it("vision-capable chat model: vlmDescribe closure is still passed but not called by hydration", async () => {
@@ -3218,8 +3233,11 @@ describe("BlueBubbles client", () => {
         minimaxVlmDescribe: vi.fn(),
       }))
 
-      vi.doMock("../../../heart/config", () => ({
-        getMinimaxConfig: () => ({ apiKey: "sk-test" }),
+      vi.doMock("../../../heart/provider-credentials", () => ({
+        readProviderCredentialRecord: vi.fn(async () => ({
+          ok: true,
+          record: { credentials: { apiKey: "sk-test" }, config: {} },
+        })),
       }))
 
       global.fetch = vi.fn().mockResolvedValueOnce(
@@ -3262,7 +3280,7 @@ describe("BlueBubbles client", () => {
 
       vi.doUnmock("../../../senses/bluebubbles/media")
       vi.doUnmock("../../../heart/providers/minimax-vlm")
-      vi.doUnmock("../../../heart/config")
+      vi.doUnmock("../../../heart/provider-credentials")
     })
   })
 })

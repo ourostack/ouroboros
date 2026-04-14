@@ -15,7 +15,6 @@ export type ProviderVisibilityStatus = "configured" | "unconfigured"
 export interface ProviderVisibilityCredential {
   status: "present" | "missing" | "invalid-pool"
   source?: string
-  contributedByAgent?: string
   revision?: string
   repairCommand?: string
 }
@@ -84,7 +83,6 @@ function credentialVisibility(binding: EffectiveProviderBinding): ProviderVisibi
     return {
       status: "present",
       source: credential.source,
-      contributedByAgent: credential.contributedByAgent,
       revision: credential.revision,
     }
   }
@@ -160,11 +158,8 @@ export function buildAgentProviderVisibility(input: BuildAgentProviderVisibility
 }
 
 function credentialLabel(credential: ProviderVisibilityCredential): string {
-  if (credential.status === "present") {
-    const source = credential.source ?? "unknown"
-    return credential.contributedByAgent ? `${source} from ${credential.contributedByAgent}` : source
-  }
-  if (credential.status === "invalid-pool") return "invalid pool"
+  if (credential.status === "present") return credential.source ?? "vault"
+  if (credential.status === "invalid-pool") return "vault unavailable"
   return "missing"
 }
 

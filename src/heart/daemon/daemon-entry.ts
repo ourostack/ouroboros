@@ -25,7 +25,6 @@ import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
-import * as os from "os"
 import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
@@ -80,8 +79,7 @@ const processManager = new DaemonProcessManager({
   /* v8 ignore next 4 -- wiring: delegates to checkAgentConfigWithProviderHealth which has full unit tests @preserve */
   configCheck: async (agent) => {
     const bundlesRoot = getAgentBundlesRoot()
-    const secretsRoot = path.join(os.homedir(), ".agentsecrets")
-    return checkAgentConfigWithProviderHealth(agent, bundlesRoot, secretsRoot)
+    return checkAgentConfigWithProviderHealth(agent, bundlesRoot)
   },
   /* v8 ignore start -- pulse flush wiring: integration code; flushPulse itself has full unit tests @preserve */
   onSnapshotChange: () => {

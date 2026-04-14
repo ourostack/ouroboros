@@ -10,12 +10,48 @@ const mockPlayHatchAnimation = vi.fn(async (
   writer?.(`\nmock hatch ${hatchlingName}\n`)
 })
 
+const mockCreateVaultAccount = vi.hoisted(() => vi.fn(async (
+  _agentName: string,
+  serverUrl: string,
+  email: string,
+) => ({ success: true, email, serverUrl })))
+
+const mockStoreVaultUnlockSecret = vi.hoisted(() => vi.fn())
+
+const mockStoreProviderCredentials = vi.hoisted(() =>
+  vi.fn(async (agentName: string, provider: string) => ({
+    credentialPath: `vault:${agentName}:providers/${provider}`,
+  })),
+)
+
 vi.mock("../../../heart/hatch/hatch-animation", () => ({
   playHatchAnimation: mockPlayHatchAnimation,
 }))
 
+vi.mock("../../../repertoire/vault-setup", () => ({
+  createVaultAccount: mockCreateVaultAccount,
+}))
+
+vi.mock("../../../repertoire/vault-unlock", () => ({
+  storeVaultUnlockSecret: mockStoreVaultUnlockSecret,
+}))
+
+vi.mock("../../../heart/auth/auth-flow", () => ({
+  storeProviderCredentials: mockStoreProviderCredentials,
+}))
+
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
+}
+
+function resetCredentialMocks(): void {
+  mockPlayHatchAnimation.mockClear()
+  mockCreateVaultAccount.mockClear()
+  mockStoreVaultUnlockSecret.mockClear()
+  mockStoreProviderCredentials.mockReset()
+  mockStoreProviderCredentials.mockImplementation(async (agentName: string, provider: string) => ({
+    credentialPath: `vault:${agentName}:providers/${provider}`,
+  }))
 }
 
 describe("getSpecialistTools", () => {
@@ -57,7 +93,7 @@ describe("createSpecialistExecTool", () => {
   const cleanup: string[] = []
 
   afterEach(() => {
-    mockPlayHatchAnimation.mockClear()
+    resetCredentialMocks()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -250,7 +286,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   const cleanup: string[] = []
 
   afterEach(() => {
-    mockPlayHatchAnimation.mockClear()
+    resetCredentialMocks()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -325,9 +361,24 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // bundle-meta.json should exist
     expect(fs.existsSync(path.join(finalBundle, "bundle-meta.json"))).toBe(true)
 
-    // Secrets should be written
+    // Provider credentials should be written to the hatchling vault, not a legacy secrets file.
+    expect(mockCreateVaultAccount).toHaveBeenCalledWith(
+      "TestAgent",
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    )
+    expect(mockStoreVaultUnlockSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ agentName: "TestAgent" }),
+      expect.any(String),
+    )
+    expect(mockStoreProviderCredentials).toHaveBeenCalledWith(
+      "TestAgent",
+      "anthropic",
+      { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+    )
     const secretsFile = path.join(secretsRoot, "TestAgent", "secrets.json")
-    expect(fs.existsSync(secretsFile)).toBe(true)
+    expect(fs.existsSync(secretsFile)).toBe(false)
 
     // Animation should have played
     expect(animChunks.join("")).toContain("TestAgent")
@@ -456,8 +507,8 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles-rollback")
     cleanup.push(bundlesRoot)
 
-    // Use a non-writable path for secrets to trigger failure
     const secretsRoot = "/nonexistent/readonly/secrets"
+    mockStoreProviderCredentials.mockRejectedValueOnce(new Error("mock secret write failed"))
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -478,6 +529,33 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Bundle should be rolled back (removed)
     const finalBundle = path.join(bundlesRoot, "TestAgent.ouro")
     expect(fs.existsSync(finalBundle)).toBe(false)
+  })
+
+  it("rolls back moved bundle when hatchling vault creation fails", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-adopt-vault-failure")
+    const secretsRoot = makeTempDir("spec-tools-adopt-vault-failure-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+    mockCreateVaultAccount.mockResolvedValueOnce({ success: false, error: "account already exists" })
+
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "TestAgent",
+      handoff_message: "Hello",
+    })
+
+    expect(result).toContain("error: failed to write secrets")
+    expect(result).toContain("failed to create vault: account already exists")
+    expect(fs.existsSync(path.join(bundlesRoot, "TestAgent.ouro"))).toBe(false)
   })
 
   it("returns error when name parameter is missing", async () => {
@@ -630,5 +708,29 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Only README.md should be there, no friend JSON files
     const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
     expect(friendFiles.length).toBe(0)
+  }, 20000)
+
+  it("can complete adoption without an animation writer", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-no-writer-bundles")
+    const secretsRoot = makeTempDir("spec-tools-no-writer-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "NoWriterAgent",
+      handoff_message: "Hello!",
+    })
+
+    expect(result).toContain("success")
+    expect(fs.existsSync(path.join(bundlesRoot, "NoWriterAgent.ouro"))).toBe(true)
   }, 20000)
 })

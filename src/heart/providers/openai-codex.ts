@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { getOpenAICodexConfig, type OpenAICodexProviderConfig } from "../config";
-import { getAgentName, getAgentSecretsPath } from "../identity";
+import { getAgentName } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem } from "../streaming";
@@ -19,10 +19,6 @@ const OPENAI_CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 type JsonRecord = Record<string, unknown>;
 
-function getOpenAICodexSecretsPathForGuidance(): string {
-  return getAgentSecretsPath();
-}
-
 function getOpenAICodexAgentNameForGuidance(): string {
   return getAgentName();
 }
@@ -31,11 +27,9 @@ function getOpenAICodexOAuthInstructions(): string {
   const agentName = getOpenAICodexAgentNameForGuidance();
   return [
     "Fix:",
-    `  1. Run \`ouro auth --agent ${agentName}\``,
-    `  2. Open ${getOpenAICodexSecretsPathForGuidance()}`,
-    "  3. Confirm providers.openai-codex.oauthAccessToken is set",
-    "  4. This provider uses chatgpt.com/backend-api/codex/responses (not api.openai.com/responses).",
-    "  5. After reauth, retry the failed ouro command or reconnect this session.",
+    `  1. Run \`ouro auth --agent ${agentName} --provider openai-codex\``,
+    "  2. This provider uses chatgpt.com/backend-api/codex/responses (not api.openai.com/responses).",
+    "  3. After reauth, retry the failed ouro command or reconnect this session.",
   ].join("\n");
 }
 
@@ -99,7 +93,7 @@ export function createOpenAICodexProviderRuntime(model: string, codexConfig: Ope
   if (!codexConfig.oauthAccessToken) {
     throw new Error(
       getOpenAICodexReauthGuidance(
-        "provider 'openai-codex' is selected in agent.json but providers.openai-codex.oauthAccessToken is missing in secrets.json.",
+        "provider 'openai-codex' is selected but openai-codex.oauthAccessToken is missing in the agent vault.",
       ),
     );
   }

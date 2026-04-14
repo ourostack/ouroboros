@@ -8,10 +8,10 @@ import {
   resolveModelForProviderDisplay,
 } from "./provider-models"
 import {
-  readProviderCredentialPool,
+  refreshProviderCredentialPool,
   type ProviderCredentialProvenanceSource,
   type ProviderCredentialRecord,
-} from "./provider-credential-pool"
+} from "./provider-credentials"
 import type { ProviderLane } from "./provider-state"
 import { emitNervesEvent } from "../nerves/runtime"
 
@@ -23,7 +23,6 @@ export interface FailoverReadyProvider {
   model: string
   credentialRevision?: string
   source?: ProviderCredentialProvenanceSource
-  contributedByAgent?: string
   result?: Extract<PingResult, { ok: true }>
 }
 
@@ -32,7 +31,6 @@ export interface FailoverUnavailableProvider {
   model?: string
   credentialRevision?: string
   source?: ProviderCredentialProvenanceSource
-  contributedByAgent?: string
   result: FailedPingResult
 }
 
@@ -66,7 +64,6 @@ export type FailoverAction =
     lane: ProviderLane
     credentialRevision?: string
     source?: ProviderCredentialProvenanceSource
-    contributedByAgent?: string
   }
   | { action: "dismiss" }
 
@@ -95,16 +92,9 @@ function formatErrorDetail(errorMessage: string, errorSummary: string): string {
 
 export function formatCredentialProvenanceLabel(candidate: {
   source?: ProviderCredentialProvenanceSource
-  contributedByAgent?: string
 }): string | undefined {
-  if (candidate.contributedByAgent && candidate.source) {
-    return `credentials from ${candidate.contributedByAgent} via ${candidate.source}`
-  }
-  if (candidate.contributedByAgent) {
-    return `credentials from ${candidate.contributedByAgent}`
-  }
   if (candidate.source) {
-    return `credentials from this machine via ${candidate.source}`
+    return `credentials in vault via ${candidate.source}`
   }
   return undefined
 }
@@ -303,7 +293,6 @@ export function handleFailoverReply(
         lane: currentLane,
         ...(candidate.credentialRevision ? { credentialRevision: candidate.credentialRevision } : {}),
         ...(candidate.source ? { source: candidate.source } : {}),
-        ...(candidate.contributedByAgent ? { contributedByAgent: candidate.contributedByAgent } : {}),
       }
     }
   }
@@ -315,12 +304,10 @@ function candidateFromCredentialRecord(record: ProviderCredentialRecord): Omit<F
     provider: record.provider,
     credentialRevision: record.revision,
     source: record.provenance.source,
-    contributedByAgent: record.provenance.contributedByAgent,
   }
 }
 
 export interface MachineFailoverInventoryOptions {
-  homeDir?: string
   ping?: typeof pingProvider
 }
 
@@ -330,7 +317,7 @@ export async function runMachineProviderFailoverInventory(
   options: MachineFailoverInventoryOptions = {},
 ): Promise<ProviderFailoverInventory> {
   const ping = options.ping ?? pingProvider
-  const poolResult = readProviderCredentialPool(options.homeDir)
+  const poolResult = await refreshProviderCredentialPool(agentName)
   const providers = (Object.keys(PROVIDER_CREDENTIALS) as AgentProvider[]).filter((provider) => provider !== currentProvider)
   const inventory: ProviderFailoverInventory = { ready: [], unavailable: [], unconfigured: [] }
 

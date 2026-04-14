@@ -134,9 +134,9 @@ export async function minimaxVlmDescribe(params: MinimaxVlmDescribeParams): Prom
   if (!params.apiKey) {
     // We deliberately do NOT emit _start for param-validation errors — there's
     // no meaningful "started a request" to pair with. Only the _error fires.
-    emitError(params, "minimax VLM: API key is empty — re-run credential setup or add a minimax key to secrets.json")
+    emitError(params, "minimax VLM: API key is empty — run `ouro auth --agent <agent> --provider minimax`")
     throw new Error(
-      "minimax VLM: API key is empty — re-run credential setup or add a minimax key to secrets.json",
+      "minimax VLM: API key is empty — run `ouro auth --agent <agent> --provider minimax`",
     )
   }
   if (!params.prompt) {

@@ -821,14 +821,19 @@ describe("checkSecurity", () => {
     expect(cat.checks.find((c) => c.label.includes("perms"))?.detail).toContain("world-readable")
   })
 
-  it("fails when secrets.json is missing", () => {
+  it("does not fail when legacy secrets.json is missing", () => {
+    const config = JSON.stringify({ version: 2 })
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles"]),
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/agent.json": config }),
     })
     const cat = checkSecurity(deps)
-    expect(cat.checks[0].status).toBe("fail")
-    expect(cat.checks[0].detail).toBe("missing")
+    expect(cat.checks.find((c) => c.label.includes("legacy secrets.json perms"))).toBeUndefined()
+    expect(cat.checks.find((c) => c.label.includes("credential leak"))?.status).toBe("pass")
   })
 
   it("warns when agent.json contains credential keys", () => {
@@ -880,26 +885,12 @@ describe("checkSecurity", () => {
     expect(cat.checks.find((c) => c.label.includes("credential leak"))).toBeUndefined()
   })
 
-  it("checks machine-wide provider credential pool permissions without exposing raw credentials", () => {
+  it("does not inspect the removed machine-wide provider credential pool", () => {
     const config = JSON.stringify({ version: 2 })
-    const pool = JSON.stringify({
-      schemaVersion: 1,
-      updatedAt: "2026-04-12T22:20:00.000Z",
-      providers: {
-        anthropic: {
-          provider: "anthropic",
-          revision: "cred_anthropic",
-          updatedAt: "2026-04-12T22:20:00.000Z",
-          credentials: { setupToken: "sk-ant-oat01-super-secret" },
-          config: {},
-          provenance: {
-            source: "manual",
-            contributedByAgent: "slugger",
-            updatedAt: "2026-04-12T22:20:00.000Z",
-          },
-        },
-      },
-    })
+    const readFileSync = vi.fn(readFileFor({
+      "/tmp/bundles/test.ouro/agent.json": config,
+      "/tmp/secrets/providers.json": "not-json-with-secret-token",
+    }))
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -910,51 +901,15 @@ describe("checkSecurity", () => {
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       statSync: statFor({
         "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 },
-        "/tmp/secrets/providers.json": { mode: 0o644, size: pool.length },
+        "/tmp/secrets/providers.json": { mode: 0o644, size: 26 },
       }),
-      readFileSync: readFileFor({
-        "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/providers.json": pool,
-      }),
+      readFileSync,
     })
 
     const cat = checkSecurity(deps)
 
-    expect(cat.checks).toContainEqual(expect.objectContaining({
-      label: "machine provider credentials perms",
-      status: "warn",
-      detail: expect.stringContaining("world-readable"),
-    }))
-    expect(JSON.stringify(cat)).not.toContain("sk-ant-oat01-super-secret")
-  })
-
-  it("fails when the machine-wide provider credential pool is unparseable", () => {
-    const config = JSON.stringify({ version: 2 })
-    const deps = createMockDeps({
-      existsSync: existsFor([
-        "/tmp/bundles",
-        "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/secrets/test/secrets.json",
-        "/tmp/secrets/providers.json",
-      ]),
-      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      statSync: statFor({
-        "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 },
-        "/tmp/secrets/providers.json": { mode: 0o600, size: 8 },
-      }),
-      readFileSync: readFileFor({
-        "/tmp/bundles/test.ouro/agent.json": config,
-        "/tmp/secrets/providers.json": "not-json",
-      }),
-    })
-
-    const cat = checkSecurity(deps)
-
-    expect(cat.checks).toContainEqual(expect.objectContaining({
-      label: "machine provider credentials",
-      status: "fail",
-      detail: "unparseable JSON",
-    }))
+    expect(readFileSync).not.toHaveBeenCalledWith("/tmp/secrets/providers.json")
+    expect(cat.checks.find((c) => c.label.includes("machine provider credentials"))).toBeUndefined()
   })
 
   it("passes provider state leak scan when no credential-looking keys are present", () => {

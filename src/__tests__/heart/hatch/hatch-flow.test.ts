@@ -2,9 +2,18 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { runRuntimeAuthFlow } from "../../../heart/auth/auth-flow"
+const mockStoreProviderCredentials = vi.hoisted(() =>
+  vi.fn(async (agentName: string, provider: string, _credentials: Record<string, unknown>) => ({
+    credentialPath: `vault:${agentName}:providers/${provider}`,
+  })),
+)
+
+vi.mock("../../../heart/auth/auth-flow", () => ({
+  storeProviderCredentials: mockStoreProviderCredentials,
+}))
+
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
 import { readProviderState } from "../../../heart/provider-state"
@@ -17,6 +26,7 @@ describe("hatch flow", () => {
   const cleanup: string[] = []
 
   afterEach(() => {
+    mockStoreProviderCredentials.mockClear()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -157,6 +167,54 @@ describe("hatch flow", () => {
     expect(JSON.stringify(stateResult.state)).not.toContain("minimax-secret-key")
   })
 
+  it("creates a machine identity while bootstrapping provider state from the default provider credential home", async () => {
+    const homeDir = makeTempDir("hatch-provider-state-default-home")
+    const bundlesRoot = path.join(homeDir, "AgentBundles")
+    const secretsRoot = path.join(homeDir, ".agentsecrets")
+    const specialistSource = makeTempDir("hatch-provider-state-default-specialist")
+    const specialistTarget = makeTempDir("hatch-provider-state-default-specialist-target")
+    cleanup.push(homeDir, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+
+    vi.resetModules()
+    vi.doMock("../../../heart/provider-credentials", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+      return {
+        ...actual,
+        providerCredentialMachineHomeDir: () => homeDir,
+      }
+    })
+
+    try {
+      const { runHatchFlow: runIsolatedHatchFlow } = await import("../../../heart/hatch/hatch-flow")
+      const result = await runIsolatedHatchFlow(
+        {
+          agentName: "DefaultProviderHomeBot",
+          humanName: "Ari",
+          provider: "minimax",
+          credentials: { apiKey: "minimax-key" },
+        },
+        {
+          bundlesRoot,
+          secretsRoot,
+          specialistIdentitySourceDir: specialistSource,
+          specialistIdentityTargetDir: specialistTarget,
+          now: () => new Date("2026-04-12T22:16:00.000Z"),
+          random: () => 0,
+        },
+      )
+
+      const stateResult = readProviderState(result.bundleRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.updatedAt).toBe("2026-04-12T22:16:00.000Z")
+      expect(fs.existsSync(path.join(homeDir, ".ouro-cli", "machine.json"))).toBe(true)
+    } finally {
+      vi.doUnmock("../../../heart/provider-credentials")
+      vi.resetModules()
+    }
+  })
+
   it("fails fast when required provider credentials are missing", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-missing")
     const secretsRoot = makeTempDir("hatch-secrets-missing")
@@ -212,15 +270,12 @@ describe("hatch flow", () => {
       },
     )
 
-    const secretsPath = path.join(secretsRoot, "AzureBot", "secrets.json")
-    const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8")) as {
-      providers: {
-        azure: { apiKey: string; endpoint: string; deployment: string }
-      }
-    }
-    expect(secrets.providers.azure.apiKey).toBe("azure-key")
-    expect(secrets.providers.azure.endpoint).toBe("https://example.openai.azure.com")
-    expect(secrets.providers.azure.deployment).toBe("gpt-4o-mini")
+    expect(result.credentialPath).toBe("vault:AzureBot:providers/azure")
+    expect(mockStoreProviderCredentials).toHaveBeenLastCalledWith("AzureBot", "azure", {
+      apiKey: "azure-key",
+      endpoint: "https://example.openai.azure.com",
+      deployment: "gpt-4o-mini",
+    })
 
     // Psyche files are no longer written by runHatchFlow (specialist writes them now)
     expect(fs.existsSync(path.join(result.bundleRoot, "psyche", "IDENTITY.md"))).toBe(false)
@@ -252,14 +307,10 @@ describe("hatch flow", () => {
       },
     )
 
-    const secretsPath = path.join(secretsRoot, "CodexBot", "secrets.json")
-    const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8")) as {
-      providers: {
-        "openai-codex": { oauthAccessToken: string; model?: string }
-      }
-    }
-    expect(secrets.providers["openai-codex"].oauthAccessToken).toBe("oauth-token-123")
-    expect(secrets.providers["openai-codex"].model).toBeUndefined()
+    expect(result.credentialPath).toBe("vault:CodexBot:providers/openai-codex")
+    expect(mockStoreProviderCredentials).toHaveBeenLastCalledWith("CodexBot", "openai-codex", {
+      oauthAccessToken: "oauth-token-123",
+    })
 
     const agentConfig = JSON.parse(fs.readFileSync(path.join(result.bundleRoot, "agent.json"), "utf-8")) as Record<string, any>
     expect(agentConfig.humanFacing).toEqual({ provider: "openai-codex", model: "gpt-5.4" })
@@ -274,7 +325,7 @@ describe("hatch flow", () => {
     cleanup.push(bundlesRoot, secretsRoot, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "python.md"), "# Python\n", "utf-8")
 
-    await runHatchFlow(
+    const result = await runHatchFlow(
       {
         agentName: "MiniBot",
         humanName: "Ari",
@@ -292,13 +343,10 @@ describe("hatch flow", () => {
       },
     )
 
-    const secretsPath = path.join(secretsRoot, "MiniBot", "secrets.json")
-    const secrets = JSON.parse(fs.readFileSync(secretsPath, "utf-8")) as {
-      providers: {
-        minimax: { apiKey: string }
-      }
-    }
-    expect(secrets.providers.minimax.apiKey).toBe("minimax-key")
+    expect(result.credentialPath).toBe("vault:MiniBot:providers/minimax")
+    expect(mockStoreProviderCredentials).toHaveBeenLastCalledWith("MiniBot", "minimax", {
+      apiKey: "minimax-key",
+    })
   })
 
   it("preserves existing README files and falls back to friend slug when human name is blank", async () => {
@@ -337,114 +385,6 @@ describe("hatch flow", () => {
     expect(fs.readFileSync(readmePath, "utf-8")).toContain("custom readme")
   })
 
-  it("writeSecretsFile creates correct anthropic secrets file", async () => {
-    const secretsRoot = makeTempDir("hatch-secrets-ws-anthropic")
-    cleanup.push(secretsRoot)
-
-    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
-    const resultPath = writeSecretsFile("TestAgent", "anthropic", { setupToken: "sk-test-token" }, secretsRoot)
-
-    expect(resultPath).toBe(path.join(secretsRoot, "TestAgent", "secrets.json"))
-    const secrets = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as {
-      providers: { anthropic: { setupToken: string } }
-    }
-    expect(secrets.providers.anthropic.setupToken).toBe("sk-test-token")
-  })
-
-  it("writeSecretsFile creates correct azure secrets file", async () => {
-    const secretsRoot = makeTempDir("hatch-secrets-ws-azure")
-    cleanup.push(secretsRoot)
-
-    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
-    const resultPath = writeSecretsFile(
-      "TestAgent",
-      "azure",
-      { apiKey: "az-key", endpoint: "https://az.test", deployment: "gpt-4o" },
-      secretsRoot,
-    )
-
-    expect(resultPath).toBe(path.join(secretsRoot, "TestAgent", "secrets.json"))
-    const secrets = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as {
-      providers: { azure: { apiKey: string; endpoint: string; deployment: string } }
-    }
-    expect(secrets.providers.azure.apiKey).toBe("az-key")
-    expect(secrets.providers.azure.endpoint).toBe("https://az.test")
-    expect(secrets.providers.azure.deployment).toBe("gpt-4o")
-  })
-
-  it("writeSecretsFile returns the path to the written secrets file", async () => {
-    const secretsRoot = makeTempDir("hatch-secrets-ws-return")
-    cleanup.push(secretsRoot)
-
-    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
-    const resultPath = writeSecretsFile("ReturnTest", "minimax", { apiKey: "mm-key" }, secretsRoot)
-
-    expect(resultPath).toBe(path.join(secretsRoot, "ReturnTest", "secrets.json"))
-    expect(fs.existsSync(resultPath)).toBe(true)
-  })
-
-  it("writes the same secrets shape as runtime auth for anthropic and openai-codex", async () => {
-    const homeDir = makeTempDir("hatch-runtime-auth-home")
-    const hatchSecretsRoot = makeTempDir("hatch-runtime-auth-secrets")
-    cleanup.push(homeDir, hatchSecretsRoot)
-
-    const { writeSecretsFile } = await import("../../../heart/hatch/hatch-flow")
-
-    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
-    fs.writeFileSync(
-      path.join(homeDir, ".codex", "auth.json"),
-      `${JSON.stringify({ tokens: { access_token: "oauth-token-runtime" } }, null, 2)}\n`,
-      "utf8",
-    )
-
-    const anthropicAgent = "AnthropicShared"
-    await runRuntimeAuthFlow(
-      {
-        agentName: anthropicAgent,
-        provider: "anthropic",
-        promptInput: async () => `sk-ant-oat01-${"a".repeat(90)}`,
-      },
-      {
-        homeDir,
-        spawnSync: (() => ({ status: 0 })) as any,
-      },
-    )
-    const anthropicRuntime = JSON.parse(
-      fs.readFileSync(path.join(homeDir, ".agentsecrets", anthropicAgent, "secrets.json"), "utf8"),
-    ) as Record<string, unknown>
-    const anthropicHatchPath = writeSecretsFile(
-      anthropicAgent,
-      "anthropic",
-      { setupToken: `sk-ant-oat01-${"a".repeat(90)}` },
-      hatchSecretsRoot,
-    )
-    const anthropicHatch = JSON.parse(fs.readFileSync(anthropicHatchPath, "utf8")) as Record<string, unknown>
-    expect(anthropicHatch).toEqual(anthropicRuntime)
-
-    const codexAgent = "CodexShared"
-    await runRuntimeAuthFlow(
-      {
-        agentName: codexAgent,
-        provider: "openai-codex",
-      },
-      {
-        homeDir,
-        spawnSync: (() => ({ status: 0 })) as any,
-      },
-    )
-    const codexRuntime = JSON.parse(
-      fs.readFileSync(path.join(homeDir, ".agentsecrets", codexAgent, "secrets.json"), "utf8"),
-    ) as Record<string, unknown>
-    const codexHatchPath = writeSecretsFile(
-      codexAgent,
-      "openai-codex",
-      { oauthAccessToken: "oauth-token-runtime" },
-      hatchSecretsRoot,
-    )
-    const codexHatch = JSON.parse(fs.readFileSync(codexHatchPath, "utf8")) as Record<string, unknown>
-    expect(codexHatch).toEqual(codexRuntime)
-  })
-
   it("uses default home, source, and target paths when optional deps are omitted", async () => {
     const tempCwd = makeTempDir("hatch-default-cwd")
     cleanup.push(tempCwd)
@@ -457,9 +397,8 @@ describe("hatch flow", () => {
 
     const agentName = `DefaultsBot-${Date.now()}`
     const bundleRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
-    const secretsDir = path.join(homeDir, ".agentsecrets", agentName)
     const specialistSecretsDir = path.join(homeDir, ".agentsecrets", "SerpentGuide")
-    cleanup.push(bundleRoot, secretsDir, specialistBundleDir, specialistSecretsDir)
+    cleanup.push(bundleRoot, specialistBundleDir, specialistSecretsDir)
 
     const originalCwd = process.cwd()
     try {
@@ -475,7 +414,7 @@ describe("hatch flow", () => {
 
       expect(result.bundleRoot).toBe(bundleRoot)
       expect(fs.existsSync(path.join(tempCwd, "SerpentGuide.ouro", "psyche", "identities", "python.md"))).toBe(true)
-      expect(fs.existsSync(path.join(secretsDir, "secrets.json"))).toBe(true)
+      expect(result.credentialPath).toBe(`vault:${agentName}:providers/anthropic`)
     } finally {
       process.chdir(originalCwd)
     }

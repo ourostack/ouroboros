@@ -6,12 +6,12 @@
  */
 
 import { execFileSync, execSync, spawn } from "child_process"
-import { randomUUID } from "crypto"
+import { randomBytes, randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -26,22 +26,22 @@ import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
+import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
+import { createVaultAccount } from "../../repertoire/vault-setup"
+import { getVaultUnlockStatus, storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
-  loadAgentSecrets,
   resolveHatchCredentials,
   readAgentConfigForAgent,
 } from "../auth/auth-flow"
 import {
-  providerCredentialHomeDirFromSecretsRoot,
-  readProviderCredentialPool,
-  readLegacyAgentProviderCredentials,
-  splitProviderCredentialFields,
-  upsertProviderCredential,
+  providerCredentialMachineHomeDir,
+  refreshProviderCredentialPool,
+  summarizeProviderCredentialPool,
   type ProviderCredentialRecord,
-} from "../provider-credential-pool"
+} from "../provider-credentials"
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
 import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
@@ -61,6 +61,7 @@ import type {
   AuthVerifyCliCommand,
   AuthSwitchCliCommand,
   ProviderCliCommand,
+  VaultCliCommand,
   ChangelogCliCommand,
   ConfigModelCliCommand,
   ConfigModelsCliCommand,
@@ -114,12 +115,11 @@ async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Arr
     deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
   )
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
   const degraded: Array<{ agent: string; errorReason: string; fixHint: string }> = []
 
   for (const agent of agents) {
     try {
-      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot, secretsRoot)
+      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
       const fixHint = result.fix ?? ""
@@ -156,8 +156,7 @@ async function checkProviderHealthBeforeChat(
   deps: OuroCliDeps,
 ): Promise<{ ok: true } | { ok: false; output: string }> {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const secretsRoot = deps.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
-  const result = await checkAgentConfigWithProviderHealth(agentName, bundlesRoot, secretsRoot)
+  const result = await checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
   if (!result.ok) {
     const output = `${result.error}\n${result.fix ? `      fix:   ${result.fix}` : ""}`
     deps.writeStdout(output)
@@ -623,7 +622,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | CloneCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -659,7 +658,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
 // ── Provider state CLI helpers ──
 
 function providerCliHomeDir(deps: OuroCliDeps): string {
-  return providerCredentialHomeDirFromSecretsRoot(deps.secretsRoot)
+  return providerCredentialMachineHomeDir(deps.homeDir)
 }
 
 function providerCliAgentRoot(command: { agent: string }, deps: OuroCliDeps): string {
@@ -668,6 +667,162 @@ function providerCliAgentRoot(command: { agent: string }, deps: OuroCliDeps): st
 
 function providerCliNow(deps: OuroCliDeps): Date {
   return new Date((deps.now ?? Date.now)())
+}
+
+function writeAgentVaultConfig(
+  agentName: string,
+  configPath: string,
+  config: AgentConfig,
+  vault: { email: string; serverUrl: string },
+): void {
+  const nextConfig = {
+    ...config,
+    vault: {
+      email: vault.email,
+      serverUrl: vault.serverUrl,
+    },
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8")
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.vault_config_written",
+    message: "wrote credential vault locator to agent config",
+    meta: { agentName, configPath, email: vault.email, serverUrl: vault.serverUrl },
+  })
+}
+
+async function executeVaultUnlock(
+  command: Extract<OuroCliCommand, { kind: "vault.unlock" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide does not have a persistent credential vault. Hatch bootstrap uses selected provider credentials in memory only.")
+  }
+  const prompt = deps.promptInput
+  if (!prompt) throw new Error("vault unlock requires an interactive prompt to capture the vault unlock secret")
+  const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const vault = resolveVaultConfig(command.agent, config.vault)
+  const unlockSecret = await prompt(`Ouro vault unlock secret for ${vault.email}: `)
+  const store = storeVaultUnlockSecret({
+    agentName: command.agent,
+    email: vault.email,
+    serverUrl: vault.serverUrl,
+  }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
+  resetCredentialStore()
+  await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+  const message = [
+    `vault unlocked for ${command.agent} on this machine`,
+    `vault: ${vault.email} at ${vault.serverUrl}`,
+    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultCreate(
+  command: Extract<OuroCliCommand, { kind: "vault.create" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide does not have a persistent credential vault. Create a vault for the hatchling agent, not SerpentGuide.")
+  }
+  const prompt = deps.promptInput
+  const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const configuredVault = resolveVaultConfig(command.agent, config.vault)
+  const email = command.email ?? config.vault?.email ?? (prompt ? (await prompt("Ouro credential vault email: ")).trim() : "")
+  if (!email) {
+    throw new Error("vault create requires --email <email> when the agent bundle has no vault.email")
+  }
+  const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
+  const requestedUnlockSecret = command.generateUnlockSecret
+    ? ""
+    : prompt
+      ? (await prompt(`Choose Ouro vault unlock secret for ${email}: `)).trim()
+      : ""
+  if (!requestedUnlockSecret && !command.generateUnlockSecret) {
+    throw new Error("vault create requires an unlock secret. Re-run with an interactive terminal or pass --generate-unlock-secret.")
+  }
+  const unlockSecret = requestedUnlockSecret || randomBytes(32).toString("base64")
+  const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
+  if (!result.success) {
+    const message = [
+      `vault create failed for ${command.agent}: ${result.error}`,
+      "",
+      "If this vault account already exists, run:",
+      `  ouro vault unlock --agent ${command.agent}`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  writeAgentVaultConfig(command.agent, configPath, config, { email, serverUrl })
+  const store = storeVaultUnlockSecret({
+    agentName: command.agent,
+    email,
+    serverUrl,
+  }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
+  resetCredentialStore()
+  await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+  const message = [
+    `vault created for ${command.agent}`,
+    `vault: ${email} at ${serverUrl}`,
+    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
+    "Provider credentials will be stored in this agent's Ouro credential vault.",
+    ...(command.generateUnlockSecret
+      ? [
+        "",
+        `vault unlock secret: ${unlockSecret}`,
+        "",
+        "Store this in the operator password manager now. Another machine cannot unlock the vault without it.",
+      ]
+      : ["Store the vault unlock secret in the operator password manager. Another machine will need it once."]),
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultStatus(
+  command: Extract<OuroCliCommand, { kind: "vault.status" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent credential vault. Hatch bootstrap uses selected provider credentials in memory only."
+    deps.writeStdout(message)
+    return message
+  }
+  const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const vault = resolveVaultConfig(command.agent, config.vault)
+  const status = getVaultUnlockStatus({
+    agentName: command.agent,
+    email: vault.email,
+    serverUrl: vault.serverUrl,
+  }, { homeDir: deps.homeDir, store: command.store })
+
+  const lines = [
+    `agent: ${command.agent}`,
+    `vault: ${vault.email} at ${vault.serverUrl}`,
+    `local unlock store: ${status.store ? `${status.store.kind}${status.store.secure ? "" : " (explicit plaintext fallback)"}` : "unavailable"}`,
+    `local unlock: ${status.stored ? "available" : "missing"}`,
+  ]
+
+  if (status.stored) {
+    const pool = await refreshProviderCredentialPool(command.agent)
+    if (pool.ok) {
+      const summary = summarizeProviderCredentialPool(pool.pool)
+      lines.push(`provider credentials: ${summary.providers.length === 0 ? "none stored" : ""}`)
+      for (const provider of summary.providers) {
+        lines.push(`  ${provider.provider}: credential fields ${provider.credentialFields.join(", ") || "none"}, config fields ${provider.configFields.join(", ") || "none"}`)
+      }
+    } else {
+      lines.push(`provider credentials: unavailable (${pool.error})`)
+    }
+  } else {
+    lines.push("")
+    lines.push(status.fix)
+  }
+
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
 }
 
 function readOrBootstrapProviderState(agentName: string, deps: OuroCliDeps): { agentRoot: string; state: ProviderState } {
@@ -721,57 +876,17 @@ function pingAttemptCount(result: PingResult | { attempts?: unknown }): number |
   return undefined
 }
 
-function providerCliLegacyRecord(agent: string, provider: AgentProvider, deps: OuroCliDeps): ReturnType<typeof splitProviderCredentialFields> | null {
-  try {
-    const legacyCandidates = readLegacyAgentProviderCredentials({
-      homeDir: providerCliHomeDir(deps),
-      agentName: agent,
-    })
-    const candidate = legacyCandidates.find((entry) => entry.provider === provider)
-    if (candidate) return { credentials: candidate.credentials, config: candidate.config }
-  } catch {
-    // Fall through to the injected/secretsRoot-aware legacy reader below.
-  }
-
-  try {
-    const { secrets } = loadAgentSecrets(agent, { secretsRoot: deps.secretsRoot })
-    const providerSecrets = secrets.providers[provider]
-    const split = splitProviderCredentialFields(provider, providerSecrets)
-    if (Object.keys(split.credentials).length === 0 && Object.keys(split.config).length === 0) return null
-    return split
-  } catch {
-    return null
-  }
-}
-
-function readProviderCredentialRecord(
+async function readProviderCredentialRecord(
   agent: string,
   provider: AgentProvider,
-  deps: OuroCliDeps,
-): { ok: true; record: ProviderCredentialRecord } | { ok: false; reason: "missing" | "invalid"; poolPath: string; error: string } {
-  const homeDir = providerCliHomeDir(deps)
-  const poolResult = readProviderCredentialPool(homeDir)
+  _deps: OuroCliDeps,
+): Promise<{ ok: true; record: ProviderCredentialRecord } | { ok: false; reason: "missing" | "invalid" | "unavailable"; poolPath: string; error: string }> {
+  const poolResult = await refreshProviderCredentialPool(agent)
   if (poolResult.ok) {
     const existing = poolResult.pool.providers[provider]
     if (existing) return { ok: true, record: existing }
-  } else if (poolResult.reason === "invalid") {
-    return { ok: false, reason: "invalid", poolPath: poolResult.poolPath, error: poolResult.error }
-  }
-
-  const legacy = providerCliLegacyRecord(agent, provider, deps)
-  if (legacy) {
-    const record = upsertProviderCredential({
-      homeDir,
-      provider,
-      credentials: legacy.credentials,
-      config: legacy.config,
-      provenance: {
-        source: "legacy-agent-secrets",
-        contributedByAgent: agent,
-      },
-      now: providerCliNow(deps),
-    })
-    return { ok: true, record }
+  } else if (poolResult.reason === "invalid" || poolResult.reason === "unavailable") {
+    return { ok: false, reason: poolResult.reason, poolPath: poolResult.poolPath, error: poolResult.error }
   }
 
   return {
@@ -850,7 +965,7 @@ async function executeProviderUse(
     return message
   }
   const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-  const credential = readProviderCredentialRecord(command.agent, command.provider, deps)
+  const credential = await readProviderCredentialRecord(command.agent, command.provider, deps)
   if (!credential.ok) {
     if (!command.force) {
       const message = [
@@ -916,7 +1031,7 @@ async function executeProviderCheck(
 ): Promise<string> {
   const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
   const binding = state.lanes[command.lane]
-  const credential = readProviderCredentialRecord(command.agent, binding.provider, deps)
+  const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps)
   if (!credential.ok) {
     const message = [
       `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: unknown (${credential.error})`,
@@ -958,22 +1073,22 @@ async function executeProviderCheck(
 
 function renderProviderCredentialLine(credential: EffectiveProviderCredentialStatus): string {
   if (credential.status === "present") {
-    const contributor = credential.contributedByAgent ? ` by ${credential.contributedByAgent}` : ""
     const credentialFields = credential.credentialFields.length > 0 ? ` credentials: ${credential.credentialFields.join(", ")}` : " credentials: none"
     const configFields = credential.configFields.length > 0 ? ` config: ${credential.configFields.join(", ")}` : " config: none"
-    return `credentials: present (${credential.source}${contributor}; ${credential.revision};${credentialFields};${configFields})`
+    return `credentials: present in vault (${credential.source}; ${credential.revision};${credentialFields};${configFields})`
   }
   if (credential.status === "invalid-pool") {
-    return `credentials: invalid pool (${credential.error}); repair: ${credential.repair.command}`
+    return `credentials: vault unavailable (${credential.error}); repair: ${credential.repair.command}`
   }
   return `credentials: missing; repair: ${credential.repair.command}`
 }
 
-function executeProviderStatus(
+async function executeProviderStatus(
   command: Extract<OuroCliCommand, { kind: "provider.status" }>,
   deps: OuroCliDeps,
-): string {
+): Promise<string> {
   const agentRoot = providerCliAgentRoot(command, deps)
+  await refreshProviderCredentialPool(command.agent)
   const homeDir = providerCliHomeDir(deps)
   const lines = [`provider status: ${command.agent}`]
   for (const lane of ["outward", "inner"] as ProviderLane[]) {
@@ -1001,6 +1116,48 @@ function executeProviderStatus(
   return message
 }
 
+async function executeProviderRefresh(
+  command: Extract<OuroCliCommand, { kind: "provider.refresh" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent provider credentials to refresh. Hatch bootstrap uses selected credentials in memory only."
+    deps.writeStdout(message)
+    return message
+  }
+
+  const pool = await refreshProviderCredentialPool(command.agent)
+  const lines: string[] = []
+  if (pool.ok) {
+    const summary = summarizeProviderCredentialPool(pool.pool)
+    lines.push(`refreshed provider credential snapshot for ${command.agent}`)
+    lines.push(`providers: ${summary.providers.map((provider) => provider.provider).join(", ") || "none"}`)
+  } else {
+    lines.push(`provider credential refresh failed for ${command.agent}: ${pool.error}`)
+    lines.push(`Run \`ouro vault unlock --agent ${command.agent}\`, then retry.`)
+  }
+
+  try {
+    const alive = await deps.checkSocketAlive(deps.socketPath)
+    if (alive) {
+      const response = await deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent: command.agent })
+      if (response.ok) {
+        lines.push(`restarted ${command.agent} so the running agent reloads credentials`)
+      } else {
+        lines.push(`daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`)
+      }
+    } else {
+      lines.push("daemon is not running; the next start will load the refreshed snapshot")
+    }
+  } catch (error) {
+    lines.push(`daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 async function executeLegacyAuthSwitch(
   command: Extract<OuroCliCommand, { kind: "auth.switch" }>,
   deps: OuroCliDeps,
@@ -1018,6 +1175,7 @@ async function executeLegacyAuthSwitch(
       lane,
       provider: command.provider,
       model,
+      force: true,
       legacyFacing: command.facing,
     }, deps, { writeStdout: false }))
   }
@@ -1038,7 +1196,7 @@ async function executeLegacyConfigModel(
   const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
   const binding = state.lanes[lane]
   if (binding.provider === "github-copilot") {
-    const credential = readProviderCredentialRecord(command.agent, "github-copilot", deps)
+    const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps)
     if (credential.ok) {
       const ghConfig: Record<string, string | number> = {
         ...credential.record.config,
@@ -1867,15 +2025,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       } else {
         await runAgenticRepair(daemonResult.stability.degraded, {
           /* v8 ignore start -- production provider discovery wiring @preserve */
-          discoverWorkingProvider: async () => {
+          discoverWorkingProvider: async (agentName: string) => {
             const { discoverWorkingProvider: discover } = await import("./provider-discovery")
-            const { discoverExistingCredentials } = await import("./cli-defaults")
             const { pingProvider } = await import("../provider-ping")
             return discover({
-              discoverExistingCredentials,
+              agentName,
               pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
-              env: process.env as Record<string, string | undefined>,
-              secretsRoot: deps.secretsRoot ?? `${process.env["HOME"]}/.agentsecrets`,
             })
           },
           createProviderRuntime: createAgenticDiagnosisProviderRuntime,
@@ -2513,6 +2668,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeProviderStatus(command, deps)
   }
 
+  if (command.kind === "provider.refresh") {
+    return executeProviderRefresh(command, deps)
+  }
+
+  if (command.kind === "vault.unlock") {
+    return executeVaultUnlock(command, deps)
+  }
+
+  if (command.kind === "vault.create") {
+    return executeVaultCreate(command, deps)
+  }
+
+  if (command.kind === "vault.status") {
+    return executeVaultStatus(command, deps)
+  }
+
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
@@ -2523,21 +2694,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       provider,
       promptInput: deps.promptInput,
     })
-    const credentials = (result.credentials ?? {}) as Record<string, unknown>
-    const split = splitProviderCredentialFields(provider, credentials)
-    if (Object.keys(split.credentials).length > 0 || Object.keys(split.config).length > 0) {
-      upsertProviderCredential({
-        homeDir: providerCliHomeDir(deps),
-        provider,
-        credentials: split.credentials,
-        config: split.config,
-        provenance: {
-          source: "auth-flow",
-          contributedByAgent: command.agent,
-        },
-        now: providerCliNow(deps),
-      })
-    }
     // Behavior: ouro auth stores credentials only — does NOT switch provider.
     // Use `ouro auth switch` to change the active provider.
     deps.writeStdout(result.message)
@@ -2545,8 +2701,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Verify the credentials actually work by pinging the provider
     /* v8 ignore start -- integration: real API ping after auth @preserve */
     try {
-      const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
-      const status = await verifyProviderCredentials(provider, secrets.providers)
+      const credential = await readProviderCredentialRecord(command.agent, provider, deps)
+      const status = credential.ok
+        ? await verifyProviderCredentials(provider, {
+          [provider]: { ...credential.record.config, ...credential.record.credentials },
+        })
+        : `stored but could not be re-read from vault (${credential.error})`
       deps.writeStdout(`${provider}: ${status}`)
     } catch {
       // Verification failure is non-blocking — credentials were saved regardless
@@ -2558,19 +2718,34 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── auth verify (local, no daemon socket needed) ──
   /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
   if (command.kind === "auth.verify") {
-    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
-    const providers = secrets.providers
+    const poolResult = await refreshProviderCredentialPool(command.agent)
+    if (!poolResult.ok) {
+      const message = `vault unavailable: ${poolResult.error}\nRun \`ouro vault unlock --agent ${command.agent}\`, then retry.`
+      deps.writeStdout(message)
+      return message
+    }
     if (command.provider) {
-      const status = await verifyProviderCredentials(command.provider, providers)
+      const record = poolResult.pool.providers[command.provider]
+      if (!record) {
+        const message = `${command.provider}: missing. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\`.`
+        deps.writeStdout(message)
+        return message
+      }
+      const status = await verifyProviderCredentials(command.provider, {
+        [command.provider]: { ...record.config, ...record.credentials },
+      })
       const message = `${command.provider}: ${status}`
       deps.writeStdout(message)
       return message
     }
     const lines: string[] = []
-    for (const p of Object.keys(providers) as AgentProvider[]) {
-      const status = await verifyProviderCredentials(p, providers)
+    for (const [p, record] of Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>) {
+      const status = await verifyProviderCredentials(p, {
+        [p]: { ...record.config, ...record.credentials },
+      })
       lines.push(`${p}: ${status}`)
     }
+    if (lines.length === 0) lines.push(`no provider credentials in ${command.agent}'s vault`)
     const message = lines.join("\n")
     deps.writeStdout(message)
     return message
@@ -2592,9 +2767,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    const { secrets } = loadAgentSecrets(command.agent, { secretsRoot: deps.secretsRoot })
-    const ghConfig = secrets.providers["github-copilot"]
-    if (!ghConfig.githubToken || !ghConfig.baseUrl) {
+    const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps)
+    const ghConfig: Record<string, string | number> = credential.ok
+      ? { ...credential.record.config, ...credential.record.credentials }
+      : {}
+    if (typeof ghConfig.githubToken !== "string" || typeof ghConfig.baseUrl !== "string") {
       throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
     }
     const fetchFn = deps.fetchImpl ?? fetch
@@ -2987,7 +3164,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return ""
     }
 
-    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
+    const vaultLine = result.vaultUnlockSecret
+      ? `\nvault unlock secret for ${hatchInput.agentName}: ${result.vaultUnlockSecret}\nUse this with \`ouro vault unlock --agent ${hatchInput.agentName}\` on another machine.`
+      : ""
+    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}${vaultLine}`
     deps.writeStdout(message)
     return message
   }

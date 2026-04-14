@@ -121,7 +121,7 @@ describe("buildPulseState", () => {
             model: "MiniMax-M2.5",
             source: "local",
             readiness: { status: "ready" },
-            credential: { status: "present", source: "auth-flow", contributedByAgent: "slugger", revision: "cred_mm" },
+            credential: { status: "present", source: "auth-flow", revision: "cred_mm" },
             warnings: [],
           },
         ],

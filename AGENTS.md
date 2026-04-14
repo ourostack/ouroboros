@@ -159,12 +159,17 @@ These gates are defaults for autonomous operation. The human may shorten or skip
 
 ### Runtime Config Contract (Required)
 
-- `agent.json` is the source of truth for agent identity, provider+model selection per facing, `configPath`, phrases, and context settings.
-- Provider selection uses `humanFacing: { provider, model }` and `agentFacing: { provider, model }`. Human-facing covers CLI, Teams, and BlueBubbles; agent-facing covers inner dialog. Both facings are required; there is no fallback between them.
-- `configPath` must target `~/.agentsecrets/<agent>/secrets.json`.
-- `secrets.json` stores provider credentials only (API keys, tokens, endpoints) — model selection lives in `agent.json`.
-- Keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped test-run artifacts under `~/.agentstate/...`.
-- Both facing configs must be complete; runtime must fail fast with explicit guidance. Do not implement silent provider fallback behavior.
+- The full auth/provider contract is locked in `docs/auth-and-providers.md`. Keep code, tests, prompt rendering, CLI errors, and docs aligned with that file.
+- `agent.json` is the source of truth for agent identity, phrases, enabled senses, vault coordinates, and context settings. Vault coordinates are not secrets.
+- Provider selection uses local provider state under `~/AgentBundles/<agent>.ouro/state/providers.json`, with `agent.json` used only to bootstrap missing local state. Human-facing maps to the `outward` lane; agent-facing maps to the `inner` lane. Both lanes must be complete; there is no silent fallback between them.
+- Provider credentials live in the owning agent's Bitwarden/Vaultwarden vault. There is one vault per agent and no machine-wide provider credential pool. Tool/sense credential vault migration is a follow-up; do not add new provider-secret paths outside the vault.
+- The only local secret is vault unlock material stored in macOS Keychain, Windows DPAPI, Linux Secret Service, or an explicit human-approved plaintext fallback under ignored local state.
+- `ouro auth --agent <agent> --provider <provider>` writes provider credentials to that agent's vault. `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` chooses what this machine uses. `ouro provider refresh --agent <agent>` refreshes the daemon's in-memory credential snapshot from the vault.
+- Provider credentials are cached in daemon memory after refresh/startup/auth/unlock. Do not read the remote vault on every model request and do not add a local provider-key cache on disk.
+- Repair guidance must include the actor: `agent-runnable`, `human-required`, or `human-choice`. Agents may run checks/refreshes, but browser login, MFA, provider dashboards, API-token creation, and secret entry are human-required.
+- SerpentGuide hatch bootstrap may use existing unlockable agent-vault credentials or prompt the human. It runs with selected credentials in memory and stores them in the hatchling vault. SerpentGuide must not have persistent provider credentials or a persistent credential vault.
+- Keep agent-owned runtime/session/log/PII artifacts under `~/AgentBundles/<agent>.ouro/state/...` and machine-scoped runtime artifacts under `~/.ouro-cli/...`.
+- Runtime must fail fast with explicit guidance when the vault is locked, credentials are missing, or a selected provider/model fails its live check. Do not implement silent provider fallback behavior.
 
 ### Git Discipline
 

@@ -9,6 +9,5 @@ describe("daemon-cli re-export shim", () => {
     expect(daemonCli.ensureDaemonRunning).toBeTypeOf("function")
     expect(daemonCli.createDefaultOuroCliDeps).toBeTypeOf("function")
     expect(daemonCli.readFirstBundleMetaVersion).toBeTypeOf("function")
-    expect(daemonCli.discoverExistingCredentials).toBeTypeOf("function")
   })
 })
