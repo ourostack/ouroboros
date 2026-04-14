@@ -40,6 +40,10 @@ function isConfigError(degraded: DegradedAgent): boolean {
   return degraded.fixHint.length > 0 && !isVaultUnlockIssue(degraded) && !isCredentialIssue(degraded)
 }
 
+export function hasRunnableInteractiveRepair(degraded: DegradedAgent): boolean {
+  return isVaultUnlockIssue(degraded) || isCredentialIssue(degraded)
+}
+
 function isAgentProvider(value: string): value is AgentProvider {
   return Object.prototype.hasOwnProperty.call(PROVIDER_CREDENTIALS, value)
 }

@@ -46,6 +46,10 @@ vi.mock("../../../heart/daemon/startup-tui", () => ({
 }))
 
 vi.mock("../../../heart/daemon/interactive-repair", () => ({
+  hasRunnableInteractiveRepair: (entry: { errorReason: string; fixHint: string }) => {
+    const text = `${entry.errorReason}\n${entry.fixHint}`.toLowerCase()
+    return text.includes("credentials") || text.includes("ouro auth") || text.includes("vault")
+  },
   runInteractiveRepair: (...a: any[]) => mocks.runInteractiveRepair(...a),
 }))
 
