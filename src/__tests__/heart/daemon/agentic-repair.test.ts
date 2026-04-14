@@ -186,6 +186,46 @@ describe("runAgenticRepair", () => {
     expect(repairOrder).toBeLessThan(promptOrder)
   })
 
+  it("does not repeat deterministic repair when a declined local repair has no diagnosis provider", async () => {
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger'.",
+      },
+    ]
+    const deps = makeDeps({
+      discoverWorkingProvider: vi.fn(async () => null),
+      runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: false })),
+    })
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
+    expect(deps.runInteractiveRepair).toHaveBeenCalledTimes(1)
+    expect(deps.promptInput).not.toHaveBeenCalled()
+  })
+
+  it("does not repeat deterministic repair when local repair and AI diagnosis are both declined", async () => {
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "missing credentials for provider",
+        fixHint: "Run 'ouro auth --agent slugger'.",
+      },
+    ]
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+      runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: false })),
+    })
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
+    expect(deps.runInteractiveRepair).toHaveBeenCalledTimes(1)
+    expect(deps.createProviderRuntime).not.toHaveBeenCalled()
+  })
+
   it("falls back to deterministic repair when discoverWorkingProvider throws", async () => {
     const degraded: DegradedAgent[] = [
       { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
