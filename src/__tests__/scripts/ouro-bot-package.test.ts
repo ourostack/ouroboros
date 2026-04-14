@@ -107,7 +107,9 @@ describe("ouro.bot package bootstrap", () => {
   it("shows shell-aware PATH hint on first install (bash)", () => {
     const result = runWrapper(["--version"], { shell: "/bin/bash" })
     try {
-      expect(result.stderr).toContain("source ~/.bash_profile")
+      // macOS uses .bash_profile, Linux uses .bashrc
+      const expectedProfile = process.platform === "darwin" ? "~/.bash_profile" : "~/.bashrc"
+      expect(result.stderr).toContain(`source ${expectedProfile}`)
     } finally {
       result.cleanup()
     }

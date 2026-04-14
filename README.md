@@ -186,7 +186,7 @@ ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart,
 
 ## Setting Up On Another Machine
 
-To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, run `ouro auth run`, then `ouro up`.
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, and follow the guided prompts (auth, daemon start, dev tool setup are all offered inline).
 
 ## The Agent's Inner Life
 
