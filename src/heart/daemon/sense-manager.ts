@@ -114,6 +114,23 @@ function numberField(record: Record<string, unknown> | undefined, key: string, f
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
+function compactRuntimeConfigError(agent: string, error: string): string {
+  const compact = error.replace(/\s+/g, " ").trim()
+  if (/credential vault is locked|vault locked|vault is locked/i.test(compact)) {
+    return `vault locked; run 'ouro vault unlock --agent ${agent}'`
+  }
+  return compact || "unavailable"
+}
+
+function runtimeConfigUnavailableDetail(
+  agent: string,
+  runtimeConfig: RuntimeCredentialConfigReadResult,
+): string {
+  if (runtimeConfig.ok) return ""
+  if (runtimeConfig.reason === "missing") return `missing vault runtime/config (${agent})`
+  return `vault runtime/config unavailable (${compactRuntimeConfigError(agent, runtimeConfig.error)})`
+}
+
 function senseFactsFromRuntimeConfig(
   agent: string,
   senses: AgentSensesConfig,
@@ -126,11 +143,7 @@ function senseFactsFromRuntimeConfig(
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
-  const unavailableDetail = runtimeConfig.ok
-    ? ""
-    : runtimeConfig.reason === "missing"
-      ? `missing vault runtime/config (${agent})`
-      : `vault runtime/config unavailable (${runtimeConfig.error})`
+  const unavailableDetail = runtimeConfigUnavailableDetail(agent, runtimeConfig)
   const teams = payload.teams as Record<string, unknown> | undefined
   const teamsChannel = payload.teamsChannel as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined

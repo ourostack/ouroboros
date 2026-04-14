@@ -822,7 +822,12 @@ describe("daemon sense manager", () => {
         ok: false,
         reason: "unavailable",
         itemPath: "vault:slugger:runtime/config",
-        error: "vault locked",
+        error: [
+          "Ouro credential vault is locked on this machine for slugger.",
+          "",
+          "Vault: slugger@ouro.bot at https://vault.ouro.bot",
+          "Run `ouro vault unlock --agent slugger` and enter the saved agent vault unlock secret.",
+        ].join("\n"),
       }),
       refreshRuntimeCredentialConfig: vi.fn(),
     }))
@@ -841,7 +846,93 @@ describe("daemon sense manager", () => {
     expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
       expect.objectContaining({
         status: "needs_config",
-        detail: "vault runtime/config unavailable (vault locked)",
+        detail: "vault runtime/config unavailable (vault locked; run 'ouro vault unlock --agent slugger')",
+      }),
+    )
+  })
+
+  it("keeps non-lock runtime/config errors compact in sense details", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: true },
+        bluebubbles: { enabled: false },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "vault:slugger:runtime/config",
+        error: "runtime credential payload\nis malformed",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/config unavailable (runtime credential payload is malformed)",
+      }),
+    )
+  })
+
+  it("uses a stable placeholder when unavailable runtime/config errors are blank", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: true },
+        bluebubbles: { enabled: false },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "vault:slugger:runtime/config",
+        error: "  \n\t ",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/config unavailable (unavailable)",
       }),
     )
   })

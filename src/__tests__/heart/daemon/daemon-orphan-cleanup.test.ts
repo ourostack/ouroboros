@@ -5,6 +5,7 @@ import * as path from "path"
 import {
   parseOrphanPidsFromPs,
   filterPidfilePidsToActualOrphans,
+  mergeUniqueOrphanPids,
   killOrphanProcesses,
   writePidfile,
 } from "../../../heart/daemon/daemon"
@@ -183,6 +184,12 @@ describe("filterPidfilePidsToActualOrphans", () => {
       " 5001 not-a-number",
     ].join("\n"))
     expect(filterPidfilePidsToActualOrphans([5000, 5001], psRunner)).toEqual([5000])
+  })
+})
+
+describe("mergeUniqueOrphanPids", () => {
+  it("keeps pidfile and ps-scan orphans while deduping repeats", () => {
+    expect(mergeUniqueOrphanPids([5000, 5001], [5001, 5002], [], [5000, 5003])).toEqual([5000, 5001, 5002, 5003])
   })
 })
 
