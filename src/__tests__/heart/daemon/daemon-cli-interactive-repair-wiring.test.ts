@@ -145,6 +145,7 @@ describe("ouro up: interactive repair wiring", () => {
       degraded,
       expect.objectContaining({
         writeStdout: deps.writeStdout,
+        runVaultUnlock: expect.any(Function),
       }),
     )
   })

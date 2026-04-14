@@ -291,15 +291,18 @@ describe("checkAgentConfigWithProviderHealth", () => {
       ok: false,
       reason: "unavailable",
       poolPath: "vault:myagent:providers/*",
-      error: "vault locked",
+      error: "Ouro credential vault is locked on this machine for myagent.\n\nRun `ouro vault unlock --agent myagent`.",
     })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("cannot read provider credentials")
-    expect(result.error).toContain("vault locked")
+    expect(result.error).toContain("credential vault is locked on this machine")
+    expect(result.error).not.toContain("Run `ouro vault unlock")
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro auth")
   })
 
   it("returns a provider-specific failure when ping fails", async () => {
