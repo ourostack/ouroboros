@@ -18,6 +18,7 @@ export interface InteractiveRepairDeps {
   promptInput: (prompt: string) => Promise<string>
   writeStdout: (msg: string) => void
   runAuthFlow: (agent: string, provider?: AgentProvider) => Promise<void>
+  runVaultUnlock?: (agent: string) => Promise<void>
 }
 
 export interface InteractiveRepairResult {
@@ -30,8 +31,13 @@ function isCredentialIssue(degraded: DegradedAgent): boolean {
   return reason.includes("credentials") || hint.includes("ouro auth")
 }
 
+function isVaultUnlockIssue(degraded: DegradedAgent): boolean {
+  const text = `${degraded.errorReason}\n${degraded.fixHint}`.toLowerCase()
+  return /ouro vault unlock|credential vault is locked|vault(?: is)? locked/.test(text)
+}
+
 function isConfigError(degraded: DegradedAgent): boolean {
-  return degraded.fixHint.length > 0 && !isCredentialIssue(degraded)
+  return degraded.fixHint.length > 0 && !isVaultUnlockIssue(degraded) && !isCredentialIssue(degraded)
 }
 
 function isAgentProvider(value: string): value is AgentProvider {
@@ -48,6 +54,11 @@ function extractProviderFromFixHint(fixHint: string): AgentProvider | undefined 
 function authCommandFor(degraded: DegradedAgent): string {
   const command = degraded.fixHint.match(/ouro auth[^\n.]+/)?.[0]?.trim()
   return command && command.length > 0 ? command : `ouro auth --agent ${degraded.agent}`
+}
+
+function vaultUnlockCommandFor(degraded: DegradedAgent): string {
+  const command = degraded.fixHint.match(/ouro vault unlock[^\n.]+/)?.[0]?.trim()
+  return command && command.length > 0 ? command : `ouro vault unlock --agent ${degraded.agent}`
 }
 
 export async function runInteractiveRepair(
@@ -69,7 +80,33 @@ export async function runInteractiveRepair(
   let repairsAttempted = false
 
   for (const entry of degraded) {
-    if (isCredentialIssue(entry)) {
+    if (isVaultUnlockIssue(entry)) {
+      const unlockCommand = vaultUnlockCommandFor(entry)
+      const answer = await deps.promptInput(
+        `run \`${unlockCommand}\` now? [y/n] `,
+      )
+      if (answer.toLowerCase() === "y") {
+        try {
+          if (!deps.runVaultUnlock) {
+            deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)
+          } else {
+            await deps.runVaultUnlock(entry.agent)
+            repairsAttempted = true
+          }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
+          deps.writeStdout(`vault unlock error for ${entry.agent}: ${msg}`)
+          repairsAttempted = true
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.interactive_repair_vault_unlock_error",
+            message: `vault unlock failed for ${entry.agent}`,
+            meta: { agent: entry.agent, error: msg },
+          })
+        }
+      }
+    } else if (isCredentialIssue(entry)) {
       const provider = extractProviderFromFixHint(entry.fixHint)
       const authCommand = authCommandFor(entry)
       const answer = await deps.promptInput(

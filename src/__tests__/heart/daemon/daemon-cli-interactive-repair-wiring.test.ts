@@ -20,6 +20,12 @@ const mocks = vi.hoisted(() => ({
   })),
 }))
 
+const vaultMocks = vi.hoisted(() => ({
+  storeVaultUnlockSecret: vi.fn(() => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })),
+  resetCredentialStore: vi.fn(),
+  credentialProbeGet: vi.fn(async () => null),
+}))
+
 vi.mock("../../../heart/versioning/update-hooks", () => ({
   applyPendingUpdates: (...a: any[]) => mocks.applyPendingUpdates(...a),
   registerUpdateHook: (...a: any[]) => mocks.registerUpdateHook(...a),
@@ -57,6 +63,18 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
   resolveHatchCredentials: vi.fn(),
   writeAgentProviderSelection: vi.fn(),
   writeAgentModel: vi.fn(),
+}))
+
+vi.mock("../../../repertoire/vault-unlock", () => ({
+  storeVaultUnlockSecret: (...args: unknown[]) => vaultMocks.storeVaultUnlockSecret(...args),
+  getVaultUnlockStatus: vi.fn(),
+}))
+
+vi.mock("../../../repertoire/credential-access", () => ({
+  resetCredentialStore: () => vaultMocks.resetCredentialStore(),
+  getCredentialStore: () => ({
+    get: (...args: unknown[]) => vaultMocks.credentialProbeGet(...args),
+  }),
 }))
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
@@ -145,6 +163,7 @@ describe("ouro up: interactive repair wiring", () => {
       degraded,
       expect.objectContaining({
         writeStdout: deps.writeStdout,
+        runVaultUnlock: expect.any(Function),
       }),
     )
   })
@@ -197,6 +216,56 @@ describe("ouro up: interactive repair wiring", () => {
       provider: "anthropic",
       promptInput: deps.promptInput,
     })
+  })
+
+  it("wires runVaultUnlock closure to the vault unlock executor", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent test-agent', then run 'ouro up' again.",
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: [], degraded })
+    mocks.readAgentConfigForAgent.mockReturnValue({
+      config: {
+        humanFacing: { provider: "anthropic" },
+        vault: { email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+      },
+    })
+    vaultMocks.storeVaultUnlockSecret.mockClear()
+    vaultMocks.resetCredentialStore.mockClear()
+    vaultMocks.credentialProbeGet.mockClear()
+
+    let capturedRunVaultUnlock: ((agent: string) => Promise<void>) | undefined
+    mocks.runInteractiveRepair.mockImplementationOnce(async (_degraded: any, repairDeps: any) => {
+      capturedRunVaultUnlock = repairDeps.runVaultUnlock
+      return { repairsAttempted: false }
+    })
+
+    const promptInput = vi.fn(async () => "unlock-material")
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      promptInput,
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+      homeDir: "/tmp/ouro-home",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(capturedRunVaultUnlock).toBeDefined()
+    await capturedRunVaultUnlock!("test-agent")
+
+    expect(promptInput).toHaveBeenCalledWith("Ouro vault unlock secret for test-agent@ouro.bot: ")
+    expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(
+      { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+      "unlock-material",
+      { homeDir: "/tmp/ouro-home", store: undefined },
+    )
+    expect(vaultMocks.resetCredentialStore).toHaveBeenCalled()
+    expect(vaultMocks.credentialProbeGet).toHaveBeenCalledWith("__ouro_vault_probe__")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("vault unlocked for test-agent"))
   })
 
   it("uses default promptInput when deps.promptInput is undefined", async () => {

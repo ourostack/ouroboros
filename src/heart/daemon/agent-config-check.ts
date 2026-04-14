@@ -300,11 +300,30 @@ function invalidPoolResult(
   model: string,
   pool: { ok: false; reason: "invalid" | "unavailable"; poolPath: string; error: string },
 ): ConfigCheckResult {
+  if (pool.reason === "unavailable" && isVaultLockedError(pool.error)) {
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials because ${agentName}'s credential vault is locked on this machine.`,
+      fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro up' again.`,
+    }
+  }
+  if (pool.reason === "invalid") {
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault at ${pool.poolPath}: ${pool.error}`,
+      fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to rewrite this provider credential, then run 'ouro up' again.`,
+    }
+  }
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault at ${pool.poolPath}: ${pool.error}`,
-    fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro auth --agent ${agentName} --provider ${provider}' if the credential is missing or stale.`,
+    fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro up' again. If the credential is missing or stale after unlock, run 'ouro auth --agent ${agentName} --provider ${provider}'.`,
   }
+}
+
+function isVaultLockedError(error: string): boolean {
+  const normalized = error.toLowerCase()
+  return /(?:ouro )?credential vault is locked|vault(?: is)? locked/.test(normalized)
 }
 
 function failedPingResult(
@@ -390,7 +409,7 @@ export async function checkAgentConfigWithProviderHealth(
       }
       return invalidPoolResult(agentName, lane, binding.provider, binding.model, {
         ...poolResult,
-        reason: "invalid",
+        reason: poolResult.reason,
       })
     }
     const record = credentialRecordForLane(poolResult.pool, binding.provider)

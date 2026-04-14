@@ -428,8 +428,10 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
 
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials from slugger's vault")
+    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials because slugger's credential vault is locked on this machine")
     expect(result.fix).toContain("ouro vault unlock --agent slugger")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro auth")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
