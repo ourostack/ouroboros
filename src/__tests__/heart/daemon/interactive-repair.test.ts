@@ -325,13 +325,13 @@ describe("runInteractiveRepair", () => {
       promptInput: vi.fn(async () => "n"),
     })
     const degraded: DegradedAgent[] = [
-      { agent: "slugger", errorReason: "config parse error", fixHint: "check ~/.agentsecrets/slugger/secrets.json for syntax errors" },
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check the agent vault runtime/config item for malformed fields" },
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: false })
     // Should display the fix hint
     expect(deps.writeStdout).toHaveBeenCalledWith(
-      expect.stringContaining("check ~/.agentsecrets/slugger/secrets.json"),
+      expect.stringContaining("check the agent vault runtime/config item"),
     )
     expect(emitNervesEvent).toHaveBeenCalled()
   })

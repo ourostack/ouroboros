@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.379",
+      "changes": [
+        "Outlook Runtime now renders the existing local provider lanes, including provider/model, readiness, credential source and revision, repair commands, and warnings.",
+        "Active runtime code, current docs, and current tests no longer reference the retired home-directory credential path; a contract test now blocks that path from returning to active product surface.",
+        "Guardrails now protect the current local vault unlock-file stores instead of the retired credential directory, keeping agent writes aligned with the bundle plus vault credential model.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the Outlook provider lanes and credential-path cleanup release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.378",
       "changes": [
         "Existing-agent continuation docs now spell out the bundle plus vault flow: clone the bundle, unlock the agent vault, refresh and verify provider/runtime credentials, then run `ouro up`.",

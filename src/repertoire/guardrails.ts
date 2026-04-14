@@ -1,5 +1,4 @@
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
 import { isTrustedLevel, type TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -37,19 +36,16 @@ const READ_ONLY_TOOLS = new Set(["read_file", "glob", "grep"])
 
 // --- protected path detection ---
 
-const PROTECTED_PATH_SEGMENTS = [".git/"]
+const PROTECTED_PATH_SEGMENTS = [
+  ".git/",
+  ".ouro-cli/vault-unlock/",
+  ".ouro-cli/vault-unlock-dpapi/",
+]
 const PROTECTED_FILENAMES = ["agent.json"]
-
-function getProtectedAbsolutePrefixes(): string[] {
-  return [`${os.homedir()}/.agentsecrets/`]
-}
 
 function isProtectedPath(filePath: string): boolean {
   for (const segment of PROTECTED_PATH_SEGMENTS) {
     if (filePath.includes(`/${segment}`) || filePath.startsWith(segment)) return true
-  }
-  for (const prefix of getProtectedAbsolutePrefixes()) {
-    if (filePath.startsWith(prefix)) return true
   }
   for (const name of PROTECTED_FILENAMES) {
     if (path.basename(filePath) === name) return true
