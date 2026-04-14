@@ -51,13 +51,30 @@ function extractProviderFromFixHint(fixHint: string): AgentProvider | undefined 
   return provider
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function cleanExtractedCommand(command: string | undefined): string | undefined {
+  const cleaned = command?.trim().replace(/[`'",;:.)]+$/g, "").trim()
+  return cleaned && cleaned.length > 0 ? cleaned : undefined
+}
+
+function extractRepairCommand(fixHint: string, commandPrefix: string): string | undefined {
+  const escapedPrefix = escapeRegExp(commandPrefix)
+  const commandBody = `${escapedPrefix}(?=\\s|$)[^\`'"]*`
+  const quoted = fixHint.match(new RegExp(`[\`'"](${commandBody})[\`'"]`, "i"))?.[1]
+  const unquoted = fixHint.match(new RegExp(`(${escapedPrefix}(?=\\s|$)[^\\n,;.]+)`, "i"))?.[1]
+  return cleanExtractedCommand(quoted) ?? cleanExtractedCommand(unquoted)
+}
+
 function authCommandFor(degraded: DegradedAgent): string {
-  const command = degraded.fixHint.match(/ouro auth[^\n.]+/)?.[0]?.trim()
+  const command = extractRepairCommand(degraded.fixHint, "ouro auth")
   return command && command.length > 0 ? command : `ouro auth --agent ${degraded.agent}`
 }
 
 function vaultUnlockCommandFor(degraded: DegradedAgent): string {
-  const command = degraded.fixHint.match(/ouro vault unlock[^\n.]+/)?.[0]?.trim()
+  const command = extractRepairCommand(degraded.fixHint, "ouro vault unlock")
   return command && command.length > 0 ? command : `ouro vault unlock --agent ${degraded.agent}`
 }
 
