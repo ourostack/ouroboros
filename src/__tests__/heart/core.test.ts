@@ -438,6 +438,53 @@ describe("getProviderDisplayLabel", () => {
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
   })
 
+  it("uses local provider state for provider and model labels when it exists", async () => {
+    vi.resetModules()
+    await setupConfig({ provider: "minimax", humanFacingModel: "config-model", providers: { minimax: { apiKey: "minimax-key" } } })
+    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
+      if (String(filePath).endsWith("/state/providers.json")) {
+        return JSON.stringify({
+          schemaVersion: 1,
+          machineId: "machine_core_local_state",
+          updatedAt: "2026-04-13T12:00:00.000Z",
+          lanes: {
+            outward: { provider: "anthropic", model: "claude-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
+            inner: { provider: "github-copilot", model: "gpt-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
+          },
+          readiness: {},
+        })
+      }
+      return defaultReadFileSync(filePath, encoding)
+    })
+
+    const core = await import("../../heart/core")
+    core.resetProviderRuntime()
+
+    expect(core.getProvider("human")).toBe("anthropic")
+    expect(core.getModel("human")).toBe("claude-local")
+    expect(core.getProviderDisplayLabel("agent")).toBe("github copilot (gpt-local)")
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+  })
+
+  it("fails fast when local provider state is invalid", async () => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
+      if (String(filePath).endsWith("/state/providers.json")) return "{not-json"
+      return defaultReadFileSync(filePath, encoding)
+    })
+
+    const core = await import("../../heart/core")
+
+    expect(() => core.getProvider("human")).toThrow("provider state for testagent is invalid")
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+  })
+
   it.each([
     [
       "anthropic",
@@ -2761,6 +2808,68 @@ describe("runAgent", () => {
     vi.useRealTimers()
   })
 
+  it("continues retrying with the cached runtime when credential refresh fails", async () => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    const refreshProviderCredentialPool = vi.fn(async () => {
+      if (refreshProviderCredentialPool.mock.calls.length === 1) {
+        throw new Error("vault refresh error")
+      }
+      throw "vault refresh down"
+    })
+    vi.doMock("../../heart/provider-credentials", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/provider-credentials")>("../../heart/provider-credentials")
+      const record = actual.createProviderCredentialRecord({
+        provider: "minimax",
+        credentials: { apiKey: "minimax-key" },
+        config: {},
+        provenance: { source: "manual" },
+        now: new Date("2026-04-13T12:00:00.000Z"),
+      })
+      return {
+        ...actual,
+        readProviderCredentialRecord: vi.fn(async () => ({ ok: true, poolPath: "vault:testagent:providers/*", record })),
+        refreshProviderCredentialPool,
+      }
+    })
+    await setupMinimax("minimax-key", "MiniMax-M2.5")
+    const core = await import("../../heart/core")
+
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount <= 2) throw new Error("fetch failed")
+      return makeStream([makeChunk("recovered after refresh miss")])
+    })
+
+    const errors: { error: Error; severity: string }[] = []
+    const chunks: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: (t) => chunks.push(t),
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: (err, severity) => errors.push({ error: err, severity }),
+    }
+
+    const promise = core.runAgent([{ role: "system", content: "test" }], callbacks)
+    await vi.advanceTimersByTimeAsync(2100)
+    await vi.advanceTimersByTimeAsync(4100)
+    await vi.advanceTimersByTimeAsync(100)
+    await promise
+
+    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", { preserveCachedOnFailure: true })
+    expect(callCount).toBe(3)
+    expect(chunks).toContain("recovered after refresh miss")
+    expect(errors[0].severity).toBe("transient")
+
+    vi.useRealTimers()
+    vi.doUnmock("../../heart/provider-credentials")
+  })
+
   it("gives up after bounded provider attempts with terminal final error", async () => {
     vi.useFakeTimers()
     let callCount = 0
@@ -3734,6 +3843,24 @@ describe("provider abstraction contract", () => {
     expect(typeof runtime?.streamTurn).toBe("function")
     expect(typeof runtime?.appendToolOutput).toBe("function")
     expect(typeof runtime?.resetTurnState).toBe("function")
+  })
+
+  it("registry constructs github-copilot provider runtimes from vault records", async () => {
+    vi.resetModules()
+    const core = await import("../../heart/core")
+    const { createProviderCredentialRecord } = await import("../../heart/provider-credentials")
+    const record = createProviderCredentialRecord({
+      provider: "github-copilot",
+      credentials: { githubToken: "ghp_test" },
+      config: { baseUrl: "https://copilot.example" },
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+
+    const runtime = core.createProviderRegistry().resolve("github-copilot", "claude-sonnet-4.6", record)
+
+    expect(runtime?.id).toBe("github-copilot")
+    expect(runtime?.model).toBe("claude-sonnet-4.6")
   })
 
   it("azure provider runtime safely ignores tool output before turn state initialization", async () => {

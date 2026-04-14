@@ -368,8 +368,8 @@ export function readVaultUnlockSecret(
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.vault_unlock_loaded",
-    message: "loaded vault unlock secret from local store",
-    meta: { serverUrl: config.serverUrl, email: config.email, store: store.kind, secure: store.secure },
+    message: "loaded vault unlock material from local store",
+    meta: { store: store.kind, secure: store.secure, hasAgentName: !!config.agentName },
   })
   return { secret, store }
 }
@@ -390,8 +390,8 @@ export function storeVaultUnlockSecret(
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.vault_unlock_stored",
-    message: "stored vault unlock secret in local store",
-    meta: { serverUrl: config.serverUrl, email: config.email, store: store.kind, secure: store.secure },
+    message: "stored vault unlock material in local store",
+    meta: { store: store.kind, secure: store.secure, hasAgentName: !!config.agentName },
   })
   return store
 }

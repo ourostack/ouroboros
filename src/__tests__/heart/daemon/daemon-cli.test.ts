@@ -4488,6 +4488,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
       selectedIdentity: "python.md",
       specialistSecretsPath: "/tmp/.agentsecrets/SerpentGuide/secrets.json",
       hatchlingSecretsPath: "/tmp/.agentsecrets/ExplicitBot/secrets.json",
+      vaultUnlockSecret: "generated-unlock-material",
     }))
 
     const deps: OuroCliDeps = {
@@ -4519,6 +4520,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(runSerpentGuide).not.toHaveBeenCalled()
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
+    expect(result).toContain("vault unlock secret for ExplicitBot: generated-unlock-material")
   })
 
   it("routes bare ouro hatch through specialist when no explicit args given", async () => {

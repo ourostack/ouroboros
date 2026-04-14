@@ -133,6 +133,37 @@ afterEach(() => {
 })
 
 describe("runtime auth flow", () => {
+  it("rejects persistent provider auth for SerpentGuide", async () => {
+    emitTestEvent("serpent guide persistent auth unsupported")
+
+    await expect(() =>
+      runRuntimeAuthFlow({
+        agentName: "SerpentGuide",
+        provider: "minimax",
+        promptInput: async () => "minimax-key",
+      }),
+    ).rejects.toThrow("persistent SerpentGuide auth is not supported")
+    expect(mockRefreshProviderCredentialPool).not.toHaveBeenCalled()
+  })
+
+  it("asks the operator to unlock the agent vault before auth when the vault is unavailable", async () => {
+    emitTestEvent("auth flow vault unavailable")
+    mockRefreshProviderCredentialPool.mockResolvedValueOnce({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:MiniBot:providers/*",
+      error: "vault locked",
+    })
+
+    await expect(() =>
+      runRuntimeAuthFlow({
+        agentName: "MiniBot",
+        provider: "minimax",
+        promptInput: async () => "minimax-key",
+      }),
+    ).rejects.toThrow("Run `ouro vault unlock --agent MiniBot`, then retry auth.")
+  })
+
   it("reads agent config and rewrites provider selection", () => {
     emitTestEvent("reads and rewrites agent config")
     const bundlesRoot = makeTempDir("auth-flow-bundles")

@@ -167,6 +167,54 @@ describe("hatch flow", () => {
     expect(JSON.stringify(stateResult.state)).not.toContain("minimax-secret-key")
   })
 
+  it("creates a machine identity while bootstrapping provider state from the default provider credential home", async () => {
+    const homeDir = makeTempDir("hatch-provider-state-default-home")
+    const bundlesRoot = path.join(homeDir, "AgentBundles")
+    const secretsRoot = path.join(homeDir, ".agentsecrets")
+    const specialistSource = makeTempDir("hatch-provider-state-default-specialist")
+    const specialistTarget = makeTempDir("hatch-provider-state-default-specialist-target")
+    cleanup.push(homeDir, specialistSource, specialistTarget)
+    fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
+
+    vi.resetModules()
+    vi.doMock("../../../heart/provider-credentials", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+      return {
+        ...actual,
+        providerCredentialMachineHomeDir: () => homeDir,
+      }
+    })
+
+    try {
+      const { runHatchFlow: runIsolatedHatchFlow } = await import("../../../heart/hatch/hatch-flow")
+      const result = await runIsolatedHatchFlow(
+        {
+          agentName: "DefaultProviderHomeBot",
+          humanName: "Ari",
+          provider: "minimax",
+          credentials: { apiKey: "minimax-key" },
+        },
+        {
+          bundlesRoot,
+          secretsRoot,
+          specialistIdentitySourceDir: specialistSource,
+          specialistIdentityTargetDir: specialistTarget,
+          now: () => new Date("2026-04-12T22:16:00.000Z"),
+          random: () => 0,
+        },
+      )
+
+      const stateResult = readProviderState(result.bundleRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.updatedAt).toBe("2026-04-12T22:16:00.000Z")
+      expect(fs.existsSync(path.join(homeDir, ".ouro-cli", "machine.json"))).toBe(true)
+    } finally {
+      vi.doUnmock("../../../heart/provider-credentials")
+      vi.resetModules()
+    }
+  })
+
   it("fails fast when required provider credentials are missing", async () => {
     const bundlesRoot = makeTempDir("hatch-bundles-missing")
     const secretsRoot = makeTempDir("hatch-secrets-missing")

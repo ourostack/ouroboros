@@ -531,6 +531,33 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     expect(fs.existsSync(finalBundle)).toBe(false)
   })
 
+  it("rolls back moved bundle when hatchling vault creation fails", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-adopt-vault-failure")
+    const secretsRoot = makeTempDir("spec-tools-adopt-vault-failure-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+    mockCreateVaultAccount.mockResolvedValueOnce({ success: false, error: "account already exists" })
+
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+      animationWriter: () => {},
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "TestAgent",
+      handoff_message: "Hello",
+    })
+
+    expect(result).toContain("error: failed to write secrets")
+    expect(result).toContain("failed to create vault: account already exists")
+    expect(fs.existsSync(path.join(bundlesRoot, "TestAgent.ouro"))).toBe(false)
+  })
+
   it("returns error when name parameter is missing", async () => {
     const tmpDir = makeTempDir("spec-tools-adopt-noname")
     cleanup.push(tmpDir)
@@ -681,5 +708,29 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     // Only README.md should be there, no friend JSON files
     const friendFiles = fs.readdirSync(friendsDir).filter((f) => f.endsWith(".json"))
     expect(friendFiles.length).toBe(0)
+  }, 20000)
+
+  it("can complete adoption without an animation writer", async () => {
+    const tmpDir = setupTempDir()
+    const bundlesRoot = makeTempDir("spec-tools-no-writer-bundles")
+    const secretsRoot = makeTempDir("spec-tools-no-writer-secrets")
+    cleanup.push(bundlesRoot, secretsRoot)
+
+    const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
+    const execTool = createSpecialistExecTool({
+      tempDir: tmpDir,
+      credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
+      provider: "anthropic",
+      bundlesRoot,
+      secretsRoot,
+    })
+
+    const result = await execTool("complete_adoption", {
+      name: "NoWriterAgent",
+      handoff_message: "Hello!",
+    })
+
+    expect(result).toContain("success")
+    expect(fs.existsSync(path.join(bundlesRoot, "NoWriterAgent.ouro"))).toBe(true)
   }, 20000)
 })

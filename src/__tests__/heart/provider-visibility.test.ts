@@ -191,4 +191,94 @@ describe("provider visibility", () => {
       detail: "400 status code",
     })
   })
+
+  it("formats readiness and credential edge states without exposing credentials", async () => {
+    emitTestEvent("provider visibility formatting edge states")
+    const {
+      formatProviderVisibilityLine,
+      isAgentProviderVisibility,
+      providerVisibilityStatusRows,
+    } = await import("../../heart/provider-visibility")
+
+    const presentVaultLine = formatProviderVisibilityLine({
+      lane: "outward",
+      status: "configured",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "local",
+      readiness: { status: "failed" },
+      credential: { status: "present", revision: "vault_mm" },
+      warnings: [],
+    })
+    expect(presentVaultLine).toContain("failed")
+    expect(presentVaultLine).toContain("credentials: vault")
+
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      source: "bootstrap",
+      readiness: { status: "stale", reason: "model changed" },
+      credential: { status: "invalid-pool", error: "vault locked" },
+      warnings: [],
+    })).toContain("stale: model changed")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      source: "bootstrap",
+      readiness: { status: "stale" },
+      credential: { status: "missing", repairCommand: "ouro auth --agent slugger --provider anthropic" },
+      warnings: ["missing credential"],
+    })).toContain("stale")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "azure",
+      model: "gpt-4o",
+      source: "local",
+      readiness: { status: "unknown", reason: "not checked" },
+      credential: { status: "present", source: "manual" },
+      warnings: [],
+    })).toContain("unknown: not checked")
+    expect(formatProviderVisibilityLine({
+      lane: "inner",
+      status: "configured",
+      provider: "azure",
+      model: "gpt-4o",
+      source: "local",
+      readiness: { status: "unknown" },
+      credential: { status: "present", source: "manual" },
+      warnings: [],
+    })).toContain("unknown")
+
+    const rows = providerVisibilityStatusRows({
+      agentName: "slugger",
+      lanes: [
+        {
+          lane: "outward",
+          status: "configured",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          readiness: { status: "ready" },
+          credential: { status: "present" },
+          warnings: [],
+        },
+      ],
+    })
+    expect(rows[0]).toMatchObject({ credential: "vault", readiness: "ready" })
+
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "outward", status: "configured" }] })).toBe(true)
+    expect(isAgentProviderVisibility(null)).toBe(false)
+    expect(isAgentProviderVisibility([])).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: 42, lanes: [] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: "nope" })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [null] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [[]] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "sideways", status: "configured" }] })).toBe(false)
+    expect(isAgentProviderVisibility({ agentName: "slugger", lanes: [{ lane: "inner", status: "ready" }] })).toBe(false)
+  })
 })

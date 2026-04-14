@@ -32,6 +32,19 @@ const mockProviderCredentials = vi.hoisted(() => ({
   }),
 }))
 
+const mockVaultDeps = vi.hoisted(() => ({
+  createVaultAccount: vi.fn(async () => ({ success: true })),
+  storeVaultUnlockSecret: vi.fn(() => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })),
+  getVaultUnlockStatus: vi.fn(() => ({
+    configured: true,
+    stored: false,
+    store: { kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" },
+    fix: "run ouro vault unlock",
+  })),
+  resetCredentialStore: vi.fn(),
+  credentialProbeGet: vi.fn(async () => null),
+}))
+
 vi.mock("../../../heart/provider-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
   return {
@@ -40,6 +53,22 @@ vi.mock("../../../heart/provider-credentials", async () => {
     readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
   }
 })
+
+vi.mock("../../../repertoire/vault-setup", () => ({
+  createVaultAccount: (...args: unknown[]) => mockVaultDeps.createVaultAccount(...args),
+}))
+
+vi.mock("../../../repertoire/vault-unlock", () => ({
+  storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
+  getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
+}))
+
+vi.mock("../../../repertoire/credential-access", () => ({
+  resetCredentialStore: () => mockVaultDeps.resetCredentialStore(),
+  getCredentialStore: () => ({
+    get: (...args: unknown[]) => mockVaultDeps.credentialProbeGet(...args),
+  }),
+}))
 
 import {
   parseOuroCommand,
@@ -101,6 +130,24 @@ function writeUnavailableProviderCredentialPool(agentName: string, error: string
   mockProviderCredentials.pools.set(agentName, unavailableCredentialPool(agentName, error))
 }
 
+function writeInvalidProviderCredentialPool(agentName: string, error: string): void {
+  mockProviderCredentials.pools.set(agentName, {
+    ok: false,
+    reason: "invalid",
+    poolPath: `vault:${agentName}:providers/*`,
+    error,
+  })
+}
+
+function writeMissingProviderCredentialPool(agentName: string): void {
+  mockProviderCredentials.pools.set(agentName, {
+    ok: false,
+    reason: "missing",
+    poolPath: `vault:${agentName}:providers/*`,
+    error: "provider credentials have not been loaded from vault",
+  })
+}
+
 function readProviderCredentialPool(_homeDir: string, agentName = "Slugger"): ProviderCredentialPoolReadResult {
   return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
 }
@@ -116,6 +163,7 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
     cleanupStaleSocket: () => {},
     fallbackPendingMessage: () => "",
     bundlesRoot,
+    homeDir,
     secretsRoot: path.join(homeDir, ".agentsecrets"),
     ...overrides,
     _output: output,
@@ -205,6 +253,20 @@ afterEach(() => {
   mockProviderCredentials.pools.clear()
   mockProviderCredentials.refreshProviderCredentialPool.mockClear()
   mockProviderCredentials.readProviderCredentialPool.mockClear()
+  mockVaultDeps.createVaultAccount.mockReset()
+  mockVaultDeps.createVaultAccount.mockResolvedValue({ success: true })
+  mockVaultDeps.storeVaultUnlockSecret.mockReset()
+  mockVaultDeps.storeVaultUnlockSecret.mockReturnValue({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })
+  mockVaultDeps.getVaultUnlockStatus.mockReset()
+  mockVaultDeps.getVaultUnlockStatus.mockReturnValue({
+    configured: true,
+    stored: false,
+    store: { kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" },
+    fix: "run ouro vault unlock",
+  })
+  mockVaultDeps.resetCredentialStore.mockClear()
+  mockVaultDeps.credentialProbeGet.mockReset()
+  mockVaultDeps.credentialProbeGet.mockResolvedValue(null)
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue
@@ -306,6 +368,75 @@ describe("provider CLI command parsing", () => {
     })
   })
 
+  it("parses provider refresh and vault lifecycle commands", () => {
+    emitTestEvent("provider cli parse refresh vault")
+
+    expect(parseOuroCommand(["provider", "refresh", "--agent", "Slugger"])).toEqual({
+      kind: "provider.refresh",
+      agent: "Slugger",
+    })
+    expect(() => parseOuroCommand(["provider", "refresh", "--agent", "Slugger", "--extra"]))
+      .toThrow("ouro provider refresh --agent <name>")
+
+    expect(parseOuroCommand([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+      "--generate-unlock-secret",
+    ])).toEqual({
+      kind: "vault.create",
+      agent: "Slugger",
+      email: "operator@example.com",
+      serverUrl: "https://vault.example.com",
+      store: "plaintext-file",
+      generateUnlockSecret: true,
+    })
+    expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "auto"])).toEqual({
+      kind: "vault.unlock",
+      agent: "Slugger",
+      store: "auto",
+    })
+    expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "macos-keychain"])).toEqual({
+      kind: "vault.unlock",
+      agent: "Slugger",
+      store: "macos-keychain",
+    })
+    expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "windows-dpapi"])).toEqual({
+      kind: "vault.unlock",
+      agent: "Slugger",
+      store: "windows-dpapi",
+    })
+    expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "linux-secret-service"])).toEqual({
+      kind: "vault.unlock",
+      agent: "Slugger",
+      store: "linux-secret-service",
+    })
+    expect(parseOuroCommand(["vault", "status", "--agent", "Slugger"])).toEqual({
+      kind: "vault.status",
+      agent: "Slugger",
+    })
+    expect(parseOuroCommand(["vault", "status", "--agent", "Slugger", "--store", "plaintext-file"])).toEqual({
+      kind: "vault.status",
+      agent: "Slugger",
+      store: "plaintext-file",
+    })
+    expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
+      .toThrow("vault --store")
+    expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--bad"]))
+      .toThrow("ouro vault create|unlock|status --agent <name>")
+    expect(() => parseOuroCommand(["vault", "delete", "--agent", "Slugger"]))
+      .toThrow("ouro vault create|unlock|status --agent <name>")
+    expect(() => parseOuroCommand(["vault", "status"]))
+      .toThrow("ouro vault create|unlock|status --agent <name>")
+  })
+
   it("rejects malformed provider command shapes with direct usage", () => {
     emitTestEvent("provider cli parse malformed")
 
@@ -373,6 +504,39 @@ describe("provider CLI command execution", () => {
     })
   })
 
+  it("ouro use bootstraps missing local provider state and records optional ping attempts only when present", async () => {
+    emitTestEvent("provider cli use bootstraps provider state")
+    const bundlesRoot = makeTempDir("provider-cli-bootstrap-state-bundles")
+    const homeDir = makeTempDir("provider-cli-bootstrap-state-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok" })
+
+    const result = await runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("ready")
+    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.machineId).toMatch(/^machine_/)
+    expect(stateResult.state.readiness.inner).toMatchObject({
+      status: "ready",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    })
+    expect(stateResult.state.readiness.inner.attempts).toBeUndefined()
+  })
+
   it("ouro use refuses missing credentials unless forced", async () => {
     emitTestEvent("provider cli use missing credentials")
     const bundlesRoot = makeTempDir("provider-cli-missing-bundles")
@@ -409,6 +573,54 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+
+    const result = await runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("no credentials")
+    expect(result).toContain("ouro auth --agent Slugger --provider minimax")
+  })
+
+  it("ouro use treats invalid agent vault credential snapshots as unavailable credentials", async () => {
+    emitTestEvent("provider cli use invalid credential snapshot")
+    const bundlesRoot = makeTempDir("provider-cli-invalid-snapshot-bundles")
+    const homeDir = makeTempDir("provider-cli-invalid-snapshot-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeInvalidProviderCredentialPool("Slugger", "bad vault payload")
+
+    const result = await runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("no credentials")
+    expect(result).toContain("ouro auth --agent Slugger --provider minimax")
+  })
+
+  it("ouro use treats a missing vault credential snapshot as missing credentials", async () => {
+    emitTestEvent("provider cli use missing credential snapshot")
+    const bundlesRoot = makeTempDir("provider-cli-missing-snapshot-bundles")
+    const homeDir = makeTempDir("provider-cli-missing-snapshot-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeMissingProviderCredentialPool("Slugger")
 
     const result = await runOuroCli([
       "use",
@@ -618,6 +830,304 @@ describe("provider CLI command execution", () => {
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
     expect(stateResult.state.lanes.outward.provider).toBe("anthropic")
+  })
+
+  it("vault unlock stores local unlock material and probes the agent vault", async () => {
+    emitTestEvent("provider cli vault unlock")
+    const bundlesRoot = makeTempDir("provider-cli-vault-unlock-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-unlock-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "vault",
+      "unlock",
+      "--agent",
+      "Slugger",
+      "--store",
+      "plaintext-file",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "unlock-material",
+    }))
+
+    expect(result).toContain("vault unlocked for Slugger")
+    expect(result).toContain("explicit plaintext fallback")
+    expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
+      { agentName: "Slugger", email: "Slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+      "unlock-material",
+      { homeDir, store: "plaintext-file" },
+    )
+    expect(mockVaultDeps.resetCredentialStore).toHaveBeenCalled()
+    expect(mockVaultDeps.credentialProbeGet).toHaveBeenCalledWith("__ouro_vault_probe__")
+
+    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({ kind: "macos-keychain", secure: true, location: "macOS Keychain" })
+    const secureResult = await runOuroCli([
+      "vault",
+      "unlock",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "unlock-material",
+    }))
+    expect(secureResult).toContain("local unlock store: macos-keychain")
+    expect(secureResult).not.toContain("explicit plaintext fallback")
+  })
+
+  it("vault unlock rejects SerpentGuide and non-interactive runs", async () => {
+    emitTestEvent("provider cli vault unlock guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-unlock-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-unlock-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(["vault", "unlock", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "unlock-material",
+    }))).rejects.toThrow("SerpentGuide does not have a persistent credential vault")
+    await expect(runOuroCli(["vault", "unlock", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow("vault unlock requires an interactive prompt")
+  })
+
+  it("vault create writes vault locator, stores unlock material, and handles existing accounts", async () => {
+    emitTestEvent("provider cli vault create")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const created = await runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(created).toContain("vault created for Slugger")
+    expect(created).toContain("vault unlock secret:")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.example.com",
+      "operator@example.com",
+      expect.any(String),
+    )
+    expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
+      email: "operator@example.com",
+      serverUrl: "https://vault.example.com",
+    })
+
+    mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
+    const failed = await runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--server",
+      "https://vault.example.com",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(failed).toContain("vault create failed for Slugger: already exists")
+    expect(failed).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("vault create can prompt for email and unlock material", async () => {
+    emitTestEvent("provider cli vault create prompts")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-prompt-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-prompt-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompts: string[] = []
+    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({ kind: "macos-keychain", secure: true, location: "macOS Keychain" })
+
+    const result = await runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return question.includes("email") ? "operator@example.com" : "chosen-unlock-material"
+      },
+    }))
+
+    expect(result).toContain("vault created for Slugger")
+    expect(result).not.toContain("vault unlock secret:")
+    expect(result).toContain("local unlock store: macos-keychain")
+    expect(result).not.toContain("explicit plaintext fallback")
+    expect(prompts).toEqual([
+      "Ouro credential vault email: ",
+      "Choose Ouro vault unlock secret for operator@example.com: ",
+    ])
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.ouro.bot",
+      "operator@example.com",
+      "chosen-unlock-material",
+    )
+  })
+
+  it("vault create rejects unsupported persistent SerpentGuide vaults and missing inputs", async () => {
+    emitTestEvent("provider cli vault create guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(["vault", "create", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "operator@example.com",
+    }))).rejects.toThrow("Create a vault for the hatchling agent")
+    await expect(runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow("vault create requires --email")
+    await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow("vault create requires an unlock secret")
+  })
+
+  it("vault status reports local unlock state and vault provider summaries", async () => {
+    emitTestEvent("provider cli vault status")
+    const bundlesRoot = makeTempDir("provider-cli-vault-status-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-status-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" },
+      fix: "available",
+    })
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const result = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("agent: Slugger")
+    expect(result).toContain("local unlock: available")
+    expect(result).toContain("minimax: credential fields apiKey")
+    expect(result).toContain("anthropic: credential fields setupToken")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
+    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
+    const empty = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(empty).toContain("local unlock store: macos-keychain")
+    expect(empty).toContain("provider credentials: none stored")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        minimax: {
+          provider: "minimax",
+          revision: "cred_empty",
+          updatedAt: NOW,
+          credentials: {},
+          config: {},
+          provenance: { source: "manual", updatedAt: NOW },
+        },
+      },
+    }))
+    const noneFields = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(noneFields).toContain("minimax: credential fields none, config fields none")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+    const unavailable = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(unavailable).toContain("provider credentials: unavailable (vault locked)")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: false,
+      store: { kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" },
+      fix: "run ouro vault unlock",
+    })
+    const missing = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(missing).toContain("local unlock: missing")
+    expect(missing).toContain("run ouro vault unlock")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: false,
+      stored: false,
+      fix: "no local store",
+    })
+    const noStore = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(noStore).toContain("local unlock store: unavailable")
+
+    const serpent = await runOuroCli(["vault", "status", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
+    expect(serpent).toContain("SerpentGuide has no persistent credential vault")
+  })
+
+  it("provider refresh reloads vault credentials and restarts running agents when possible", async () => {
+    emitTestEvent("provider cli refresh")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const restarted = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => true,
+      sendCommand: async () => ({ ok: true, summary: "restarted" }),
+    }))
+
+    expect(restarted).toContain("refreshed provider credential snapshot for Slugger")
+    expect(restarted).toContain("providers: minimax, anthropic")
+    expect(restarted).toContain("restarted Slugger")
+
+    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
+    const none = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => false,
+    }))
+    expect(none).toContain("providers: none")
+
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+    const failed = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => false,
+    }))
+    expect(failed).toContain("provider credential refresh failed for Slugger: vault locked")
+    expect(failed).toContain("daemon is not running")
+
+    const skipped = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => true,
+      sendCommand: async () => ({ ok: false, error: "restart failed" }),
+    }))
+    expect(skipped).toContain("daemon restart skipped: restart failed")
+
+    const skippedMessage = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => true,
+      sendCommand: async () => ({ ok: false, message: "restart declined" }),
+    }))
+    expect(skippedMessage).toContain("daemon restart skipped: restart declined")
+
+    const skippedUnknown = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => true,
+      sendCommand: async () => ({ ok: false }),
+    }))
+    expect(skippedUnknown).toContain("daemon restart skipped: unknown daemon error")
+
+    const threw = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => {
+        throw new Error("socket broke")
+      },
+    }))
+    expect(threw).toContain("daemon restart skipped: socket broke")
+
+    const threwString = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      checkSocketAlive: async () => {
+        throw "socket string broke"
+      },
+    }))
+    expect(threwString).toContain("daemon restart skipped: socket string broke")
+
+    const serpent = await runOuroCli(["provider", "refresh", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
+    expect(serpent).toContain("SerpentGuide has no persistent provider credentials")
   })
 
   it("legacy auth switch with --facing agent updates only the inner local lane", async () => {

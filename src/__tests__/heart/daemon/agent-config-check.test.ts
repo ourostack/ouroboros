@@ -248,9 +248,35 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
 
+  it("accepts legacy secrets-root arguments that are not named .agentsecrets", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, "/tmp/legacy-secrets", { pingProvider })
+
+    expect(result).toEqual({ ok: true })
+    expect(pingProvider).toHaveBeenCalledOnce()
+  })
+
   it("fails before pinging when selected credentials are missing from the agent vault", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
     refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({}))
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("has no credentials in myagent's vault")
+    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(pingProvider).not.toHaveBeenCalled()
+  })
+
+  it("treats a missing credential pool as missing selected credentials", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "missing",
+      poolPath: "vault:myagent:providers/*",
+      error: "provider credentials have not been loaded from vault",
+    })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
