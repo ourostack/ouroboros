@@ -2059,6 +2059,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
             await authRunner({ agentName: agent, provider, promptInput: deps.promptInput })
           },
+          runVaultUnlock: async (agent: string) => {
+            await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
+          },
         })
       }
     }

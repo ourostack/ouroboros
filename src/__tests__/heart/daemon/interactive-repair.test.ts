@@ -76,6 +76,59 @@ describe("runInteractiveRepair", () => {
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger", "github-copilot")
   })
 
+  it("prompts for vault unlock before auth when provider credentials are blocked by a locked vault", async () => {
+    const runVaultUnlock = vi.fn(async () => undefined)
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runVaultUnlock,
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "outward provider openai-codex model gpt-5.4 cannot read provider credentials because slugger's credential vault is locked on this machine.",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      expect.stringContaining("ouro vault unlock --agent slugger"),
+    )
+    expect(deps.promptInput).not.toHaveBeenCalledWith(
+      expect.stringContaining("ouro auth"),
+    )
+    expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
+  })
+
+  it("reports vault unlock errors without relabeling them as auth flow errors", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runVaultUnlock: vi.fn(async () => {
+        throw new Error("operator cancelled unlock")
+      }),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("vault unlock error for slugger: operator cancelled unlock"),
+    )
+    expect(deps.writeStdout).not.toHaveBeenCalledWith(
+      expect.stringContaining("auth flow error"),
+    )
+  })
+
   it("skips auth flow when user says n for missing credentials", async () => {
     const deps = makeDeps({
       promptInput: vi.fn(async () => "n"),
