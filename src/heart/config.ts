@@ -5,8 +5,16 @@ import {
   getAgentRoot,
   getAgentSecretsPath,
   DEFAULT_AGENT_CONTEXT,
+  getAgentName,
   type AgentProvider,
 } from "./identity"
+import {
+  cacheProviderCredentialRecords,
+  createProviderCredentialRecord,
+  readCachedProviderCredentialRecord,
+  resetProviderCredentialCache,
+  splitProviderCredentialFields,
+} from "./provider-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface AzureProviderConfig {
@@ -84,13 +92,6 @@ export interface IntegrationsConfig {
 }
 
 export interface OuroborosConfig {
-  providers: {
-    azure: AzureProviderConfig
-    minimax: MinimaxProviderConfig
-    anthropic: AnthropicProviderConfig
-    "openai-codex": OpenAICodexProviderConfig
-    "github-copilot": GithubCopilotProviderConfig
-  }
   teams: TeamsConfig
   teamsSecondary: TeamsConfig
   oauth: OAuthConfig
@@ -102,29 +103,19 @@ export interface OuroborosConfig {
   integrations: IntegrationsConfig
 }
 
-const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
-  providers: {
-    azure: {
-      apiKey: "",
-      endpoint: "",
-      deployment: "",
-      apiVersion: "2025-04-01-preview",
-      managedIdentityClientId: "",
-    },
-    minimax: {
-      apiKey: "",
-    },
-    anthropic: {
-      setupToken: "",
-    },
-    "openai-codex": {
-      oauthAccessToken: "",
-    },
-    "github-copilot": {
-      githubToken: "",
-      baseUrl: "",
-    },
-  },
+type ProviderConfigPatch = Partial<Record<AgentProvider, Record<string, unknown>>>
+
+type RuntimeConfigPatch = DeepPartial<OuroborosConfig> & {
+  /**
+   * Test/runtime injection for provider credentials. Production provider
+   * credentials live in the agent vault; this patch shape seeds the same
+   * in-memory provider credential cache instead of resurrecting providers in
+   * secrets.json.
+   */
+  providers?: ProviderConfigPatch
+}
+
+const DEFAULT_LOCAL_RUNTIME_CONFIG: Omit<OuroborosConfig, "context"> = {
   teams: {
     clientId: "",
     clientSecret: "",
@@ -167,27 +158,21 @@ const DEFAULT_SECRETS_TEMPLATE: Omit<OuroborosConfig, "context"> = {
 
 function defaultRuntimeConfig(): OuroborosConfig {
   return {
-    providers: {
-      azure: { ...DEFAULT_SECRETS_TEMPLATE.providers.azure },
-      minimax: { ...DEFAULT_SECRETS_TEMPLATE.providers.minimax },
-      anthropic: { ...DEFAULT_SECRETS_TEMPLATE.providers.anthropic },
-      "openai-codex": { ...DEFAULT_SECRETS_TEMPLATE.providers["openai-codex"] },
-      "github-copilot": { ...DEFAULT_SECRETS_TEMPLATE.providers["github-copilot"] },
-    },
-    teams: { ...DEFAULT_SECRETS_TEMPLATE.teams },
-    teamsSecondary: { ...DEFAULT_SECRETS_TEMPLATE.teamsSecondary },
-    oauth: { ...DEFAULT_SECRETS_TEMPLATE.oauth },
+    teams: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.teams },
+    teamsSecondary: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.teamsSecondary },
+    oauth: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.oauth },
     context: { ...DEFAULT_AGENT_CONTEXT },
-    teamsChannel: { ...DEFAULT_SECRETS_TEMPLATE.teamsChannel },
-    bluebubbles: { ...DEFAULT_SECRETS_TEMPLATE.bluebubbles },
-    bluebubblesChannel: { ...DEFAULT_SECRETS_TEMPLATE.bluebubblesChannel },
-    vault: { ...DEFAULT_SECRETS_TEMPLATE.vault },
-    integrations: { ...DEFAULT_SECRETS_TEMPLATE.integrations },
+    teamsChannel: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.teamsChannel },
+    bluebubbles: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.bluebubbles },
+    bluebubblesChannel: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.bluebubblesChannel },
+    vault: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.vault },
+    integrations: { ...DEFAULT_LOCAL_RUNTIME_CONFIG.integrations },
   }
 }
 
 let _runtimeConfigOverride: DeepPartial<OuroborosConfig> | null = null
 let _testContextOverride: ContextConfig | null = null
+let _providerConfigOverride: ProviderConfigPatch | null = null
 
 function resolveConfigPath(): string {
   return getAgentSecretsPath()
@@ -233,7 +218,7 @@ export function loadConfig(): OuroborosConfig {
 
     if (errorCode === "ENOENT") {
       try {
-        fs.writeFileSync(configPath, JSON.stringify(DEFAULT_SECRETS_TEMPLATE, null, 2) + "\n", "utf-8")
+        fs.writeFileSync(configPath, JSON.stringify(DEFAULT_LOCAL_RUNTIME_CONFIG, null, 2) + "\n", "utf-8")
       } catch (writeError) {
         emitNervesEvent({
           level: "warn",
@@ -263,6 +248,19 @@ export function loadConfig(): OuroborosConfig {
   }
 
   const sanitizedFileData = { ...fileData }
+  if ("providers" in sanitizedFileData) {
+    delete sanitizedFileData.providers
+    emitNervesEvent({
+      level: "warn",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: "ignored legacy providers block in secrets config",
+      meta: {
+        phase: "loadConfig",
+        path: configPath,
+      },
+    })
+  }
   if ("context" in sanitizedFileData) {
     delete sanitizedFileData.context
     emitNervesEvent({
@@ -303,13 +301,36 @@ export function loadConfig(): OuroborosConfig {
 export function resetConfigCache(): void {
   _runtimeConfigOverride = null
   _testContextOverride = null
+  _providerConfigOverride = null
+  resetProviderCredentialCache()
 }
 
 export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P]
 }
 
-export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void {
+function seedProviderCredentialCache(providers?: ProviderConfigPatch): void {
+  if (!providers) return
+  _providerConfigOverride = deepMerge(
+    (_providerConfigOverride ?? {}) as Record<string, unknown>,
+    providers as Record<string, unknown>,
+  ) as ProviderConfigPatch
+  const records = Object.entries(_providerConfigOverride).map(([provider, rawConfig]) => {
+    const split = splitProviderCredentialFields(provider as AgentProvider, rawConfig)
+    return createProviderCredentialRecord({
+      provider: provider as AgentProvider,
+      credentials: split.credentials,
+      config: split.config,
+      provenance: { source: "manual" },
+      now: new Date(0),
+    })
+  })
+  cacheProviderCredentialRecords(getAgentName(), records, new Date(0))
+}
+
+export function patchRuntimeConfig(partial: RuntimeConfigPatch): void {
+  const { providers, ...runtimePartial } = partial
+  seedProviderCredentialCache(providers)
   const contextPatch = partial.context as Partial<ContextConfig> | undefined
   if (contextPatch) {
     const base = _testContextOverride ?? DEFAULT_AGENT_CONTEXT
@@ -320,38 +341,47 @@ export function patchRuntimeConfig(partial: DeepPartial<OuroborosConfig>): void 
   }
   _runtimeConfigOverride = deepMerge(
     (_runtimeConfigOverride ?? {}) as unknown as Record<string, unknown>,
-    partial as unknown as Record<string, unknown>,
+    runtimePartial as unknown as Record<string, unknown>,
   ) as unknown as DeepPartial<OuroborosConfig>
 }
 
+function readProviderConfig(provider: AgentProvider): Record<string, string | number> {
+  const cached = readCachedProviderCredentialRecord(getAgentName(), provider)
+  return cached.ok ? { ...cached.record.config, ...cached.record.credentials } : {}
+}
+
 export function getAzureConfig(): AzureProviderConfig {
-  const config = loadConfig()
-  return { ...config.providers.azure }
+  const raw = readProviderConfig("azure")
+  return {
+    apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "",
+    endpoint: typeof raw.endpoint === "string" ? raw.endpoint : "",
+    deployment: typeof raw.deployment === "string" ? raw.deployment : "",
+    apiVersion: typeof raw.apiVersion === "string" ? raw.apiVersion : "2025-04-01-preview",
+    managedIdentityClientId: typeof raw.managedIdentityClientId === "string" ? raw.managedIdentityClientId : "",
+  }
 }
 
 export function getMinimaxConfig(): MinimaxProviderConfig {
-  const config = loadConfig()
-  return { ...config.providers.minimax }
+  const raw = readProviderConfig("minimax")
+  return { apiKey: typeof raw.apiKey === "string" ? raw.apiKey : "" }
 }
 
 export function getAnthropicConfig(): AnthropicProviderConfig {
-  const config = loadConfig()
-  return { ...config.providers.anthropic }
+  const raw = readProviderConfig("anthropic")
+  return { setupToken: typeof raw.setupToken === "string" ? raw.setupToken : "" }
 }
 
 export function getOpenAICodexConfig(): OpenAICodexProviderConfig {
-  const config = loadConfig()
-  return { ...config.providers["openai-codex"] }
+  const raw = readProviderConfig("openai-codex")
+  return { oauthAccessToken: typeof raw.oauthAccessToken === "string" ? raw.oauthAccessToken : "" }
 }
 
 export function getGithubCopilotConfig(): GithubCopilotProviderConfig {
-  const config = loadConfig()
-  return { ...config.providers["github-copilot"] }
-}
-
-export function getProviderConfig(provider: AgentProvider): Record<string, unknown> {
-  const config = loadConfig()
-  return { ...(config.providers[provider] as unknown as Record<string, unknown>) }
+  const raw = readProviderConfig("github-copilot")
+  return {
+    githubToken: typeof raw.githubToken === "string" ? raw.githubToken : "",
+    baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl : "",
+  }
 }
 
 export function getTeamsConfig(): TeamsConfig {

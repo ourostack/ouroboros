@@ -3,12 +3,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // Default readFileSync: return psyche file stubs so prompt.ts module-level loads work
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
   const p = String(filePath)
+  if (p.endsWith("/state/providers.json")) {
+    const error = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException
+    error.code = "ENOENT"
+    throw error
+  }
   if (p.endsWith("SOUL.md")) return "mock soul"
   if (p.endsWith("IDENTITY.md")) return "mock identity"
   if (p.endsWith("LORE.md")) return "mock lore"
   if (p.endsWith("FRIENDS.md")) return "mock friends"
   if (p.endsWith("package.json")) return JSON.stringify({ name: "other" })
   return ""
+}
+
+function readFileSyncReturning(content: string): (filePath: any, encoding?: any) => string {
+  return (filePath: any, encoding?: any) => {
+    const p = String(filePath)
+    if (p.endsWith("/state/providers.json")) return defaultReadFileSync(filePath, encoding)
+    return content
+  }
 }
 
 function mockReadFileToolResult(content: string, matcher: RegExp = /\.txt$/) {
@@ -254,6 +267,33 @@ async function resetConfig() {
   config.resetConfigCache()
 }
 
+async function getCachedProviderCredential(provider: string) {
+  const credentials = await import("../../heart/provider-credentials")
+  const record = credentials.readCachedProviderCredentialRecord("testagent", provider as any)
+  if (!record.ok) throw new Error(record.error)
+  return record.record
+}
+
+async function resolveTestProviderRuntime(core: any, provider?: string, model?: string) {
+  const resolvedProvider = provider ?? core.getProvider()
+  const resolvedModel = model ?? core.getModel()
+  return core.createProviderRegistry().resolve(
+    resolvedProvider,
+    resolvedModel,
+    await getCachedProviderCredential(resolvedProvider),
+  )
+}
+
+const noopCallbacks: ChannelCallbacks = {
+  onModelStart: () => {},
+  onModelStreamStart: () => {},
+  onTextChunk: () => {},
+  onReasoningChunk: () => {},
+  onToolStart: () => {},
+  onToolEnd: () => {},
+  onError: () => {},
+}
+
 describe("ChannelCallbacks interface", () => {
   it("accepts an object with all required callback signatures", () => {
     const callbacks: ChannelCallbacks = {
@@ -324,7 +364,7 @@ describe("getProviderDisplayLabel", () => {
     })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
-    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: gpt-4.1)")
+    expect(getProviderDisplayLabel()).toBe("azure openai (model: gpt-4.1)")
   })
 
   it("falls back to default in the azure provider label when deployment is blank", async () => {
@@ -354,7 +394,7 @@ describe("getProviderDisplayLabel", () => {
       })
       const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
       resetProviderRuntime()
-      expect(getProviderDisplayLabel()).toBe("azure openai (default, model: gpt-4.1)")
+      expect(getProviderDisplayLabel()).toBe("azure openai (model: gpt-4.1)")
     } finally {
       vi.doUnmock("../../heart/providers/azure")
     }
@@ -374,7 +414,7 @@ describe("getProviderDisplayLabel", () => {
     })
     const { getProviderDisplayLabel, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
-    expect(getProviderDisplayLabel()).toBe("azure openai (gpt-4.1, model: unknown)")
+    expect(getProviderDisplayLabel()).toBe("azure openai (model: unknown)")
   })
 
   it("formats the anthropic provider label", async () => {
@@ -1022,7 +1062,7 @@ describe("runAgent", () => {
   it("fires onToolStart before tool execution and onToolEnd after", async () => {
     // First call: model returns tool call
     // Second call: model returns text only (ending loop)
-    vi.mocked(fs.readFileSync).mockReturnValue("file data")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("file data"))
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1240,7 +1280,7 @@ describe("runAgent", () => {
   })
 
   it("handles multiple tool calls in a single response", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("data1")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("data1"))
     vi.mocked(fs.readdirSync).mockReturnValue([
       { name: "a.txt", isDirectory: () => false } as any,
     ])
@@ -1330,7 +1370,7 @@ describe("runAgent", () => {
   })
 
   it("handles invalid JSON in tool call arguments gracefully", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("fallback")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("fallback"))
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -3400,7 +3440,8 @@ describe("getClient", () => {
 
     expect(fatal.mockExit).toHaveBeenCalledWith(1)
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-    expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.minimax.apiKey is missing"))
+    expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("has no credentials for testagent"))
+    expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("ouro auth --agent testagent --provider minimax"))
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "error",
       event: "engine.provider_init_error",
@@ -3440,9 +3481,9 @@ describe("getClient", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.azure is incomplete"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("azure endpoint/deployment is incomplete in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3688,8 +3729,7 @@ describe("provider abstraction contract", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupMinimax()
     const core = await import("../../heart/core")
-    const registry = (core as any).createProviderRegistry()
-    const runtime = registry.resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     expect(runtime).toBeTruthy()
     expect(typeof runtime?.streamTurn).toBe("function")
     expect(typeof runtime?.appendToolOutput).toBe("function")
@@ -3701,7 +3741,7 @@ describe("provider abstraction contract", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     expect(runtime?.id).toBe("azure")
     expect(() => runtime?.appendToolOutput("call_1", "ok")).not.toThrow()
   })
@@ -3718,7 +3758,7 @@ describe("provider abstraction contract", () => {
     }))
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     expect(runtime?.id).toBe("azure")
 
     const onTextChunk = vi.fn()
@@ -3760,7 +3800,7 @@ describe("provider abstraction contract", () => {
       vi.spyOn(core as any, "createProviderRegistry").mockReturnValue({
         resolve: () => null,
       } as any)
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -3787,7 +3827,7 @@ describe("provider abstraction contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("provider exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3841,6 +3881,7 @@ describe("anthropic setup-token provider contract", () => {
       const core = await import("../../heart/core")
       expect(core.getProvider()).toBe("anthropic")
       expect(core.getModel()).toBe("claude-opus-4-6")
+      await resolveTestProviderRuntime(core)
       expect(mockAnthropicCtor).toHaveBeenCalledWith(
         expect.objectContaining({
           authToken: makeAnthropicSetupToken(),
@@ -3873,7 +3914,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("expected prefix sk-ant-oat01-"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3903,7 +3944,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("too short"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3933,19 +3974,17 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("no setup-token credential was found"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
-      expect(msg).toContain("no setup-token credential was found")
+      expect(msg).toContain("anthropic.setupToken is missing in the agent vault")
       expect(msg).toContain("ouro auth --agent testagent")
-      expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
-      expect(msg).toContain("providers.anthropic.setupToken")
+      expect(msg).toContain("agent vault")
       expect(msg).toContain("retry the failed ouro command or reconnect this session")
       expect(msg).not.toContain("npm run auth:claude-setup-token")
-      expect(msg).not.toContain("--provider")
     } finally {
       fatal.restore()
     }
@@ -3967,17 +4006,16 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockExit).toHaveBeenCalledWith(1)
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.anthropic.setupToken is missing"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("setupToken is missing")
       expect(msg).toContain("ouro auth --agent testagent")
-      expect(msg).toContain("/tmp/.agentsecrets/testagent/secrets.json")
-      expect(msg).toContain("providers.anthropic.setupToken")
+      expect(msg).toContain("agent vault")
     } finally {
       fatal.restore()
     }
@@ -4107,7 +4145,7 @@ describe("anthropic setup-token provider contract", () => {
     ]
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     expect(runtime.id).toBe("anthropic")
     expect(() => runtime.resetTurnState(messages)).not.toThrow()
     expect(() => runtime.appendToolOutput("noop-call", "ok")).not.toThrow()
@@ -4202,7 +4240,7 @@ describe("anthropic setup-token provider contract", () => {
 
     const reasoningChunk = vi.fn()
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -4309,7 +4347,7 @@ describe("anthropic setup-token provider contract", () => {
     ]))
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -4379,7 +4417,7 @@ describe("anthropic setup-token provider contract", () => {
     ]))
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [
@@ -4439,7 +4477,7 @@ describe("anthropic setup-token provider contract", () => {
     const controller = new AbortController()
     controller.abort()
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     const result = await runtime.streamTurn({
       messages: [{ role: "user", content: "hi" }],
       activeTools: [],
@@ -4486,7 +4524,7 @@ describe("anthropic setup-token provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hi" }],
@@ -4532,7 +4570,7 @@ describe("anthropic setup-token provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hi" }],
@@ -4572,7 +4610,7 @@ describe("anthropic setup-token provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hi" }],
@@ -4600,13 +4638,13 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("no setup-token credential was found"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
-        message: expect.stringContaining("no setup-token credential was found"),
+        message: expect.stringContaining("anthropic.setupToken is missing in the agent vault"),
       }))
     } finally {
       fatal.restore()
@@ -4658,7 +4696,7 @@ describe("anthropic setup-token provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     const result = await runtime.streamTurn({
       messages: [
         { role: "system", content: "" },
@@ -4718,7 +4756,7 @@ describe("anthropic setup-token provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hi" }],
@@ -4730,38 +4768,27 @@ describe("anthropic setup-token provider contract", () => {
 
   it("logs non-Error provider-resolution failures before exiting", async () => {
     vi.resetModules()
-    await setAgentProvider("anthropic")
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     const emitNervesEvent = vi.fn()
     vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
-    vi.doMock("../../heart/config", () => ({
-      getAzureConfig: () => ({
-        apiKey: "",
-        endpoint: "",
-        deployment: "",
-        modelName: "",
-        apiVersion: "",
-      }),
-      getAnthropicConfig: () => {
-        throw "config-exploded"
-      },
-      getMinimaxConfig: () => ({
-        apiKey: "",
-        model: "",
-      }),
-      getContextConfig: () => ({
-        maxTokens: 120000,
-        contextMargin: 2000,
-      }),
-      getProviderConfig: () => {
+    vi.doMock("../../heart/providers/anthropic", () => ({
+      createAnthropicProviderRuntime: () => {
         throw "config-exploded"
       },
     }))
+    await setupConfig({
+      providers: {
+        anthropic: {
+          setupToken: makeAnthropicSetupToken(),
+        },
+      },
+    })
 
     const fatal = interceptFatalProviderInit()
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("config-exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4771,7 +4798,7 @@ describe("anthropic setup-token provider contract", () => {
       }))
     } finally {
       fatal.restore()
-      vi.doUnmock("../../heart/config")
+      vi.doUnmock("../../heart/providers/anthropic")
     }
   })
 })
@@ -4835,19 +4862,18 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("providers.openai-codex.oauthAccessToken is missing"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
       expect(msg).toContain("openai-codex")
       expect(msg).toContain("oauthAccessToken")
-      expect(msg).toContain("secrets.json")
+      expect(msg).toContain("agent vault")
       expect(msg).toContain("ouro auth --agent testagent")
       expect(msg).toContain("retry the failed ouro command or reconnect this session")
       expect(msg).not.toContain("npm run auth:openai-codex")
-      expect(msg).not.toContain("--provider")
     } finally {
       fatal.restore()
     }
@@ -4879,7 +4905,7 @@ describe("openai-codex oauth provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hello" }],
@@ -4995,7 +5021,7 @@ describe("openai-codex oauth provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hello" }],
@@ -5022,14 +5048,13 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
-      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("OAuth access token is empty"))
+      expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
         (c: any[]) => c[0]?.event === "engine.provider_init_error",
       )?.[0]?.message ?? ""
-      expect(msg).toContain("OAuth access token is empty")
-      expect(msg).toContain("providers.openai-codex.oauthAccessToken")
+      expect(msg).toContain("openai-codex.oauthAccessToken is missing in the agent vault")
     } finally {
       fatal.restore()
     }
@@ -5053,7 +5078,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5085,7 +5110,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5115,7 +5140,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5146,7 +5171,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5177,7 +5202,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      expect(() => core.getProvider()).toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5238,7 +5263,7 @@ describe("openai-codex oauth provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     expect(mockOpenAICtor).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: oauthAccessToken,
       baseURL: "https://chatgpt.com/backend-api/codex",
@@ -5313,7 +5338,7 @@ describe("openai-codex oauth provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hello" }],
@@ -5347,7 +5372,7 @@ describe("openai-codex oauth provider contract", () => {
     }
 
     const core = await import("../../heart/core")
-    const runtime = (core as any).createProviderRegistry().resolve()
+    const runtime = await resolveTestProviderRuntime(core)
     await expect(
       runtime.streamTurn({
         messages: [{ role: "user", content: "hello" }],
@@ -6161,7 +6186,7 @@ describe("tool_choice required and settle", () => {
   })
 
   it("settle mixed with other tool calls: other tools execute, settle rejected, loop continues", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("file data")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("file data"))
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -6298,7 +6323,7 @@ describe("tool_choice required and settle", () => {
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupAzure()
 
-    vi.mocked(fs.readFileSync).mockReturnValue("file data")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("file data"))
 
     const funcItem1 = { type: "function_call", id: "fc1", call_id: "c1", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" }
     const funcItem2 = { type: "function_call", id: "fc2", call_id: "c2", name: "settle", arguments: '{"answer":"done"}', status: "completed" }
@@ -7296,7 +7321,7 @@ describe("integration: kick + tool_choice required combined", () => {
   })
 
   it("intent phrase only in model content triggers kick, not in tool results", async () => {
-    vi.mocked(fs.readFileSync).mockReturnValue("let me read the file content here")
+    vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("let me read the file content here"))
 
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -8668,16 +8693,15 @@ describe("facing-aware provider runtime", () => {
     const core = await import("../../heart/core")
     core.resetProviderRuntime()
 
-    // Warm caches
-    core.getModel("human")
-    core.getModel("agent")
+    mockCreate.mockResolvedValue({ choices: [{ message: { content: "ok" } }] })
+    await core.createSummarize("human")("transcript", "instruction")
+    await core.createSummarize("agent")("transcript", "instruction")
 
     const callsBefore = mockOpenAICtor.mock.calls.length
     core.resetProviderRuntime()
 
-    // After reset, accessing should re-create runtimes
-    core.getModel("human")
-    core.getModel("agent")
+    await core.createSummarize("human")("transcript", "instruction")
+    await core.createSummarize("agent")("transcript", "instruction")
     expect(mockOpenAICtor.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 
@@ -8766,7 +8790,7 @@ describe("facing-aware provider runtime", () => {
     expect(callArgs.model).toBe("mm-agent-sum")
   })
 
-  it("fingerprint includes model from agent config + credentials from secrets", async () => {
+  it("fingerprint includes model from agent config + credentials from the provider cache", async () => {
     await setupDualFacing({
       humanProvider: "minimax",
       humanModel: "mm-fp",
@@ -8777,15 +8801,15 @@ describe("facing-aware provider runtime", () => {
     const core = await import("../../heart/core")
     core.resetProviderRuntime()
 
-    // Warm the cache
-    core.getModel("human")
+    mockCreate.mockResolvedValue({ choices: [{ message: { content: "ok" } }] })
+    await core.createSummarize("human")("transcript", "instruction")
     const callsBefore = mockOpenAICtor.mock.calls.length
 
-    // Change the secrets key -- fingerprint should change, forcing re-creation
+    // Change the credential key -- fingerprint should change, forcing re-creation
     const config = await import("../../heart/config")
     config.patchRuntimeConfig({ providers: { minimax: { apiKey: "mm-key-2" } } })
 
-    core.getModel("human")
+    await core.createSummarize("human")("transcript", "instruction")
     expect(mockOpenAICtor.mock.calls.length).toBeGreaterThan(callsBefore)
   })
 })

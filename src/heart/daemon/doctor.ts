@@ -327,41 +327,19 @@ export function checkHabits(deps: DoctorDeps): DoctorCategory {
 export function checkSecurity(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
   const agents = discoverAgents(deps)
-  const providerPoolPath = `${deps.secretsRoot}/providers.json`
-
-  if (deps.existsSync(providerPoolPath)) {
-    const stat = deps.statSync(providerPoolPath)
-    const worldReadable = (stat.mode & 0o004) !== 0
-    checks.push({
-      label: "machine provider credentials perms",
-      status: worldReadable ? "warn" : "pass",
-      detail: worldReadable ? "world-readable — consider chmod 600" : "not world-readable",
-    })
-
-    try {
-      JSON.parse(deps.readFileSync(providerPoolPath)) as unknown
-      checks.push({ label: "machine provider credentials", status: "pass", detail: "readable JSON" })
-    } catch {
-      checks.push({ label: "machine provider credentials", status: "fail", detail: "unparseable JSON" })
-    }
-  }
 
   for (const agentDir of agents) {
     const agentName = agentDir.replace(/\.ouro$/, "")
     const secretsPath = `${deps.secretsRoot}/${agentName}/secrets.json`
 
-    if (!deps.existsSync(secretsPath)) {
-      checks.push({ label: `${agentDir} secrets.json`, status: "fail", detail: "missing" })
-      continue
-    }
-
-    // Check file permissions
-    const stat = deps.statSync(secretsPath)
-    const worldReadable = (stat.mode & 0o004) !== 0
-    if (worldReadable) {
-      checks.push({ label: `${agentDir} secrets.json perms`, status: "warn", detail: "world-readable — consider chmod 600" })
-    } else {
-      checks.push({ label: `${agentDir} secrets.json perms`, status: "pass", detail: "not world-readable" })
+    if (deps.existsSync(secretsPath)) {
+      const stat = deps.statSync(secretsPath)
+      const worldReadable = (stat.mode & 0o004) !== 0
+      if (worldReadable) {
+        checks.push({ label: `${agentDir} legacy secrets.json perms`, status: "warn", detail: "world-readable — consider deleting or chmod 600" })
+      } else {
+        checks.push({ label: `${agentDir} legacy secrets.json perms`, status: "pass", detail: "not world-readable" })
+      }
     }
 
     // Check agent.json for leaked credential keys

@@ -68,10 +68,11 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 const mockAzureOpenAICtor = vi.fn()
+const mockChatCreate = vi.fn().mockResolvedValue({ choices: [{ message: { content: "summary" } }] })
 
 vi.mock("openai", () => {
   class MockOpenAI {
-    chat = { completions: { create: vi.fn() } }
+    chat = { completions: { create: mockChatCreate } }
     responses = { create: vi.fn() }
     constructor(opts?: any) { mockAzureOpenAICtor(opts) }
   }
@@ -93,6 +94,7 @@ describe("azure provider fingerprint includes managedIdentityClientId", () => {
   beforeEach(() => {
     vi.resetModules()
     mockAzureOpenAICtor.mockReset()
+    mockChatCreate.mockClear()
   })
 
   it("fingerprint with managedIdentityClientId undefined differs from one with a value", async () => {
@@ -112,9 +114,9 @@ describe("azure provider fingerprint includes managedIdentityClientId", () => {
     })
 
     // First call: create provider with no managedIdentityClientId
-    const { getModel, resetProviderRuntime } = await import("../../heart/core")
+    const { createSummarize, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
-    getModel() // triggers provider creation
+    await createSummarize()("hello", "summarize")
     expect(mockAzureOpenAICtor).toHaveBeenCalledTimes(1)
 
     // Change managedIdentityClientId
@@ -127,7 +129,7 @@ describe("azure provider fingerprint includes managedIdentityClientId", () => {
     })
 
     // Second call: should detect fingerprint change and re-create provider
-    getModel()
+    await createSummarize()("hello", "summarize")
     expect(mockAzureOpenAICtor).toHaveBeenCalledTimes(2)
   })
 
@@ -148,9 +150,9 @@ describe("azure provider fingerprint includes managedIdentityClientId", () => {
       },
     })
 
-    const { getModel, resetProviderRuntime } = await import("../../heart/core")
+    const { createSummarize, resetProviderRuntime } = await import("../../heart/core")
     resetProviderRuntime()
-    getModel()
+    await createSummarize()("hello", "summarize")
     expect(mockAzureOpenAICtor).toHaveBeenCalledTimes(1)
 
     // Switch to managed identity
@@ -163,7 +165,7 @@ describe("azure provider fingerprint includes managedIdentityClientId", () => {
       },
     })
 
-    getModel()
+    await createSummarize()("hello", "summarize")
     expect(mockAzureOpenAICtor).toHaveBeenCalledTimes(2)
   })
 })

@@ -7,6 +7,8 @@ const testState = vi.hoisted(() => ({
   agentRoot: "",
 }))
 
+const mockReadProviderCredentialRecord = vi.hoisted(() => vi.fn())
+
 vi.mock("../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
   return {
@@ -21,6 +23,10 @@ vi.mock("../../heart/providers/minimax-vlm", () => ({
   minimaxVlmDescribe: vi.fn(),
 }))
 
+vi.mock("../../heart/provider-credentials", () => ({
+  readProviderCredentialRecord: mockReadProviderCredentialRecord,
+}))
+
 import { getToolsForChannel } from "../../repertoire/tools"
 import { attachmentToolDefinitions } from "../../repertoire/tools-attachments"
 import { getChannelCapabilities } from "../../mind/friends/channel"
@@ -28,7 +34,6 @@ import { cacheRecentAttachment } from "../../heart/attachments/store"
 import { buildCliLocalFileAttachmentRecord } from "../../heart/attachments/sources/cli-local-file"
 import * as materializeModule from "../../heart/attachments/materialize"
 import { minimaxVlmDescribe } from "../../heart/providers/minimax-vlm"
-import * as configModule from "../../heart/config"
 
 const tempDirs: string[] = []
 
@@ -48,7 +53,13 @@ function writeFile(dir: string, name: string, content: string): string {
 beforeEach(() => {
   vi.resetAllMocks()
   testState.agentRoot = ""
-  vi.spyOn(configModule, "getMinimaxConfig").mockReturnValue({ apiKey: "test-key" })
+  mockReadProviderCredentialRecord.mockResolvedValue({
+    ok: true,
+    record: {
+      credentials: { apiKey: "test-key" },
+      config: {},
+    },
+  })
 })
 
 afterEach(() => {
@@ -267,7 +278,12 @@ describe("attachment tool handlers", () => {
       mimeType: "image/jpeg",
       byteCount: 10,
     })
-    vi.spyOn(configModule, "getMinimaxConfig").mockReturnValue({ apiKey: "" } as any)
+    mockReadProviderCredentialRecord.mockResolvedValueOnce({
+      ok: false,
+      reason: "missing",
+      poolPath: "vault:testagent:providers/minimax",
+      error: "missing minimax credentials",
+    })
 
     const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
     const parsed = JSON.parse(await tool.handler({ attachment_id: attachment.id, prompt: "what is this?" }))

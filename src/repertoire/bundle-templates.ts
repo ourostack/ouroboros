@@ -7,7 +7,7 @@
  *
  *   - Runtime state (sessions, logs, runtime files) — stale data with no
  *     value for review or history.
- *   - Credentials — real secrets live in `~/.agentsecrets`, but defense
+ *   - Credentials — real secrets live in the agent vault, but defense
  *     in depth in case anything leaks into the bundle.
  *   - Editor / OS noise (.DS_Store, .idea/, etc.).
  *   - Build artifacts (rare in bundles, but possible).
@@ -30,7 +30,7 @@
 export const BUNDLE_GITIGNORE_TEMPLATE = `# Runtime state — sessions, logs, runtime files, never tracked
 state/
 
-# Credentials — never tracked. Real secrets live in ~/.agentsecrets, but
+# Credentials — never tracked. Real secrets live in the agent vault, but
 # defense in depth in case anything leaks into the bundle.
 .env
 .env.*

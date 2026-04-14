@@ -8,6 +8,38 @@ vi.mock("../../../heart/provider-ping", () => ({
   pingProvider: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+const mockProviderCredentials = vi.hoisted(() => ({
+  pools: new Map<string, any>(),
+  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: true,
+      poolPath: `vault:${agentName}:providers/*`,
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers: {},
+      },
+    }
+  }),
+  readProviderCredentialPool: vi.fn((agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: false,
+      reason: "missing",
+      poolPath: `vault:${agentName}:providers/*`,
+      error: "provider credentials have not been loaded from vault",
+    }
+  }),
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockProviderCredentials.refreshProviderCredentialPool,
+    readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
+  }
+})
+
 // Mock startup-tui so ensureDaemonRunning doesn't poll a real socket
 vi.mock("../../../heart/daemon/startup-tui", () => ({
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
@@ -20,7 +52,6 @@ vi.mock("../../../heart/daemon/agent-config-check", () => ({
 
 import {
   createDefaultOuroCliDeps,
-  discoverExistingCredentials,
   parseOuroCommand,
   runOuroCli,
   type OuroCliDeps,
@@ -35,6 +66,32 @@ import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-
 const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
 ) as { version: string }
+
+function setProviderCredentialPool(
+  agentName: string,
+  providers: Record<string, { credentials?: Record<string, string | number>; config?: Record<string, string | number>; revision?: string }>,
+): void {
+  const now = "2026-04-13T00:00:00.000Z"
+  mockProviderCredentials.pools.set(agentName, {
+    ok: true,
+    poolPath: `vault:${agentName}:providers/*`,
+    pool: {
+      schemaVersion: 1,
+      updatedAt: now,
+      providers: Object.fromEntries(Object.entries(providers).map(([provider, record]) => [
+        provider,
+        {
+          provider,
+          revision: record.revision ?? `cred_${provider}`,
+          updatedAt: now,
+          credentials: record.credentials ?? {},
+          config: record.config ?? {},
+          provenance: { source: "auth-flow", updatedAt: now },
+        },
+      ])),
+    },
+  })
+}
 
 describe("ouro CLI parsing", () => {
   it("parses primary daemon commands", () => {
@@ -910,6 +967,9 @@ describe("ouro CLI execution", () => {
       secretsRoot: tmp.secretsRoot,
     }
     try {
+      setProviderCredentialPool(tmp.agentName, {
+        anthropic: { credentials: { setupToken: "sk-ant-test" } },
+      })
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
       expect(typeof result).toBe("string")
       expect(result).toContain("anthropic")
@@ -1025,6 +1085,12 @@ describe("ouro CLI execution", () => {
       secretsRoot: tmp.secretsRoot,
     }
     try {
+      setProviderCredentialPool(tmp.agentName, {
+        "github-copilot": {
+          credentials: { githubToken: "ghp_valid_token" },
+          config: { baseUrl: "https://api.test.com" },
+        },
+      })
       // pingProvider is mocked to return { ok: true } at the top of this file
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toBe("github-copilot: ok")
@@ -1060,6 +1126,12 @@ describe("ouro CLI execution", () => {
       secretsRoot: tmp.secretsRoot,
     }
     try {
+      setProviderCredentialPool(tmp.agentName, {
+        "github-copilot": {
+          credentials: { githubToken: "ghp_expired" },
+          config: { baseUrl: "https://api.test.com" },
+        },
+      })
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toBe("github-copilot: failed (token expired)")
     } finally {
@@ -1098,6 +1170,16 @@ describe("ouro CLI execution", () => {
       secretsRoot: tmp.secretsRoot,
     }
     try {
+      setProviderCredentialPool(tmp.agentName, {
+        azure: { credentials: { apiKey: "az-key" }, config: { endpoint: "https://az.test.com" } },
+        minimax: { credentials: {} },
+        anthropic: { credentials: { setupToken: "sk-ant-abc" } },
+        "openai-codex": { credentials: { oauthAccessToken: "tok" } },
+        "github-copilot": {
+          credentials: { githubToken: "ghp_test" },
+          config: { baseUrl: "https://api.test.com" },
+        },
+      })
       // pingProvider is mocked to return { ok: true } — all providers with creds pass
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
       expect(result).toContain("azure: ok")
@@ -4598,229 +4680,6 @@ describe("daemon command protocol", () => {
 
     expect(parsed.ok).toBe(false)
     expect(parsed.error).toContain("Invalid daemon command payload")
-  })
-})
-
-describe("discoverExistingCredentials", () => {
-  const fs = require("fs") as typeof import("fs")
-  const os = require("os") as typeof import("os")
-  const path = require("path") as typeof import("path")
-
-  function makeTempSecrets(): string {
-    return fs.mkdtempSync(path.join(os.tmpdir(), "discover-creds-"))
-  }
-
-  it("returns empty array when secretsRoot does not exist", () => {
-    const result = discoverExistingCredentials("/nonexistent/path")
-    expect(result).toEqual([])
-  })
-
-  it("returns empty array when secretsRoot is empty", () => {
-    const tmpDir = makeTempSecrets()
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers anthropic credentials with setupToken", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "myagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({ providers: { anthropic: { setupToken: "sk-ant-test" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([
-        { agentName: "myagent", provider: "anthropic", credentials: { setupToken: "sk-ant-test" }, providerConfig: { setupToken: "sk-ant-test" } },
-      ])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers minimax credentials with apiKey", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "minimaxagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({ providers: { minimax: { apiKey: "mm-key-123" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([
-        { agentName: "minimaxagent", provider: "minimax", credentials: { apiKey: "mm-key-123" }, providerConfig: { apiKey: "mm-key-123" } },
-      ])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers openai-codex credentials with oauthAccessToken", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "codexagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({ providers: { "openai-codex": { oauthAccessToken: "oauth-tok" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([
-        { agentName: "codexagent", provider: "openai-codex", credentials: { oauthAccessToken: "oauth-tok" }, providerConfig: { oauthAccessToken: "oauth-tok" } },
-      ])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers azure credentials when all three fields present", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "azureagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({
-        providers: { azure: { apiKey: "az-key", endpoint: "https://az.endpoint", deployment: "gpt-deploy" } },
-      }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([
-        {
-          agentName: "azureagent",
-          provider: "azure",
-          credentials: { apiKey: "az-key", endpoint: "https://az.endpoint", deployment: "gpt-deploy" },
-          providerConfig: { apiKey: "az-key", endpoint: "https://az.endpoint", deployment: "gpt-deploy" },
-        },
-      ])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers github-copilot credentials with githubToken", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "copilotagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({ providers: { "github-copilot": { githubToken: "ghp-tok", baseUrl: "https://copilot.api" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([
-        {
-          agentName: "copilotagent",
-          provider: "github-copilot",
-          credentials: { githubToken: "ghp-tok", baseUrl: "https://copilot.api" },
-          providerConfig: { githubToken: "ghp-tok", baseUrl: "https://copilot.api" },
-        },
-      ])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("skips azure with missing fields", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "azuepartial")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({ providers: { azure: { apiKey: "az-key", endpoint: "", deployment: "" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("skips providers with empty credential strings", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "emptyagent")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(
-      path.join(agentDir, "secrets.json"),
-      JSON.stringify({
-        providers: {
-          anthropic: { setupToken: "" },
-          minimax: { apiKey: "" },
-          "openai-codex": { oauthAccessToken: "" },
-        },
-      }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("discovers multiple providers from multiple agents and deduplicates", () => {
-    const tmpDir = makeTempSecrets()
-    const agentA = path.join(tmpDir, "agentA")
-    const agentB = path.join(tmpDir, "agentB")
-    fs.mkdirSync(agentA)
-    fs.mkdirSync(agentB)
-    // Both agents have same anthropic key
-    fs.writeFileSync(
-      path.join(agentA, "secrets.json"),
-      JSON.stringify({ providers: { anthropic: { setupToken: "same-key" } } }),
-    )
-    fs.writeFileSync(
-      path.join(agentB, "secrets.json"),
-      JSON.stringify({ providers: { anthropic: { setupToken: "same-key" }, minimax: { apiKey: "mm-key" } } }),
-    )
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      // Should have anthropic (deduplicated) + minimax
-      expect(result).toHaveLength(2)
-      expect(result.find((r) => r.provider === "anthropic")).toBeDefined()
-      expect(result.find((r) => r.provider === "minimax")).toBeDefined()
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("skips non-directory entries and invalid JSON", () => {
-    const tmpDir = makeTempSecrets()
-    // File instead of directory
-    fs.writeFileSync(path.join(tmpDir, "not-a-dir"), "hello")
-    // Directory with invalid JSON
-    const badDir = path.join(tmpDir, "badjson")
-    fs.mkdirSync(badDir)
-    fs.writeFileSync(path.join(badDir, "secrets.json"), "not-json{{{")
-    // Directory with no secrets.json
-    const emptyDir = path.join(tmpDir, "nosecrets")
-    fs.mkdirSync(emptyDir)
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  })
-
-  it("skips entries without providers key", () => {
-    const tmpDir = makeTempSecrets()
-    const agentDir = path.join(tmpDir, "noproviders")
-    fs.mkdirSync(agentDir)
-    fs.writeFileSync(path.join(agentDir, "secrets.json"), JSON.stringify({ integrations: {} }))
-    try {
-      const result = discoverExistingCredentials(tmpDir)
-      expect(result).toEqual([])
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
   })
 })
 

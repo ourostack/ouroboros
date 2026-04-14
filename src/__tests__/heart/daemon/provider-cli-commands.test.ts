@@ -9,17 +9,48 @@ vi.mock("../../../heart/provider-ping", () => ({
   pingGithubCopilotModel: vi.fn(async () => ({ ok: true })),
 }))
 
+const mockProviderCredentials = vi.hoisted(() => ({
+  pools: new Map<string, any>(),
+  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: true,
+      poolPath: `vault:${agentName}:providers/*`,
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-12T20:10:00.000Z",
+        providers: {},
+      },
+    }
+  }),
+  readProviderCredentialPool: vi.fn((agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: false,
+      reason: "missing",
+      poolPath: `vault:${agentName}:providers/*`,
+      error: "provider credentials have not been loaded from vault",
+    }
+  }),
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockProviderCredentials.refreshProviderCredentialPool,
+    readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
+  }
+})
+
 import {
   parseOuroCommand,
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { pingProvider } from "../../../heart/provider-ping"
-import {
-  readProviderCredentialPool,
-  writeProviderCredentialPool,
-  type ProviderCredentialPool,
-} from "../../../heart/provider-credential-pool"
+import type {
+  ProviderCredentialPool,
+  ProviderCredentialPoolReadResult,
+} from "../../../heart/provider-credentials"
 import {
   readProviderState,
   writeProviderState,
@@ -43,6 +74,35 @@ function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)
   return dir
+}
+
+function okCredentialPool(agentName: string, pool: ProviderCredentialPool): ProviderCredentialPoolReadResult {
+  return {
+    ok: true,
+    poolPath: `vault:${agentName}:providers/*`,
+    pool,
+  }
+}
+
+function unavailableCredentialPool(agentName: string, error: string): ProviderCredentialPoolReadResult {
+  return {
+    ok: false,
+    reason: "unavailable",
+    poolPath: `vault:${agentName}:providers/*`,
+    error,
+  }
+}
+
+function writeProviderCredentialPool(_homeDir: string, pool: ProviderCredentialPool, agentName = "Slugger"): void {
+  mockProviderCredentials.pools.set(agentName, okCredentialPool(agentName, pool))
+}
+
+function writeUnavailableProviderCredentialPool(agentName: string, error: string): void {
+  mockProviderCredentials.pools.set(agentName, unavailableCredentialPool(agentName, error))
+}
+
+function readProviderCredentialPool(_homeDir: string, agentName = "Slugger"): ProviderCredentialPoolReadResult {
+  return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
 }
 
 function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -117,7 +177,6 @@ function credentialPool(overrides: Partial<ProviderCredentialPool> = {}): Provid
         config: {},
         provenance: {
           source: "auth-flow",
-          contributedByAgent: "Slugger",
           updatedAt: NOW,
         },
       },
@@ -128,8 +187,7 @@ function credentialPool(overrides: Partial<ProviderCredentialPool> = {}): Provid
         credentials: { setupToken: "anthropic-secret" },
         config: {},
         provenance: {
-          source: "legacy-agent-secrets",
-          contributedByAgent: "LegacyAgent",
+          source: "manual",
           updatedAt: NOW,
         },
       },
@@ -144,6 +202,9 @@ function readAgentConfig(bundlesRoot: string, agentName: string): Record<string,
 
 afterEach(() => {
   mockPingProvider.mockReset()
+  mockProviderCredentials.pools.clear()
+  mockProviderCredentials.refreshProviderCredentialPool.mockClear()
+  mockProviderCredentials.readProviderCredentialPool.mockClear()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue
@@ -341,14 +402,13 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
   })
 
-  it("ouro use treats invalid machine credential pools as unavailable credentials", async () => {
+  it("ouro use treats unavailable agent vault credentials as unavailable credentials", async () => {
     emitTestEvent("provider cli use invalid credential pool")
     const bundlesRoot = makeTempDir("provider-cli-invalid-pool-bundles")
     const homeDir = makeTempDir("provider-cli-invalid-pool-home")
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
-    fs.mkdirSync(path.join(homeDir, ".agentsecrets"), { recursive: true })
-    fs.writeFileSync(path.join(homeDir, ".agentsecrets", "providers.json"), "{bad-json", "utf-8")
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
     const result = await runOuroCli([
       "use",
@@ -403,8 +463,8 @@ describe("provider CLI command execution", () => {
     })
   })
 
-  it("ouro use ignores unreadable legacy per-agent secrets while checking the machine pool", async () => {
-    emitTestEvent("provider cli use unreadable legacy secrets")
+  it("ouro use ignores unrelated legacy per-agent secrets while checking the agent vault", async () => {
+    emitTestEvent("provider cli use ignores legacy secrets")
     const bundlesRoot = makeTempDir("provider-cli-unreadable-legacy-bundles")
     const homeDir = makeTempDir("provider-cli-unreadable-legacy-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -430,8 +490,8 @@ describe("provider CLI command execution", () => {
     expect(mockPingProvider).not.toHaveBeenCalled()
   })
 
-  it("ouro use ignores legacy per-agent secrets for other providers", async () => {
-    emitTestEvent("provider cli use wrong legacy provider")
+  it("ouro use does not fall back to legacy per-agent secrets for other providers", async () => {
+    emitTestEvent("provider cli use no legacy fallback")
     const bundlesRoot = makeTempDir("provider-cli-wrong-legacy-bundles")
     const homeDir = makeTempDir("provider-cli-wrong-legacy-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -529,8 +589,8 @@ describe("provider CLI command execution", () => {
     })
   })
 
-  it("ouro auth stores credentials in the machine pool and does not switch bindings", async () => {
-    emitTestEvent("provider cli auth writes machine pool")
+  it("ouro auth delegates storage to the auth flow and does not switch bindings", async () => {
+    emitTestEvent("provider cli auth delegates storage")
     const bundlesRoot = makeTempDir("provider-cli-auth-bundles")
     const homeDir = makeTempDir("provider-cli-auth-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -553,18 +613,6 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toContain("authenticated Slugger with minimax")
-    const poolResult = readProviderCredentialPool(homeDir)
-    expect(poolResult.ok).toBe(true)
-    if (!poolResult.ok) throw new Error(poolResult.error)
-    expect(poolResult.pool.providers.minimax).toMatchObject({
-      provider: "minimax",
-      credentials: { apiKey: "new-minimax-secret" },
-      provenance: {
-        source: "auth-flow",
-        contributedByAgent: "Slugger",
-      },
-    })
-
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
@@ -719,12 +767,11 @@ describe("provider CLI command execution", () => {
       },
       readiness: {},
     }))
-    fs.mkdirSync(path.join(homeDir, ".agentsecrets"), { recursive: true })
-    fs.writeFileSync(path.join(homeDir, ".agentsecrets", "providers.json"), "{not-json", "utf-8")
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
     const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
 
-    expect(result).toContain("credentials: invalid pool")
+    expect(result).toContain("credentials: vault unavailable")
     expect(result).toContain("repair: ouro auth --agent Slugger --provider minimax")
     expect(result).toContain("warning: minimax cannot read credentials")
   })
@@ -779,7 +826,7 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("readiness: failed (bad token)")
-    expect(result).toContain("credentials: present (manual; cred_ghc_config_only; credentials: none; config: baseUrl)")
+    expect(result).toContain("credentials: present in vault (manual; cred_ghc_config_only; credentials: none; config: baseUrl)")
   })
 
   it("ouro check performs a live selected binding check and updates readiness", async () => {
@@ -996,7 +1043,6 @@ describe("provider CLI command execution", () => {
           config: { baseUrl: "https://api.copilot.example.com" },
           provenance: {
             source: "auth-flow",
-            contributedByAgent: "Slugger",
             updatedAt: NOW,
           },
         },
@@ -1063,7 +1109,6 @@ describe("provider CLI command execution", () => {
           config: { baseUrl: "https://api.copilot.example.com" },
           provenance: {
             source: "auth-flow",
-            contributedByAgent: "Slugger",
             updatedAt: NOW,
           },
         },
@@ -1125,7 +1170,6 @@ describe("provider CLI command execution", () => {
           config: {},
           provenance: {
             source: "auth-flow",
-            contributedByAgent: "Slugger",
             updatedAt: NOW,
           },
         },

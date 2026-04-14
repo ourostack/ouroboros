@@ -142,7 +142,7 @@ describe("minimaxVlmDescribe", () => {
         baseURL: "https://api.minimaxi.chat/v1",
         fetchImpl,
       }),
-    ).rejects.toThrow(/re-run credential setup|configure|add a minimax key/i)
+    ).rejects.toThrow(/ouro auth --agent <agent> --provider minimax|configure|add a minimax key/i)
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

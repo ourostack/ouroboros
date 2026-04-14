@@ -70,17 +70,19 @@ Expected:
 - system setup happens first
 - Adoption Specialist runs
 - a canonical bundle is created under `~/AgentBundles/Hatchling.ouro/`
-- secrets are written under `~/.agentsecrets/Hatchling/secrets.json`
+- selected provider credentials are stored in the hatchling's vault
+- interactive hatch does not create, mutate, or persist a SerpentGuide vault
 
 Verify:
 
 - `~/AgentBundles/Hatchling.ouro/agent.json`
 - `~/AgentBundles/Hatchling.ouro/bundle-meta.json`
 - canonical psyche/task/skill/state directories exist
+- the hatchling vault is unlockable on this machine
 
 ## 4. Provider Auth Recovery Smoke
 
-Provider credentials and provider selection are separate. `ouro auth` stores credentials only in the machine credential pool. Provider/model selection for each local machine lives in the bundle's `state/providers.json`.
+Provider credentials and provider selection are separate. `ouro auth` stores credentials in the owning agent's vault. Provider/model selection for each local machine lives in the bundle's `state/providers.json`.
 
 When a provider needs first-time setup or reauth, use the installed runtime path instead of repo-local scripts:
 
@@ -91,11 +93,12 @@ ouro auth --agent Hatchling --provider openai-codex
 
 Expected:
 
-- `ouro auth` stores credentials only in `~/.agentsecrets/providers.json`
+- `ouro auth` stores credentials only in the owning agent's vault
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
-- `--provider <provider>` authenticates that provider in the machine credential pool without switching a lane
+- `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
+- use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -209,16 +212,17 @@ ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <m
 After reauth succeeds, retry the failed `ouro` command or reconnect the session that
 already errored.
 
+If a repair message says the agent can run a refresh or verify command, that is agent-runnable. If it requires browser login, MFA, provider dashboard access, API token creation, or secret entry, it is human-required; enter secrets in the terminal or provider UI, never in chat.
+
 ### A sense shows `needs_config`
 
 Check:
 
 - `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
 - `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
-- `~/.agentsecrets/<agent>/secrets.json`
-- `~/.agentsecrets/providers.json`
+- the agent's vault provider credentials, plus the integration's existing sense credentials
 
-Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; provider credentials live in `~/.agentsecrets/providers.json`; sense-specific secret material lives in `~/.agentsecrets/<agent>/secrets.json`.
+Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; provider credentials live in the owning agent's vault. Tool/sense credential vault migration is a follow-up.
 
 ### BlueBubbles or Teams behavior feels wrong
 
@@ -229,4 +233,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific config block is complete in `secrets.json`, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`.

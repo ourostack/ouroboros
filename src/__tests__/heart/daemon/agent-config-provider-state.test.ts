@@ -3,11 +3,47 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 
+const mockProviderCredentials = vi.hoisted(() => ({
+  pools: new Map<string, any>(),
+  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: true,
+      poolPath: `vault:${agentName}:providers/*`,
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-12T22:00:00.000Z",
+        providers: {},
+      },
+    }
+  }),
+  readProviderCredentialPool: vi.fn((agentName: string) => {
+    return mockProviderCredentials.pools.get(agentName) ?? {
+      ok: false,
+      reason: "missing",
+      poolPath: `vault:${agentName}:providers/*`,
+      error: "provider credentials have not been loaded from vault",
+    }
+  }),
+}))
+
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  return {
+    ...actual,
+    refreshProviderCredentialPool: mockProviderCredentials.refreshProviderCredentialPool,
+    readProviderCredentialPool: mockProviderCredentials.readProviderCredentialPool,
+  }
+})
+
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 import { loadOrCreateMachineIdentity } from "../../../heart/machine-identity"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
-import { readProviderCredentialPool, upsertProviderCredential } from "../../../heart/provider-credential-pool"
+import type { AgentProvider } from "../../../heart/identity"
+import type {
+  ProviderCredentialPool,
+  ProviderCredentialPoolReadResult,
+} from "../../../heart/provider-credentials"
 import {
   getProviderStatePath,
   readProviderState,
@@ -43,21 +79,63 @@ function writeAgentConfig(
   return agentRoot
 }
 
+function okCredentialPool(agentName: string, pool: ProviderCredentialPool): ProviderCredentialPoolReadResult {
+  return {
+    ok: true,
+    poolPath: `vault:${agentName}:providers/*`,
+    pool,
+  }
+}
+
+function unavailableCredentialPool(agentName: string, error: string): ProviderCredentialPoolReadResult {
+  return {
+    ok: false,
+    reason: "unavailable",
+    poolPath: `vault:${agentName}:providers/*`,
+    error,
+  }
+}
+
+function readProviderCredentialPool(agentName: string): ProviderCredentialPoolReadResult {
+  return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
+}
+
+function writeProviderCredentialPool(agentName: string, pool: ProviderCredentialPool): void {
+  mockProviderCredentials.pools.set(agentName, okCredentialPool(agentName, pool))
+}
+
+function writeUnavailableProviderCredentialPool(agentName: string, error: string): void {
+  mockProviderCredentials.pools.set(agentName, unavailableCredentialPool(agentName, error))
+}
+
 function seedCredential(input: {
   homeDir: string
+  agentName?: string
   provider: "anthropic" | "minimax" | "openai-codex"
   credentials: Record<string, string>
   revision: string
 }): void {
-  upsertProviderCredential({
-    homeDir: input.homeDir,
+  const agentName = input.agentName ?? "slugger"
+  const existing = readProviderCredentialPool(agentName)
+  const pool: ProviderCredentialPool = existing.ok
+    ? {
+      ...existing.pool,
+      providers: { ...existing.pool.providers },
+    }
+    : {
+      schemaVersion: 1,
+      updatedAt: "2026-04-12T22:00:00.000Z",
+      providers: {},
+    }
+  pool.providers[input.provider as AgentProvider] = {
     provider: input.provider,
+    revision: input.revision,
+    updatedAt: "2026-04-12T22:00:00.000Z",
     credentials: input.credentials,
     config: {},
-    provenance: { source: "manual", contributedByAgent: "test-agent" },
-    now: new Date("2026-04-12T22:00:00.000Z"),
-    makeRevision: () => input.revision,
-  })
+    provenance: { source: "manual", updatedAt: "2026-04-12T22:00:00.000Z" },
+  }
+  writeProviderCredentialPool(agentName, pool)
 }
 
 function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
@@ -88,6 +166,9 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
   const cleanup: string[] = []
 
   afterEach(() => {
+    mockProviderCredentials.pools.clear()
+    mockProviderCredentials.refreshProviderCredentialPool.mockClear()
+    mockProviderCredentials.readProviderCredentialPool.mockClear()
     while (cleanup.length > 0) {
       const entry = cleanup.pop()
       if (!entry) continue
@@ -95,7 +176,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     }
   })
 
-  it("bootstraps missing provider state from agent.json and checks selected lane models from the machine pool", async () => {
+  it("bootstraps missing provider state from agent.json and checks selected lane models from the agent vault", async () => {
     emitTestEvent("agent config bootstraps provider state")
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
@@ -308,125 +389,8 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(pingProvider).not.toHaveBeenCalledWith("anthropic", expect.anything(), expect.anything())
   })
 
-  it("migrates legacy per-agent provider credentials into the machine pool before checking", async () => {
-    emitTestEvent("agent config migrates legacy provider credentials")
-    const homeDir = makeTempHome()
-    cleanup.push(homeDir)
-    const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
-    const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
-      humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-      agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-    })
-    writeProviderState(agentRoot, providerState())
-    const legacySecretsPath = path.join(secretsRoot, "slugger", "secrets.json")
-    fs.mkdirSync(path.dirname(legacySecretsPath), { recursive: true })
-    fs.writeFileSync(legacySecretsPath, `${JSON.stringify({
-      providers: {
-        minimax: { apiKey: "legacy-minimax-key" },
-      },
-    }, null, 2)}\n`, "utf-8")
-    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
-
-    expect(result).toEqual({ ok: true })
-    const poolResult = readProviderCredentialPool(homeDir)
-    expect(poolResult.ok).toBe(true)
-    if (!poolResult.ok) throw new Error(poolResult.error)
-    expect(poolResult.pool.providers.minimax).toMatchObject({
-      provider: "minimax",
-      credentials: { apiKey: "legacy-minimax-key" },
-      provenance: {
-        source: "legacy-agent-secrets",
-        contributedByAgent: "slugger",
-      },
-    })
-    expect(pingProvider).toHaveBeenCalledWith(
-      "minimax",
-      { apiKey: "legacy-minimax-key" },
-      expect.objectContaining({ model: "MiniMax-M2.5" }),
-    )
-  })
-
-  it("ignores unusable legacy credential entries and reports missing machine credentials", async () => {
-    emitTestEvent("agent config ignores unusable legacy credentials")
-    const homeDir = makeTempHome()
-    cleanup.push(homeDir)
-    const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
-    const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
-      humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-      agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-    })
-    writeProviderState(agentRoot, providerState())
-    const legacySecretsPath = path.join(secretsRoot, "slugger", "secrets.json")
-    fs.mkdirSync(path.dirname(legacySecretsPath), { recursive: true })
-    fs.writeFileSync(legacySecretsPath, `${JSON.stringify({
-      providers: {
-        minimax: { apiKey: "" },
-        "not-a-provider": { apiKey: "ignored" },
-        anthropic: null,
-      },
-    }, null, 2)}\n`, "utf-8")
-    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
-    expect(result.fix).toContain("ouro auth --agent slugger --provider minimax")
-    expect(pingProvider).not.toHaveBeenCalled()
-  })
-
-  it("ignores legacy secrets files that are not JSON objects", async () => {
-    emitTestEvent("agent config ignores legacy secrets non-object")
-    const homeDir = makeTempHome()
-    cleanup.push(homeDir)
-    const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
-    const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
-      humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-      agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-    })
-    writeProviderState(agentRoot, providerState())
-    const legacySecretsPath = path.join(secretsRoot, "slugger", "secrets.json")
-    fs.mkdirSync(path.dirname(legacySecretsPath), { recursive: true })
-    fs.writeFileSync(legacySecretsPath, "[]\n", "utf-8")
-    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
-    expect(pingProvider).not.toHaveBeenCalled()
-  })
-
-  it("ignores legacy secrets files without a providers object", async () => {
-    emitTestEvent("agent config ignores legacy secrets without providers object")
-    const homeDir = makeTempHome()
-    cleanup.push(homeDir)
-    const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const secretsRoot = path.join(homeDir, ".agentsecrets")
-    const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
-      humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-      agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
-    })
-    writeProviderState(agentRoot, providerState())
-    const legacySecretsPath = path.join(secretsRoot, "slugger", "secrets.json")
-    fs.mkdirSync(path.dirname(legacySecretsPath), { recursive: true })
-    fs.writeFileSync(legacySecretsPath, `${JSON.stringify({ providers: [] }, null, 2)}\n`, "utf-8")
-    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-
-    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
-
-    expect(result.ok).toBe(false)
-    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
-    expect(pingProvider).not.toHaveBeenCalled()
-  })
-
-  it("reports missing machine credentials when no pool or legacy credentials are present", async () => {
-    emitTestEvent("agent config missing machine provider credentials")
+  it("reports missing agent-vault credentials when the selected provider is absent", async () => {
+    emitTestEvent("agent config missing vault provider credentials")
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
@@ -441,14 +405,14 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
 
     expect(result.ok).toBe(false)
-    expect(result.error).toContain(path.join(homeDir, ".agentsecrets", "providers.json"))
+    expect(result.error).toContain("slugger's vault at vault:slugger:providers/*")
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
     expect(result.fix).toContain("ouro use --agent slugger --lane outward")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
-  it("reports invalid machine credential pool guidance before pinging", async () => {
-    emitTestEvent("agent config invalid machine provider credentials")
+  it("reports unavailable agent-vault credential guidance before pinging", async () => {
+    emitTestEvent("agent config unavailable vault provider credentials")
     const homeDir = makeTempHome()
     cleanup.push(homeDir)
     const bundlesRoot = path.join(homeDir, "AgentBundles")
@@ -458,17 +422,14 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
     })
     writeProviderState(agentRoot, providerState())
-    fs.mkdirSync(secretsRoot, { recursive: true })
-    fs.writeFileSync(path.join(secretsRoot, "providers.json"), "{bad-json", "utf-8")
+    writeUnavailableProviderCredentialPool("slugger", "vault locked")
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, secretsRoot, { pingProvider } as any)
 
     expect(result.ok).toBe(false)
-    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read machine provider credentials")
-    expect(result.fix).toContain("Fix")
-    expect(result.fix).toContain("ouro use --agent slugger --lane outward")
-    expect(result.fix).toContain("--force")
+    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials from slugger's vault")
+    expect(result.fix).toContain("ouro vault unlock --agent slugger")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 

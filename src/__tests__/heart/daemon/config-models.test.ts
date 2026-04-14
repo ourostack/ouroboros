@@ -3,6 +3,65 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
+
+const mockProviderCredentialRecords = vi.hoisted(() => new Map<string, {
+  credentials: Record<string, string>
+  config: Record<string, string>
+}>())
+vi.mock("../../../heart/provider-credentials", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
+  const readPool = (agentName: string) => {
+    const providers: Record<string, unknown> = {}
+    for (const [key, record] of mockProviderCredentialRecords.entries()) {
+      const [recordAgent, provider] = key.split(":")
+      if (recordAgent !== agentName || !provider) continue
+      providers[provider] = {
+        provider,
+        revision: `test_${provider}`,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        credentials: record.credentials,
+        config: record.config,
+        provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+      }
+    }
+    return {
+      ok: true,
+      poolPath: `vault:${agentName}:providers/*`,
+      pool: {
+        schemaVersion: 1,
+        updatedAt: "2026-04-13T00:00:00.000Z",
+        providers,
+      },
+    }
+  }
+  return {
+    ...actual,
+    refreshProviderCredentialPool: vi.fn(async (agentName: string) => readPool(agentName)),
+    readProviderCredentialRecord: vi.fn(async (agentName: string, provider: string) => {
+      const record = mockProviderCredentialRecords.get(`${agentName}:${provider}`)
+      if (!record) {
+        return {
+          ok: false,
+          reason: "missing",
+          poolPath: `vault:${agentName}:providers/*`,
+          error: `${provider} credentials are missing`,
+        }
+      }
+      return {
+        ok: true,
+        poolPath: `vault:${agentName}:providers/*`,
+        record: {
+          provider,
+          revision: `test_${provider}`,
+          updatedAt: "2026-04-13T00:00:00.000Z",
+          credentials: record.credentials,
+          config: record.config,
+          provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+        },
+      }
+    }),
+  }
+})
 import {
   listGithubCopilotModels,
   pingGithubCopilotModel,
@@ -52,6 +111,16 @@ function seedSecrets(homeDir: string, agentName: string, secrets: Record<string,
   const secretsDir = path.join(homeDir, ".agentsecrets", agentName)
   fs.mkdirSync(secretsDir, { recursive: true })
   fs.writeFileSync(path.join(secretsDir, "secrets.json"), JSON.stringify(secrets), "utf8")
+  const providers = (secrets.providers && typeof secrets.providers === "object")
+    ? secrets.providers as Record<string, Record<string, string>>
+    : {}
+  const copilot = providers["github-copilot"]
+  if (copilot) {
+    mockProviderCredentialRecords.set(`${agentName}:github-copilot`, {
+      credentials: { githubToken: copilot.githubToken },
+      config: { baseUrl: copilot.baseUrl },
+    })
+  }
 }
 
 function makeMockFetch(body: unknown, status = 200): typeof fetch {
@@ -93,6 +162,7 @@ function makeCliDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
 }
 
 afterEach(() => {
+  mockProviderCredentialRecords.clear()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue

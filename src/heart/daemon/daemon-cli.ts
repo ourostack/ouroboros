@@ -39,5 +39,4 @@ export { pingGithubCopilotModel } from "../provider-ping"
 export {
   createDefaultOuroCliDeps,
   readFirstBundleMetaVersion,
-  discoverExistingCredentials,
 } from "./cli-defaults"
