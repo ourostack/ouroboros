@@ -10,8 +10,15 @@ if (!agentName) {
 }
 
 import { configureDaemonRuntimeLogger } from "../../heart/daemon/runtime-logging"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 configureDaemonRuntimeLogger("bluebubbles")
+emitNervesEvent({
+  component: "senses",
+  event: "senses.entry_boot",
+  message: "booting BlueBubbles entrypoint",
+  meta: { entry: "bluebubbles", agentName },
+})
 import("../../heart/runtime-credentials")
   .then(async ({ refreshRuntimeCredentialConfig }) => {
     await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
@@ -19,6 +26,13 @@ import("../../heart/runtime-credentials")
     await startBlueBubblesApp()
   })
   .catch((error) => {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.entry_error",
+      message: "BlueBubbles entrypoint failed",
+      meta: { entry: "bluebubbles", agentName, error: error instanceof Error ? error.message : String(error) },
+    })
     // eslint-disable-next-line no-console -- fatal startup guard for sense process
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)

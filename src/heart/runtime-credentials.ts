@@ -149,7 +149,7 @@ export async function upsertRuntimeCredentialConfig(
   agentName: string,
   config: RuntimeCredentialConfig,
   now: Date = new Date(),
-): Promise<RuntimeCredentialConfigReadResult> {
+): Promise<RuntimeCredentialConfigReadSuccess> {
   const payload: RuntimeCredentialVaultPayload = {
     schemaVersion: 1,
     kind: "runtime-config",
@@ -169,7 +169,8 @@ export async function upsertRuntimeCredentialConfig(
     message: "upserted runtime credential config in vault",
     meta: { agentName, itemPath: result.itemPath, revision: result.revision },
   })
-  return cacheResult(agentName, result)
+  cacheResult(agentName, result)
+  return result
 }
 
 export function resetRuntimeCredentialConfigCache(): void {

@@ -473,6 +473,10 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro vault config status")
     expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger"]))
       .toThrow("ouro vault config set")
+    expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--bad"]))
+      .toThrow("ouro vault config set")
+    expect(() => parseOuroCommand(["vault", "config", "delete", "--agent", "Slugger"]))
+      .toThrow("ouro vault config set")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
       .toThrow("vault --store")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--bad"]))
@@ -1092,6 +1096,60 @@ describe("provider CLI command execution", () => {
       store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
       fix: "available",
     })
+    mockVaultDeps.rawSecrets.delete("Slugger:runtime/config")
+    resetRuntimeCredentialConfigCache()
+    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
+    const missingRuntime = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(missingRuntime).toContain("runtime credentials: missing")
+    expect(missingRuntime).toContain("ouro vault config set --agent Slugger")
+
+    const agentConfigPath = path.join(bundlesRoot, "Slugger.ouro", "agent.json")
+    const agentConfig = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as Record<string, unknown>
+    fs.writeFileSync(agentConfigPath, `${JSON.stringify({
+      ...agentConfig,
+      vault: {
+        email: "slugger@example.com",
+        serverUrl: "https://vault.example.com",
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
+    writeRuntimeConfig("Slugger", {})
+    resetRuntimeCredentialConfigCache()
+    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
+    const emptyRuntime = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(emptyRuntime).toContain("vault locator: agent.json")
+    expect(emptyRuntime).toContain("vault: slugger@example.com at https://vault.example.com")
+    expect(emptyRuntime).toContain("runtime credentials: none stored")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", JSON.stringify({
+      schemaVersion: 1,
+      kind: "wrong",
+      updatedAt: NOW,
+      config: {},
+    }))
+    resetRuntimeCredentialConfigCache()
+    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
+    const invalidRuntime = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(invalidRuntime).toContain("runtime credentials: invalid")
+    expect(invalidRuntime).not.toContain("store sense/integration credentials")
+
+    mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
+      configured: true,
+      stored: true,
+      store: { kind: "macos-keychain", secure: true, location: "macOS Keychain" },
+      fix: "available",
+    })
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
     const unavailable = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
     expect(unavailable).toContain("provider credentials: unavailable (vault locked)")
@@ -1147,6 +1205,26 @@ describe("provider CLI command execution", () => {
     expect(status).toContain("fields: bluebubbles.password, bluebubbles.serverUrl")
     expect(status).not.toContain("super-secret")
 
+    writeRuntimeConfig("Slugger", {})
+    resetRuntimeCredentialConfigCache()
+    const emptyStatus = await runOuroCli(["vault", "config", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(emptyStatus).toContain("fields: none stored")
+
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", JSON.stringify({
+      schemaVersion: 1,
+      kind: "wrong",
+      updatedAt: NOW,
+      config: {},
+    }))
+    resetRuntimeCredentialConfigCache()
+    const invalidStatus = await runOuroCli(["vault", "config", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(invalidStatus).toContain("status: invalid")
+    expect(invalidStatus).toContain("ouro vault unlock --agent Slugger")
+
+    writeRuntimeConfig("Slugger", {
+      bluebubbles: { serverUrl: "http://localhost:1234", password: "super-secret" },
+    })
+    resetRuntimeCredentialConfigCache()
     const prompted = await runOuroCli(["vault", "config", "set", "--agent", "Slugger", "--key", "teams.clientId"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
         expect(question).toBe("Value for teams.clientId: ")
@@ -1167,6 +1245,19 @@ describe("provider CLI command execution", () => {
       ["vault", "config", "set", "--agent", "SerpentGuide", "--key", "bluebubbles.password", "--value", "x"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("SerpentGuide does not have persistent runtime credentials")
+    const serpentStatus = await runOuroCli(
+      ["vault", "config", "status", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentStatus).toContain("SerpentGuide has no persistent runtime credentials")
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles", "--value", "x"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("runtime config key must be a dotted path")
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("vault config set requires --value")
     await expect(runOuroCli(
       ["vault", "config", "set", "--agent", "Slugger", "--key", "__proto__.polluted", "--value", "x"],
       makeCliDeps(homeDir, bundlesRoot),

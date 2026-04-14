@@ -948,7 +948,7 @@ async function executeVaultConfigSet(
   const stored = await upsertRuntimeCredentialConfig(command.agent, nextConfig, providerCliNow(deps))
   const message = [
     `stored ${command.key} for ${command.agent} in the agent vault runtime/config item`,
-    `runtime credentials: ${stored.ok ? stored.revision : "updated"}`,
+    `runtime credentials: ${stored.revision}`,
     "value was not printed",
   ].join("\n")
   deps.writeStdout(message)

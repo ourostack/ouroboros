@@ -32,6 +32,36 @@ describe("agent entrypoint", () => {
     argvSpy.mockRestore()
   })
 
+  it("continues startup when runtime config refresh is unavailable", async () => {
+    vi.resetModules()
+
+    const startInnerDialogWorker = vi.fn(async () => undefined)
+    const configureCliRuntimeLogger = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(async () => {
+      throw new Error("vault locked")
+    })
+    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../heart/agent-entry")
+
+    await vi.waitFor(() => {
+      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+    })
+    argvSpy.mockRestore()
+  })
+
   it("fails fast when --agent is missing", async () => {
     vi.resetModules()
 

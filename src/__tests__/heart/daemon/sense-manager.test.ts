@@ -598,6 +598,94 @@ describe("daemon sense manager", () => {
     )
   })
 
+  it("rechecks runtime/config during default sense config checks and returns sense-specific repair hints", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-home-"))
+    const bundlesRoot = path.join(homeRoot, "AgentBundles")
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: true },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      teams: {
+        clientId: "cid",
+        clientSecret: "secret",
+        tenantId: "tenant",
+      },
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+    })
+
+    const processManagerCtor = vi.fn()
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => homeRoot,
+      }
+    })
+
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(options: unknown) {
+          processManagerCtor(options)
+        }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    new DaemonSenseManager({
+      agents: ["slugger"],
+    })
+
+    const options = processManagerCtor.mock.calls[0]?.[0] as {
+      configCheck: (name: string) => Promise<{ ok: boolean; error?: string; fix?: string }>
+    }
+
+    await expect(options.configCheck("bad-format")).resolves.toEqual({ ok: true })
+    await expect(options.configCheck("missing:teams")).resolves.toEqual({ ok: true })
+    await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
+
+    await cacheRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+    })
+    const missingTeams = await options.configCheck("slugger:teams")
+    expect(missingTeams).toEqual({
+      ok: false,
+      error: "teams is enabled for slugger but runtime credentials are not ready: missing teams.clientId/teams.clientSecret/teams.tenantId",
+      fix: "Run 'ouro vault config set --agent slugger --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.",
+    })
+
+    await cacheRuntimeConfig("slugger", {
+      teams: {
+        clientId: "cid",
+        clientSecret: "secret",
+        tenantId: "tenant",
+      },
+    })
+    const missingBlueBubbles = await options.configCheck("slugger:bluebubbles")
+    expect(missingBlueBubbles).toEqual({
+      ok: false,
+      error: "bluebubbles is enabled for slugger but runtime credentials are not ready: missing bluebubbles.serverUrl/bluebubbles.password",
+      fix: "Run 'ouro vault config set --agent slugger --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.",
+    })
+  })
+
   it("treats empty runtime/config objects as missing required config", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {
@@ -711,6 +799,49 @@ describe("daemon sense manager", () => {
       expect.objectContaining({
         status: "needs_config",
         detail: "missing vault runtime/config (slugger)",
+      }),
+    )
+  })
+
+  it("reports unavailable runtime/config distinctly from a missing runtime/config item", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: true },
+        bluebubbles: { enabled: false },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "vault:slugger:runtime/config",
+        error: "vault locked",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/config unavailable (vault locked)",
       }),
     )
   })
