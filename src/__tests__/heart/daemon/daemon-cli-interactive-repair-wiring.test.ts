@@ -50,6 +50,7 @@ vi.mock("../../../heart/daemon/interactive-repair", () => ({
     const text = `${entry.errorReason}\n${entry.fixHint}`.toLowerCase()
     return text.includes("credentials") || text.includes("ouro auth") || text.includes("vault")
   },
+  isAffirmativeAnswer: (answer: string) => /^(y|yes)$/i.test(answer.trim()),
   runInteractiveRepair: (...a: any[]) => mocks.runInteractiveRepair(...a),
 }))
 

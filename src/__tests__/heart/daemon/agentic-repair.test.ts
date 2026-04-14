@@ -285,6 +285,28 @@ describe("runAgenticRepair", () => {
     expect(emitNervesEvent).toHaveBeenCalled()
   })
 
+  it("treats whitespace-padded yes as acceptance of agentic diagnosis", async () => {
+    const mockStreamTurn = vi.fn(async () => ({
+      content: "This looks like a config issue.",
+      toolCalls: [],
+      outputItems: [],
+    }))
+    const degraded: DegradedAgent[] = [
+      { agent: "slugger", errorReason: "config parse error", fixHint: "check agent.json" },
+    ]
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => " yes "),
+      createProviderRuntime: vi.fn(() => ({
+        streamTurn: mockStreamTurn,
+      })),
+    })
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result.usedAgentic).toBe(true)
+    expect(mockStreamTurn).toHaveBeenCalled()
+  })
+
   it("includes degraded agent details and daemon logs in the LLM request context", async () => {
     const mockStreamTurn = vi.fn(async () => ({
       content: "Check the agent config.",

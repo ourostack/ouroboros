@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.370",
+      "changes": [
+        "`ouro up` AI-assisted diagnosis prompts now accept `yes`, `YES`, and whitespace-padded affirmative answers, matching the deterministic repair prompts.",
+        "Repair prompt affirmative parsing now lives in one shared helper used by both interactive auth/vault repair and agentic diagnosis.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the repair prompt answer parsing release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.369",
       "changes": [
         "`ouro up` now offers runnable local repairs such as `ouro vault unlock` or `ouro auth` before optional AI-assisted diagnosis, avoiding a model call when the deterministic fix is already known.",
