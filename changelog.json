@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.368",
+      "changes": [
+        "`ouro up` interactive repair prompts now treat `yes`, `YES`, and whitespace-padded affirmative answers as yes for both provider auth and vault unlock repairs.",
+        "Interactive repair now uses one shared affirmative-answer parser instead of duplicating raw `y` checks across repair branches.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the repair answer parsing release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.367",
       "changes": [
         "`ouro up` repair prompts now extract exact `ouro auth` and `ouro vault unlock` commands from fix hints instead of swallowing trailing prose such as `then run ouro up again`.",
