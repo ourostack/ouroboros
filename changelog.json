@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.371",
+      "changes": [
+        "`ouro up` now rechecks selected provider health after a deterministic repair actually runs, so a successful vault unlock or auth repair is followed by either a recovery confirmation or the remaining degraded details.",
+        "Post-repair provider checks target the originally repairable degraded agents directly, avoiding false recovery when discovery output is sparse.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the post-repair provider check release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.370",
       "changes": [
         "`ouro up` AI-assisted diagnosis prompts now accept `yes`, `YES`, and whitespace-padded affirmative answers, matching the deterministic repair prompts.",

@@ -5,7 +5,7 @@
  * present and that the wired runAuthFlow closure correctly reads agent
  * config and delegates to deps.runAuthFlow.
  */
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 const mocks = vi.hoisted(() => ({
@@ -112,6 +112,24 @@ function currentRuntimeOverview(): Record<string, string> {
 }
 
 describe("ouro up: interactive repair wiring", () => {
+  beforeEach(() => {
+    mocks.applyPendingUpdates.mockResolvedValue({ updated: [] })
+    mocks.pruneStaleEphemeralBundles.mockReturnValue([])
+    mocks.pollDaemonStartup.mockReset()
+    mocks.pollDaemonStartup.mockResolvedValue({ stable: [], degraded: [] })
+    mocks.runInteractiveRepair.mockReset()
+    mocks.runInteractiveRepair.mockResolvedValue({ repairsAttempted: false })
+    mocks.checkAgentConfigWithProviderHealth.mockReset()
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValue({ ok: true })
+    mocks.readAgentConfigForAgent.mockReset()
+    mocks.readAgentConfigForAgent.mockReturnValue({
+      config: { humanFacing: { provider: "anthropic" as const } },
+    })
+    vaultMocks.storeVaultUnlockSecret.mockClear()
+    vaultMocks.resetCredentialStore.mockClear()
+    vaultMocks.credentialProbeGet.mockClear()
+  })
+
   it("removes newly degraded agents from the stable startup list", () => {
     emitNervesEvent({
       component: "daemon",
@@ -341,6 +359,94 @@ describe("ouro up: interactive repair wiring", () => {
       }],
       expect.anything(),
     )
+  })
+
+  it("rechecks the repaired agent's provider health after an attempted repair", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent test-agent'.",
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: [], degraded })
+    mocks.runInteractiveRepair.mockImplementationOnce(async () => ({ repairsAttempted: true }))
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
+
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("provider checks recovered after repair")
+  })
+
+  it("reports remaining provider degradation after an attempted repair", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent test-agent'.",
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: [], degraded })
+    mocks.runInteractiveRepair.mockImplementationOnce(async () => ({ repairsAttempted: true }))
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+      ok: false,
+      error: "selected provider openai-codex for humanFacing failed health check: 400 status code",
+      fix: "Run 'ouro auth --agent test-agent --provider openai-codex' to refresh credentials.",
+    })
+
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("provider checks still degraded after repair:")
+    expect(output).toContain("test-agent: selected provider openai-codex for humanFacing failed health check")
+    expect(output).toContain("fix: Run 'ouro auth --agent test-agent --provider openai-codex' to refresh credentials.")
+    expect(output).toContain("run `ouro up` again after applying the remaining fixes.")
+  })
+
+  it("reports remaining provider degradation without inventing an absent fix", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent test-agent'.",
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: [], degraded })
+    mocks.runInteractiveRepair.mockImplementationOnce(async () => ({ repairsAttempted: true }))
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+      ok: false,
+      error: "selected provider health check failed",
+    })
+
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("provider checks still degraded after repair:")
+    expect(output).toContain("test-agent: selected provider health check failed")
+    expect(output).not.toContain("    fix:")
   })
 
   it("keeps already-running daemons healthy when selected provider checks pass", async () => {
