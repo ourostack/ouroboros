@@ -137,20 +137,20 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
-  // --- protected paths include ~/.agentsecrets/ ---
+  // --- local vault unlock stores are protected ---
 
-  it("blocks write_file to ~/.agentsecrets/anything", async () => {
+  it("blocks write_file to plaintext vault unlock material", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const home = process.env.HOME || "/Users/test"
-    const result = guardInvocation("write_file", { path: `${home}/.agentsecrets/agent/secrets.json` }, { readPaths: new Set() })
+    const result = guardInvocation("write_file", { path: `${home}/.ouro-cli/vault-unlock/unlock.secret` }, { readPaths: new Set() })
     expect(result.allowed).toBe(false)
     if (!result.allowed) expect(result.reason).toMatch(/protected/i)
   })
 
-  it("blocks shell write to ~/.agentsecrets/", async () => {
+  it("blocks shell write to DPAPI vault unlock material", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
     const home = process.env.HOME || "/Users/test"
-    const result = guardInvocation("shell", { command: `cat secrets > ${home}/.agentsecrets/x` }, { readPaths: new Set() })
+    const result = guardInvocation("shell", { command: `cat secret > ${home}/.ouro-cli/vault-unlock-dpapi/vault-unlock/unlock.dpapi` }, { readPaths: new Set() })
     expect(result.allowed).toBe(false)
   })
 

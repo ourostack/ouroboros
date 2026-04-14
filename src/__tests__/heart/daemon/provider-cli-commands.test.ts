@@ -725,64 +725,6 @@ describe("provider CLI command execution", () => {
     })
   })
 
-  it("ouro use ignores unrelated legacy per-agent secrets while checking the agent vault", async () => {
-    emitTestEvent("provider cli use ignores legacy secrets")
-    const bundlesRoot = makeTempDir("provider-cli-unreadable-legacy-bundles")
-    const homeDir = makeTempDir("provider-cli-unreadable-legacy-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
-    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
-    const legacyDir = path.join(homeDir, ".agentsecrets", "Slugger")
-    fs.mkdirSync(legacyDir, { recursive: true })
-    fs.writeFileSync(path.join(legacyDir, "secrets.json"), "{bad-json", "utf-8")
-
-    const result = await runOuroCli([
-      "use",
-      "--agent",
-      "Slugger",
-      "--lane",
-      "inner",
-      "--provider",
-      "minimax",
-      "--model",
-      "MiniMax-M2.5",
-    ], makeCliDeps(homeDir, bundlesRoot))
-
-    expect(result).toContain("no credentials")
-    expect(mockPingProvider).not.toHaveBeenCalled()
-  })
-
-  it("ouro use does not fall back to legacy per-agent secrets for other providers", async () => {
-    emitTestEvent("provider cli use no legacy fallback")
-    const bundlesRoot = makeTempDir("provider-cli-wrong-legacy-bundles")
-    const homeDir = makeTempDir("provider-cli-wrong-legacy-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
-    writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
-    const legacyDir = path.join(homeDir, ".agentsecrets", "Slugger")
-    fs.mkdirSync(legacyDir, { recursive: true })
-    fs.writeFileSync(path.join(legacyDir, "secrets.json"), `${JSON.stringify({
-      providers: {
-        anthropic: { setupToken: "anthropic-only" },
-      },
-    })}\n`, "utf-8")
-
-    const result = await runOuroCli([
-      "use",
-      "--agent",
-      "Slugger",
-      "--lane",
-      "inner",
-      "--provider",
-      "minimax",
-      "--model",
-      "MiniMax-M2.5",
-    ], makeCliDeps(homeDir, bundlesRoot))
-
-    expect(result).toContain("no credentials")
-    expect(mockPingProvider).not.toHaveBeenCalled()
-  })
-
   it("ouro use refuses failed live checks unless forced", async () => {
     emitTestEvent("provider cli use failed check without force")
     const bundlesRoot = makeTempDir("provider-cli-failed-check-bundles")
@@ -869,7 +811,7 @@ describe("provider CLI command execution", () => {
         agentName: "Slugger",
         provider: "minimax",
         message: "authenticated Slugger with minimax",
-        secretsPath: path.join(homeDir, ".agentsecrets", "legacy", "secrets.json"),
+        credentialPath: "providers/minimax",
         credentials: { apiKey: "new-minimax-secret" },
       }),
     }))

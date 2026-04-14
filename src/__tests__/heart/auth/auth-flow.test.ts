@@ -108,12 +108,6 @@ function writeAgentConfig(
   return configPath
 }
 
-function readSecrets(homeDir: string, agentName: string): Record<string, any> {
-  return JSON.parse(
-    fs.readFileSync(path.join(homeDir, ".agentsecrets", agentName, "secrets.json"), "utf8"),
-  ) as Record<string, any>
-}
-
 function expectProviderCredentialWrite(agentName: string, provider: string) {
   const write = providerCredentialWrites.find((entry) => entry.agentName === agentName && entry.provider === provider)
   expect(write).toBeDefined()
@@ -218,15 +212,6 @@ describe("runtime auth flow", () => {
       `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
       "utf8",
     )
-    fs.mkdirSync(path.join(homeDir, ".agentsecrets", agentName), { recursive: true })
-    fs.writeFileSync(
-      path.join(homeDir, ".agentsecrets", agentName, "secrets.json"),
-      `${JSON.stringify({
-        oauth: { githubConnectionName: "github-oauth" },
-        providers: { minimax: { model: "custom-minimax" } },
-      }, null, 2)}\n`,
-      "utf8",
-    )
 
     const spawnSync = vi.fn(() => ({ status: 0 })) as any
     const result = await runRuntimeAuthFlow(
@@ -246,10 +231,6 @@ describe("runtime auth flow", () => {
     expect(result.credentialPath).toBe("providers/openai-codex")
     const write = expectProviderCredentialWrite(agentName, "openai-codex")
     expect(write.credentials.oauthAccessToken).toBe("oauth-token-refreshed")
-    const legacySecrets = readSecrets(homeDir, agentName)
-    expect(legacySecrets.providers["openai-codex"]).toBeUndefined()
-    expect(legacySecrets.providers.minimax.model).toBe("custom-minimax")
-    expect(legacySecrets.oauth.githubConnectionName).toBe("github-oauth")
   })
 
   it("treats non-string Codex auth tokens as missing and re-runs login", async () => {
@@ -511,9 +492,7 @@ describe("runtime auth flow", () => {
 
   it("defaults runtime auth writes to os.homedir when no homeDir dep is provided", async () => {
     emitTestEvent("defaults to os.homedir")
-    const homeDir = os.homedir()
     const agentName = `DefaultHomeBot-${Date.now()}`
-    cleanup.push(path.join(homeDir, ".agentsecrets", agentName))
 
     const result = await runRuntimeAuthFlow({
       agentName,
@@ -563,25 +542,6 @@ describe("runtime auth flow", () => {
         homeDir,
       }),
     ).rejects.toThrow("Azure endpoint is required.")
-  })
-
-  it("does not read legacy secrets files when writing provider credentials", async () => {
-    emitTestEvent("legacy secrets ignored by provider auth")
-    const homeDir = makeTempDir("auth-flow-home-bad-secrets")
-    const agentName = "BadSecrets"
-    fs.mkdirSync(path.join(homeDir, ".agentsecrets", agentName), { recursive: true })
-    fs.writeFileSync(path.join(homeDir, ".agentsecrets", agentName, "secrets.json"), "{not-json}\n", "utf8")
-
-    const result = await runRuntimeAuthFlow({
-      agentName,
-      provider: "minimax",
-      promptInput: async () => "minimax-key",
-    }, {
-      homeDir,
-    })
-
-    expect(result.credentialPath).toBe("providers/minimax")
-    expect(expectProviderCredentialWrite(agentName, "minimax").credentials.apiKey).toBe("minimax-key")
   })
 
   it("stores provider credentials through the provider vault path", async () => {
@@ -896,28 +856,10 @@ describe("readAgentConfigForAgent v2 inline migration", () => {
       }, null, 2) + "\n",
     )
 
-    // Write secrets at default location so migration can find them.
-    // Subpath const so `.agentsecrets` is not on the same line as
-    // `os.homedir()` (test-isolation.contract rule).
-    const agentSecretsSubpath = ".agentsecrets"
-    const defaultSecretsDir = path.join(os.homedir(), agentSecretsSubpath, agentName)
-    fs.mkdirSync(defaultSecretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(defaultSecretsDir, "secrets.json"),
-      JSON.stringify({
-        providers: { anthropic: { model: "claude-opus-4-6", setupToken: "tok" } },
-      }, null, 2) + "\n",
-    )
-
-    try {
-      const { config } = readAgentConfigForAgent(agentName, bundlesRoot)
-      expect(config.version).toBe(2)
-      expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-      expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
-    } finally {
-      // Clean up secrets we wrote to default location
-      fs.rmSync(defaultSecretsDir, { recursive: true, force: true })
-    }
+    const { config } = readAgentConfigForAgent(agentName, bundlesRoot)
+    expect(config.version).toBe(2)
+    expect(config.humanFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(config.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
   })
 
   it("returns v2 config directly without migration", () => {
@@ -1089,29 +1031,20 @@ describe("writeAgentModel with facing (agent.json)", () => {
     expect(updated.humanFacing.model).toBe("gpt-4o")
   })
 
-  it("does not write model to secrets.json", () => {
-    emitTestEvent("writeAgentModel no secrets write")
-    const bundlesRoot = makeTempDir("auth-flow-model-no-secrets")
-    const homeDir = makeTempDir("auth-flow-model-no-secrets-home")
+  it("writes model changes only to agent.json", () => {
+    emitTestEvent("writeAgentModel agent config only")
+    const bundlesRoot = makeTempDir("auth-flow-model-config-only")
     const agentName = "NoSecretsModelBot"
     writeAgentConfig(bundlesRoot, agentName, "anthropic", {
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     })
 
-    // Seed secrets without model
-    const secretsDir = path.join(homeDir, ".agentsecrets", agentName)
-    fs.mkdirSync(secretsDir, { recursive: true })
-    fs.writeFileSync(
-      path.join(secretsDir, "secrets.json"),
-      JSON.stringify({ providers: { anthropic: { setupToken: "tok" } } }),
-    )
-
     writeAgentModel(agentName, "human", "claude-haiku-35", { bundlesRoot })
 
-    // Secrets should NOT have model written to it
-    const secrets = JSON.parse(fs.readFileSync(path.join(secretsDir, "secrets.json"), "utf8")) as any
-    expect(secrets.providers.anthropic.model).toBeUndefined()
+    const updated = JSON.parse(fs.readFileSync(path.join(bundlesRoot, `${agentName}.ouro`, "agent.json"), "utf8")) as any
+    expect(updated.humanFacing.model).toBe("claude-haiku-35")
+    expect(updated.agentFacing.model).toBe("claude-opus-4-6")
   })
 
   it("returns configPath instead of secretsPath", () => {
