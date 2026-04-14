@@ -7,7 +7,13 @@
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { hasRunnableInteractiveRepair, type DegradedAgent, type InteractiveRepairDeps, type InteractiveRepairResult } from "./interactive-repair"
+import {
+  hasRunnableInteractiveRepair,
+  isAffirmativeAnswer,
+  type DegradedAgent,
+  type InteractiveRepairDeps,
+  type InteractiveRepairResult,
+} from "./interactive-repair"
 import type { DiscoverWorkingProviderResult } from "./provider-discovery"
 import type { AgentProvider } from "../identity"
 import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
@@ -221,7 +227,7 @@ export async function runAgenticRepair(
   // Offer agentic diagnosis
   const answer = await deps.promptInput("would you like AI-assisted diagnosis? [y/n] ")
 
-  if (answer.toLowerCase() !== "y") {
+  if (!isAffirmativeAnswer(answer)) {
     // User declined — fall back to deterministic repair
     emitNervesEvent({
       level: "info",
