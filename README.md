@@ -13,6 +13,7 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 - Agent bundles live outside the repo at `~/AgentBundles/<agent>.ouro/`.
 - Credentials live in the owning agent's Bitwarden/Vaultwarden vault. Provider credentials use `providers/<provider>`, runtime/sense/integration credentials use `runtime/config`, and travel/tool credentials use ordinary vault credential items.
 - Vault coordinates and local runtime state live in the agent bundle; raw credentials do not.
+- The only Ouro-owned durable credential locations are the bundle and the agent vault. Local unlock material is a machine-local cache, not a credential source of truth.
 - Machine-scoped test and runtime spillover lives under `~/.agentstate/...`.
 
 Current first-class senses:
@@ -195,7 +196,7 @@ ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart,
 
 ## Setting Up On Another Machine
 
-To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, and follow the guided prompts (auth, daemon start, dev tool setup are all offered inline).
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
 
 ## The Agent's Inner Life
 

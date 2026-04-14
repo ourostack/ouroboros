@@ -1,6 +1,6 @@
 # Setting Up An Agent On A New Machine
 
-This guide covers how to get an existing Ouroboros agent running on a second (or third, or fourth) machine. The agent's bundle — its identity, memory, habits, and state — lives in a git repo that syncs across machines. The harness handles the rest.
+This guide covers how to get an existing Ouroboros agent running on a second (or third, or fourth) machine. The agent's bundle — its identity, memory, habits, and state — lives in a git repo that syncs across machines. The agent's raw credentials live in the agent vault. The durable Ouro-owned story is bundle plus vault; local unlock material is recreated per machine.
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ npx ouro.bot
 
 On first run, this installs the `@ouro.bot/cli` package, creates the `ouro` command, and adds it to your PATH. Follow the shell hint it prints (`source ~/.zshrc`, `source ~/.bash_profile`, etc.) or open a new terminal.
 
-## Step 2: Clone or hatch
+## Step 2: Continue An Existing Agent Bundle
 
 On first run with no existing agents, the CLI offers a choice:
 
@@ -39,6 +39,12 @@ Enter the git remote URL for the agent bundle: https://github.com/you/youragent.
 ```
 
 Or run directly:
+
+```bash
+ouro clone <bundle-git-remote>
+```
+
+For example:
 
 ```bash
 ouro clone https://github.com/you/youragent.ouro.git
@@ -58,14 +64,30 @@ The agent name is inferred from the URL. Override with `--agent <name>` if neede
 
 **Guided flow:** After cloning, the CLI offers to continue with provider auth, daemon start, and dev tool setup — all inline. You can accept each step or skip it and run the commands yourself later.
 
-## Step 3: Set up provider auth
+## Step 3: Unlock the agent vault
 
 Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is per-machine (stored in `state/providers.json` inside the bundle). See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
 
-If you skipped the guided prompt, or need to re-run auth later:
+If this is an existing bundle, unlock its vault on this machine before starting the daemon:
 
 ```bash
-ouro auth run --agent <name>
+ouro vault unlock --agent <agent>
+```
+
+Ouro stores local unlock material in Keychain, DPAPI, Secret Service, or an explicit plaintext fallback if the human chooses it. Local unlock material is a machine-local cache, not a credential source of truth.
+
+Then refresh and verify the credentials this machine can use:
+
+```bash
+ouro provider refresh --agent <agent>
+ouro auth verify --agent <agent>
+ouro vault config status --agent <agent>
+```
+
+If provider credentials are missing or stale, run:
+
+```bash
+ouro auth --agent <agent>
 ```
 
 This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.). On WSL/Linux, vault unlock uses Linux Secret Service (`secret-tool`) by default. If that's not available, it falls back to explicit plaintext with user confirmation.
@@ -130,7 +152,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Skills | |
 | Agent config (`agent.json`) | |
 
-Provider credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). The vault itself is remote and shared — vault unlock material is local to each machine. See [docs/auth-and-providers.md](auth-and-providers.md).
+Provider credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). The vault itself is remote and shared; vault unlock material is local to each machine. The only Ouro-owned durable credential locations are the bundle and the agent vault. See [docs/auth-and-providers.md](auth-and-providers.md).
 
 ## For agents reading this doc
 
@@ -146,6 +168,6 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
-**Agent can't reach model provider** — Run `ouro auth run --agent <name>` to set up credentials on this machine.
+**Agent can't reach model provider** — Run `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If credentials are missing or stale, run `ouro auth --agent <name>`.
 
 **WSL setup can't find `claude.exe`** — Make sure Claude Code is installed on Windows and that Windows executables are accessible from WSL (this is the default). Check that `/etc/wsl.conf` doesn't have `appendWindowsPath = false`.
