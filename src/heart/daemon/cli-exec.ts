@@ -95,7 +95,7 @@ import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscov
 import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
-import { runInteractiveRepair } from "./interactive-repair"
+import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
 import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
@@ -110,14 +110,17 @@ const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
 
-async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
-  const agents = await Promise.resolve(
+async function checkAgentProviders(
+  deps: OuroCliDeps,
+  agentsOverride?: string[],
+): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
+  const agents = agentsOverride ?? await Promise.resolve(
     deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
   )
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const degraded: Array<{ agent: string; errorReason: string; fixHint: string }> = []
 
-  for (const agent of agents) {
+  for (const agent of [...new Set(agents)]) {
     try {
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
       if (result.ok) continue
@@ -149,6 +152,41 @@ async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Arr
   }
 
   return degraded
+}
+
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
+  return checkAgentProviders(deps)
+}
+
+async function reportPostRepairProviderHealth(
+  deps: OuroCliDeps,
+  repairedAgents: string[],
+): Promise<void> {
+  const remainingDegraded = await checkAgentProviders(deps, repairedAgents)
+
+  emitNervesEvent({
+    level: remainingDegraded.length > 0 ? "warn" : "info",
+    component: "daemon",
+    event: "daemon.post_repair_provider_check",
+    message: remainingDegraded.length > 0
+      ? "post-repair provider health check still degraded"
+      : "post-repair provider health check recovered",
+    meta: { degradedCount: remainingDegraded.length, repairedAgents },
+  })
+
+  if (remainingDegraded.length === 0) {
+    deps.writeStdout("provider checks recovered after repair")
+    return
+  }
+
+  deps.writeStdout("provider checks still degraded after repair:")
+  for (const d of remainingDegraded) {
+    deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
+    if (d.fixHint) {
+      deps.writeStdout(`    fix: ${d.fixHint}`)
+    }
+  }
+  deps.writeStdout("run `ouro up` again after applying the remaining fixes.")
 }
 
 async function checkProviderHealthBeforeChat(
@@ -2023,7 +2061,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           meta: { degradedCount: daemonResult.stability.degraded.length },
         })
       } else {
-        await runAgenticRepair(daemonResult.stability.degraded, {
+        const repairResult = await runAgenticRepair(daemonResult.stability.degraded, {
           /* v8 ignore start -- production provider discovery wiring @preserve */
           discoverWorkingProvider: async (agentName: string) => {
             const { discoverWorkingProvider: discover } = await import("./provider-discovery")
@@ -2063,6 +2101,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
           },
         })
+        if (repairResult.repairsAttempted) {
+          const repairedAgents = daemonResult.stability.degraded
+            .filter(hasRunnableInteractiveRepair)
+            .map((entry) => entry.agent)
+          await reportPostRepairProviderHealth(deps, repairedAgents)
+        }
       }
     }
 
