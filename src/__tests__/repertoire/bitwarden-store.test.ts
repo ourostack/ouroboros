@@ -1,3 +1,6 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
 // Track nerves events
@@ -148,6 +151,30 @@ describe("BitwardenCredentialStore", () => {
       })
 
       await expect(store.login()).rejects.toThrow(/bw CLI error/)
+    })
+
+    it("uses an isolated Bitwarden app data directory when configured", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-appdata-"))
+      const envCaptures: Array<Record<string, string | undefined>> = []
+      const isolatedStore = new BitwardenCredentialStore("https://vault.ouro.bot", "ouroboros@ouro.bot", "masterpass123", { appDataDir })
+      mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, cb: Function) => {
+        envCaptures.push(opts?.env ?? {})
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+        } else {
+          cb(null, '{"access_token":"session-token"}', "")
+        }
+      })
+
+      try {
+        await isolatedStore.login()
+
+        expect(fs.statSync(appDataDir).mode & 0o777).toBe(0o700)
+        expect(envCaptures.length).toBeGreaterThan(0)
+        expect(envCaptures.every((env) => env.BITWARDENCLI_APPDATA_DIR === appDataDir)).toBe(true)
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
     })
   })
 
@@ -324,6 +351,31 @@ describe("BitwardenCredentialStore", () => {
       expect(createCalls.length).toBeGreaterThanOrEqual(1)
       const createCall = createCalls.find((c) => c[0] === "create")
       expect(createCall).toBeDefined()
+    })
+
+    it("edits an existing vault item instead of creating a duplicate", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, JSON.stringify([{ id: "existing-id", name: "existing.com", login: { username: "old", password: "old" } }]), "")
+        } else {
+          cb(null, '{"id":"existing-id"}', "")
+        }
+      })
+
+      await store.store("existing.com", {
+        username: "newuser",
+        password: "newpass",
+        notes: "new note",
+      })
+
+      expect(calls.find((call) => call[0] === "edit")).toEqual(["edit", "item", "existing-id", expect.any(String)])
+      expect(calls.find((call) => call[0] === "create")).toBeUndefined()
     })
 
     it("emits nerves events", async () => {

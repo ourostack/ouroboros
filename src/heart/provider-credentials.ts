@@ -314,7 +314,7 @@ export async function refreshProviderCredentialPool(
       component: "config/identity",
       event: "config.provider_credentials_unavailable",
       message: "provider credentials unavailable",
-      meta: { agentName, reason: result.error },
+      meta: { agentName, reason: result.reason, poolPath: result.poolPath },
     })
     if (options.preserveCachedOnFailure && cached?.ok) return cached
     return cacheResult(agentName, result)

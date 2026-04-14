@@ -102,7 +102,7 @@ describe("discoverWorkingProvider", () => {
     expect(result).toBeNull()
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.provider_discovery_none",
-      meta: expect.objectContaining({ agentName: "slugger", reason: "vault locked" }),
+      meta: expect.objectContaining({ agentName: "slugger", reason: "unavailable" }),
     }))
   })
 

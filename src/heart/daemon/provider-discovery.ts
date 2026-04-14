@@ -82,7 +82,7 @@ export async function discoverWorkingProvider(
       component: "daemon",
       event: "daemon.provider_discovery_none",
       message: "provider discovery could not read agent vault",
-      meta: { agentName: deps.agentName, reason: poolResult.error },
+      meta: { agentName: deps.agentName, reason: poolResult.reason },
     })
     return null
   }
