@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.378",
+      "changes": [
+        "Existing-agent continuation docs now spell out the bundle plus vault flow: clone the bundle, unlock the agent vault, refresh and verify provider/runtime credentials, then run `ouro up`.",
+        "Locked-vault and vault-create guidance no longer names an operator password manager as an Ouro credential location; local unlock material is documented as a machine-local cache, not a source of truth.",
+        "`ouro clone` non-interactive next steps now lead with `ouro vault unlock`, `ouro provider refresh`, and `ouro auth verify` instead of stale `ouro auth run` guidance.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the existing-bundle vault continuation release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.377",
       "changes": [
         "Runtime configuration now lives in each agent's vault as `runtime/config`, alongside provider credentials in `providers/*`, making the agent vault the single credential/config source of truth.",
