@@ -71,9 +71,30 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true })
     expect(deps.promptInput).toHaveBeenCalledWith(
-      expect.stringContaining("ouro auth --agent slugger --provider github-copilot"),
+      "run `ouro auth --agent slugger --provider github-copilot` now? [y/n] ",
     )
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger", "github-copilot")
+  })
+
+  it("extracts unquoted auth repair commands without trailing prose", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider credentials failed",
+        fixHint: "Try ouro auth --agent slugger --provider github-copilot, then run ouro up again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      "run `ouro auth --agent slugger --provider github-copilot` now? [y/n] ",
+    )
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
   it("prompts for vault unlock before auth when provider credentials are blocked by a locked vault", async () => {
@@ -94,7 +115,7 @@ describe("runInteractiveRepair", () => {
 
     expect(result).toEqual({ repairsAttempted: true })
     expect(deps.promptInput).toHaveBeenCalledWith(
-      expect.stringContaining("ouro vault unlock --agent slugger"),
+      "run `ouro vault unlock --agent slugger` now? [y/n] ",
     )
     expect(deps.promptInput).not.toHaveBeenCalledWith(
       expect.stringContaining("ouro auth"),
