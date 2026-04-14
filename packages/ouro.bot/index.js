@@ -149,8 +149,13 @@ if (!fs.existsSync(entry)) {
 
 const cliArgs = process.argv.slice(2);
 if (previousVersion === null) {
-  // First install — tell user about PATH
-  console.error(`\nouro is ready! Open a new terminal or run: source ~/.zshrc`);
+  // First install — tell user about PATH (shell-aware)
+  const userShell = process.env.SHELL ? path.basename(process.env.SHELL) : "";
+  const sourceHint = userShell === "zsh" ? "source ~/.zshrc"
+    : userShell === "bash" ? "source ~/.bash_profile"
+    : userShell === "fish" ? "source ~/.config/fish/config.fish"
+    : "restart your shell";
+  console.error(`\nouro is ready! Open a new terminal or run: ${sourceHint}`);
 }
 
 // Always pass through to CLI — first install triggers hatch-or-clone choice

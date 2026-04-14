@@ -1,6 +1,6 @@
 # Configure Dev Tools for MCP Agent Bridge
 
-Set up your development tools (Claude Code, Codex) to communicate with Ouroboros agents via MCP. One command does everything.
+Set up your development tools (Claude Code, Codex) to communicate with Ouroboros agents via MCP. One command does everything — including cross-platform WSL2 bridging on Windows.
 
 ## Setup
 
@@ -14,6 +14,16 @@ This command:
 1. Registers the MCP server with Claude Code via `claude mcp add`
 2. Configures lifecycle hooks (SessionStart, Stop, PostToolUse) for passive awareness
 3. Detects dev vs installed mode automatically and uses the correct command path
+
+**On WSL2 (Windows):** The command automatically detects the WSL environment and:
+- Calls `claude.exe` (the Windows binary) instead of `claude`
+- Prefixes MCP serve and hook commands with `wsl` so Windows-side Claude Code spawns them through WSL
+- Resolves the Windows-side home directory and writes config to the Windows-side `~/.claude/`
+- After setup, open Claude Code in PowerShell — the agent is there
+
+**On native Windows (no WSL):** Not yet supported. The command prints a message directing you to install WSL2.
+
+For the full cross-machine setup flow (including cloning an agent to a new machine), see `docs/cross-machine-setup.md` in the harness repo.
 
 ### Codex
 
