@@ -193,6 +193,26 @@ describe("vault unlock local stores", () => {
     })
   })
 
+  it("explains locked vaults as missing local unlock material, not missing provider credentials", () => {
+    emitTestEvent("vault unlock locked message local machine")
+    const missingMacos = vi.fn(() => fail(""))
+    let message = ""
+
+    try {
+      readVaultUnlockSecret(config, {
+        platform: "darwin",
+        spawnSync: missingMacos as VaultUnlockDeps["spawnSync"],
+      })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+
+    expect(message).toContain("Provider credentials are still stored in the agent vault.")
+    expect(message).toContain("This computer does not currently have usable local unlock material")
+    expect(message).toContain("new computer")
+    expect(message).toContain("local profile or hostname migration")
+  })
+
   it("renders no-agent repair guidance for missing secure stores and locked stores", () => {
     emitTestEvent("vault unlock no agent repair guidance")
     const namelessConfig = { email: config.email, serverUrl: config.serverUrl }
