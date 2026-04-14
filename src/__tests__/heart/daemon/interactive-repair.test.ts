@@ -111,6 +111,27 @@ describe("runInteractiveRepair", () => {
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
+  it("prints a later auth command when the user declines credential repair", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider credentials failed",
+        fixHint: "Run 'ouro auth --agent slugger --provider github-copilot' to refresh credentials.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      "repair skipped for slugger; run `ouro auth --agent slugger --provider github-copilot` later.",
+    )
+  })
+
   it("prompts for vault unlock before auth when provider credentials are blocked by a locked vault", async () => {
     const runVaultUnlock = vi.fn(async () => undefined)
     const deps = makeDeps({
@@ -246,6 +267,27 @@ describe("runInteractiveRepair", () => {
     expect(result).toEqual({ repairsAttempted: false })
     expect(deps.promptInput).toHaveBeenCalledWith(
       expect.stringContaining("ouro vault unlock --agent slugger"),
+    )
+    expect(deps.runAuthFlow).not.toHaveBeenCalled()
+  })
+
+  it("prints a later vault unlock command when the user declines unlock repair", async () => {
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => " no "),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "credential vault is locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      "repair skipped for slugger; run `ouro vault unlock --agent slugger` later.",
     )
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
