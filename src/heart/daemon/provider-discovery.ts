@@ -63,13 +63,35 @@ function stringifyProviderFields(fields: Record<string, string | number>): Recor
   return result
 }
 
-function discoveredFromVaultRecord(record: ProviderCredentialRecord): DiscoveredCredential {
+function discoveredFromVaultRecord(record: ProviderCredentialRecord, agentName = "vault"): DiscoveredCredential {
   return {
     provider: record.provider,
-    agentName: "vault",
+    agentName,
     credentials: stringifyProviderFields(record.credentials),
     providerConfig: stringifyProviderFields(record.config),
   }
+}
+
+export async function discoverInstalledAgentCredentials(agentNames: string[]): Promise<DiscoveredCredential[]> {
+  const discovered: DiscoveredCredential[] = []
+  for (const agentName of agentNames) {
+    if (agentName === "SerpentGuide") continue
+    const poolResult = await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true })
+    if (!poolResult.ok) continue
+
+    for (const record of Object.values(poolResult.pool.providers)) {
+      if (!record) continue
+      discovered.push(discoveredFromVaultRecord(record, agentName))
+    }
+  }
+  return discovered
+}
+
+export function describeDiscoveredCredentialSource(credential: DiscoveredCredential, envVar?: string): string {
+  if (credential.agentName === "env") {
+    return envVar ? `from env: $${envVar}` : "from env"
+  }
+  return `from ${credential.agentName}'s vault`
 }
 
 export async function discoverWorkingProvider(

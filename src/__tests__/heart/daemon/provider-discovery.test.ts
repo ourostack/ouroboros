@@ -20,7 +20,7 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: (...args: unknown[]) => mockEmitNervesEvent(...args),
 }))
 
-import { discoverWorkingProvider, scanEnvVarCredentials } from "../../../heart/daemon/provider-discovery"
+import { describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, discoverWorkingProvider, scanEnvVarCredentials } from "../../../heart/daemon/provider-discovery"
 
 function emitTestEvent(testName: string): void {
   mockEmitNervesEvent({
@@ -181,5 +181,100 @@ describe("discoverWorkingProvider", () => {
       event: "daemon.provider_discovery_all_failed",
       meta: expect.objectContaining({ agentName: "slugger", candidateCount: 1 }),
     }))
+  })
+})
+
+describe("discoverInstalledAgentCredentials", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("returns credentials from unlockable installed agent vaults with source provenance", async () => {
+    emitTestEvent("discover installed agent credentials")
+    mockProviderCredentials.refreshProviderCredentialPool
+      .mockResolvedValueOnce(okPool({
+        minimax: {
+          provider: "minimax",
+          revision: "vault_mm",
+          updatedAt: "2026-04-13T00:00:00.000Z",
+          credentials: { apiKey: "mm-good" },
+          config: {},
+          provenance: { source: "auth-flow", updatedAt: "2026-04-13T00:00:00.000Z" },
+        },
+        azure: {
+          provider: "azure",
+          revision: "vault_az",
+          updatedAt: "2026-04-13T00:00:00.000Z",
+          credentials: { apiKey: "az-good" },
+          config: { endpoint: "https://example.openai.azure.com", deployment: "gpt-5-4" },
+          provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
+        },
+      }))
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: "unavailable",
+        poolPath: "vault:locked:providers/*",
+        error: "vault locked",
+      })
+
+    const result = await discoverInstalledAgentCredentials(["SerpentGuide", "slugger", "locked"])
+
+    expect(result).toEqual([
+      {
+        agentName: "slugger",
+        provider: "minimax",
+        credentials: { apiKey: "mm-good" },
+        providerConfig: {},
+      },
+      {
+        agentName: "slugger",
+        provider: "azure",
+        credentials: { apiKey: "az-good" },
+        providerConfig: { endpoint: "https://example.openai.azure.com", deployment: "gpt-5-4" },
+      },
+    ])
+    expect(mockProviderCredentials.refreshProviderCredentialPool).toHaveBeenNthCalledWith(1, "slugger", { preserveCachedOnFailure: true })
+    expect(mockProviderCredentials.refreshProviderCredentialPool).toHaveBeenNthCalledWith(2, "locked", { preserveCachedOnFailure: true })
+  })
+
+  it("returns an empty list when there are no reusable installed agent credentials", async () => {
+    emitTestEvent("discover no installed credentials")
+    mockProviderCredentials.refreshProviderCredentialPool.mockResolvedValue(okPool({}))
+
+    await expect(discoverInstalledAgentCredentials(["SerpentGuide", "slugger"])).resolves.toEqual([])
+  })
+
+  it("ignores sparse provider entries while reading installed agent vaults", async () => {
+    emitTestEvent("discover sparse installed credentials")
+    mockProviderCredentials.refreshProviderCredentialPool.mockResolvedValue(okPool({
+      minimax: undefined,
+    }))
+
+    await expect(discoverInstalledAgentCredentials(["slugger"])).resolves.toEqual([])
+  })
+})
+
+describe("describeDiscoveredCredentialSource", () => {
+  it("labels installed-agent and env credential sources without exposing secrets", () => {
+    emitTestEvent("describe discovered credential sources")
+
+    expect(describeDiscoveredCredentialSource({
+      agentName: "slugger",
+      provider: "minimax",
+      credentials: { apiKey: "mm-secret" },
+      providerConfig: {},
+    })).toBe("from slugger's vault")
+    expect(describeDiscoveredCredentialSource({
+      agentName: "env",
+      provider: "anthropic",
+      credentials: { setupToken: "sk-secret" },
+      providerConfig: {},
+    }, "ANTHROPIC_API_KEY")).toBe("from env: $ANTHROPIC_API_KEY")
+    expect(describeDiscoveredCredentialSource({
+      agentName: "env",
+      provider: "anthropic",
+      credentials: { setupToken: "sk-secret" },
+      providerConfig: {},
+    })).toBe("from env")
   })
 })

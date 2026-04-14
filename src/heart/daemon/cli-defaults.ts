@@ -43,7 +43,7 @@ import {
 import { DEFAULT_PROVIDER_MODELS } from "../provider-models"
 import { isAgentProvider } from "./cli-parse"
 import type { OuroCliDeps, DiscoveredCredential } from "./cli-types"
-import { scanEnvVarCredentials } from "./provider-discovery"
+import { describeDiscoveredCredentialSource, discoverInstalledAgentCredentials, scanEnvVarCredentials } from "./provider-discovery"
 import {
   cacheProviderCredentialRecords,
   createProviderCredentialRecord,
@@ -239,11 +239,20 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
 
   try {
     const discovered: DiscoveredCredential[] = []
-    const existingBundleCount = listExistingBundles(getAgentBundlesRoot()).length
+    const existingBundles = listExistingBundles(getAgentBundlesRoot())
+    const existingBundleCount = existingBundles.length
     const hatchVerb = existingBundleCount > 0 ? "let's hatch a new agent." : "let's hatch your first agent."
 
     // Default models per provider (used when entering new credentials)
     const defaultModels = DEFAULT_PROVIDER_MODELS
+
+    const installedAgentCreds = await discoverInstalledAgentCredentials(existingBundles)
+    for (const cred of installedAgentCreds) {
+      discovered.push({
+        ...cred,
+        providerConfig: { model: defaultModels[cred.provider], ...cred.providerConfig },
+      })
+    }
 
     // Scan environment variables for API keys using the shared helper
     const envCreds = scanEnvVarCredentials(process.env)
@@ -262,22 +271,22 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     if (discovered.length > 0) {
       process.stdout.write(`\n\ud83d\udc0d welcome to ouroboros! ${hatchVerb}\n`)
       process.stdout.write("i found existing API credentials:\n\n")
-      const unique = [...new Map(discovered.map((d) => [`${d.provider}`, d])).values()]
-      for (let i = 0; i < unique.length; i++) {
-        const model = unique[i].providerConfig.model || unique[i].providerConfig.deployment || ""
+      const credentialOptions = discovered
+      for (let i = 0; i < credentialOptions.length; i++) {
+        const model = credentialOptions[i].providerConfig.model || credentialOptions[i].providerConfig.deployment || ""
         const modelLabel = model ? `, ${model}` : ""
-        const envMatch = envDiscovered.find((e) => e.provider === unique[i].provider && unique[i].agentName === "env")
-        const sourceLabel = envMatch ? `from env: $${envMatch.envVar}` : `from ${unique[i].agentName}`
-        process.stdout.write(`  ${i + 1}. ${unique[i].provider}${modelLabel} (${sourceLabel})\n`)
+        const envMatch = envDiscovered.find((e) => e.provider === credentialOptions[i].provider && credentialOptions[i].agentName === "env")
+        const sourceLabel = describeDiscoveredCredentialSource(credentialOptions[i], envMatch?.envVar)
+        process.stdout.write(`  ${i + 1}. ${credentialOptions[i].provider}${modelLabel} (${sourceLabel})\n`)
       }
       process.stdout.write("\n")
       const choice = await coldPrompt("use one of these? enter number, or 'new' for a different key: ")
 
       const idx = parseInt(choice, 10) - 1
-      if (idx >= 0 && idx < unique.length) {
-        providerRaw = unique[idx].provider
-        credentials = unique[idx].credentials
-        providerConfig = unique[idx].providerConfig
+      if (idx >= 0 && idx < credentialOptions.length) {
+        providerRaw = credentialOptions[idx].provider
+        credentials = credentialOptions[idx].credentials
+        providerConfig = credentialOptions[idx].providerConfig
       } else {
         const pRaw = await coldPrompt("provider (anthropic/azure/minimax/openai-codex/github-copilot): ")
         if (!isAgentProvider(pRaw)) {
@@ -364,7 +373,6 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       return null
     }
 
-    const existingBundles = listExistingBundles(bundlesRoot)
     const systemPrompt = buildSpecialistSystemPrompt(soulText, identity.content, existingBundles, {
       tempDir,
       provider: providerRaw,
