@@ -88,7 +88,6 @@ describe("runtime metadata", () => {
     const metadata = getRuntimeMetadata({
       repoRoot: "/mock/repo",
       bundlesRoot: "/mock/bundles",
-      secretsRoot: null,
       daemonLoggingPath: "",
       readFileSync: readFileSync as any,
       statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as any,
@@ -116,7 +115,6 @@ describe("runtime metadata", () => {
     const metadata = getRuntimeMetadata({
       repoRoot: "/mock/repo",
       bundlesRoot: "/mock/bundles",
-      secretsRoot: null,
       daemonLoggingPath: "/mock/logging.json",
       readFileSync: readFileSync as any,
       statSync: vi.fn(() => ({ mtime: new Date("2026-03-08T23:00:00.000Z") })) as any,
@@ -135,7 +133,6 @@ describe("runtime metadata", () => {
     const files = new Map<string, string>([
       ["/mock/repo/package.json", JSON.stringify({ version: "1.2.3" })],
       ["/mock/bundles/slugger.ouro/agent.json", JSON.stringify({ provider: "anthropic" })],
-      ["/mock/secrets/slugger/secrets.json", JSON.stringify({ providers: { anthropic: { setupToken: "token-a" } } })],
       ["/mock/logging.json", JSON.stringify({ daemon: "info" })],
     ])
 
@@ -152,12 +149,6 @@ describe("runtime metadata", () => {
           mockDirent("README.md", false),
         ]
       }
-      if (target === "/mock/secrets") {
-        return [
-          mockDirent("slugger", true),
-          mockDirent("misc.txt", false),
-        ]
-      }
       return []
     }) as unknown as typeof import("fs").readdirSync
     const existsSync = vi.fn((target: string) => files.has(target)) as unknown as typeof import("fs").existsSync
@@ -165,7 +156,6 @@ describe("runtime metadata", () => {
     const deps = {
       repoRoot: "/mock/repo",
       bundlesRoot: "/mock/bundles",
-      secretsRoot: "/mock/secrets",
       daemonLoggingPath: "/mock/logging.json",
       readFileSync,
       readdirSync,
@@ -175,7 +165,7 @@ describe("runtime metadata", () => {
     }
 
     const first = getRuntimeMetadata(deps)
-    files.set("/mock/secrets/slugger/secrets.json", JSON.stringify({ providers: { anthropic: { setupToken: "token-b" } } }))
+    files.set("/mock/bundles/slugger.ouro/agent.json", JSON.stringify({ provider: "minimax" }))
     const second = getRuntimeMetadata(deps)
 
     expect(first).toEqual(expect.objectContaining({
@@ -189,11 +179,10 @@ describe("runtime metadata", () => {
   it("hashes missing and unreadable tracked config files without crashing", () => {
     const files = new Map<string, string>([
       ["/mock/repo/package.json", JSON.stringify({ version: "1.2.3" })],
-      ["/mock/bundles/slugger.ouro/agent.json", JSON.stringify({ provider: "anthropic" })],
     ])
 
     const readFileSync = vi.fn((target: string) => {
-      if (target === "/mock/secrets/slugger/secrets.json") {
+      if (target === "/mock/bundles/slugger.ouro/agent.json") {
         throw new Error("permission denied")
       }
       const value = files.get(target)
@@ -202,13 +191,12 @@ describe("runtime metadata", () => {
     }) as unknown as typeof import("fs").readFileSync
     const readdirSync = vi.fn((target: string) => {
       if (target === "/mock/bundles") return [mockDirent("slugger.ouro", true)]
-      if (target === "/mock/secrets") return [mockDirent("slugger", true)]
       throw new Error(`unexpected readdir ${target}`)
     }) as unknown as typeof import("fs").readdirSync
     const existsSync = vi.fn((target: string) =>
       target === "/mock/logging.json"
         ? false
-        : target === "/mock/secrets/slugger/secrets.json"
+        : target === "/mock/bundles/slugger.ouro/agent.json"
           ? true
           : files.has(target),
     ) as unknown as typeof import("fs").existsSync
@@ -216,7 +204,6 @@ describe("runtime metadata", () => {
     const metadata = getRuntimeMetadata({
       repoRoot: "/mock/repo",
       bundlesRoot: "/mock/bundles",
-      secretsRoot: "/mock/secrets",
       daemonLoggingPath: "/mock/logging.json",
       readFileSync,
       readdirSync,

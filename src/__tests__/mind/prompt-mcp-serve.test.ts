@@ -17,7 +17,6 @@ vi.mock("fs", async () => {
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/mock/secrets/testagent/secrets.json"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   loadAgentConfig: vi.fn(() => ({
     version: 1,
@@ -34,6 +33,7 @@ vi.mock("../../heart/identity", () => ({
 
 vi.mock("../../heart/config", () => ({
   getProviderModelId: vi.fn(() => "test-model"),
+  loadConfig: vi.fn(() => ({ teams: {}, bluebubbles: {} })),
   patchRuntimeConfig: vi.fn(),
   resetConfigCache: vi.fn(),
 }))

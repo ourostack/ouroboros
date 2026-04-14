@@ -178,6 +178,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro auth --agent ouroboros",
     subcommands: ["verify", "switch"],
   },
+  vault: {
+    category: "Auth",
+    description: "Create, unlock, inspect, and populate the agent credential vault",
+    usage: "ouro vault <create|unlock|status|config> --agent <name>",
+    example: "ouro vault status --agent ouroboros",
+    subcommands: ["create", "unlock", "status", "config set", "config status"],
+  },
   thoughts: {
     category: "Internal",
     description: "View agent inner dialog thoughts",

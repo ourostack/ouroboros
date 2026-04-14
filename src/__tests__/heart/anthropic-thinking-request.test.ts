@@ -43,12 +43,10 @@ vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.f
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "anthropic",
   })),
   DEFAULT_AGENT_CONTEXT: { maxTokens: 80000, contextMargin: 20 },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -97,7 +95,6 @@ describe("Anthropic thinking request params", () => {
     emitTestEvent("anthropic thinking param sent")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -134,7 +131,6 @@ describe("Anthropic thinking request params", () => {
     emitTestEvent("anthropic thinking defaults medium")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -169,7 +165,6 @@ describe("Anthropic thinking request params", () => {
     emitTestEvent("anthropic max_tokens from registry opus")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -203,7 +198,6 @@ describe("Anthropic thinking request params", () => {
     emitTestEvent("anthropic max_tokens from registry sonnet")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
       agentFacing: { provider: "anthropic", model: "claude-sonnet-4-6" },
@@ -237,7 +231,6 @@ describe("Anthropic thinking request params", () => {
     emitTestEvent("anthropic max_tokens fallback")
     vi.mocked(identity.loadAgentConfig).mockReturnValue({
       name: "testagent",
-      configPath: "~/.agentsecrets/testagent/secrets.json",
       provider: "anthropic",
       humanFacing: { provider: "anthropic", model: "unknown-model" },
       agentFacing: { provider: "anthropic", model: "unknown-model" },

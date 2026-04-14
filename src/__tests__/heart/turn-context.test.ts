@@ -9,7 +9,6 @@ vi.mock("../../nerves/runtime", () => ({
 
 const mockGetAgentRoot = vi.fn().mockReturnValue("/mock/agent-root")
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
-const mockGetAgentSecretsPath = vi.fn().mockReturnValue("/mock/secrets.json")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({
   senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false } },
 })
@@ -17,7 +16,6 @@ const mockLoadAgentConfig = vi.fn().mockReturnValue({
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: () => mockGetAgentRoot(),
   getAgentName: () => mockGetAgentName(),
-  getAgentSecretsPath: () => mockGetAgentSecretsPath(),
   loadAgentConfig: () => mockLoadAgentConfig(),
 }))
 
@@ -108,8 +106,13 @@ vi.mock("../../arc/cares", () => ({
 }))
 
 const mockGetSyncConfig = vi.fn().mockReturnValue({ enabled: false, remote: "origin" })
+const mockLoadConfig = vi.fn().mockReturnValue({
+  teams: {},
+  bluebubbles: {},
+})
 vi.mock("../../heart/config", () => ({
   getSyncConfig: () => mockGetSyncConfig(),
+  loadConfig: () => mockLoadConfig(),
 }))
 
 const mockReadHealth = vi.fn().mockReturnValue(null)
@@ -126,8 +129,6 @@ vi.mock("../../mind/prompt", () => ({
 
 const mockExistsSync = vi.fn().mockReturnValue(false)
 const mockReadFileSync = vi.fn().mockImplementation((filePath: string) => {
-  // Secrets path returns empty object
-  if (filePath === "/mock/secrets.json") return "{}"
   // Bundle-meta.json should not exist by default — throw to simulate missing file
   throw new Error("ENOENT: no such file or directory")
 })
@@ -187,6 +188,7 @@ describe("buildTurnContext", () => {
     mockReadRecentEpisodes.mockReturnValue([])
     mockReadActiveCares.mockReturnValue([])
     mockGetSyncConfig.mockReturnValue({ enabled: false, remote: "origin" })
+    mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
     mockReadHealth.mockReturnValue(null)
     mockReadJournalFiles.mockReturnValue([])
     mockReadInnerDialogRawData.mockReturnValue({
@@ -415,26 +417,20 @@ describe("buildTurnContext", () => {
     expect(ctx.daemonRunning).toBe(false)
   })
 
-  it("handles secrets read failure in sense status lines gracefully", async () => {
-    mockReadFileSync.mockImplementation(() => { throw new Error("secrets fail") })
+  it("handles runtime config read failure in sense status lines gracefully", async () => {
+    mockLoadConfig.mockImplementation(() => { throw new Error("runtime config fail") })
 
     const ctx = await buildTurnContext(makeInput())
-    // Should still produce status lines (CLI is always available)
-    expect(ctx.senseStatusLines).toEqual(expect.arrayContaining([expect.stringContaining("CLI")]))
+    expect(ctx.senseStatusLines).toEqual([])
   })
 
-  it("detects configured senses from secrets and enabled config", async () => {
+  it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
     })
-    mockReadFileSync.mockImplementation((filePath: string) => {
-      if (filePath === "/mock/secrets.json") {
-        return JSON.stringify({
-          teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
-          bluebubbles: { serverUrl: "http://bb", password: "pass" },
-        })
-      }
-      throw new Error("ENOENT")
+    mockLoadConfig.mockReturnValue({
+      teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
+      bluebubbles: { serverUrl: "http://bb", password: "pass" },
     })
 
     const ctx = await buildTurnContext(makeInput())
@@ -445,16 +441,11 @@ describe("buildTurnContext", () => {
     ])
   })
 
-  it("detects needs_config when senses enabled but secrets missing", async () => {
+  it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
     })
-    mockReadFileSync.mockImplementation((filePath: string) => {
-      if (filePath === "/mock/secrets.json") {
-        return JSON.stringify({ teams: {}, bluebubbles: {} })
-      }
-      throw new Error("ENOENT")
-    })
+    mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
 
     const ctx = await buildTurnContext(makeInput())
     expect(ctx.senseStatusLines).toEqual([
@@ -475,11 +466,8 @@ describe("buildTurnContext", () => {
     ])
   })
 
-  it("handles non-object JSON in secrets gracefully", async () => {
-    mockReadFileSync.mockImplementation((filePath: string) => {
-      if (filePath === "/mock/secrets.json") return JSON.stringify([1, 2, 3])
-      throw new Error("ENOENT")
-    })
+  it("handles malformed runtime config gracefully", async () => {
+    mockLoadConfig.mockReturnValue([])
 
     const ctx = await buildTurnContext(makeInput())
     // Should still produce lines — just with disabled/needs_config

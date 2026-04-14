@@ -113,7 +113,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -131,7 +130,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -150,7 +148,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -170,7 +167,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -195,7 +191,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -216,7 +211,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -235,7 +229,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -253,7 +246,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -272,7 +264,6 @@ describe("createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -314,11 +305,10 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     return tmpDir
   }
 
-  it("succeeds with valid bundle: scaffolds, moves, writes secrets, plays animation", async () => {
+  it("succeeds with valid bundle: scaffolds, moves, writes vault credentials, plays animation", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles")
-    const secretsRoot = makeTempDir("spec-tools-adopt-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const animChunks: string[] = []
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
@@ -327,7 +317,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: (text: string) => animChunks.push(text),
     })
 
@@ -377,8 +366,8 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       "anthropic",
       { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
     )
-    const secretsFile = path.join(secretsRoot, "TestAgent", "secrets.json")
-    expect(fs.existsSync(secretsFile)).toBe(false)
+    const legacyBundleSecretsFile = path.join(finalBundle, "secrets", "secrets.json")
+    expect(fs.existsSync(legacyBundleSecretsFile)).toBe(false)
 
     // Animation should have played
     expect(animChunks.join("")).toContain("TestAgent")
@@ -394,8 +383,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     }, null, 2), "utf-8")
 
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles2")
-    const secretsRoot = makeTempDir("spec-tools-adopt-secrets2")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -403,7 +391,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -419,8 +406,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("returns error when name is not PascalCase", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles3")
-    const secretsRoot = makeTempDir("spec-tools-adopt-secrets3")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -428,7 +414,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -444,8 +429,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("returns error when target bundle already exists", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles4")
-    const secretsRoot = makeTempDir("spec-tools-adopt-secrets4")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     // Pre-create the target bundle
     fs.mkdirSync(path.join(bundlesRoot, "TestAgent.ouro"), { recursive: true })
@@ -456,7 +440,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -480,8 +463,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     }
 
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles5")
-    const secretsRoot = makeTempDir("spec-tools-adopt-secrets5")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -489,7 +471,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -507,7 +488,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     const bundlesRoot = makeTempDir("spec-tools-adopt-bundles-rollback")
     cleanup.push(bundlesRoot)
 
-    const secretsRoot = "/nonexistent/readonly/secrets"
     mockStoreProviderCredentials.mockRejectedValueOnce(new Error("mock secret write failed"))
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
@@ -516,7 +496,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -534,8 +513,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("rolls back moved bundle when hatchling vault creation fails", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-adopt-vault-failure")
-    const secretsRoot = makeTempDir("spec-tools-adopt-vault-failure-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
     mockCreateVaultAccount.mockResolvedValueOnce({ success: false, error: "account already exists" })
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
@@ -544,7 +522,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -568,7 +545,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: "test" },
       provider: "anthropic",
       bundlesRoot: tmpDir,
-      secretsRoot: tmpDir,
       animationWriter: () => {},
     })
 
@@ -583,8 +559,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("creates initial friend record with phone externalId when provided", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-phone-bundles")
-    const secretsRoot = makeTempDir("spec-tools-phone-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -592,7 +567,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
       humanName: "Ari",
     })
@@ -618,8 +592,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("creates initial friend record with teams handle when provided", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-teams-bundles")
-    const secretsRoot = makeTempDir("spec-tools-teams-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -627,7 +600,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
       humanName: "Ari",
     })
@@ -652,8 +624,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("uses 'primary' as friend name when humanName not provided", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-noname-bundles")
-    const secretsRoot = makeTempDir("spec-tools-noname-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -661,7 +632,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
       // humanName intentionally omitted
     })
@@ -684,8 +654,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("does not create friend record when no contact info provided", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-nocontact-bundles")
-    const secretsRoot = makeTempDir("spec-tools-nocontact-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -693,7 +662,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
       animationWriter: () => {},
     })
 
@@ -713,8 +681,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
   it("can complete adoption without an animation writer", async () => {
     const tmpDir = setupTempDir()
     const bundlesRoot = makeTempDir("spec-tools-no-writer-bundles")
-    const secretsRoot = makeTempDir("spec-tools-no-writer-secrets")
-    cleanup.push(bundlesRoot, secretsRoot)
+    cleanup.push(bundlesRoot)
 
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
@@ -722,7 +689,6 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      secretsRoot,
     })
 
     const result = await execTool("complete_adoption", {

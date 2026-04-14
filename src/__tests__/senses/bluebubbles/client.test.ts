@@ -915,7 +915,7 @@ describe("BlueBubbles client", () => {
     )
 
     await expect(client.checkHealth()).rejects.toThrow(
-      "BlueBubbles auth failed at http://bluebubbles.local (HTTP 401). Check `bluebubbles.password` in secrets.json and confirm the server accepts it. Raw error: unauthorized",
+      "BlueBubbles auth failed at http://bluebubbles.local (HTTP 401). Check `bluebubbles.password` in the agent vault runtime/config item and confirm the server accepts it. Raw error: unauthorized",
     )
   })
 

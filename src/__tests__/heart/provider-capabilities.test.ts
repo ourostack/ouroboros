@@ -51,7 +51,6 @@ vi.mock("../../repertoire/skills", () => ({
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
   })),
   DEFAULT_AGENT_CONTEXT: {
@@ -59,7 +58,6 @@ vi.mock("../../heart/identity", () => ({
     contextMargin: 20,
   },
   getAgentName: vi.fn(() => "testagent"),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/repo/testagent"),
   getRepoRoot: vi.fn(() => "/mock/repo"),
   resetIdentity: vi.fn(),
@@ -115,7 +113,6 @@ function makeOpenAICodexAccessToken(accountId = "chatgpt-account-test"): string 
 async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "openai-codex") {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider,
     humanFacing: { provider, model: "" },
     agentFacing: { provider, model: "" },

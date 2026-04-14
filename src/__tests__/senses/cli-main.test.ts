@@ -202,12 +202,10 @@ vi.mock("../../senses/commands", () => ({
 vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "testagent"),
   setAgentName: vi.fn(),
-  getAgentSecretsPath: vi.fn(() => "/tmp/.agentsecrets/testagent/secrets.json"),
   getAgentRoot: vi.fn(() => "/mock/agent/root"),
   getAgentBundlesRoot: vi.fn(() => "/mock/bundles"),
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
-    configPath: "~/.agentsecrets/testagent/secrets.json",
     provider: "minimax",
     phrases: {
       thinking: ["working"],

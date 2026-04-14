@@ -59,8 +59,6 @@ export interface DoctorDeps {
   socketPath: string
   /** Root directory containing `<agent>.ouro` bundles (e.g., ~/AgentBundles). */
   bundlesRoot: string
-  /** Root directory containing per-agent secrets (e.g., ~/.agentsecrets). */
-  secretsRoot: string
   /** Home directory for the current user. */
   homedir: string
   /** Current PATH string used to resolve the `ouro` command. */

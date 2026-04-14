@@ -5,7 +5,8 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
 import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
-import { getAgentRoot, getAgentName, getAgentSecretsPath, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { loadConfig } from "../heart/config";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
@@ -426,17 +427,7 @@ function localSenseStatusLines(): string[] {
     teams: { enabled: false },
     bluebubbles: { enabled: false },
   }
-  let payload: Record<string, unknown> = {}
-  try {
-    const raw = fs.readFileSync(getAgentSecretsPath(), "utf-8")
-    const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      payload = parsed as Record<string, unknown>
-    }
-  } catch {
-    payload = {}
-  }
-
+  const payload = loadConfig() as unknown as Record<string, unknown>
   const teams = payload.teams as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
   const configured: Record<SenseName, boolean> = {
@@ -467,13 +458,13 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("sense states:")
   lines.push("- interactive = available when opened by the user instead of kept running by the daemon")
   lines.push("- disabled = turned off in agent.json")
-  lines.push("- needs_config = enabled but missing required secrets.json values")
+  lines.push("- needs_config = enabled but missing required vault runtime/config values")
   lines.push("- ready = enabled and configured; `ouro up` should bring it online")
   lines.push("- running = enabled and currently active")
   lines.push("- error = enabled but unhealthy")
-  lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required secrets.json fields instead of guessing.")
-  lines.push("teams setup truth: enable `senses.teams.enabled`, then provide `teams.clientId`, `teams.clientSecret`, and `teams.tenantId` in secrets.json.")
-  lines.push("bluebubbles setup truth: enable `senses.bluebubbles.enabled`, then provide `bluebubbles.serverUrl` and `bluebubbles.password` in secrets.json.")
+  lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
+  lines.push("teams setup truth: enable `senses.teams.enabled`, then store `teams.clientId`, `teams.clientSecret`, and `teams.tenantId` in the agent vault runtime/config item.")
+  lines.push("bluebubbles setup truth: enable `senses.bluebubbles.enabled`, then store `bluebubbles.serverUrl` and `bluebubbles.password` in the agent vault runtime/config item.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
@@ -726,7 +717,7 @@ export interface BuildSystemOptions {
   // Goal: all production turn paths provide these values; fallback is backup only.
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
   daemonRunning?: boolean;
-  /** Pre-read sense status lines. When provided, skips secrets.json read. */
+  /** Pre-read sense status lines. When provided, skips local derivation. */
   senseStatusLines?: string[];
   /** Pre-read bundle-meta.json. When provided, skips the fs read. */
   bundleMeta?: BundleMeta | null;

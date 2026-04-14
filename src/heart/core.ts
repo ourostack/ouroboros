@@ -304,7 +304,7 @@ export interface RunAgentOptions {
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
   daemonRunning?: boolean;
-  /** Pre-read sense status lines. When provided, skips secrets.json read. */
+  /** Pre-read sense status lines. When provided, skips local derivation. */
   senseStatusLines?: string[];
   /** Pre-read bundle-meta.json. When provided, skips the fs read. */
   bundleMeta?: import("../mind/bundle-manifest").BundleMeta | null;

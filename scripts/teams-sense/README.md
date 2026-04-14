@@ -12,8 +12,6 @@ They are operator utilities, not the main day-to-day runtime path. The primary r
 
 - `deploy-azure.sh`
   Provisions or updates the App Service deployment shell around a Teams bot.
-- `set-app-secrets.sh`
-  Pushes a reduced `secrets.json` payload into the `OUROBOROS_SECRETS` app setting.
 - `startup.sh`
   Startup script used by the App Service deployment path.
 - `self-restart.sh`
@@ -26,13 +24,13 @@ They are operator utilities, not the main day-to-day runtime path. The primary r
 - They are not the same thing as `ouro up`.
 - Review the script bodies before using them in a fresh environment.
 
-## Secrets Shape
+## Credential Shape
 
-The deployment path still expects the real source of truth locally to be:
+The deployment path uses the same source of truth as local runtime:
 
-`~/.agentsecrets/<agent>/secrets.json`
-
-`set-app-secrets.sh` extracts a deployment-sized subset from that file and writes it into the App Service app settings.
+- non-secret agent configuration in the bundle
+- raw Teams/OAuth/provider credentials in the agent's Bitwarden/Vaultwarden vault
+- machine-local vault unlock material provisioned explicitly for that host
 
 ## OAuth
 

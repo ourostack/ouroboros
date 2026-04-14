@@ -3,6 +3,11 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
+import {
+  readRuntimeCredentialConfig,
+  refreshRuntimeCredentialConfig,
+  type RuntimeCredentialConfigReadResult,
+} from "../runtime-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { DaemonProcessManager } from "./process-manager"
 
@@ -25,7 +30,6 @@ export interface DaemonSenseManagerLike {
 export interface DaemonSenseManagerOptions {
   agents: string[]
   bundlesRoot?: string
-  secretsRoot?: string
   processManager?: {
     startAutoStartAgents(): Promise<void>
     stopAll(): Promise<void>
@@ -47,8 +51,6 @@ interface AgentSenseContext {
   senses: AgentSensesConfig
   facts: Record<SenseName, SenseConfigFacts>
 }
-
-type SecretsPayload = Record<string, unknown>
 
 const DEFAULT_TEAMS_PORT = 3978
 const DEFAULT_BLUEBUBBLES_PORT = 18790
@@ -102,22 +104,6 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
   return defaults
 }
 
-function readSecretsPayload(secretsPath: string): { payload: SecretsPayload; error: string | null } {
-  try {
-    const raw = fs.readFileSync(secretsPath, "utf-8")
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { payload: {}, error: "invalid secrets.json object" }
-    }
-    return { payload: parsed as SecretsPayload, error: null }
-  } catch (error) {
-    return {
-      payload: {},
-      error: error instanceof Error ? error.message : String(error),
-    }
-  }
-}
-
 function textField(record: Record<string, unknown> | undefined, key: string): string {
   const value = record?.[key]
   return typeof value === "string" ? value.trim() : ""
@@ -128,10 +114,10 @@ function numberField(record: Record<string, unknown> | undefined, key: string, f
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
-function senseFactsFromSecrets(
+function senseFactsFromRuntimeConfig(
   agent: string,
   senses: AgentSensesConfig,
-  secretsPath: string,
+  runtimeConfig: RuntimeCredentialConfigReadResult,
 ): Record<SenseName, SenseConfigFacts> {
   const base: Record<SenseName, SenseConfigFacts> = {
     cli: { configured: true, detail: "local interactive terminal" },
@@ -139,7 +125,12 @@ function senseFactsFromSecrets(
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
   }
 
-  const { payload, error } = readSecretsPayload(secretsPath)
+  const payload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const unavailableDetail = runtimeConfig.ok
+    ? ""
+    : runtimeConfig.reason === "missing"
+      ? `missing vault runtime/config (${agent})`
+      : `vault runtime/config unavailable (${runtimeConfig.error})`
   const teams = payload.teams as Record<string, unknown> | undefined
   const teamsChannel = payload.teamsChannel as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
@@ -158,9 +149,7 @@ function senseFactsFromSecrets(
         }
       : {
           configured: false,
-          detail: error && !fs.existsSync(secretsPath)
-            ? `missing secrets.json (${agent})`
-            : `missing ${missing.join("/")}`,
+          detail: runtimeConfig.ok ? `missing ${missing.join("/")}` : unavailableDetail,
         }
   }
 
@@ -176,13 +165,21 @@ function senseFactsFromSecrets(
         }
       : {
           configured: false,
-          detail: error && !fs.existsSync(secretsPath)
-            ? `missing secrets.json (${agent})`
-            : `missing ${missing.join("/")}`,
+          detail: runtimeConfig.ok ? `missing ${missing.join("/")}` : unavailableDetail,
         }
   }
 
   return base
+}
+
+function senseRepairHint(agent: string, sense: SenseName): string {
+  if (sense === "teams") {
+    return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
+  }
+  if (sense === "bluebubbles") {
+    return `Run 'ouro vault config set --agent ${agent} --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.`
+  }
+  return `Run 'ouro vault status --agent ${agent}'.`
 }
 
 function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName } | null {
@@ -278,19 +275,18 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   constructor(options: DaemonSenseManagerOptions) {
     const bundlesRoot = options.bundlesRoot ?? path.join(os.homedir(), "AgentBundles")
-    const secretsRoot = options.secretsRoot ?? path.join(os.homedir(), ".agentsecrets")
     this.bundlesRoot = bundlesRoot
     this.contexts = new Map(
       options.agents.map((agent) => {
         const senses = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
-        const facts = senseFactsFromSecrets(agent, senses, path.join(secretsRoot, agent, "secrets.json"))
+        const facts = senseFactsFromRuntimeConfig(agent, senses, readRuntimeCredentialConfig(agent))
         return [agent, { senses, facts }]
       }),
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
       return (["teams", "bluebubbles"] as SenseName[])
-        .filter((sense) => context.senses[sense].enabled && context.facts[sense].configured)
+        .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
           agentArg: agent,
@@ -302,6 +298,21 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
     this.processManager = options.processManager ?? new DaemonProcessManager({
       agents: managedSenseAgents,
+      configCheck: async (name) => {
+        const parsed = parseSenseSnapshotName(name)
+        if (!parsed) return { ok: true }
+        const context = this.contexts.get(parsed.agent)
+        if (!context) return { ok: true }
+        const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
+        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed)
+        const fact = context.facts[parsed.sense]
+        if (fact.configured) return { ok: true }
+        return {
+          ok: false,
+          error: `${parsed.sense} is enabled for ${parsed.agent} but runtime credentials are not ready: ${fact.detail}`,
+          fix: senseRepairHint(parsed.agent, parsed.sense),
+        }
+      },
     })
 
     emitNervesEvent({
@@ -342,6 +353,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     }
 
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, readRuntimeCredentialConfig(agent))
       const blueBubblesRuntimeFacts = readBlueBubblesRuntimeFacts(agent, this.bundlesRoot, runtime.get(agent)?.bluebubbles)
       const runtimeInfo: Partial<Record<SenseName, SenseRuntimeInfo>> = {
         cli: { configured: true },

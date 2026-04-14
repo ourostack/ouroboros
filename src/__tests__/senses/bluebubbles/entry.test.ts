@@ -10,8 +10,11 @@ describe("bluebubbles entrypoint", () => {
 
     const startBlueBubblesApp = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
-    vi.doMock("../../../senses/bluebubbles", () => ({ startBlueBubblesApp }))
+    vi.doMock("../../../senses/bluebubbles/index", () => ({ startBlueBubblesApp }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    }))
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -21,10 +24,11 @@ describe("bluebubbles entrypoint", () => {
     ])
 
     await import("../../../senses/bluebubbles/entry")
-    await Promise.resolve()
 
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("bluebubbles")
-    expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(startBlueBubblesApp).toHaveBeenCalledTimes(1)
+    })
     argvSpy.mockRestore()
   })
 
