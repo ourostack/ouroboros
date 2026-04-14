@@ -239,6 +239,59 @@ function relPath(absolute: string): string {
   return relative(process.cwd(), absolute)
 }
 
+const RETIRED_HOME_SECRET_PATH_FRAGMENT = [".", "agentsecrets"].join("")
+const ACTIVE_SURFACE_ENTRIES = [
+  "AGENTS.md",
+  "README.md",
+  "docs",
+  "lobster-research.md",
+  "packages",
+  "src",
+]
+const ACTIVE_SURFACE_EXCLUDE_DIRS = new Set([".git", "coverage", "dist", "node_modules"])
+const ACTIVE_SURFACE_EXCLUDE_FILES = new Set([
+  "changelog.json",
+  "src/__tests__/heart/daemon/test-isolation.contract.test.ts",
+])
+const ACTIVE_SURFACE_EXTENSIONS = new Set([".cjs", ".js", ".json", ".md", ".ts", ".tsx"])
+
+function hasActiveSurfaceExtension(filePath: string): boolean {
+  for (const extension of ACTIVE_SURFACE_EXTENSIONS) {
+    if (filePath.endsWith(extension)) return true
+  }
+  return false
+}
+
+function walkActiveSurfaceEntry(entryPath: string, out: string[] = []): string[] {
+  if (!existsSync(entryPath)) return out
+  const statEntries = readdirSync(entryPath, { withFileTypes: true })
+  for (const entry of statEntries) {
+    if (ACTIVE_SURFACE_EXCLUDE_DIRS.has(entry.name)) continue
+    const full = join(entryPath, entry.name)
+    if (entry.isDirectory()) {
+      walkActiveSurfaceEntry(full, out)
+    } else if (entry.isFile() && hasActiveSurfaceExtension(full)) {
+      const rel = relPath(full)
+      if (!ACTIVE_SURFACE_EXCLUDE_FILES.has(rel)) out.push(full)
+    }
+  }
+  return out
+}
+
+function activeSurfaceFiles(): string[] {
+  const files: string[] = []
+  for (const entry of ACTIVE_SURFACE_ENTRIES) {
+    const full = join(process.cwd(), entry)
+    if (!existsSync(full)) continue
+    if (hasActiveSurfaceExtension(full)) {
+      if (!ACTIVE_SURFACE_EXCLUDE_FILES.has(entry)) files.push(full)
+      continue
+    }
+    walkActiveSurfaceEntry(full, files)
+  }
+  return files
+}
+
 /**
  * Shared implementation for the "no NEW test file constructs a write path
  * under real ~/<prod-dir>" rule family. `dirName` is for error messages,
@@ -304,6 +357,26 @@ function runProdPathCheck(
 }
 
 describe("test isolation contract", () => {
+  it("active product surface does not mention the retired home-directory credential path", () => {
+    const offenders: Array<{ file: string; line: number; snippet: string }> = []
+    for (const file of activeSurfaceFiles()) {
+      const lines = readFileSync(file, "utf-8").split("\n")
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!
+        if (line.includes(RETIRED_HOME_SECRET_PATH_FRAGMENT)) {
+          offenders.push({ file: relPath(file), line: i + 1, snippet: line.trim() })
+        }
+      }
+    }
+
+    expect(offenders, [
+      "The retired home-directory credential path appeared in active product surface.",
+      "Keep raw credentials in the owning agent vault; local unlock material uses the current unlock stores.",
+      "",
+      ...offenders.map((offender) => `  ${offender.file}:${offender.line}  ${offender.snippet}`),
+    ].join("\n")).toEqual([])
+  })
+
   it("no NEW test file uses `name: \"testagent\"` without mocking socket-client", () => {
     const allTests = walkTestFiles(TESTS_ROOT)
     const newOffenders: string[] = []
