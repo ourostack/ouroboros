@@ -127,6 +127,19 @@ export function filterPidfilePidsToActualOrphans(
   return survivingOrphans
 }
 
+export function mergeUniqueOrphanPids(...sources: number[][]): number[] {
+  const merged: number[] = []
+  const seen = new Set<number>()
+  for (const source of sources) {
+    for (const pid of source) {
+      if (seen.has(pid)) continue
+      seen.add(pid)
+      merged.push(pid)
+    }
+  }
+  return merged
+}
+
 /* v8 ignore start -- shells out to ps; covered by filterPidfilePidsToActualOrphans unit tests via injected runner @preserve */
 function runPsCheck(pids: number[]): string | null {
   try {
@@ -168,7 +181,8 @@ export function killOrphanProcesses(): void {
     return
   }
   try {
-    let pidsToKill: number[] = []
+    let pidfileOrphans: number[] = []
+    let scanOrphans: number[] = []
 
     // Primary: read pidfile from previous daemon
     try {
@@ -178,18 +192,21 @@ export function killOrphanProcesses(): void {
         .filter((n) => !isNaN(n) && n !== process.pid)
       // Verify each candidate is an actual live orphan before killing. See
       // docstring above for why this matters.
-      pidsToKill = filterPidfilePidsToActualOrphans(candidates)
+      pidfileOrphans = filterPidfilePidsToActualOrphans(candidates)
       fs.unlinkSync(PIDFILE_PATH)
     } catch {
-      // No pidfile — fall back to ps scan (scoped to orphans with PPID=1).
+      // No pidfile — the ps scan below still covers true orphans.
     }
 
-    if (pidsToKill.length === 0) {
-      try {
-        const result = execSync("ps -eo pid,ppid,command", { encoding: "utf-8", timeout: 5000 })
-        pidsToKill = parseOrphanPidsFromPs(result, process.pid)
-      } catch { /* ps failed — best effort */ }
-    }
+    // Always supplement the pidfile with the scoped ps scan. A stale or
+    // partial pidfile can otherwise kill one old daemon while leaving a
+    // sibling PPID=1 daemon alive without a socket.
+    try {
+      const result = execSync("ps -eo pid,ppid,command", { encoding: "utf-8", timeout: 5000 })
+      scanOrphans = parseOrphanPidsFromPs(result, process.pid)
+    } catch { /* ps failed — best effort */ }
+
+    const pidsToKill = mergeUniqueOrphanPids(pidfileOrphans, scanOrphans)
 
     if (pidsToKill.length > 0) {
       for (const pid of pidsToKill) {
