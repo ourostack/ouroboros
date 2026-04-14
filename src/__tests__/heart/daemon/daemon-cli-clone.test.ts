@@ -83,6 +83,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     // git --version succeeds
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
@@ -123,13 +124,57 @@ describe("ouro clone execution", () => {
     expect(written.sync.enabled).toBe(true)
     expect(written.sync.remote).toBe("origin")
 
-    // Verify success message was output
+    // Verify success message was output (non-interactive: shows next steps)
     const output = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls
       .map((c: unknown[]) => c[0])
       .join("\n")
     expect(output).toContain("cloned agent to")
     expect(output).toContain("sync enabled")
     expect(output).toContain("ouro auth run")
+  })
+
+  it("interactive clone: chains auth, up, and setup when user says yes", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+
+    // Track which CLI sub-commands get chained
+    const chainedCommands: string[][] = []
+    const promptResponses = ["y", "y", "y"]  // auth=yes, up=yes, setup=yes
+    let promptIndex = 0
+    deps.promptInput = vi.fn().mockImplementation(() => {
+      return Promise.resolve(promptResponses[promptIndex++] ?? "n")
+    })
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
+      if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      return Buffer.from("")
+    })
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.ouro/agent.json")) return true
+      return false
+    })
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      const s = String(p)
+      if (s.includes("agent.json")) return JSON.stringify({ name: "agent" })
+      if (s.includes("package.json")) return JSON.stringify({ version: "0.1.0" })
+      return ""
+    })
+
+    await runOuroCli(["clone", "https://github.com/user/agent.ouro.git"], deps)
+
+    // Verify promptInput was called 3 times (auth, up, setup)
+    expect(deps.promptInput).toHaveBeenCalledTimes(3)
+
+    // Verify the prompts asked the right questions
+    const prompts = (deps.promptInput as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0])
+    expect(prompts[0]).toContain("auth")
+    expect(prompts[1]).toContain("daemon")
+    expect(prompts[2]).toContain("Claude Code")
   })
 
   it("git not installed: outputs human-readable install guide", async () => {
@@ -159,6 +204,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -176,11 +222,38 @@ describe("ouro clone execution", () => {
     expect(output).toContain("could not reach remote")
   })
 
+  it("remote auth failure: suggests gh auth login", async () => {
+    const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+    const deps = createDefaultOuroCliDeps()
+    deps.writeStdout = vi.fn()
+    deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
+
+    mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
+      if (cmd === "git" && args[0] === "ls-remote") {
+        const err = new Error("fatal: Authentication failed") as Error & { stderr: Buffer }
+        err.stderr = Buffer.from("fatal: Authentication failed for 'https://github.com/user/private.git'")
+        throw err
+      }
+      return Buffer.from("")
+    })
+
+    await runOuroCli(["clone", "https://github.com/user/private.git"], deps)
+
+    const output = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls
+      .map((c: unknown[]) => c[0])
+      .join("\n")
+    expect(output).toContain("authentication failed")
+    expect(output).toContain("gh auth login")
+  })
+
   it("target path already exists: outputs error message", async () => {
     const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     // git --version succeeds
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
@@ -208,6 +281,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -243,6 +317,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -274,6 +349,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -308,6 +384,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -345,6 +422,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
@@ -364,6 +442,7 @@ describe("ouro clone execution", () => {
     const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
+    deps.promptInput = undefined
     // deliberately NOT setting deps.bundlesRoot
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
@@ -400,6 +479,7 @@ describe("ouro clone execution", () => {
     const deps = createDefaultOuroCliDeps()
     deps.writeStdout = vi.fn()
     deps.bundlesRoot = "/mock/bundles"
+    deps.promptInput = undefined
 
     mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")

@@ -593,11 +593,12 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
       meta: { agent: agentDir, remote: remoteName },
     })
 
-    const answer = await deps.promptInput(
+    /* v8 ignore next -- ?? fallback: promptInput always returns string in practice @preserve */
+    const answer = (await deps.promptInput(
       `Bundle ${agentDir} appears to be a git clone with a remote. Enable sync? (y/n): `,
-    )
+    )) ?? ""
 
-    if (answer.trim().toLowerCase() === "y") {
+    if (answer.trim().toLowerCase() === "y" && fs.existsSync(agentJsonPath)) {
       const raw = fs.readFileSync(agentJsonPath, "utf-8")
       const config = JSON.parse(raw) as Record<string, unknown>
       config.sync = { enabled: true, remote: remoteName }
@@ -1566,10 +1567,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             message: "user chose clone in first-run flow",
             meta: {},
           })
-          const remote = await deps.promptInput("Enter the git remote URL for the agent bundle: ")
-          // Run clone execution path
-          const cloneCommand = { kind: "clone" as const, remote: remote.trim() }
-          return await runOuroCli(["clone", cloneCommand.remote], deps)
+          /* v8 ignore next -- ?? fallback: promptInput always returns string in practice @preserve */
+          const remote = (await deps.promptInput("Enter the git remote URL for the agent bundle: "))?.trim() ?? ""
+          if (!remote) {
+            deps.writeStdout("no remote URL provided — skipping clone")
+            // Fall through to hatch flow
+          } else {
+            return await runOuroCli(["clone", remote], deps)
+          }
         }
         emitNervesEvent({
           component: "daemon",
@@ -3051,10 +3056,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     emitNervesEvent({ component: "daemon", event: "daemon.clone_remote_check", message: "checking remote accessibility", meta: { remote: command.remote } })
     try {
       execFileSync("git", ["ls-remote", "--exit-code", command.remote], { stdio: "pipe", timeout: 15000 })
-    } catch {
-      const message = `could not reach remote: ${command.remote}\nCheck the URL and your network connection.`
-      deps.writeStdout(message)
-      return message
+    } catch (lsErr) {
+      const stderr = (lsErr as { stderr?: Buffer })?.stderr?.toString() ?? ""
+      const isAuth = stderr.includes("Authentication failed")
+        || stderr.includes("could not read Username")
+        || stderr.includes("terminal prompts disabled")
+        || stderr.includes("403")
+        || stderr.includes("401")
+      const hint = isAuth
+        ? `authentication failed for: ${command.remote}\nSet up credentials first:\n  gh auth login          (GitHub repos)\n  git config credential.helper store   (other hosts)`
+        : `could not reach remote: ${command.remote}\nCheck the URL and your network connection.`
+      deps.writeStdout(hint)
+      return hint
     }
 
     // 5. Clone
@@ -3067,19 +3080,80 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // 7. Enable sync in agent.json
     const agentJsonPath = path.join(targetPath, "agent.json")
+    let syncEnabled = false
     if (fs.existsSync(agentJsonPath)) {
       const raw = fs.readFileSync(agentJsonPath, "utf-8")
       const config = JSON.parse(raw) as Record<string, unknown>
       config.sync = { enabled: true, remote: "origin" }
       fs.writeFileSync(agentJsonPath, JSON.stringify(config, null, 2) + "\n")
+      syncEnabled = true
       emitNervesEvent({ component: "daemon", event: "daemon.clone_sync_enabled", message: "sync enabled in agent.json", meta: { agentName } })
+    } else {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.clone_no_agent_json", message: "cloned repo has no agent.json — may not be a valid bundle", meta: { agentName, targetPath } })
     }
 
     // 8. Output success message
     emitNervesEvent({ component: "daemon", event: "daemon.clone_complete", message: "clone complete", meta: { agentName, targetPath } })
-    const message = `cloned ${agentName} to ${targetPath}\nsync enabled (remote: origin)\nnext steps:\n  ouro auth run --agent ${agentName}`
-    deps.writeStdout(message)
-    return message
+    const syncMsg = syncEnabled ? "\nsync enabled (remote: origin)" : "\nwarning: no agent.json found — this may not be a valid agent bundle"
+    deps.writeStdout(`cloned ${agentName} to ${targetPath}${syncMsg}`)
+
+    // 9. Guided post-clone flow (when interactive)
+    if (deps.promptInput) {
+      // Auth
+      const authAnswer = await deps.promptInput(`\nSet up provider auth now? (y/n): `) ?? ""
+      if (authAnswer.trim().toLowerCase() === "y") {
+        emitNervesEvent({ component: "daemon", event: "daemon.clone_chain_auth", message: "chaining auth from clone flow", meta: { agentName } })
+        try {
+          await runOuroCli(["auth", "--agent", agentName], deps)
+        /* v8 ignore start -- chained command failures: tested via interactive clone test, catch branches are defensive @preserve */
+        } catch (e) {
+          deps.writeStdout(`auth setup failed: ${e instanceof Error ? e.message : String(e)}\nYou can retry later with: ouro auth run --agent ${agentName}`)
+        }
+        /* v8 ignore stop */
+      }
+
+      // Daemon
+      const upAnswer = await deps.promptInput(`\nStart the daemon now? (y/n): `) ?? ""
+      if (upAnswer.trim().toLowerCase() === "y") {
+        emitNervesEvent({ component: "daemon", event: "daemon.clone_chain_up", message: "chaining daemon start from clone flow", meta: { agentName } })
+        try {
+          await runOuroCli(["up"], deps)
+        /* v8 ignore start -- chained command failures: defensive catch @preserve */
+        } catch (e) {
+          deps.writeStdout(`daemon start failed: ${e instanceof Error ? e.message : String(e)}\nYou can retry later with: ouro up`)
+        }
+        /* v8 ignore stop */
+      }
+
+      // Dev tool setup
+      const setupAnswer = await deps.promptInput(`\nSet up Claude Code integration? (y/n): `) ?? ""
+      if (setupAnswer.trim().toLowerCase() === "y") {
+        emitNervesEvent({ component: "daemon", event: "daemon.clone_chain_setup", message: "chaining dev tool setup from clone flow", meta: { agentName } })
+        try {
+          await runOuroCli(["setup", "--tool", "claude-code", "--agent", agentName], deps)
+        /* v8 ignore start -- chained command failures: defensive catch @preserve */
+        } catch (e) {
+          deps.writeStdout(`dev tool setup failed: ${e instanceof Error ? e.message : String(e)}\nYou can retry later with: ouro setup --tool claude-code --agent ${agentName}`)
+        }
+        /* v8 ignore stop */
+      }
+    } else {
+      deps.writeStdout(`\nnext steps:\n  ouro auth run --agent ${agentName}\n  ouro up\n  ouro setup --tool claude-code --agent ${agentName}`)
+    }
+
+    /* v8 ignore start -- PATH hint: only fires inside npx, not testable in vitest @preserve */
+    if (process.env.npm_execpath) {
+      const shell = process.env.SHELL ? path.basename(process.env.SHELL) : ""
+      const bashProfile = process.platform === "darwin" ? "~/.bash_profile" : "~/.bashrc"
+      const sourceCmd = shell === "zsh" ? "source ~/.zshrc"
+        : shell === "bash" ? `source ${bashProfile}`
+        : shell === "fish" ? "source ~/.config/fish/config.fish"
+        : "restart your shell"
+      deps.writeStdout(`\ntip: if 'ouro' is not found, run: ${sourceCmd}`)
+    }
+    /* v8 ignore stop */
+
+    return `clone complete: ${agentName}`
   }
 
   const daemonCommand = toDaemonCommand(command)
