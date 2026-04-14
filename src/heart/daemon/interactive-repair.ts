@@ -86,6 +86,10 @@ export function isAffirmativeAnswer(answer: string): boolean {
   return /^(y|yes)$/i.test(answer.trim())
 }
 
+function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: InteractiveRepairDeps): void {
+  deps.writeStdout(`repair skipped for ${degraded.agent}; run \`${command}\` later.`)
+}
+
 export async function runInteractiveRepair(
   degraded: DegradedAgent[],
   deps: InteractiveRepairDeps,
@@ -130,6 +134,8 @@ export async function runInteractiveRepair(
             meta: { agent: entry.agent, error: msg },
           })
         }
+      } else {
+        writeDeclinedRepair(entry, unlockCommand, deps)
       }
     } else if (isCredentialIssue(entry)) {
       const provider = extractProviderFromFixHint(entry.fixHint)
@@ -157,6 +163,8 @@ export async function runInteractiveRepair(
             meta: { agent: entry.agent, error: msg },
           })
         }
+      } else {
+        writeDeclinedRepair(entry, authCommand, deps)
       }
     } else if (isConfigError(entry)) {
       deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)
