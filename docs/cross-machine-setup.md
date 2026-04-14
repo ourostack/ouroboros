@@ -60,13 +60,15 @@ The agent name is inferred from the URL. Override with `--agent <name>` if neede
 
 ## Step 3: Set up provider auth
 
+Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is per-machine (stored in `state/providers.json` inside the bundle). See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
+
 If you skipped the guided prompt, or need to re-run auth later:
 
 ```bash
 ouro auth run --agent <name>
 ```
 
-This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.).
+This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.). On WSL/Linux, vault unlock uses Linux Secret Service (`secret-tool`) by default. If that's not available, it falls back to explicit plaintext with user confirmation.
 
 ## Step 4: Start the daemon
 
@@ -121,12 +123,14 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Syncs across machines | Per-machine (not synced) |
 |---|---|
 | Psyche (SOUL.md, IDENTITY.md, etc.) | Machine identity (`~/.ouro-cli/machine.json`) |
-| Diary, journal | Machine-local vault unlock material |
+| Diary, journal | Provider/model lane selection (`state/providers.json`) |
 | Habits | Daemon state (pids, health, logs) |
 | Friends | Dev tool registrations (MCP, hooks) |
-| Tasks | Provider/model lane selection (`state/providers.json`) |
+| Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |
 | Skills | |
 | Agent config (`agent.json`) | |
+
+Provider credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). The vault itself is remote and shared — vault unlock material is local to each machine. See [docs/auth-and-providers.md](auth-and-providers.md).
 
 ## For agents reading this doc
 
