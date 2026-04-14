@@ -815,9 +815,9 @@ async function executeVaultCreate(
         "",
         `vault unlock secret: ${unlockSecret}`,
         "",
-        "Store this in the operator password manager now. Another machine cannot unlock the vault without it.",
+        "Keep this saved outside Ouro now. Another machine cannot unlock the vault without it.",
       ]
-      : ["Store the vault unlock secret in the operator password manager. Another machine will need it once."]),
+      : ["Keep the vault unlock secret saved outside Ouro. Another machine will need it once."]),
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -3460,7 +3460,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           await runOuroCli(["auth", "--agent", agentName], deps)
         /* v8 ignore start -- chained command failures: tested via interactive clone test, catch branches are defensive @preserve */
         } catch (e) {
-          deps.writeStdout(`auth setup failed: ${e instanceof Error ? e.message : String(e)}\nYou can retry later with: ouro auth run --agent ${agentName}`)
+          deps.writeStdout(`auth setup failed: ${e instanceof Error ? e.message : String(e)}\nYou can retry later with: ouro auth --agent ${agentName}`)
         }
         /* v8 ignore stop */
       }
@@ -3491,7 +3491,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         /* v8 ignore stop */
       }
     } else {
-      deps.writeStdout(`\nnext steps:\n  ouro auth run --agent ${agentName}\n  ouro up\n  ouro setup --tool claude-code --agent ${agentName}`)
+      deps.writeStdout(`\nnext steps:\n  ouro vault unlock --agent ${agentName}\n  ouro provider refresh --agent ${agentName}\n  ouro auth verify --agent ${agentName}\n  ouro up\n  ouro setup --tool claude-code --agent ${agentName}`)
     }
 
     /* v8 ignore start -- PATH hint: only fires inside npx, not testable in vitest @preserve */

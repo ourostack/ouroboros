@@ -16,6 +16,8 @@ The short version: each agent owns one vault. Provider/model choice is local to 
 | Vault unlock material on this machine | Local unlock store | Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service. Plaintext fallback is allowed only by explicit human choice. |
 | Hot runtime | Process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
 
+The only Ouro-owned durable credential locations are the bundle and the agent vault. Local unlock material is a machine-local cache, not a credential source of truth.
+
 Do not introduce a second credential source of truth. Raw credentials belong in the owning agent's vault. Bundle files may contain references, configuration, state, and vault coordinates, but not raw credentials.
 
 ## Provider Selection
@@ -191,25 +193,39 @@ Interactive hatch must not create, mutate, or persist a SerpentGuide vault. Pers
 
 Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only.
 
-## Bootstrap On A New Machine
+## Continue An Existing Agent Bundle
 
-When a bundle is copied or pulled onto a new machine:
+When a bundle is copied, pulled, or cloned onto a machine, the durable Ouro-owned story is bundle plus vault:
 
-1. The bundle brings identity, vault coordinates, and local-state templates.
-2. The remote vault does not live inside the bundle.
-3. The human unlocks the agent vault for that machine:
+1. The bundle brings identity, vault coordinates, sync settings, and local-state templates.
+2. The remote vault brings raw provider, runtime, sense, integration, travel, and tool credentials.
+3. The remote vault does not live inside the bundle, and raw credentials do not live in the bundle.
+4. Local unlock material is recreated per machine by unlocking the agent vault once.
+
+Start from the bundle remote:
+
+```bash
+ouro clone <bundle-git-remote>
+```
+
+If the bundle already exists at `~/AgentBundles/<agent>.ouro`, start at unlock:
 
 ```bash
 ouro vault unlock --agent <agent>
 ```
 
-4. The harness stores the vault unlock material in the local unlock store.
-5. Provider and runtime credentials can then be refreshed and verified:
+Then refresh and verify what this machine can use:
 
 ```bash
 ouro provider refresh --agent <agent>
 ouro auth verify --agent <agent>
 ouro vault config status --agent <agent>
+```
+
+Start the daemon when the vault and provider state are ready:
+
+```bash
+ouro up
 ```
 
 Windows DPAPI means a CurrentUser-protected encrypted local unlock file. Windows keeps the protection keys; Ouro stores only the encrypted blob. This fits local unlock caching because the blob is usable by the same Windows user on the same machine, not as a portable credential source.
@@ -222,9 +238,9 @@ If the machine has no usable local secret store, the harness may offer an explic
 
 There is no hidden recovery path for a lost vault unlock secret.
 
-For an existing agent with no vault locator, run `ouro vault create --agent <agent>` or `ouro vault create --agent <agent> --generate-unlock-secret`. The command writes vault coordinates to `agent.json`, stores local unlock material for this machine, and prints a generated unlock secret only when the human requested generation. The human must save that secret in the operator password manager.
+For an existing agent with no vault locator, run `ouro vault create --agent <agent>` or `ouro vault create --agent <agent> --generate-unlock-secret`. The command writes vault coordinates to `agent.json`, stores local unlock material for this machine, and prints a generated unlock secret only when the human requested generation. The human must keep that unlock secret outside Ouro; Ouro will not write a portable copy into the bundle or the vault.
 
-For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the unlock secret from the operator password manager. Ouro stores only local unlock material for that machine.
+For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
 For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create or rotate a vault and re-auth/re-enter credentials into the new vault.
 

@@ -211,6 +211,8 @@ describe("vault unlock local stores", () => {
     expect(message).toContain("This computer does not currently have usable local unlock material")
     expect(message).toContain("new computer")
     expect(message).toContain("local profile or hostname migration")
+    expect(message).toContain("enter the saved agent vault unlock secret")
+    expect(message).not.toContain("operator password manager")
   })
 
   it("renders no-agent repair guidance for missing secure stores and locked stores", () => {
