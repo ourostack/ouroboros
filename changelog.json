@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.382",
+      "changes": [
+        "The packaged travel-planning skill now describes travel/tool credentials as agent Bitwarden/Vaultwarden vault items instead of using retired bundle-vault wording.",
+        "Documentation contracts now block packaged skills from reintroducing legacy local credential paths, vault-key wording, or obsolete Bitwarden Agent Access CLI guidance.",
+        "The coverage workflow now treats `skills/` changes as package-shipping changes that require a fresh unpublished CLI version before merge.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the packaged skill credential-guidance release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.381",
       "changes": [
         "`ouro status` provider rows now suppress old readiness error details whenever credentials are currently missing or the agent vault is unavailable, keeping the table focused on the active blocker.",
