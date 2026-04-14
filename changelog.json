@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.372",
+      "changes": [
+        "Locked-vault errors now explain that provider credentials are still stored in the agent vault and that this computer is missing usable local unlock material.",
+        "The locked-vault guidance now names common machine-local causes, including a new computer, local profile or hostname migration, and removed local unlock entries.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the locked-vault bootstrap copy release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.371",
       "changes": [
         "`ouro up` now rechecks selected provider health after a deterministic repair actually runs, so a successful vault unlock or auth repair is followed by either a recovery confirmation or the remaining degraded details.",

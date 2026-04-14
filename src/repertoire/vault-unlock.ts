@@ -117,6 +117,10 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     `Vault: ${vaultLabel(config)}`,
     `Local unlock store: ${store.kind} (${store.location})`,
     "",
+    "Provider credentials are still stored in the agent vault.",
+    "This computer does not currently have usable local unlock material for that vault.",
+    "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
+    "",
     `Run \`${command}\` and enter the vault unlock secret from the operator password manager.`,
   ].join("\n")
 }
