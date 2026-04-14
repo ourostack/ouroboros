@@ -88,7 +88,9 @@ function addToPath() {
   const base = path.basename(shell);
   let profilePath;
   if (base === "zsh") profilePath = path.join(os.homedir(), ".zshrc");
-  else if (base === "bash") profilePath = path.join(os.homedir(), ".bash_profile");
+  else if (base === "bash") profilePath = process.platform === "darwin"
+    ? path.join(os.homedir(), ".bash_profile")
+    : path.join(os.homedir(), ".bashrc");
   else if (base === "fish") profilePath = path.join(os.homedir(), ".config", "fish", "config.fish");
   else return;
 
@@ -151,8 +153,9 @@ const cliArgs = process.argv.slice(2);
 if (previousVersion === null) {
   // First install — tell user about PATH (shell-aware)
   const userShell = process.env.SHELL ? path.basename(process.env.SHELL) : "";
+  const bashProfile = process.platform === "darwin" ? "~/.bash_profile" : "~/.bashrc";
   const sourceHint = userShell === "zsh" ? "source ~/.zshrc"
-    : userShell === "bash" ? "source ~/.bash_profile"
+    : userShell === "bash" ? `source ${bashProfile}`
     : userShell === "fish" ? "source ~/.config/fish/config.fish"
     : "restart your shell";
   console.error(`\nouro is ready! Open a new terminal or run: ${sourceHint}`);

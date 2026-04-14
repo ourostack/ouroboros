@@ -83,6 +83,16 @@ Most read-only tools work without the daemon (reads filesystem directly). For wr
 - Ensure `dist/` is built: `npm run build`
 - Check that the entry point path is correct (setup auto-detects this)
 
+### WSL2-specific issues
+
+**`claude.exe` not found** — Windows executables must be accessible from WSL. This is the default, but enterprise environments may disable it via `/etc/wsl.conf` setting `appendWindowsPath = false`. Check with `which claude.exe`. If missing, add Claude Code's install directory to WSL's PATH manually or update `wsl.conf`.
+
+**`cmd.exe` or `wslpath` fails** — The setup command resolves the Windows home directory using `cmd.exe /C echo %USERPROFILE%` piped through `wslpath`. If either is unavailable, the setup will fail. `wslpath` ships with all standard WSL distributions. `cmd.exe` requires Windows executables to be on PATH (see above).
+
+**MCP server hangs or returns empty** — The MCP server runs inside WSL via `wsl ouro mcp-serve --agent <name>`. If stdio piping between Windows and WSL is broken, check that the WSL distribution is running (`wsl --status`) and that no other process has claimed stdin.
+
+**Hooks not firing** — Claude Code hooks use `wsl ouro hook <event> --agent <name>`. If hooks fail silently, check that `ouro` is on PATH inside WSL (run `wsl ouro --version` from PowerShell to verify).
+
 ### Removing
 ```bash
 claude mcp remove ouro-<agent-name>

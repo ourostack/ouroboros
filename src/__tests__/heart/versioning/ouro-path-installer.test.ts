@@ -139,12 +139,20 @@ exec node "$ENTRY" "$@"
     expect(appended["/home/test/.zshrc"]).toContain("# Added by ouro")
   })
 
-  it("updates .bash_profile when shell is bash", () => {
-    const deps = makeDeps({ shell: "/bin/bash" })
+  it("updates .bash_profile when shell is bash on macOS", () => {
+    const deps = makeDeps({ shell: "/bin/bash", platform: "darwin" })
     const result = installOuroCommand(deps)
 
     expect(result.shellProfileUpdated).toBe("/home/test/.bash_profile")
     expect(appended["/home/test/.bash_profile"]).toContain("export PATH=")
+  })
+
+  it("updates .bashrc when shell is bash on Linux", () => {
+    const deps = makeDeps({ shell: "/bin/bash", platform: "linux" })
+    const result = installOuroCommand(deps)
+
+    expect(result.shellProfileUpdated).toBe("/home/test/.bashrc")
+    expect(appended["/home/test/.bashrc"]).toContain("export PATH=")
   })
 
   it("updates fish config when shell is fish", () => {

@@ -66,14 +66,19 @@ function writeWrapperScript(
   chmodSync(scriptPath, 0o755)
 }
 
-function detectShellProfile(homeDir: string, shell: string | undefined): string | null {
+function detectShellProfile(homeDir: string, shell: string | undefined, platform?: string): string | null {
   if (!shell) return null
   const base = path.basename(shell)
   if (base === "zsh") return path.join(homeDir, ".zshrc")
   if (base === "bash") {
-    // macOS uses .bash_profile, Linux uses .bashrc
-    const profilePath = path.join(homeDir, ".bash_profile")
-    return profilePath
+    // macOS uses .bash_profile; Linux/WSL uses .bashrc (the default
+    // interactive shell config on Debian/Ubuntu). Writing to .bash_profile
+    // on Linux often has no effect because non-login shells skip it.
+    /* v8 ignore next -- ?? fallback: callers always pass platform from deps @preserve */
+    const effectivePlatform = platform ?? process.platform
+    return effectivePlatform === "darwin"
+      ? path.join(homeDir, ".bash_profile")
+      : path.join(homeDir, ".bashrc")
   }
   if (base === "fish") return path.join(homeDir, ".config", "fish", "config.fish")
   return null
@@ -276,7 +281,7 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   let shellProfileUpdated: string | null = null
 
   if (!pathReady) {
-    const profilePath = detectShellProfile(homeDir, shell)
+    const profilePath = detectShellProfile(homeDir, shell, platform)
     if (profilePath) {
       try {
         let existing = ""
