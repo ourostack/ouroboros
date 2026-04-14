@@ -291,15 +291,54 @@ describe("checkAgentConfigWithProviderHealth", () => {
       ok: false,
       reason: "unavailable",
       poolPath: "vault:myagent:providers/*",
-      error: "vault locked",
+      error: "Ouro credential vault is locked on this machine for myagent.\n\nRun `ouro vault unlock --agent myagent`.",
     })
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("cannot read provider credentials")
-    expect(result.error).toContain("vault locked")
+    expect(result.error).toContain("credential vault is locked on this machine")
+    expect(result.error).not.toContain("Run `ouro vault unlock")
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro auth")
+  })
+
+  it("tells the user to rewrite credentials when the agent vault record is invalid", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "invalid",
+      poolPath: "vault:myagent:providers/*",
+      error: "provider credential JSON is malformed",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("cannot read provider credentials from myagent's vault")
+    expect(result.error).toContain("provider credential JSON is malformed")
+    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(result.fix).toContain("rewrite this provider credential")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro vault unlock")
+  })
+
+  it("keeps unlock first for unavailable vault errors that are not explicit lock messages", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "temporary vault service outage",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("temporary vault service outage")
+    expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
   })
 
   it("returns a provider-specific failure when ping fails", async () => {
