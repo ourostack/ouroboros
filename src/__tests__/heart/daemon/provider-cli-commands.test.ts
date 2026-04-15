@@ -425,6 +425,40 @@ describe("provider CLI command parsing", () => {
       store: "plaintext-file",
       generateUnlockSecret: true,
     })
+    expect(parseOuroCommand([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      "/tmp/legacy-secrets.json",
+      "--from",
+      "/tmp/provider-pool.json",
+      "--email",
+      "slugger+recovered@example.com",
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+      "--generate-unlock-secret",
+    ])).toEqual({
+      kind: "vault.recover",
+      agent: "Slugger",
+      sources: ["/tmp/legacy-secrets.json", "/tmp/provider-pool.json"],
+      email: "slugger+recovered@example.com",
+      serverUrl: "https://vault.example.com",
+      store: "plaintext-file",
+      generateUnlockSecret: true,
+    })
+    expect(() => parseOuroCommand(["vault", "recover", "--agent", "Slugger"]))
+      .toThrow("ouro vault recover")
+    expect(() => parseOuroCommand(["vault", "recover", "--agent", "Slugger", "--from"]))
+      .toThrow("ouro vault recover")
+    expect(parseOuroCommand(["vault", "recover", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"])).toEqual({
+      kind: "vault.recover",
+      agent: "Slugger",
+      sources: ["/tmp/legacy-secrets.json"],
+    })
     expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "auto"])).toEqual({
       kind: "vault.unlock",
       agent: "Slugger",
@@ -480,11 +514,11 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
       .toThrow("vault --store")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--bad"]))
-      .toThrow("ouro vault create|unlock|status --agent <name>")
+      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "delete", "--agent", "Slugger"]))
-      .toThrow("ouro vault create|unlock|status --agent <name>")
+      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "status"]))
-      .toThrow("ouro vault create|unlock|status --agent <name>")
+      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -958,7 +992,250 @@ describe("provider CLI command execution", () => {
     )
   })
 
-  it("vault create rejects unsupported persistent SerpentGuide vaults and missing inputs", async () => {
+  it("vault recover creates a replacement vault and imports local JSON credential exports without printing values", async () => {
+    emitTestEvent("provider cli vault recover")
+    const bundlesRoot = makeTempDir("provider-cli-vault-recover-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-recover-home")
+    const sourceDir = makeTempDir("provider-cli-vault-recover-source")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const legacySecretsPath = path.join(sourceDir, "legacy-secrets.json")
+    const providerPoolPath = path.join(sourceDir, "provider-pool.json")
+    fs.writeFileSync(legacySecretsPath, JSON.stringify({
+      providers: {
+        minimax: { apiKey: "mini-secret", model: "MiniMax-M2.5" },
+        "github-copilot": { githubToken: "gh-secret", baseUrl: "https://api.githubcopilot.com" },
+	      },
+	      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "bb-secret" },
+	      operatorNote: "scalar-secret",
+	      vault: { masterPassword: "" },
+	    }), "utf-8")
+    fs.writeFileSync(providerPoolPath, JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      providers: {
+	        anthropic: {
+	          provider: "anthropic",
+	          credentials: { setupToken: "anthropic-secret", expiresAt: 1_777_777_777, ignoredFlag: true },
+	          config: null,
+	        },
+      },
+      bluebubbles: { accountId: "default" },
+    }), "utf-8")
+
+    const result = await runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      legacySecretsPath,
+      "--from",
+      providerPoolPath,
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+
+    expect(result).toContain("vault recovered for Slugger")
+    expect(result).toContain("vault: slugger+recovered-20260412201000@ouro.bot at https://vault.example.com")
+    expect(result).toContain("provider credentials imported: anthropic, github-copilot, minimax")
+	    expect(result).toContain("runtime credentials imported: bluebubbles.accountId, bluebubbles.password, bluebubbles.serverUrl, operatorNote")
+    expect(result).toContain("credential values were not printed")
+    expect(result).not.toContain("mini-secret")
+    expect(result).not.toContain("gh-secret")
+	    expect(result).not.toContain("anthropic-secret")
+	    expect(result).not.toContain("bb-secret")
+	    expect(result).not.toContain("scalar-secret")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.example.com",
+      "slugger+recovered-20260412201000@ouro.bot",
+      expect.any(String),
+    )
+    expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
+      { agentName: "Slugger", email: "slugger+recovered-20260412201000@ouro.bot", serverUrl: "https://vault.example.com" },
+      expect.any(String),
+      { homeDir, store: "plaintext-file" },
+    )
+    expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
+      email: "slugger+recovered-20260412201000@ouro.bot",
+      serverUrl: "https://vault.example.com",
+    })
+    const minimaxRaw = mockVaultDeps.rawSecrets.get("Slugger:providers/minimax")
+    expect(minimaxRaw).toBeDefined()
+    expect(JSON.parse(minimaxRaw ?? "{}")).toMatchObject({
+      kind: "provider-credential",
+      provider: "minimax",
+      credentials: { apiKey: "mini-secret" },
+      config: {},
+    })
+	    const githubRaw = mockVaultDeps.rawSecrets.get("Slugger:providers/github-copilot")
+	    expect(JSON.parse(githubRaw ?? "{}")).toMatchObject({
+	      provider: "github-copilot",
+	      credentials: { githubToken: "gh-secret" },
+	      config: { baseUrl: "https://api.githubcopilot.com" },
+	    })
+	    const anthropicRaw = mockVaultDeps.rawSecrets.get("Slugger:providers/anthropic")
+	    expect(JSON.parse(anthropicRaw ?? "{}")).toMatchObject({
+	      provider: "anthropic",
+	      credentials: { setupToken: "anthropic-secret", expiresAt: 1_777_777_777 },
+	    })
+	    const runtimeRaw = mockVaultDeps.rawSecrets.get("Slugger:runtime/config")
+    expect(runtimeRaw).toBeDefined()
+    const runtime = JSON.parse(runtimeRaw ?? "{}") as { config: Record<string, unknown> }
+	    expect(runtime.config).toEqual({
+	      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "bb-secret", accountId: "default" },
+	      operatorNote: "scalar-secret",
+	    })
+    expect(runtime.config).not.toHaveProperty("providers")
+    expect(runtime.config).not.toHaveProperty("vault")
+  })
+
+	  it("vault recover covers empty imports, prompted secrets, failures, and guards", async () => {
+	    emitTestEvent("provider cli vault recover guards")
+	    const bundlesRoot = makeTempDir("provider-cli-vault-recover-guards-bundles")
+	    const homeDir = makeTempDir("provider-cli-vault-recover-guards-home")
+	    const sourceDir = makeTempDir("provider-cli-vault-recover-guards-source")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const emptySource = path.join(sourceDir, "empty.json")
+	    fs.writeFileSync(emptySource, JSON.stringify({
+	      providers: {
+	        minimax: { credentials: null, config: null },
+	        anthropic: null,
+	        "not-a-provider": { apiKey: "ignored-secret" },
+	      },
+	    }), "utf-8")
+
+    const prompted = await runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      emptySource,
+      "--email",
+      "slugger+manual@example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        expect(question).toBe("Choose replacement Ouro vault unlock secret for slugger+manual@example.com: ")
+        return "chosen-recovery-secret"
+      },
+    }))
+    expect(prompted).toContain("provider credentials imported: none")
+    expect(prompted).toContain("runtime credentials imported: none")
+    expect(prompted).toContain("Keep the replacement vault unlock secret saved outside Ouro")
+    expect(prompted).not.toContain("chosen-recovery-secret")
+    expect(prompted).not.toContain("ignored-secret")
+
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      emptySource,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("vault recover requires a replacement unlock secret")
+
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "SerpentGuide",
+      "--from",
+      emptySource,
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("Recover the hatchling agent vault")
+
+    mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
+    const failed = await runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      emptySource,
+      "--email",
+      "slugger+manual@example.com",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot))
+    expect(failed).toContain("vault recover failed for Slugger: already exists")
+    expect(failed).toContain("retry with a fresh --email value")
+
+    const nonObjectSource = path.join(sourceDir, "non-object.json")
+    fs.writeFileSync(nonObjectSource, "[]", "utf-8")
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      nonObjectSource,
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("must be a JSON object")
+
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      path.join(sourceDir, "missing.json"),
+      "--generate-unlock-secret",
+	    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("cannot read vault recover source")
+	  })
+
+	  it("vault recover explains sanitized defaults and secure local stores", async () => {
+	    emitTestEvent("provider cli vault recover edge cases")
+	    const bundlesRoot = makeTempDir("provider-cli-vault-recover-edge-bundles")
+	    const homeDir = makeTempDir("provider-cli-vault-recover-edge-home")
+	    const sourceDir = makeTempDir("provider-cli-vault-recover-edge-source")
+	    writeAgentConfig(bundlesRoot, "!!!")
+	    const emptySource = path.join(sourceDir, "empty.json")
+	    fs.writeFileSync(emptySource, JSON.stringify({ providers: {} }), "utf-8")
+	    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({
+	      kind: "macos-keychain",
+	      secure: true,
+	      location: "macOS Keychain",
+	    })
+
+	    const recovered = await runOuroCli([
+	      "vault",
+	      "recover",
+	      "--agent",
+	      "!!!",
+	      "--from",
+	      emptySource,
+	      "--generate-unlock-secret",
+	    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+
+	    expect(recovered).toContain("vault: agent+recovered-20260412201000@ouro.bot at https://vault.ouro.bot")
+	    expect(recovered).toContain("local unlock store: macos-keychain")
+	    expect(recovered).not.toContain("explicit plaintext fallback")
+
+	    writeAgentConfig(bundlesRoot, "TopLevel")
+	    const topLevelProviderSource = path.join(sourceDir, "top-level-provider.json")
+	    fs.writeFileSync(topLevelProviderSource, JSON.stringify({
+	      minimax: { apiKey: "top-level-mini-secret" },
+	    }), "utf-8")
+
+	    const topLevelRecovered = await runOuroCli([
+	      "vault",
+	      "recover",
+	      "--agent",
+	      "TopLevel",
+	      "--from",
+	      topLevelProviderSource,
+	      "--generate-unlock-secret",
+	    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+
+	    expect(topLevelRecovered).toContain("provider credentials imported: minimax")
+	    expect(topLevelRecovered).toContain("runtime credentials imported: none")
+	    expect(topLevelRecovered).not.toContain("top-level-mini-secret")
+	  })
+
+	  it("vault create rejects unsupported persistent SerpentGuide vaults and missing inputs", async () => {
     emitTestEvent("provider cli vault create guards")
     const bundlesRoot = makeTempDir("provider-cli-vault-create-guards-bundles")
     const homeDir = makeTempDir("provider-cli-vault-create-guards-home")

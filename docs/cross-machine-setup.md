@@ -94,6 +94,12 @@ This walks you through authenticating with your model provider (Anthropic, Azure
 
 If this agent predates the vault-backed auth model, follow the **Old Auth-Style Agents** checklist in [docs/auth-and-providers.md](auth-and-providers.md) before relying on `ouro up`.
 
+If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the recovery checklist instead of `ouro vault unlock`. The recovery path creates a replacement vault and can import a human-specified local JSON credential export once:
+
+```bash
+ouro vault recover --agent <agent> --from <json> --generate-unlock-secret
+```
+
 ## Step 4: Start the daemon
 
 If you skipped the guided prompt:

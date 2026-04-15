@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.384",
+      "changes": [
+        "Added `ouro vault recover --agent <agent> --from <json>` for existing alpha agents whose vault coordinates exist but whose unlock secret was never saved.",
+        "`ouro vault recover` creates a replacement agent vault, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only redacted field/provider summaries.",
+        "Auth/provider docs now distinguish normal vault unlock from lost-secret replacement-vault recovery, including the old-auth checklist path.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault recovery release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.383",
       "changes": [
         "`ouro provider refresh` now stops after a failed vault credential refresh instead of also reporting that the daemon restarted to reload credentials.",
