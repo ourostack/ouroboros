@@ -191,20 +191,9 @@ jobs:
           cd packages/ouro.bot
           npm publish --access public --provenance --tag latest
 
-      - name: Align supported npm dist-tags
-        run: |
-          LOCAL=$(node -p "require('./package.json').version")
-          WRAPPER_LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
-
-          npm dist-tag add "@ouro.bot/cli@${LOCAL}" latest
-          npm dist-tag add "@ouro.bot/cli@${LOCAL}" alpha
-          npm dist-tag add "ouro.bot@${WRAPPER_LOCAL}" latest
-          npm dist-tag add "ouro.bot@${WRAPPER_LOCAL}" alpha
-
       - name: Verify supported npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
-          WRAPPER_LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
 
           verify_tag() {
             package_ref="$1"
@@ -228,9 +217,7 @@ jobs:
           }
 
           verify_tag "@ouro.bot/cli@latest" "$LOCAL"
-          verify_tag "@ouro.bot/cli@alpha" "$LOCAL"
-          verify_tag "ouro.bot@latest" "$WRAPPER_LOCAL"
-          verify_tag "ouro.bot@alpha" "$WRAPPER_LOCAL"
+          verify_tag "ouro.bot@latest" "$LOCAL"
 
           echo "supported npm dist-tags verified for ${LOCAL}"
 

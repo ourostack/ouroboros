@@ -45,6 +45,12 @@ The bootstrap and update channel is:
 - `ouro.bot@latest`
 - `@ouro.bot/cli@latest`
 
+`latest` is the only supported npm dist-tag channel. The package version still uses
+alpha prerelease semver while the project is in alpha, but that does not mean
+`ouro.bot@alpha` or `@ouro.bot/cli@alpha` are maintained install paths. Trusted
+publishing updates `latest`; arbitrary dist-tag mutation would require a separate
+npm automation credential, so the harness does not rely on or advertise `alpha`.
+
 The launcher should always converge on the same runtime channel as the bootstrap path. `ouro up` repairs stale launcher contents if needed.
 
 ## 4. Bootstrap Wrapper
