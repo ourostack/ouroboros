@@ -46,6 +46,7 @@ describe("ouro.bot entrypoint", () => {
     const emitNervesEvent = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     vi.doMock("../../../heart/versioning/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
@@ -64,6 +65,7 @@ describe("ouro.bot entrypoint", () => {
       expect.objectContaining({ event: "daemon.ouro_bot_entry_error" }),
     )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("ouro-bot")
+    expect(stderrSpy).toHaveBeenCalledWith("fail\n")
     expect(exitSpy).toHaveBeenCalledWith(1)
 
     argvSpy.mockRestore()
@@ -78,6 +80,7 @@ describe("ouro.bot entrypoint", () => {
     const emitNervesEvent = vi.fn()
     const configureDaemonRuntimeLogger = vi.fn()
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 
     vi.doMock("../../../heart/versioning/ouro-bot-wrapper", () => ({ runOuroBotWrapper }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
@@ -100,6 +103,7 @@ describe("ouro.bot entrypoint", () => {
       }),
     )
     expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("ouro-bot")
+    expect(stderrSpy).toHaveBeenCalledWith("string-failure\n")
     expect(exitSpy).toHaveBeenCalledWith(1)
 
     argvSpy.mockRestore()

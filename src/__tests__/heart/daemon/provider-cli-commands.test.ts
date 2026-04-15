@@ -1185,6 +1185,7 @@ describe("provider CLI command execution", () => {
 
     const nonObjectSource = path.join(sourceDir, "non-object.json")
     fs.writeFileSync(nonObjectSource, "[]", "utf-8")
+    const nonObjectPromptSecret = vi.fn(async () => "unused-recovery-secret")
     await expect(runOuroCli([
       "vault",
       "recover",
@@ -1193,9 +1194,11 @@ describe("provider CLI command execution", () => {
       "--from",
       nonObjectSource,
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-recovery-secret",
+      promptSecret: nonObjectPromptSecret,
     }))).rejects.toThrow("must be a JSON object")
+    expect(nonObjectPromptSecret).not.toHaveBeenCalled()
 
+    const missingPromptSecret = vi.fn(async () => "unused-recovery-secret")
     await expect(runOuroCli([
       "vault",
       "recover",
@@ -1204,8 +1207,9 @@ describe("provider CLI command execution", () => {
       "--from",
       path.join(sourceDir, "missing.json"),
 	    ], makeCliDeps(homeDir, bundlesRoot, {
-	      promptSecret: async () => "chosen-recovery-secret",
+	      promptSecret: missingPromptSecret,
 	    }))).rejects.toThrow("cannot read vault recover source")
+    expect(missingPromptSecret).not.toHaveBeenCalled()
 	  })
 
 	  it("vault recover explains sanitized defaults and secure local stores", async () => {

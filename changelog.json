@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.389",
+      "changes": [
+        "CLI entrypoints now print command failures to stderr before exiting, so invalid commands and vault recovery errors are visible in the terminal instead of only appearing in runtime logs.",
+        "Vault unlock secret prompts now fail fast when stdin/stdout is not an interactive terminal, preserving the non-echoing human-provided secret flow instead of dangling or silently exiting.",
+        "`ouro vault recover` now validates every local `--from` JSON source before asking for the replacement vault unlock secret, so bad paths or malformed files never ask the human to type a secret first.",
+        "Vault recovery tests now assert that bad source files do not call the secret prompt and that entrypoint failures are terminal-visible.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault recovery prompt polish release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.388",
       "changes": [
         "The default agent credential vault host now points at the live Vaultwarden endpoint `https://vault.ouroboros.bot` instead of the website redirect host.",

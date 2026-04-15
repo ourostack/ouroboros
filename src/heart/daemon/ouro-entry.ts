@@ -13,12 +13,14 @@ emitNervesEvent({
 })
 
 void runOuroCli(process.argv.slice(2)).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(`${message}\n`)
   emitNervesEvent({
     level: "error",
     component: "daemon",
     event: "daemon.cli_entry_error",
     message: "ouro CLI entrypoint failed",
-    meta: { error: error instanceof Error ? error.message : String(error) },
+    meta: { error: message },
   })
   process.exit(1)
 })
