@@ -1292,6 +1292,9 @@ async function executeProviderRefresh(
   } else {
     lines.push(`provider credential refresh failed for ${command.agent}: ${pool.error}`)
     lines.push(`Run \`ouro vault unlock --agent ${command.agent}\`, then retry.`)
+    const message = lines.join("\n")
+    deps.writeStdout(message)
+    return message
   }
 
   try {

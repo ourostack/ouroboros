@@ -1244,8 +1244,11 @@ describe("provider CLI command execution", () => {
       checkSocketAlive: async () => false,
     }))
     expect(failed).toContain("provider credential refresh failed for Slugger: vault locked")
-    expect(failed).toContain("daemon is not running")
+    expect(failed).toContain("Run `ouro vault unlock --agent Slugger`, then retry.")
+    expect(failed).not.toContain("daemon is not running")
+    expect(failed).not.toContain("restarted Slugger")
 
+    writeProviderCredentialPool(homeDir, credentialPool())
     const skipped = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       checkSocketAlive: async () => true,
       sendCommand: async () => ({ ok: false, error: "restart failed" }),

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.383",
+      "changes": [
+        "`ouro provider refresh` now stops after a failed vault credential refresh instead of also reporting that the daemon restarted to reload credentials.",
+        "Provider refresh CLI tests now cover the locked-vault failure path separately from successful daemon restart and restart-skip paths.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the provider refresh failure-output release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.382",
       "changes": [
         "The packaged travel-planning skill now describes travel/tool credentials as agent Bitwarden/Vaultwarden vault items instead of using retired bundle-vault wording.",
