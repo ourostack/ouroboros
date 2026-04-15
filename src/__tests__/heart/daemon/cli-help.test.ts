@@ -177,7 +177,7 @@ describe("getCommandHelp()", () => {
     expect(result).not.toBeNull()
     expect(result).toContain("vault recover")
     expect(result).toContain("--from <json>")
-    expect(result).toContain("--generate-unlock-secret")
+    expect(result).not.toContain("--generate-unlock-secret")
   })
 })
 
@@ -337,7 +337,7 @@ describe("runOuroCli help execution", () => {
 
     expect(result).toContain("vault recover")
     expect(result).toContain("--from <json>")
-    expect(result).toContain("--generate-unlock-secret")
+    expect(result).not.toContain("--generate-unlock-secret")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
   })
 
@@ -347,7 +347,7 @@ describe("runOuroCli help execution", () => {
 
     expect(result).toContain("vault recover")
     expect(result).toContain("--from <json>")
-    expect(result).toContain("--generate-unlock-secret")
+    expect(result).not.toContain("--generate-unlock-secret")
   })
 
   it("ouro help <unknown> outputs fallback grouped help", async () => {

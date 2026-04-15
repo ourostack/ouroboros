@@ -40,6 +40,7 @@ const mockUpsertProviderCredential = vi.hoisted(() => vi.fn(async (input: {
     provenance: { source: "auth-flow", updatedAt: "2026-04-13T00:00:00.000Z" },
   }
 }))
+const mockRefreshAnthropicToken = vi.hoisted(() => vi.fn(async () => null))
 
 vi.mock("../../../heart/provider-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
@@ -49,6 +50,10 @@ vi.mock("../../../heart/provider-credentials", async () => {
     upsertProviderCredential: mockUpsertProviderCredential,
   }
 })
+
+vi.mock("../../../heart/providers/anthropic-token", () => ({
+  refreshAnthropicToken: mockRefreshAnthropicToken,
+}))
 
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
@@ -119,6 +124,7 @@ afterEach(() => {
   providerCredentialWrites.splice(0)
   mockRefreshProviderCredentialPool.mockClear()
   mockUpsertProviderCredential.mockClear()
+  mockRefreshAnthropicToken.mockClear()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue

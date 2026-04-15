@@ -90,7 +90,7 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
   followup: ["processing"],
 }
 
-export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouro.bot"
+export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouroboros.bot"
 
 /**
  * Resolve the vault config for an agent, applying defaults.

@@ -94,11 +94,11 @@ describe("createVaultAccount", () => {
       json: async () => ({}),
     })
 
-    await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("https://vault.ouro.bot/api/accounts/register")
+    expect(url).toBe("https://vault.ouroboros.bot/identity/accounts/register")
     expect(opts.method).toBe("POST")
     expect(opts.headers["Content-Type"]).toBe("application/json")
   })
@@ -110,7 +110,7 @@ describe("createVaultAccount", () => {
       json: async () => ({}),
     })
 
-    await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(body.name).toBe("ouroboros")
@@ -137,11 +137,11 @@ describe("createVaultAccount", () => {
       json: async () => ({}),
     })
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(true)
     expect(result.email).toBe("ouroboros@ouro.bot")
-    expect(result.serverUrl).toBe("https://vault.ouro.bot")
+    expect(result.serverUrl).toBe("https://vault.ouroboros.bot")
     expect(result.error).toBeUndefined()
   })
 
@@ -153,10 +153,11 @@ describe("createVaultAccount", () => {
       json: async () => ({ message: "Email already taken" }),
     })
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(false)
     expect(result.error).toContain("Email already taken")
+    expect(result.error).toContain("https://vault.ouroboros.bot/identity/accounts/register")
   })
 
   it("falls back to HTTP status when error response body is not JSON", async () => {
@@ -167,10 +168,11 @@ describe("createVaultAccount", () => {
       json: async () => { throw new Error("not json") },
     })
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(false)
-    expect(result.error).toBe("HTTP 502 Bad Gateway")
+    expect(result.error).toContain("HTTP 502 Bad Gateway")
+    expect(result.error).toContain("Check --server")
   })
 
   it("falls back to HTTP status when error response has no message field", async () => {
@@ -181,28 +183,31 @@ describe("createVaultAccount", () => {
       json: async () => ({ detail: "duplicate" }), // no "message" key
     })
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(false)
-    expect(result.error).toBe("HTTP 409 Conflict")
+    expect(result.error).toContain("HTTP 409 Conflict")
+    expect(result.error).toContain("Check --server")
   })
 
   it("returns failure result on network error", async () => {
     mockFetch.mockRejectedValue(new Error("ECONNREFUSED"))
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(false)
     expect(result.error).toContain("ECONNREFUSED")
+    expect(result.error).toContain("cannot reach vault registration endpoint")
   })
 
   it("handles non-Error thrown value in outer catch", async () => {
     mockFetch.mockRejectedValue("string-error")
 
-    const result = await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    const result = await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(result.success).toBe(false)
-    expect(result.error).toBe("string-error")
+    expect(result.error).toContain("string-error")
+    expect(result.error).toContain("cannot reach vault registration endpoint")
   })
 
   it("emits nerves events", async () => {
@@ -212,7 +217,7 @@ describe("createVaultAccount", () => {
       json: async () => ({}),
     })
 
-    await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(nervesEvents.some((e) => e.event === "repertoire.vault_setup_start")).toBe(true)
     expect(nervesEvents.some((e) => e.event === "repertoire.vault_setup_end")).toBe(true)
@@ -221,7 +226,7 @@ describe("createVaultAccount", () => {
   it("emits error event on failure", async () => {
     mockFetch.mockRejectedValue(new Error("fail"))
 
-    await createVaultAccount("ouroboros", "https://vault.ouro.bot", "ouroboros@ouro.bot", "test-password")
+    await createVaultAccount("ouroboros", "https://vault.ouroboros.bot", "ouroboros@ouro.bot", "test-password")
 
     expect(nervesEvents.some((e) => e.event === "repertoire.vault_setup_error")).toBe(true)
   })

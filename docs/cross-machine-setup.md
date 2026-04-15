@@ -97,7 +97,7 @@ If this agent predates the vault-backed auth model, follow the **Old Auth-Style 
 If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the recovery checklist instead of `ouro vault unlock`. The recovery path creates a replacement vault and can import a human-specified local JSON credential export once:
 
 ```bash
-ouro vault recover --agent <agent> --from <json> --generate-unlock-secret
+ouro vault recover --agent <agent> --from <json>
 ```
 
 ## Step 4: Start the daemon

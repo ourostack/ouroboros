@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.388",
+      "changes": [
+        "The default agent credential vault host now points at the live Vaultwarden endpoint `https://vault.ouroboros.bot` instead of the website redirect host.",
+        "`ouro vault create` and `ouro vault recover` now create accounts through the live Bitwarden/Vaultwarden identity registration endpoint and include the registration URL in setup failures.",
+        "Vault unlock/create/recover prompts now use a non-echoing secret prompt for vault unlock secrets, and the supported docs/help path asks the human to provide a saved secret instead of generating or printing one.",
+        "Deprecated `--generate-unlock-secret` vault flags now fail fast with guidance to rerun interactively, preventing new vault unlock secrets from being printed into terminals or logs.",
+        "Vault setup, unlock, provider CLI, help, docs, and runtime-config tests now encode the canonical vault host and human-provided secret flow so the wrong host or unsafe prompt path cannot silently return.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the canonical vault recovery release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.386",
       "changes": [
         "`ouro vault recover --help` and `ouro help vault recover` now show the recovery-specific flags instead of generic vault help.",
