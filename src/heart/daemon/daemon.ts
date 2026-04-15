@@ -675,7 +675,7 @@ export class OuroDaemon {
       startUpdateChecker({
         currentVersion,
         deps: {
-          distTag: "alpha",
+          distTag: "latest",
           fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
             const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
             return res.json()

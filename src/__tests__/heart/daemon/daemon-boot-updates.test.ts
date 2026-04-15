@@ -152,7 +152,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     expect(mocks.startUpdateChecker).toHaveBeenCalledWith(
       expect.objectContaining({
         currentVersion: "0.1.0-test",
-        deps: expect.objectContaining({ distTag: "alpha" }),
+        deps: expect.objectContaining({ distTag: "latest" }),
       }),
     )
 

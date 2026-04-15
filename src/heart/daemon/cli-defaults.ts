@@ -557,7 +557,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
           const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
           return res.json()
         },
-        distTag: "alpha",
+        distTag: "latest",
       })
     },
     installCliVersion: async (version: string) => { installVersion(version, {}) },
