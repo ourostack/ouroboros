@@ -244,6 +244,74 @@ For an existing agent with a vault locator and a saved unlock secret, run `ouro 
 
 For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create or rotate a vault and re-auth/re-enter credentials into the new vault.
 
+## Old Auth-Style Agents
+
+Use this checklist for any existing agent that predates the vault-backed credential model.
+
+1. Pull the latest bundle and harness.
+
+   ```bash
+   ouro clone <bundle-git-remote>
+   ```
+
+   If the bundle is already present, pull it with normal git sync or run `ouro up` once so bundle update hooks can run.
+
+2. Check whether the bundle has vault coordinates.
+
+   ```bash
+   ouro vault status --agent <agent>
+   ```
+
+   If the agent has no vault yet, create one:
+
+   ```bash
+   ouro vault create --agent <agent> --generate-unlock-secret
+   ```
+
+   Save the printed unlock secret outside Ouro. Another machine cannot unlock this agent vault without it.
+
+3. Unlock the vault on this machine.
+
+   ```bash
+   ouro vault unlock --agent <agent>
+   ```
+
+4. Re-enter provider credentials into the agent vault.
+
+   ```bash
+   ouro auth --agent <agent> --provider <provider>
+   ```
+
+   Repeat for every provider the agent should be able to use. Do not copy old local credential files into the bundle. Do not paste raw secrets into chat.
+
+5. Re-enter runtime, sense, integration, travel, and tool credentials into vault items.
+
+   ```bash
+   ouro vault config set --agent <agent> --key bluebubbles.serverUrl
+   ouro vault config set --agent <agent> --key bluebubbles.password
+   ouro vault config set --agent <agent> --key teams.clientId
+   ```
+
+   Use the relevant field names for the senses and integrations that agent actually uses.
+
+6. Choose this machine's provider/model lanes.
+
+   ```bash
+   ouro use --agent <agent> --lane outward --provider <provider> --model <model>
+   ouro use --agent <agent> --lane inner --provider <provider> --model <model>
+   ```
+
+7. Refresh, verify, and start.
+
+   ```bash
+   ouro provider refresh --agent <agent>
+   ouro auth verify --agent <agent>
+   ouro vault config status --agent <agent>
+   ouro up
+   ```
+
+8. After vault-backed auth verifies, remove obsolete local credential artifacts by hand. They are not a supported fallback and must not be committed.
+
 ## Command Vocabulary
 
 Keep the core auth/provider vocabulary small:
