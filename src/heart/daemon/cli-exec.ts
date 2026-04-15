@@ -39,7 +39,9 @@ import {
 import {
   providerCredentialMachineHomeDir,
   refreshProviderCredentialPool,
+  splitProviderCredentialFields,
   summarizeProviderCredentialPool,
+  upsertProviderCredential,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
 import {
@@ -734,6 +736,117 @@ function writeAgentVaultConfig(
   })
 }
 
+type JsonRecord = Record<string, unknown>
+
+interface VaultRecoverSourceImport {
+  sourcePath: string
+  providers: Array<{
+    provider: AgentProvider
+    credentials: Record<string, string | number>
+    config: Record<string, string | number>
+  }>
+  runtimeConfig: RuntimeCredentialConfig
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function cloneJsonRecord(value: JsonRecord): JsonRecord {
+  return JSON.parse(JSON.stringify(value)) as JsonRecord
+}
+
+function importableCredentialFields(value: unknown): Record<string, string | number> {
+  if (!isJsonRecord(value)) return {}
+  const result: Record<string, string | number> = {}
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (typeof fieldValue === "string" && fieldValue.trim()) {
+      result[key] = fieldValue
+    } else if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
+      result[key] = fieldValue
+    }
+  }
+  return result
+}
+
+function providerImportFromRaw(
+  provider: AgentProvider,
+  raw: unknown,
+): { provider: AgentProvider; credentials: Record<string, string | number>; config: Record<string, string | number> } | null {
+  if (!isJsonRecord(raw)) return null
+  const hasStructuredFields = isJsonRecord(raw.credentials) || isJsonRecord(raw.config)
+  const fields = hasStructuredFields
+    ? {
+      credentials: importableCredentialFields(raw.credentials),
+      config: importableCredentialFields(raw.config),
+    }
+    : splitProviderCredentialFields(provider, raw)
+  if (Object.keys(fields.credentials).length === 0 && Object.keys(fields.config).length === 0) return null
+  return { provider, credentials: fields.credentials, config: fields.config }
+}
+
+function recoverProviderImports(raw: JsonRecord): VaultRecoverSourceImport["providers"] {
+  const providers = isJsonRecord(raw.providers) ? raw.providers : raw
+  const imports: VaultRecoverSourceImport["providers"] = []
+  for (const [providerName, providerRaw] of Object.entries(providers)) {
+    if (!isAgentProvider(providerName)) continue
+    const imported = providerImportFromRaw(providerName, providerRaw)
+    if (imported) imports.push(imported)
+  }
+  return imports
+}
+
+const RECOVER_RUNTIME_EXCLUDED_TOP_LEVEL = new Set(["providers", "vault", "context", "schemaVersion", "updatedAt"])
+
+function recoverRuntimeConfig(raw: JsonRecord): RuntimeCredentialConfig {
+  const config: RuntimeCredentialConfig = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (RECOVER_RUNTIME_EXCLUDED_TOP_LEVEL.has(key) || isAgentProvider(key)) continue
+    config[key] = isJsonRecord(value) ? cloneJsonRecord(value) : value
+  }
+  return config
+}
+
+function mergeRuntimeConfig(a: RuntimeCredentialConfig, b: RuntimeCredentialConfig): RuntimeCredentialConfig {
+  const merged: RuntimeCredentialConfig = { ...a }
+  for (const [key, value] of Object.entries(b)) {
+    if (isJsonRecord(merged[key]) && isJsonRecord(value)) {
+      merged[key] = mergeRuntimeConfig(merged[key] as RuntimeCredentialConfig, value as RuntimeCredentialConfig)
+    } else {
+      merged[key] = isJsonRecord(value) ? cloneJsonRecord(value) : value
+    }
+  }
+  return merged
+}
+
+function readVaultRecoverSource(sourcePath: string): VaultRecoverSourceImport {
+  const resolved = path.resolve(sourcePath)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown
+  } catch (error) {
+    const reason = String(error)
+    throw new Error(`cannot read vault recover source ${resolved}: ${reason}`)
+  }
+  if (!isJsonRecord(parsed)) {
+    throw new Error(`vault recover source ${resolved} must be a JSON object`)
+  }
+  return {
+    sourcePath: resolved,
+    providers: recoverProviderImports(parsed),
+    runtimeConfig: recoverRuntimeConfig(parsed),
+  }
+}
+
+function defaultRecoveredVaultEmail(agentName: string, now: Date): string {
+  const local = agentName
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "agent"
+  const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
+  return `${local}+recovered-${stamp}@ouro.bot`
+}
+
 async function executeVaultUnlock(
   command: Extract<OuroCliCommand, { kind: "vault.unlock" }>,
   deps: OuroCliDeps,
@@ -818,6 +931,93 @@ async function executeVaultCreate(
         "Keep this saved outside Ouro now. Another machine cannot unlock the vault without it.",
       ]
       : ["Keep the vault unlock secret saved outside Ouro. Another machine will need it once."]),
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultRecover(
+  command: Extract<OuroCliCommand, { kind: "vault.recover" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide does not have a persistent credential vault. Recover the hatchling agent vault, not SerpentGuide.")
+  }
+  const prompt = deps.promptInput
+  const now = providerCliNow(deps)
+  const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const configuredVault = resolveVaultConfig(command.agent, config.vault)
+  const email = command.email ?? defaultRecoveredVaultEmail(command.agent, now)
+  const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
+  const requestedUnlockSecret = command.generateUnlockSecret
+    ? ""
+    : prompt
+      ? (await prompt(`Choose replacement Ouro vault unlock secret for ${email}: `)).trim()
+      : ""
+  if (!requestedUnlockSecret && !command.generateUnlockSecret) {
+    throw new Error("vault recover requires a replacement unlock secret. Re-run with an interactive terminal or pass --generate-unlock-secret.")
+  }
+  const unlockSecret = requestedUnlockSecret || randomBytes(32).toString("base64")
+  const sourceImports = command.sources.map(readVaultRecoverSource)
+
+  const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
+  if (!result.success) {
+    const message = [
+      `vault recover failed for ${command.agent}: ${result.error}`,
+      "",
+      "Recovery creates a replacement vault. If that vault account already exists, retry with a fresh --email value.",
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  writeAgentVaultConfig(command.agent, configPath, config, { email, serverUrl })
+  const store = storeVaultUnlockSecret({
+    agentName: command.agent,
+    email,
+    serverUrl,
+  }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
+  resetCredentialStore()
+  await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+
+  const importedProviders = new Set<AgentProvider>()
+  let mergedRuntimeConfig: RuntimeCredentialConfig = {}
+  for (const source of sourceImports) {
+    for (const provider of source.providers) {
+      await upsertProviderCredential({
+        agentName: command.agent,
+        provider: provider.provider,
+        credentials: provider.credentials,
+        config: provider.config,
+        provenance: { source: "manual" },
+        now,
+      })
+      importedProviders.add(provider.provider)
+    }
+    mergedRuntimeConfig = mergeRuntimeConfig(mergedRuntimeConfig, source.runtimeConfig)
+  }
+
+  const runtimeFields = summarizeRuntimeConfigFields(mergedRuntimeConfig)
+  if (runtimeFields.length > 0) {
+    await upsertRuntimeCredentialConfig(command.agent, mergedRuntimeConfig, now)
+  }
+  const providerList = [...importedProviders].sort()
+  const message = [
+    `vault recovered for ${command.agent}`,
+    `vault: ${email} at ${serverUrl}`,
+    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
+    `sources imported: ${sourceImports.length}`,
+    `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
+    `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
+    "credential values were not printed",
+    ...(command.generateUnlockSecret
+      ? [
+        "",
+        `vault unlock secret: ${unlockSecret}`,
+        "",
+        "Keep this saved outside Ouro now. Another machine cannot unlock the vault without it.",
+      ]
+      : ["Keep the replacement vault unlock secret saved outside Ouro. Another machine will need it once."]),
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -2847,6 +3047,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "vault.create") {
     return executeVaultCreate(command, deps)
+  }
+
+  if (command.kind === "vault.recover") {
+    return executeVaultRecover(command, deps)
   }
 
   if (command.kind === "vault.status") {
