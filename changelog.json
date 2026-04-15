@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.393",
+      "changes": [
+        "Restored the trusted publish workflow to the supported `latest` channel after the one-time alpha bridge release.",
+        "`@ouro.bot/cli@latest` and `ouro.bot@latest` now advance together again on the final current runtime version.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the post-bridge latest-channel release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.392",
       "changes": [
         "Published a one-time alpha-channel bridge so launchers still pinned to `@ouro.bot/cli@alpha` can run code that checks the supported `latest` channel.",

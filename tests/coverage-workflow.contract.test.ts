@@ -52,15 +52,17 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
   })
 
-  it("publishes the CLI and bootstrap wrapper on the alpha bridge npm channel", () => {
+  it("publishes the CLI and bootstrap wrapper on the same latest npm channel", () => {
     const workflow = readFileSync(
       join(process.cwd(), ".github", "workflows", "coverage.yml"),
       "utf8",
     )
 
-    expect(workflow).toContain("npm publish --access public --provenance --tag alpha")
-    expect(workflow).toContain('verify_tag "@ouro.bot/cli@alpha" "$LOCAL"')
-    expect(workflow).toContain('verify_tag "ouro.bot@alpha" "$LOCAL"')
+    expect(workflow).toContain("npm publish --access public --provenance --tag latest")
+    expect(workflow).toContain('verify_tag "@ouro.bot/cli@latest" "$LOCAL"')
+    expect(workflow).toContain('verify_tag "ouro.bot@latest" "$LOCAL"')
+    expect(workflow).not.toContain("npm publish --access public --provenance --tag alpha")
+    expect(workflow).not.toContain('verify_tag "@ouro.bot/cli@alpha" "$LOCAL"')
   })
 
   it("runs the outlook-ui package typecheck and test suite before the root coverage gate continues", () => {
