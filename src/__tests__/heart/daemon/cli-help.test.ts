@@ -284,6 +284,10 @@ describe("parseOuroCommand help handling", () => {
     expect(parseOuroCommand(["vault", "recover", "--agent", "slugger", "--help"]))
       .toEqual({ kind: "help", command: "vault recover" })
     expect(parseOuroCommand(["help", "vault", "recover"])).toEqual({ kind: "help", command: "vault recover" })
+    expect(parseOuroCommand(["help", "auth", "verify"])).toEqual({ kind: "help", command: "auth verify" })
+    expect(parseOuroCommand(["auth", "switch", "--help"])).toEqual({ kind: "help", command: "auth switch" })
+    expect(parseOuroCommand(["provider", "refresh", "--help"])).toEqual({ kind: "help", command: "provider refresh" })
+    expect(parseOuroCommand(["use", "--help"])).toEqual({ kind: "help", command: "use" })
   })
 })
 
@@ -348,6 +352,15 @@ describe("runOuroCli help execution", () => {
     expect(result).toContain("vault recover")
     expect(result).toContain("--from <json>")
     expect(result).not.toContain("--generate-unlock-secret")
+  })
+
+  it("ouro help covers documented auth bootstrap commands", async () => {
+    const deps = makeDeps()
+
+    await expect(runOuroCli(["help", "auth", "verify"], deps)).resolves.toContain("ouro auth verify --agent <name>")
+    await expect(runOuroCli(["help", "auth", "switch"], deps)).resolves.toContain("ouro auth switch --agent <name>")
+    await expect(runOuroCli(["help", "provider", "refresh"], deps)).resolves.toContain("ouro provider refresh --agent <name>")
+    await expect(runOuroCli(["help", "use"], deps)).resolves.toContain("ouro use --agent <name>")
   })
 
   it("ouro help <unknown> outputs fallback grouped help", async () => {
