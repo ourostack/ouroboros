@@ -186,12 +186,15 @@ Interactive hatch should bootstrap SerpentGuide like this:
 4. Guide the human through provider-specific auth without asking for secrets in chat.
 5. Ping-check the selected provider credentials.
 6. Use the selected credentials to run SerpentGuide in memory.
-7. Create/configure the hatchling bundle and hatchling vault.
-8. Store the selected provider credentials into the hatchling vault.
+7. Prompt the human outside model context for a human-chosen hatchling vault unlock secret.
+8. Create/configure the hatchling bundle and hatchling vault.
+9. Store the selected provider credentials into the hatchling vault.
+
+The hatchling vault unlock secret is not generated, printed, included in tool arguments, or sent through chat. The terminal secret prompt does not echo it. The human must save the hatchling vault unlock secret outside Ouro if they want to unlock that new agent on another machine.
 
 Interactive hatch must not create, mutate, or persist a SerpentGuide vault. Persistent SerpentGuide provider credentials are not a supported state: there is no durable human-custody path for a SerpentGuide vault unlock secret, and a packaged bootstrap specialist should not become a hidden credential owner.
 
-Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only.
+Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only. If the flow needs to create a hatchling vault, it still requires a non-echoing human-provided vault unlock secret prompt; it must not generate and print one.
 
 ## Continue An Existing Agent Bundle
 

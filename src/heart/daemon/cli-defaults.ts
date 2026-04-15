@@ -444,6 +444,7 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
       provider: providerRaw,
       bundlesRoot,
       animationWriter: (text: string) => process.stdout.write(text),
+      promptSecret: defaultPromptSecret,
     })
 
     // Run the serpent guide session via runCliSession

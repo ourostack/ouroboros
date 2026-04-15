@@ -70,6 +70,16 @@ describe("auth/provider documentation contract", () => {
     expect(corpus).not.toContain("operator password manager")
   })
 
+  it("documents hatchling vault unlock secrets as human-provided and non-echoing", () => {
+    const authGuide = readRepoFile("docs", "auth-and-providers.md")
+    const specialistPrompt = readRepoFile("src", "heart", "hatch", "specialist-prompt.ts")
+
+    expect(authGuide).toContain("Prompt the human outside model context for a human-chosen hatchling vault unlock secret.")
+    expect(authGuide).toContain("The hatchling vault unlock secret is not generated, printed, included in tool arguments, or sent through chat.")
+    expect(specialistPrompt).toContain("complete_adoption tool triggers a hidden terminal prompt")
+    expect(specialistPrompt).toContain("I must never ask the human to type the vault unlock secret into chat")
+  })
+
   it("keeps packaged skill credential guidance on the agent vault model", () => {
     const corpus = readPackagedSkillCorpus()
     const retiredCredentialDir = [".agent", "secrets"].join("")

@@ -70,6 +70,7 @@ Expected:
 - system setup happens first
 - Adoption Specialist runs
 - a canonical bundle is created under `~/AgentBundles/Hatchling.ouro/`
+- the hatchling vault unlock secret is typed by the human into a hidden terminal prompt, not generated or printed
 - selected provider credentials are stored in the hatchling's vault
 - interactive hatch does not create, mutate, or persist a SerpentGuide vault
 

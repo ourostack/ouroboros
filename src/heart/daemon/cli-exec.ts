@@ -3532,10 +3532,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return ""
     }
 
-    const vaultLine = result.vaultUnlockSecret
-      ? `\nvault unlock secret for ${hatchInput.agentName}: ${result.vaultUnlockSecret}\nUse this with \`ouro vault unlock --agent ${hatchInput.agentName}\` on another machine.`
-      : ""
-    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}${vaultLine}`
+    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
     deps.writeStdout(message)
     return message
   }
