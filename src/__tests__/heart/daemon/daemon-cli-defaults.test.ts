@@ -26,6 +26,27 @@ function withProcessPlatform(platform: NodeJS.Platform): () => void {
   }
 }
 
+function withStreamTTY(stream: NodeJS.ReadStream | NodeJS.WriteStream, isTTY: boolean): () => void {
+  const original = Object.getOwnPropertyDescriptor(stream, "isTTY")
+  Object.defineProperty(stream, "isTTY", { value: isTTY, configurable: true })
+  return () => {
+    if (original) {
+      Object.defineProperty(stream, "isTTY", original)
+    } else {
+      Reflect.deleteProperty(stream, "isTTY")
+    }
+  }
+}
+
+function withSecretPromptTTY(): () => void {
+  const restoreStdin = withStreamTTY(process.stdin, true)
+  const restoreStdout = withStreamTTY(process.stdout, true)
+  return () => {
+    restoreStdout()
+    restoreStdin()
+  }
+}
+
 describe("daemon CLI default dependency branches", () => {
   it("passes removable launchd deps and falls back to uid 0 when getuid is unavailable", async () => {
     vi.resetModules()
@@ -1179,6 +1200,7 @@ describe("daemon CLI default dependency branches", () => {
   it("uses default promptSecret and trims readline responses", async () => {
     vi.resetModules()
 
+    const restoreTTY = withSecretPromptTTY()
     const close = vi.fn()
     const originalWriteToOutput = vi.fn()
     let iface!: {
@@ -1228,12 +1250,14 @@ describe("daemon CLI default dependency branches", () => {
       expect(close).toHaveBeenCalledTimes(1)
     } finally {
       stdoutWrite.mockRestore()
+      restoreTTY()
     }
   })
 
   it("uses default promptSecret when readline has no output hook", async () => {
     vi.resetModules()
 
+    const restoreTTY = withSecretPromptTTY()
     const question = vi.fn((_prompt: string, callback: (answer: string) => void) => {
       callback("  still-hush  ")
     })
@@ -1266,6 +1290,37 @@ describe("daemon CLI default dependency branches", () => {
       expect(close).toHaveBeenCalledTimes(1)
     } finally {
       stdoutWrite.mockRestore()
+      restoreTTY()
+    }
+  })
+
+  it("rejects default promptSecret outside an interactive terminal", async () => {
+    vi.resetModules()
+
+    const restoreStdinTTY = withStreamTTY(process.stdin, false)
+    const restoreStdoutTTY = withStreamTTY(process.stdout, true)
+
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn(), readdirSync: vi.fn(() => []) }))
+
+    try {
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.promptSecret!("Secret: ")).rejects.toThrow(
+        "vault unlock secret entry requires an interactive terminal",
+      )
+    } finally {
+      restoreStdoutTTY()
+      restoreStdinTTY()
     }
   })
 

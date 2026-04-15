@@ -942,6 +942,7 @@ async function executeVaultRecover(
     throw new Error("SerpentGuide does not have a persistent credential vault. Recover the hatchling agent vault, not SerpentGuide.")
   }
   if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("recover")
+  const sourceImports = command.sources.map(readVaultRecoverSource)
   const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "recover")
   const now = providerCliNow(deps)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
@@ -952,7 +953,6 @@ async function executeVaultRecover(
   if (!unlockSecret) {
     throw new Error("vault recover requires a replacement unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
-  const sourceImports = command.sources.map(readVaultRecoverSource)
 
   const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
   if (!result.success) {

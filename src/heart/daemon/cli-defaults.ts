@@ -208,6 +208,9 @@ async function defaultPromptInput(question: string): Promise<string> {
 }
 
 async function defaultPromptSecret(question: string): Promise<string> {
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    throw new Error("vault unlock secret entry requires an interactive terminal so the secret can be hidden. Re-run this command in a terminal and enter the human-chosen secret when prompted.")
+  }
   const readline = await import("readline")
   const rl = readline.createInterface({
     input: process.stdin,

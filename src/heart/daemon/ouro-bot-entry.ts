@@ -13,12 +13,14 @@ emitNervesEvent({
 })
 
 void runOuroBotWrapper(process.argv.slice(2)).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(`${message}\n`)
   emitNervesEvent({
     level: "error",
     component: "daemon",
     event: "daemon.ouro_bot_entry_error",
     message: "ouro.bot wrapper entrypoint failed",
-    meta: { error: error instanceof Error ? error.message : String(error) },
+    meta: { error: message },
   })
   process.exit(1)
 })
