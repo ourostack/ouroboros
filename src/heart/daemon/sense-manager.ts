@@ -117,7 +117,7 @@ function numberField(record: Record<string, unknown> | undefined, key: string, f
 function compactRuntimeConfigError(agent: string, error: string): string {
   const compact = error.replace(/\s+/g, " ").trim()
   if (/credential vault is locked|vault locked|vault is locked/i.test(compact)) {
-    return `vault locked; run 'ouro vault unlock --agent ${agent}'`
+    return `vault locked; run 'ouro vault unlock --agent ${agent}' if you have the saved secret, or 'ouro vault replace --agent ${agent}' if none was saved`
   }
   return compact || "unavailable"
 }

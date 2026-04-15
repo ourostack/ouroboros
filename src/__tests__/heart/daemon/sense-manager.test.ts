@@ -846,7 +846,7 @@ describe("daemon sense manager", () => {
     expect(manager.listSenseRows().find((row) => row.sense === "teams")).toEqual(
       expect.objectContaining({
         status: "needs_config",
-        detail: "vault runtime/config unavailable (vault locked; run 'ouro vault unlock --agent slugger')",
+        detail: "vault runtime/config unavailable (vault locked; run 'ouro vault unlock --agent slugger' if you have the saved secret, or 'ouro vault replace --agent slugger' if none was saved)",
       }),
     )
   })

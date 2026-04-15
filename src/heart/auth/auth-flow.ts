@@ -14,6 +14,7 @@ import {
   splitProviderCredentialFields,
   upsertProviderCredential,
 } from "../provider-credentials"
+import { vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-"
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80
@@ -400,7 +401,7 @@ export async function runRuntimeAuthFlow(
 
   const vault = await refreshProviderCredentialPool(input.agentName)
   if (!vault.ok && vault.reason === "unavailable") {
-    throw new Error(`${vault.error}\nRun \`ouro vault unlock --agent ${input.agentName}\`, then retry auth.`)
+    throw new Error(`${vault.error}\n${vaultUnlockReplaceRecoverFix(input.agentName, `Then retry 'ouro auth --agent ${input.agentName} --provider ${input.provider}'.`)}`)
   }
 
   const credentials = await collectRuntimeAuthCredentials(input, deps)

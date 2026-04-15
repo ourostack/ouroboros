@@ -106,6 +106,25 @@ function missingSecureStoreMessage(config: VaultUnlockConfig): string {
   ].join("\n")
 }
 
+export function vaultUnlockReplaceRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
+  return [
+    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
+    `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
+    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
+    nextStep,
+  ].join(" ")
+}
+
+function lostUnlockSecretGuidance(config: VaultUnlockConfig): string {
+  if (!config.agentName) {
+    return "If nobody saved that unlock secret, run `ouro vault replace --agent <agent>` to create a new empty vault and re-enter credentials. If you do have a local JSON credential export, run `ouro vault recover --agent <agent> --from <json>` to import it."
+  }
+  return [
+    `If nobody saved that unlock secret, run \`ouro vault replace --agent ${config.agentName}\` to create a new empty vault and re-enter credentials.`,
+    `If you do have a local JSON credential export, run \`ouro vault recover --agent ${config.agentName} --from <json>\` to import it.`,
+  ].join(" ")
+}
+
 function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelection): string {
   const agentPart = config.agentName ? ` for ${config.agentName}` : ""
   const command = config.agentName
@@ -120,13 +139,11 @@ function lockedMessage(config: VaultUnlockConfig, store: VaultUnlockStoreSelecti
     "Provider credentials are still stored in the agent vault.",
     "This computer does not currently have usable local unlock material for that vault.",
     "This can happen on a new computer, after a local profile or hostname migration, or if the local unlock entry was removed.",
-	    "",
-	    `Run \`${command}\` and enter the saved agent vault unlock secret from the human/operator who controls that vault.`,
-	    config.agentName
-	      ? `If nobody saved that unlock secret, run \`ouro vault recover --agent ${config.agentName} --from <json>\` with a local credential export, or create a replacement vault and re-enter credentials.`
-	      : "If nobody saved that unlock secret, run `ouro vault recover --agent <agent> --from <json>` with a local credential export, or create a replacement vault and re-enter credentials.",
-	  ].join("\n")
-	}
+    "",
+    `Run \`${command}\` and enter the saved agent vault unlock secret from the human/operator who controls that vault.`,
+    lostUnlockSecretGuidance(config),
+  ].join("\n")
+}
 
 function validateStoreKind(store: VaultUnlockStoreKind | undefined): VaultUnlockStoreKind {
   const requested = store ?? "auto"

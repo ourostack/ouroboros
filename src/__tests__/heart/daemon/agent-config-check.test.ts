@@ -292,6 +292,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.error).toContain("credential vault is locked on this machine")
     expect(result.error).not.toContain("Run `ouro vault unlock")
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.fix).toContain("ouro vault replace --agent myagent")
     expect(result.fix).toContain("ouro vault recover --agent myagent --from <json>")
     expect(result.fix).toContain("ouro up")
     expect(result.fix).not.toContain("ouro auth")

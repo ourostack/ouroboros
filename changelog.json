@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.394",
+      "changes": [
+        "Added `ouro vault replace --agent <agent>` for existing pre-vault agents whose bundle has vault coordinates but no saved unlock secret and no local JSON credential export.",
+        "`ouro vault status --agent <agent>` now clearly reports when an existing agent has not configured a vault locator yet and points to `ouro vault create --agent <agent>` instead of implying an unlockable vault exists.",
+        "Locked-vault repair guidance now distinguishes saved-secret unlock, no-export replacement, and JSON-export recovery across provider checks, auth, provider refresh, vault config status, and vault unlock errors.",
+        "Interactive repair prompts now warn humans to run vault unlock only when they have the saved unlock secret, and docs explain how old auth-style agents continue by replacing the vault and re-entering credentials.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the pre-vault replacement repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.393",
       "changes": [
         "Restored the trusted publish workflow to the supported `latest` channel after the one-time alpha bridge release.",

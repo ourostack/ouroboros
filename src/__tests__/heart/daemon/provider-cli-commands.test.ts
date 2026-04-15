@@ -62,6 +62,12 @@ vi.mock("../../../repertoire/vault-setup", () => ({
 vi.mock("../../../repertoire/vault-unlock", () => ({
   storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
   getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
+  vaultUnlockReplaceRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
+    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
+    `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
+    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
+    nextStep,
+  ].join(" "),
 }))
 
 vi.mock("../../../repertoire/credential-access", () => ({
@@ -273,6 +279,16 @@ function readAgentConfig(bundlesRoot: string, agentName: string): Record<string,
   return JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, agentName), "agent.json"), "utf-8")) as Record<string, unknown>
 }
 
+function writeAgentVaultLocator(
+  bundlesRoot: string,
+  agentName: string,
+  vault: { email: string; serverUrl: string },
+): void {
+  const agentConfigPath = path.join(bundlesRoot, `${agentName}.ouro`, "agent.json")
+  const agentConfig = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as Record<string, unknown>
+  fs.writeFileSync(agentConfigPath, `${JSON.stringify({ ...agentConfig, vault }, null, 2)}\n`, "utf-8")
+}
+
 afterEach(() => {
   mockPingProvider.mockReset()
   mockProviderCredentials.pools.clear()
@@ -427,6 +443,32 @@ describe("provider CLI command parsing", () => {
     })
     expect(parseOuroCommand([
       "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--email",
+      "slugger+replacement@example.com",
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+      "--generate-unlock-secret",
+    ])).toEqual({
+      kind: "vault.replace",
+      agent: "Slugger",
+      email: "slugger+replacement@example.com",
+      serverUrl: "https://vault.example.com",
+      store: "plaintext-file",
+      generateUnlockSecret: true,
+    })
+    expect(parseOuroCommand(["vault", "replace", "--agent", "Slugger"])).toEqual({
+      kind: "vault.replace",
+      agent: "Slugger",
+    })
+    expect(() => parseOuroCommand(["vault", "replace", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"]))
+      .toThrow("--from is only valid")
+    expect(parseOuroCommand([
+      "vault",
       "recover",
       "--agent",
       "Slugger",
@@ -514,11 +556,11 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
       .toThrow("vault --store")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--bad"]))
-      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
+      .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "delete", "--agent", "Slugger"]))
-      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
+      .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "status"]))
-      .toThrow("ouro vault create|recover|unlock|status --agent <name>")
+      .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -998,6 +1040,126 @@ describe("provider CLI command execution", () => {
     )
   })
 
+  it("vault replace creates an empty replacement vault for pre-vault agents", async () => {
+    emitTestEvent("provider cli vault replace")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        expect(question).toBe("Choose replacement Ouro vault unlock secret for slugger+replaced-20260412201000@ouro.bot: ")
+        return "chosen-replacement-secret"
+      },
+    }))
+
+    expect(result).toContain("vault replaced for Slugger")
+    expect(result).toContain("vault: slugger+replaced-20260412201000@ouro.bot at https://vault.example.com")
+    expect(result).toContain("credentials imported: none")
+    expect(result).toContain("no-export path")
+    expect(result).toContain("ouro auth --agent Slugger --provider <provider>")
+    expect(result).toContain("ouro vault config set --agent Slugger --key <field>")
+    expect(result).toContain("Keep the replacement vault unlock secret saved outside Ouro")
+    expect(result).not.toContain("chosen-replacement-secret")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.example.com",
+      "slugger+replaced-20260412201000@ouro.bot",
+      "chosen-replacement-secret",
+    )
+    expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
+      { agentName: "Slugger", email: "slugger+replaced-20260412201000@ouro.bot", serverUrl: "https://vault.example.com" },
+      "chosen-replacement-secret",
+      { homeDir, store: "plaintext-file" },
+    )
+    expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
+      email: "slugger+replaced-20260412201000@ouro.bot",
+      serverUrl: "https://vault.example.com",
+    })
+    expect(mockVaultDeps.rawSecrets.size).toBe(0)
+  })
+
+  it("vault replace covers prompted secrets, failures, and guards", async () => {
+    emitTestEvent("provider cli vault replace guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({
+      kind: "macos-keychain",
+      secure: true,
+      location: "macOS Keychain",
+    })
+
+    const prompted = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--email",
+      "slugger+manual@example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async (question) => {
+        expect(question).toBe("Choose replacement Ouro vault unlock secret for slugger+manual@example.com: ")
+        return "chosen-replacement-secret"
+      },
+    }))
+    expect(prompted).toContain("vault replaced for Slugger")
+    expect(prompted).toContain("local unlock store: macos-keychain")
+    expect(prompted).not.toContain("explicit plaintext fallback")
+    expect(prompted).not.toContain("chosen-replacement-secret")
+
+    await expect(runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("vault replace requires an interactive secret prompt")
+    await expect(runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "   ",
+    }))).rejects.toThrow("vault replace requires a replacement unlock secret")
+    await expect(runOuroCli(["vault", "replace", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-replacement-secret",
+    }))).rejects.toThrow("Replace the hatchling agent vault")
+    await expect(runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-replacement-secret",
+    }))).rejects.toThrow("vault replace no longer supports --generate-unlock-secret")
+
+    mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
+    const failed = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--email",
+      "slugger+manual@example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-replacement-secret",
+    }))
+    expect(failed).toContain("vault replace failed for Slugger: already exists")
+    expect(failed).toContain("retry with a fresh --email value")
+  })
+
   it("vault recover creates a replacement vault and imports local JSON credential exports without printing values", async () => {
     emitTestEvent("provider cli vault recover")
     const bundlesRoot = makeTempDir("provider-cli-vault-recover-bundles")
@@ -1311,6 +1473,10 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-vault-status-bundles")
     const homeDir = makeTempDir("provider-cli-vault-status-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+      email: "slugger@example.com",
+      serverUrl: "https://vault.example.com",
+    })
     mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
       configured: true,
       stored: true,
@@ -1378,15 +1544,6 @@ describe("provider CLI command execution", () => {
     expect(missingRuntime).toContain("runtime credentials: missing")
     expect(missingRuntime).toContain("ouro vault config set --agent Slugger")
 
-    const agentConfigPath = path.join(bundlesRoot, "Slugger.ouro", "agent.json")
-    const agentConfig = JSON.parse(fs.readFileSync(agentConfigPath, "utf-8")) as Record<string, unknown>
-    fs.writeFileSync(agentConfigPath, `${JSON.stringify({
-      ...agentConfig,
-      vault: {
-        email: "slugger@example.com",
-        serverUrl: "https://vault.example.com",
-      },
-    }, null, 2)}\n`, "utf-8")
     mockVaultDeps.getVaultUnlockStatus.mockReturnValueOnce({
       configured: true,
       stored: true,
@@ -1449,6 +1606,21 @@ describe("provider CLI command execution", () => {
 
     const serpent = await runOuroCli(["vault", "status", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
     expect(serpent).toContain("SerpentGuide has no persistent credential vault")
+  })
+
+  it("vault status gives a create path when an existing agent has no vault locator", async () => {
+    emitTestEvent("provider cli vault status no locator")
+    const bundlesRoot = makeTempDir("provider-cli-vault-status-no-locator-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-status-no-locator-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("vault locator: not configured in agent.json")
+    expect(result).toContain("local unlock: not checked")
+    expect(result).toContain("ouro vault create --agent Slugger")
+    expect(result).toContain("ouro auth --agent Slugger --provider <provider>")
+    expect(mockVaultDeps.getVaultUnlockStatus).not.toHaveBeenCalled()
   })
 
   it("vault config set and status manage runtime credentials without printing values", async () => {
@@ -1577,7 +1749,9 @@ describe("provider CLI command execution", () => {
       checkSocketAlive: async () => false,
     }))
     expect(failed).toContain("provider credential refresh failed for Slugger: vault locked")
-    expect(failed).toContain("Run `ouro vault unlock --agent Slugger`, then retry.")
+    expect(failed).toContain("ouro vault unlock --agent Slugger")
+    expect(failed).toContain("ouro vault replace --agent Slugger")
+    expect(failed).toContain("Then retry 'ouro provider refresh'.")
     expect(failed).not.toContain("daemon is not running")
     expect(failed).not.toContain("restarted Slugger")
 

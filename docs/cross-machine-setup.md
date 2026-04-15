@@ -76,6 +76,8 @@ ouro vault unlock --agent <agent>
 
 Ouro stores local unlock material in Keychain, DPAPI, Secret Service, or an explicit plaintext fallback if the human chooses it. Local unlock material is a machine-local cache, not a credential source of truth.
 
+If `ouro vault status --agent <agent>` says the vault locator is not configured in `agent.json`, this agent has not set up its vault yet. Run `ouro vault create --agent <agent>`, save the human-chosen unlock secret outside Ouro, then re-enter provider credentials with `ouro auth --agent <agent>`.
+
 Then refresh and verify the credentials this machine can use:
 
 ```bash
@@ -94,7 +96,15 @@ This walks you through authenticating with your model provider (Anthropic, Azure
 
 If this agent predates the vault-backed auth model, follow the **Old Auth-Style Agents** checklist in [docs/auth-and-providers.md](auth-and-providers.md) before relying on `ouro up`.
 
-If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the recovery checklist instead of `ouro vault unlock`. The recovery path creates a replacement vault and can import a human-specified local JSON credential export once:
+If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the old-auth checklist instead of `ouro vault unlock`.
+
+If there is no local credential export because the agent predates vault-backed provider storage, create an empty replacement vault and re-enter credentials:
+
+```bash
+ouro vault replace --agent <agent>
+```
+
+If the human does have a local JSON credential export, recover into a replacement vault and import it once:
 
 ```bash
 ouro vault recover --agent <agent> --from <json>
@@ -176,6 +186,6 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
-**Agent can't reach model provider** — Run `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If credentials are missing or stale, run `ouro auth --agent <name>`.
+**Agent can't reach model provider** — If you have the saved vault unlock secret, run `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If nobody ever saved an unlock secret for this existing agent, run `ouro vault replace --agent <name>`, then re-enter credentials with `ouro auth --agent <name>`.
 
 **WSL setup can't find `claude.exe`** — Make sure Claude Code is installed on Windows and that Windows executables are accessible from WSL (this is the default). Check that `/etc/wsl.conf` doesn't have `appendWindowsPath = false`.

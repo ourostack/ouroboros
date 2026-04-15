@@ -18,6 +18,7 @@ import {
   type ProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
+import { vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 
 export interface ConfigCheckResult {
   ok: boolean
@@ -327,11 +328,7 @@ function isVaultLockedError(error: string): boolean {
 }
 
 export function vaultUnlockOrRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
-  return [
-    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
-    `If nobody saved it, run 'ouro vault recover --agent ${agentName} --from <json>' with a local credential export.`,
-    nextStep,
-  ].join(" ")
+  return vaultUnlockReplaceRecoverFix(agentName, nextStep)
 }
 
 function failedPingResult(
