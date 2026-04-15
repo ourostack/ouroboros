@@ -39,9 +39,11 @@ The installed `ouro` command is a tiny launcher written to:
 
 - `~/.local/bin/ouro`
 
-It currently delegates to:
+It delegates to the version-managed runtime under `~/.ouro-cli/CurrentVersion`.
+The bootstrap and update channel is:
 
-- `npx --yes @ouro.bot/cli@alpha "$@"`
+- `ouro.bot@latest`
+- `@ouro.bot/cli@latest`
 
 The launcher should always converge on the same runtime channel as the bootstrap path. `ouro up` repairs stale launcher contents if needed.
 

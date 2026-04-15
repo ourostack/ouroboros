@@ -2193,7 +2193,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next 2 -- unreachable after exec replaces process @preserve */
           return ""
         }
-        const message = "no installed version found. run: npx @ouro.bot/cli@alpha"
+        const message = "no installed version found. run: npx ouro.bot"
         deps.writeStdout(message)
         return message
       }
@@ -2615,13 +2615,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       try {
         const updateResult = await deps.checkForCliUpdate()
         if (updateResult.latestVersion) {
-          sections.push(`published alpha: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
+          sections.push(`published latest: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
         } else if (updateResult.error) {
-          sections.push(`published alpha: unavailable (${updateResult.error})`)
+          sections.push(`published latest: unavailable (${updateResult.error})`)
         }
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err)
-        sections.push(`published alpha: unavailable (${reason})`)
+        sections.push(`published latest: unavailable (${reason})`)
       }
     }
 

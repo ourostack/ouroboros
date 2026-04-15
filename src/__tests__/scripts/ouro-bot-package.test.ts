@@ -23,7 +23,7 @@ const fs = require("fs")
 const path = require("path")
 
 const args = process.argv.slice(2)
-if (args[0] === "view" && args[1] === "@ouro.bot/cli@alpha" && args[2] === "version") {
+if (args[0] === "view" && args[1] === "@ouro.bot/cli@latest" && args[2] === "version") {
   process.stdout.write(${JSON.stringify(`${version}\n`)})
   process.exit(0)
 }

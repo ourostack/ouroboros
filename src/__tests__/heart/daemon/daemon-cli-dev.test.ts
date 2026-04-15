@@ -206,7 +206,7 @@ describe("ouro up from dev context", () => {
     const result = await runOuroCli(["up"], deps)
 
     expect(result).toContain("no installed version found")
-    expect(result).toContain("npx @ouro.bot/cli@alpha")
+    expect(result).toContain("npx ouro.bot")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
 
