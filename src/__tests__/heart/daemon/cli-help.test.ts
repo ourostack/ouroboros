@@ -170,6 +170,15 @@ describe("getCommandHelp()", () => {
       COMMAND_REGISTRY["up"].example = original
     }
   })
+
+  it("returns focused help for vault recover", () => {
+    const result = getCommandHelp("vault recover")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("vault recover")
+    expect(result).toContain("--from <json>")
+    expect(result).toContain("--generate-unlock-secret")
+  })
 })
 
 // ── Unit 1a: Levenshtein distance + "did you mean?" ──
@@ -265,6 +274,17 @@ describe("parseOuroCommand help handling", () => {
   it("parses 'status --help' as { kind: 'help', command: 'status' }", () => {
     expect(parseOuroCommand(["status", "--help"])).toEqual({ kind: "help", command: "status" })
   })
+
+  it("parses top-level -h as grouped help", () => {
+    expect(parseOuroCommand(["-h"])).toEqual({ kind: "help" })
+  })
+
+  it("parses nested command help before flags", () => {
+    expect(parseOuroCommand(["vault", "recover", "--help"])).toEqual({ kind: "help", command: "vault recover" })
+    expect(parseOuroCommand(["vault", "recover", "--agent", "slugger", "--help"]))
+      .toEqual({ kind: "help", command: "vault recover" })
+    expect(parseOuroCommand(["help", "vault", "recover"])).toEqual({ kind: "help", command: "vault recover" })
+  })
 })
 
 // ── Unit 2c: runOuroCli help execution ──
@@ -309,6 +329,25 @@ describe("runOuroCli help execution", () => {
     const result = await runOuroCli(["help", "chat"], deps)
     expect(result).toContain("chat")
     expect(result).toContain(COMMAND_REGISTRY["chat"].description)
+  })
+
+  it("ouro vault recover --help outputs recovery options", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["vault", "recover", "--help"], deps)
+
+    expect(result).toContain("vault recover")
+    expect(result).toContain("--from <json>")
+    expect(result).toContain("--generate-unlock-secret")
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+  })
+
+  it("ouro help vault recover outputs the same recovery help", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["help", "vault", "recover"], deps)
+
+    expect(result).toContain("vault recover")
+    expect(result).toContain("--from <json>")
+    expect(result).toContain("--generate-unlock-secret")
   })
 
   it("ouro help <unknown> outputs fallback grouped help", async () => {
