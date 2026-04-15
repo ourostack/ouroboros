@@ -872,13 +872,13 @@ describe("provider CLI command execution", () => {
       "--store",
       "plaintext-file",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "unlock-material",
+      promptSecret: async () => "unlock-material",
     }))
 
     expect(result).toContain("vault unlocked for Slugger")
     expect(result).toContain("explicit plaintext fallback")
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "Slugger", email: "Slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+      { agentName: "Slugger", email: "Slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
       { homeDir, store: "plaintext-file" },
     )
@@ -892,7 +892,7 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "unlock-material",
+      promptSecret: async () => "unlock-material",
     }))
     expect(secureResult).toContain("local unlock store: macos-keychain")
     expect(secureResult).not.toContain("explicit plaintext fallback")
@@ -905,10 +905,10 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
 
     await expect(runOuroCli(["vault", "unlock", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "unlock-material",
+      promptSecret: async () => "unlock-material",
     }))).rejects.toThrow("SerpentGuide does not have a persistent credential vault")
     await expect(runOuroCli(["vault", "unlock", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
-      .rejects.toThrow("vault unlock requires an interactive prompt")
+      .rejects.toThrow("vault unlock requires an interactive secret prompt")
   })
 
   it("vault create writes vault locator, stores unlock material, and handles existing accounts", async () => {
@@ -928,16 +928,17 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot))
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-create-secret",
+    }))
 
     expect(created).toContain("vault created for Slugger")
-    expect(created).toContain("vault unlock secret:")
+    expect(created).not.toContain("vault unlock secret:")
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.example.com",
       "operator@example.com",
-      expect.any(String),
+      "chosen-create-secret",
     )
     expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
       email: "operator@example.com",
@@ -954,8 +955,9 @@ describe("provider CLI command execution", () => {
       "operator@example.com",
       "--server",
       "https://vault.example.com",
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot))
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-create-secret",
+    }))
 
     expect(failed).toContain("vault create failed for Slugger: already exists")
     expect(failed).toContain("ouro vault unlock --agent Slugger")
@@ -971,7 +973,11 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
-        prompts.push(question)
+        prompts.push(`input:${question}`)
+        return "operator@example.com"
+      },
+      promptSecret: async (question) => {
+        prompts.push(`secret:${question}`)
         return question.includes("email") ? "operator@example.com" : "chosen-unlock-material"
       },
     }))
@@ -981,12 +987,12 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("local unlock store: macos-keychain")
     expect(result).not.toContain("explicit plaintext fallback")
     expect(prompts).toEqual([
-      "Ouro credential vault email: ",
-      "Choose Ouro vault unlock secret for operator@example.com: ",
+      "input:Ouro credential vault email: ",
+      "secret:Choose Ouro vault unlock secret for operator@example.com: ",
     ])
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
-      "https://vault.ouro.bot",
+      "https://vault.ouroboros.bot",
       "operator@example.com",
       "chosen-unlock-material",
     )
@@ -1035,8 +1041,10 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "chosen-recovery-secret",
+    }))
 
     expect(result).toContain("vault recovered for Slugger")
     expect(result).toContain("vault: slugger+recovered-20260412201000@ouro.bot at https://vault.example.com")
@@ -1052,11 +1060,11 @@ describe("provider CLI command execution", () => {
       "Ouro credential vault",
       "https://vault.example.com",
       "slugger+recovered-20260412201000@ouro.bot",
-      expect.any(String),
+      "chosen-recovery-secret",
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger+recovered-20260412201000@ouro.bot", serverUrl: "https://vault.example.com" },
-      expect.any(String),
+      "chosen-recovery-secret",
       { homeDir, store: "plaintext-file" },
     )
     expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
@@ -1118,7 +1126,7 @@ describe("provider CLI command execution", () => {
       "--email",
       "slugger+manual@example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async (question) => {
+      promptSecret: async (question) => {
         expect(question).toBe("Choose replacement Ouro vault unlock secret for slugger+manual@example.com: ")
         return "chosen-recovery-secret"
       },
@@ -1136,7 +1144,17 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--from",
       emptySource,
-    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("vault recover requires a replacement unlock secret")
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("vault recover requires an interactive secret prompt")
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      emptySource,
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "   ",
+    }))).rejects.toThrow("vault recover requires a replacement unlock secret")
 
     await expect(runOuroCli([
       "vault",
@@ -1145,8 +1163,9 @@ describe("provider CLI command execution", () => {
       "SerpentGuide",
       "--from",
       emptySource,
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("Recover the hatchling agent vault")
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-recovery-secret",
+    }))).rejects.toThrow("Recover the hatchling agent vault")
 
     mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
     const failed = await runOuroCli([
@@ -1158,8 +1177,9 @@ describe("provider CLI command execution", () => {
       emptySource,
       "--email",
       "slugger+manual@example.com",
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot))
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-recovery-secret",
+    }))
     expect(failed).toContain("vault recover failed for Slugger: already exists")
     expect(failed).toContain("retry with a fresh --email value")
 
@@ -1172,8 +1192,9 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--from",
       nonObjectSource,
-      "--generate-unlock-secret",
-    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("must be a JSON object")
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "chosen-recovery-secret",
+    }))).rejects.toThrow("must be a JSON object")
 
     await expect(runOuroCli([
       "vault",
@@ -1182,8 +1203,9 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--from",
       path.join(sourceDir, "missing.json"),
-      "--generate-unlock-secret",
-	    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("cannot read vault recover source")
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      promptSecret: async () => "chosen-recovery-secret",
+	    }))).rejects.toThrow("cannot read vault recover source")
 	  })
 
 	  it("vault recover explains sanitized defaults and secure local stores", async () => {
@@ -1207,10 +1229,12 @@ describe("provider CLI command execution", () => {
 	      "!!!",
 	      "--from",
 	      emptySource,
-	      "--generate-unlock-secret",
-	    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      now: () => Date.parse(NOW),
+	      promptSecret: async () => "chosen-recovery-secret",
+	    }))
 
-	    expect(recovered).toContain("vault: agent+recovered-20260412201000@ouro.bot at https://vault.ouro.bot")
+	    expect(recovered).toContain("vault: agent+recovered-20260412201000@ouro.bot at https://vault.ouroboros.bot")
 	    expect(recovered).toContain("local unlock store: macos-keychain")
 	    expect(recovered).not.toContain("explicit plaintext fallback")
 
@@ -1227,8 +1251,10 @@ describe("provider CLI command execution", () => {
 	      "TopLevel",
 	      "--from",
 	      topLevelProviderSource,
-	      "--generate-unlock-secret",
-	    ], makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      now: () => Date.parse(NOW),
+	      promptSecret: async () => "chosen-recovery-secret",
+	    }))
 
 	    expect(topLevelRecovered).toContain("provider credentials imported: minimax")
 	    expect(topLevelRecovered).toContain("runtime credentials imported: none")
@@ -1243,11 +1269,37 @@ describe("provider CLI command execution", () => {
 
     await expect(runOuroCli(["vault", "create", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => "operator@example.com",
+      promptSecret: async () => "chosen-create-secret",
     }))).rejects.toThrow("Create a vault for the hatchling agent")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
       .rejects.toThrow("vault create requires --email")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot)))
-      .rejects.toThrow("vault create requires an unlock secret")
+      .rejects.toThrow("vault create requires an interactive secret prompt")
+    await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "   ",
+    }))).rejects.toThrow("vault create requires an unlock secret")
+    await expect(runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "unused",
+    }))).rejects.toThrow("no longer supports --generate-unlock-secret")
+    await expect(runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      path.join(homeDir, "missing.json"),
+      "--generate-unlock-secret",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "unused",
+    }))).rejects.toThrow("no longer supports --generate-unlock-secret")
   })
 
   it("vault status reports local unlock state and vault provider summaries", async () => {

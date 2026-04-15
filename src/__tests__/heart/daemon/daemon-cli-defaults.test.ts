@@ -1176,6 +1176,99 @@ describe("daemon CLI default dependency branches", () => {
     expect(close).toHaveBeenCalledTimes(1)
   })
 
+  it("uses default promptSecret and trims readline responses", async () => {
+    vi.resetModules()
+
+    const close = vi.fn()
+    const originalWriteToOutput = vi.fn()
+    let iface!: {
+      question: ReturnType<typeof vi.fn>
+      close: ReturnType<typeof vi.fn>
+      _writeToOutput: (text: string) => void
+    }
+    const question = vi.fn((prompt: string, callback: (answer: string) => void) => {
+      iface._writeToOutput(prompt)
+      setImmediate(() => {
+        iface._writeToOutput("typed-secret")
+        callback("  hush  ")
+      })
+    })
+    const createInterface = vi.fn(() => {
+      iface = {
+        question,
+        close,
+        _writeToOutput: originalWriteToOutput,
+      }
+      return iface
+    })
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+
+    vi.doMock("readline", () => ({ createInterface }))
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn(), readdirSync: vi.fn(() => []) }))
+
+    try {
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      const value = await deps.promptSecret!("Secret: ")
+      expect(value).toBe("hush")
+      expect(question).toHaveBeenCalledWith("Secret: ", expect.any(Function))
+      expect(originalWriteToOutput).toHaveBeenCalledWith("Secret: ")
+      expect(originalWriteToOutput).not.toHaveBeenCalledWith("typed-secret")
+      expect(stdoutWrite).toHaveBeenCalledWith("\n")
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      stdoutWrite.mockRestore()
+    }
+  })
+
+  it("uses default promptSecret when readline has no output hook", async () => {
+    vi.resetModules()
+
+    const question = vi.fn((_prompt: string, callback: (answer: string) => void) => {
+      callback("  still-hush  ")
+    })
+    const close = vi.fn()
+    const createInterface = vi.fn(() => ({
+      question,
+      close,
+    }))
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+
+    vi.doMock("readline", () => ({ createInterface }))
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({ existsSync: vi.fn(() => false), unlinkSync: vi.fn(), readdirSync: vi.fn(() => []) }))
+
+    try {
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      const value = await deps.promptSecret!("Secret: ")
+      expect(value).toBe("still-hush")
+      expect(question).toHaveBeenCalledWith("Secret: ", expect.any(Function))
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      stdoutWrite.mockRestore()
+    }
+  })
+
   it("default discovery filters disabled/invalid bundles and sorts enabled agents", async () => {
     vi.resetModules()
 

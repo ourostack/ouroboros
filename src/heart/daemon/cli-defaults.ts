@@ -207,6 +207,43 @@ async function defaultPromptInput(question: string): Promise<string> {
   }
 }
 
+async function defaultPromptSecret(question: string): Promise<string> {
+  const readline = await import("readline")
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true,
+  })
+  type MutedReadline = import("readline").Interface & {
+    _writeToOutput?: (stringToWrite: string) => void
+  }
+  const mutableRl = rl as MutedReadline
+  const originalWriteToOutput = mutableRl._writeToOutput
+  let muted = false
+  if (originalWriteToOutput) {
+    mutableRl._writeToOutput = (stringToWrite: string) => {
+      if (!muted) {
+        originalWriteToOutput.call(rl, stringToWrite)
+      }
+    }
+  }
+  try {
+    const response = await new Promise<string>((resolve) => {
+      rl.question(question, (answer) => {
+        process.stdout.write("\n")
+        resolve(answer)
+      })
+      muted = true
+    })
+    return response.trim()
+  } finally {
+    if (originalWriteToOutput) {
+      mutableRl._writeToOutput = originalWriteToOutput
+    }
+    rl.close()
+  }
+}
+
 export function defaultListDiscoveredAgents(): string[] {
   return listEnabledBundleAgents({
     bundlesRoot: getAgentBundlesRoot(),
@@ -481,6 +518,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,
+    promptSecret: defaultPromptSecret,
     runSerpentGuide: defaultRunSerpentGuide,
     runAuthFlow: defaultRunRuntimeAuthFlow,
     registerOuroBundleType: defaultRegisterOuroBundleUti,

@@ -51,7 +51,7 @@ describe("BitwardenCredentialStore", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    store = new BitwardenCredentialStore("https://vault.ouro.bot", "ouroboros@ouro.bot", "masterpass123")
+    store = new BitwardenCredentialStore("https://vault.ouroboros.bot", "ouroboros@ouro.bot", "masterpass123")
   })
 
   describe("isReady", () => {
@@ -78,7 +78,7 @@ describe("BitwardenCredentialStore", () => {
       // First call: bw status
       expect(calls[0]).toEqual(["status"])
       // Second call: bw config server <url>
-      expect(calls[1]).toEqual(["config", "server", "https://vault.ouro.bot"])
+      expect(calls[1]).toEqual(["config", "server", "https://vault.ouroboros.bot"])
       // Third call: bw login
       expect(calls[2][0]).toBe("login")
       expect(calls[2][1]).toBe("ouroboros@ouro.bot")
@@ -123,7 +123,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
         } else if (args[0] === "unlock") {
           cb(null, "unlocked-session-token", "")
         } else {
@@ -156,7 +156,7 @@ describe("BitwardenCredentialStore", () => {
     it("uses an isolated Bitwarden app data directory when configured", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-appdata-"))
       const envCaptures: Array<Record<string, string | undefined>> = []
-      const isolatedStore = new BitwardenCredentialStore("https://vault.ouro.bot", "ouroboros@ouro.bot", "masterpass123", { appDataDir })
+      const isolatedStore = new BitwardenCredentialStore("https://vault.ouroboros.bot", "ouroboros@ouro.bot", "masterpass123", { appDataDir })
       mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, cb: Function) => {
         envCaptures.push(opts?.env ?? {})
         if (args[0] === "status") {

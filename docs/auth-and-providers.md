@@ -238,7 +238,7 @@ If the machine has no usable local secret store, the harness may offer an explic
 
 There is no hidden recovery path for a lost vault unlock secret.
 
-For an existing agent with no vault locator, run `ouro vault create --agent <agent>` or `ouro vault create --agent <agent> --generate-unlock-secret`. The command writes vault coordinates to `agent.json`, stores local unlock material for this machine, and prints a generated unlock secret only when the human requested generation. The human must keep that unlock secret outside Ouro; Ouro will not write a portable copy into the bundle or the vault.
+For an existing agent with no vault locator, run `ouro vault create --agent <agent>`. The command prompts for a human-chosen vault unlock secret without echoing it, writes vault coordinates to `agent.json`, and stores local unlock material for this machine. The human must keep that unlock secret outside Ouro; Ouro will not print it, write a portable copy into the bundle, or store it inside the vault.
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
@@ -265,18 +265,18 @@ Use this checklist for any existing agent that predates the vault-backed credent
    If the agent has no vault yet, create one:
 
    ```bash
-   ouro vault create --agent <agent> --generate-unlock-secret
+   ouro vault create --agent <agent>
    ```
 
-   Save the printed unlock secret outside Ouro. Another machine cannot unlock this agent vault without it.
+   Enter a human-chosen unlock secret when prompted. The prompt does not echo the secret. Save that unlock secret outside Ouro immediately. Another machine cannot unlock this agent vault without it.
 
 3. If the bundle has vault coordinates but nobody saved an unlock secret, create a replacement vault from any local JSON credential export the human still controls.
 
    ```bash
-   ouro vault recover --agent <agent> --from <json> --generate-unlock-secret
+   ouro vault recover --agent <agent> --from <json>
    ```
 
-   Repeat `--from <json>` for each local JSON export that should be imported. Save the printed replacement unlock secret outside Ouro immediately. The command stores the new vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
+   Repeat `--from <json>` for each local JSON export that should be imported. Enter a human-chosen replacement unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores the new vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
 
 4. Unlock the vault on this machine.
 

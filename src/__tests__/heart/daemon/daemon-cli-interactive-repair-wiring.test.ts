@@ -252,7 +252,7 @@ describe("ouro up: interactive repair wiring", () => {
     mocks.readAgentConfigForAgent.mockReturnValue({
       config: {
         humanFacing: { provider: "anthropic" },
-        vault: { email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+        vault: { email: "test-agent@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       },
     })
     vaultMocks.storeVaultUnlockSecret.mockClear()
@@ -265,10 +265,10 @@ describe("ouro up: interactive repair wiring", () => {
       return { repairsAttempted: false }
     })
 
-    const promptInput = vi.fn(async () => "unlock-material")
+    const promptSecret = vi.fn(async () => "unlock-material")
     const writeStdout = vi.fn()
     const deps = makeDeps({
-      promptInput,
+      promptSecret,
       writeStdout,
       bundlesRoot: "/tmp/bundles",
       homeDir: "/tmp/ouro-home",
@@ -279,9 +279,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(capturedRunVaultUnlock).toBeDefined()
     await capturedRunVaultUnlock!("test-agent")
 
-    expect(promptInput).toHaveBeenCalledWith("Ouro vault unlock secret for test-agent@ouro.bot: ")
+    expect(promptSecret).toHaveBeenCalledWith("Ouro vault unlock secret for test-agent@ouro.bot: ")
     expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
+      { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
       { homeDir: "/tmp/ouro-home", store: undefined },
     )

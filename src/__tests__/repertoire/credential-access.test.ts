@@ -100,7 +100,7 @@ describe("credential access", () => {
     expect(mockReadVaultUnlockSecret).toHaveBeenCalledWith({
       agentName: "ouroboros",
       email: "ouroboros@ouro.bot",
-      serverUrl: "https://vault.ouro.bot",
+      serverUrl: "https://vault.ouroboros.bot",
     })
   })
 

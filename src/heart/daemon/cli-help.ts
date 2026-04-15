@@ -248,13 +248,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "vault create": {
     description: "Create an agent credential vault and store local unlock material",
-    usage: "ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>] [--generate-unlock-secret]",
-    example: "ouro vault create --agent ouroboros --email ouroboros@ouro.bot --generate-unlock-secret",
+    usage: "ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",
+    example: "ouro vault create --agent ouroboros --email ouroboros@ouro.bot",
   },
   "vault recover": {
     description: "Create a replacement agent vault and import local JSON credential exports",
-    usage: "ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>] [--generate-unlock-secret]",
-    example: "ouro vault recover --agent ouroboros --from ./credentials.json --generate-unlock-secret",
+    usage: "ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
+    example: "ouro vault recover --agent ouroboros --from ./credentials.json",
   },
   "vault unlock": {
     description: "Unlock an existing agent credential vault on this machine",

@@ -11,7 +11,7 @@ describe("resolveVaultConfig", () => {
     const result = resolveVaultConfig("ouroboros", undefined)
     expect(result.email).toBe("ouroboros@ouro.bot")
     expect(result.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
-    expect(result.serverUrl).toBe("https://vault.ouro.bot")
+    expect(result.serverUrl).toBe("https://vault.ouroboros.bot")
   })
 
   it("uses email from config when provided", () => {

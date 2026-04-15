@@ -825,7 +825,7 @@ describe("daemon sense manager", () => {
         error: [
           "Ouro credential vault is locked on this machine for slugger.",
           "",
-          "Vault: slugger@ouro.bot at https://vault.ouro.bot",
+          "Vault: slugger@ouro.bot at https://vault.ouroboros.bot",
           "Run `ouro vault unlock --agent slugger` and enter the saved agent vault unlock secret.",
         ].join("\n"),
       }),

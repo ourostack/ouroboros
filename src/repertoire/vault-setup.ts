@@ -164,6 +164,7 @@ function generateRsaKeypair(): { publicKeyB64: string; privateKeyDer: Buffer } {
 
 const KDF_PBKDF2 = 0
 const KDF_ITERATIONS = 600000
+const REGISTER_ACCOUNT_PATH = "/identity/accounts/register"
 
 /**
  * Create a Bitwarden account on the configured Vaultwarden server.
@@ -197,7 +198,8 @@ export async function createVaultAccount(
     const encryptedPrivateKey = encryptWithStretchedKey(privateKeyDer, symKey)
 
     // Step 4: POST registration
-    const res = await fetch(`${serverUrl}/api/accounts/register`, {
+    const registrationUrl = `${serverUrl}${REGISTER_ACCOUNT_PATH}`
+    const res = await fetch(registrationUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -223,16 +225,17 @@ export async function createVaultAccount(
       } catch {
         errorDetail = `HTTP ${res.status} ${res.statusText}`
       }
+      const endpointAwareError = `${errorDetail} from ${registrationUrl}. Check --server; Ouro expects a Bitwarden/Vaultwarden identity API.`
 
       emitNervesEvent({
         level: "error",
         event: "repertoire.vault_setup_error",
         component: "repertoire",
-        message: `vault registration failed: ${errorDetail}`,
-        meta: { agentName, serverUrl, email, reason: errorDetail },
+        message: `vault registration failed: ${endpointAwareError}`,
+        meta: { agentName, serverUrl, email, registrationUrl, reason: endpointAwareError },
       })
 
-      return { success: false, email, serverUrl, error: errorDetail }
+      return { success: false, email, serverUrl, error: endpointAwareError }
     }
 
     emitNervesEvent({
@@ -245,14 +248,16 @@ export async function createVaultAccount(
     return { success: true, email, serverUrl }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
+    const registrationUrl = `${serverUrl}${REGISTER_ACCOUNT_PATH}`
+    const endpointAwareError = `cannot reach vault registration endpoint ${registrationUrl}: ${reason}. Check network, DNS/TLS, and --server.`
     emitNervesEvent({
       level: "error",
       event: "repertoire.vault_setup_error",
       component: "repertoire",
-      message: `vault setup failed: ${reason}`,
-      meta: { agentName, serverUrl, email, reason },
+      message: `vault setup failed: ${endpointAwareError}`,
+      meta: { agentName, serverUrl, email, registrationUrl, reason: endpointAwareError },
     })
 
-    return { success: false, email, serverUrl, error: reason }
+    return { success: false, email, serverUrl, error: endpointAwareError }
   }
 }

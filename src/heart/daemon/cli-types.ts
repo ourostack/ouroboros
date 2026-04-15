@@ -97,6 +97,7 @@ export interface OuroCliDeps {
   runSerpentGuide?: () => Promise<string | null>
   runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>
   promptInput?: (question: string) => Promise<string>
+  promptSecret?: (question: string) => Promise<string>
   registerOuroBundleType?: () => Promise<unknown> | unknown
   installOuroCommand?: () => OuroPathInstallResult
   ensureCurrentVersionInstalled?: () => void

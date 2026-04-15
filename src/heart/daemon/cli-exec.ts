@@ -6,7 +6,7 @@
  */
 
 import { execFileSync, execSync, spawn } from "child_process"
-import { randomBytes, randomUUID } from "crypto"
+import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -847,6 +847,15 @@ function defaultRecoveredVaultEmail(agentName: string, now: Date): string {
   return `${local}+recovered-${stamp}@ouro.bot`
 }
 
+function ensureVaultSecretPrompt(promptSecret: OuroCliDeps["promptSecret"], action: "create" | "recover" | "unlock"): (question: string) => Promise<string> {
+  if (promptSecret) return promptSecret
+  throw new Error(`vault ${action} requires an interactive secret prompt that does not echo the vault unlock secret`)
+}
+
+function rejectGeneratedVaultUnlockSecret(action: "create" | "recover"): never {
+  throw new Error(`vault ${action} no longer supports --generate-unlock-secret. Re-run without that flag and enter a human-chosen unlock secret; Ouro will not print vault unlock secrets.`)
+}
+
 async function executeVaultUnlock(
   command: Extract<OuroCliCommand, { kind: "vault.unlock" }>,
   deps: OuroCliDeps,
@@ -854,11 +863,10 @@ async function executeVaultUnlock(
   if (command.agent === "SerpentGuide") {
     throw new Error("SerpentGuide does not have a persistent credential vault. Hatch bootstrap uses selected provider credentials in memory only.")
   }
-  const prompt = deps.promptInput
-  if (!prompt) throw new Error("vault unlock requires an interactive prompt to capture the vault unlock secret")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "unlock")
   const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const vault = resolveVaultConfig(command.agent, config.vault)
-  const unlockSecret = await prompt(`Ouro vault unlock secret for ${vault.email}: `)
+  const unlockSecret = await promptSecret(`Ouro vault unlock secret for ${vault.email}: `)
   const store = storeVaultUnlockSecret({
     agentName: command.agent,
     email: vault.email,
@@ -882,6 +890,7 @@ async function executeVaultCreate(
   if (command.agent === "SerpentGuide") {
     throw new Error("SerpentGuide does not have a persistent credential vault. Create a vault for the hatchling agent, not SerpentGuide.")
   }
+  if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("create")
   const prompt = deps.promptInput
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
@@ -889,16 +898,12 @@ async function executeVaultCreate(
   if (!email) {
     throw new Error("vault create requires --email <email> when the agent bundle has no vault.email")
   }
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create")
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const requestedUnlockSecret = command.generateUnlockSecret
-    ? ""
-    : prompt
-      ? (await prompt(`Choose Ouro vault unlock secret for ${email}: `)).trim()
-      : ""
-  if (!requestedUnlockSecret && !command.generateUnlockSecret) {
-    throw new Error("vault create requires an unlock secret. Re-run with an interactive terminal or pass --generate-unlock-secret.")
+  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
+  if (!unlockSecret) {
+    throw new Error("vault create requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
-  const unlockSecret = requestedUnlockSecret || randomBytes(32).toString("base64")
   const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
   if (!result.success) {
     const message = [
@@ -923,14 +928,7 @@ async function executeVaultCreate(
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
     "All raw credentials for this agent will be stored in this Ouro credential vault.",
-    ...(command.generateUnlockSecret
-      ? [
-        "",
-        `vault unlock secret: ${unlockSecret}`,
-        "",
-        "Keep this saved outside Ouro now. Another machine cannot unlock the vault without it.",
-      ]
-      : ["Keep the vault unlock secret saved outside Ouro. Another machine will need it once."]),
+    "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -943,21 +941,17 @@ async function executeVaultRecover(
   if (command.agent === "SerpentGuide") {
     throw new Error("SerpentGuide does not have a persistent credential vault. Recover the hatchling agent vault, not SerpentGuide.")
   }
-  const prompt = deps.promptInput
+  if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("recover")
+  const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "recover")
   const now = providerCliNow(deps)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRecoveredVaultEmail(command.agent, now)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const requestedUnlockSecret = command.generateUnlockSecret
-    ? ""
-    : prompt
-      ? (await prompt(`Choose replacement Ouro vault unlock secret for ${email}: `)).trim()
-      : ""
-  if (!requestedUnlockSecret && !command.generateUnlockSecret) {
-    throw new Error("vault recover requires a replacement unlock secret. Re-run with an interactive terminal or pass --generate-unlock-secret.")
+  const unlockSecret = (await promptSecret(`Choose replacement Ouro vault unlock secret for ${email}: `)).trim()
+  if (!unlockSecret) {
+    throw new Error("vault recover requires a replacement unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
-  const unlockSecret = requestedUnlockSecret || randomBytes(32).toString("base64")
   const sourceImports = command.sources.map(readVaultRecoverSource)
 
   const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
@@ -1010,14 +1004,7 @@ async function executeVaultRecover(
     `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
     `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
     "credential values were not printed",
-    ...(command.generateUnlockSecret
-      ? [
-        "",
-        `vault unlock secret: ${unlockSecret}`,
-        "",
-        "Keep this saved outside Ouro now. Another machine cannot unlock the vault without it.",
-      ]
-      : ["Keep the replacement vault unlock secret saved outside Ouro. Another machine will need it once."]),
+    "Keep the replacement vault unlock secret saved outside Ouro. Another machine will need it once.",
   ].join("\n")
   deps.writeStdout(message)
   return message
