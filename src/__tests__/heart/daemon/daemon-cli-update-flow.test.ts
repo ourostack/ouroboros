@@ -156,7 +156,7 @@ describe("ouro up: CLI update flow", () => {
     //   `previousCliVersion` is captured). The previous-vs-current
     //   comparison fires.
     //
-    // Verified live on 2026-04-08: `npx --yes @ouro.bot/cli@alpha up`
+    // Verified live on 2026-04-08: `npx --yes @ouro.bot/cli@latest up`
     // printed "ouro updated to ..." twice. Path 3 was supposed to be
     // suppressed by `linkedVersionBeforeUp !== currentVersion` (which
     // skips the cross-process re-exec case from path 1), but that guard

@@ -11,7 +11,6 @@ describe("installOuroCommand", () => {
   let appended: Record<string, string>
   let chmoded: Record<string, number>
   let mkdirCalls: string[]
-  const correctContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@alpha "$@"\n'
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
@@ -480,7 +479,7 @@ exec node "$ENTRY" "$@"
   })
 
   it("repairs stale npx wrapper with new exec-from-CurrentVersion content", () => {
-    const staleContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@alpha "$@"\n'
+    const staleContent = '#!/bin/sh\nexec npx --prefer-online --yes @ouro.bot/cli@latest "$@"\n'
     const deps = makeDeps({
       existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro",
       readFileSync: (p) => {

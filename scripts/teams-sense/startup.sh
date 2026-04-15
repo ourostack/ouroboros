@@ -2,7 +2,7 @@
 # Azure App Service startup script.
 #
 # Architecture:
-#   - Harness code: installed from npm (@ouro.bot/cli@alpha) into /home/ouro-harness/
+#   - Harness code: installed from npm (@ouro.bot/cli@latest) into /home/ouro-harness/
 #   - Agent bundle: manually uploaded to /home/AgentBundles/ouroboros.ouro/
 #   - Credentials: read from the agent's Bitwarden/Vaultwarden vault after the
 #     host has been explicitly unlocked with `ouro vault unlock`.
@@ -52,14 +52,14 @@ if [ -f "node_modules/@ouro.bot/cli/package.json" ]; then
   INSTALLED_VERSION=$(node -p "require('@ouro.bot/cli/package.json').version" 2>/dev/null || echo "")
 fi
 
-LATEST_VERSION=$(npm view "@ouro.bot/cli@alpha" version 2>/dev/null || echo "")
+LATEST_VERSION=$(npm view "@ouro.bot/cli@latest" version 2>/dev/null || echo "")
 
 if [ -z "$INSTALLED_VERSION" ] || [ "$INSTALLED_VERSION" != "$LATEST_VERSION" ]; then
-  echo "Installing @ouro.bot/cli@alpha (installed: ${INSTALLED_VERSION:-none}, latest: ${LATEST_VERSION:-unknown})"
+  echo "Installing @ouro.bot/cli@latest (installed: ${INSTALLED_VERSION:-none}, latest: ${LATEST_VERSION:-unknown})"
   # Clean any stale npm state that causes "idealTree already exists" errors
   rm -rf package-lock.json node_modules
   npm cache clean --force 2>/dev/null || true
-  npm install @ouro.bot/cli@alpha 2>&1
+  npm install @ouro.bot/cli@latest 2>&1
 else
   echo "Harness up to date (v$INSTALLED_VERSION)"
 fi
