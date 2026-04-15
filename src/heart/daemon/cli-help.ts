@@ -178,6 +178,25 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro auth --agent ouroboros",
     subcommands: ["verify", "switch"],
   },
+  use: {
+    category: "Auth",
+    description: "Choose this machine's provider/model lane for an agent",
+    usage: "ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]",
+    example: "ouro use --agent ouroboros --lane outward --provider minimax --model MiniMax-M2.5",
+  },
+  check: {
+    category: "Auth",
+    description: "Run a live check for this machine's selected provider/model lane",
+    usage: "ouro check --agent <name> --lane outward|inner",
+    example: "ouro check --agent ouroboros --lane outward",
+  },
+  provider: {
+    category: "Auth",
+    description: "Refresh daemon provider credentials from an agent vault",
+    usage: "ouro provider refresh --agent <name>",
+    example: "ouro provider refresh --agent ouroboros",
+    subcommands: ["refresh"],
+  },
   vault: {
     category: "Auth",
     description: "Create, recover, unlock, inspect, and populate the agent credential vault",
@@ -246,6 +265,21 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
 }
 
 const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "auth verify": {
+    description: "Verify agent provider credentials without changing provider/model lanes",
+    usage: "ouro auth verify --agent <name> [--provider <provider>]",
+    example: "ouro auth verify --agent ouroboros --provider openai-codex",
+  },
+  "auth switch": {
+    description: "Switch local provider/model lanes after credentials are available",
+    usage: "ouro auth switch --agent <name> --provider <provider> [--facing human|agent]",
+    example: "ouro auth switch --agent ouroboros --provider minimax",
+  },
+  "provider refresh": {
+    description: "Reload this agent's provider credentials from its vault into daemon memory",
+    usage: "ouro provider refresh --agent <name>",
+    example: "ouro provider refresh --agent ouroboros",
+  },
   "vault create": {
     description: "Create an agent credential vault and store local unlock material",
     usage: "ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",

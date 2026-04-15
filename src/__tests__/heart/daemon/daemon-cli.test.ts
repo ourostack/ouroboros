@@ -4424,7 +4424,6 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     const runHatchFlow = vi.fn(async () => ({
       bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
       selectedIdentity: "python.md",
-      vaultUnlockSecret: "generated-unlock-material",
     }))
 
     const deps: OuroCliDeps = {
@@ -4456,7 +4455,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(runSerpentGuide).not.toHaveBeenCalled()
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
-    expect(result).toContain("vault unlock secret for ExplicitBot: generated-unlock-material")
+    expect(result).not.toContain("vault unlock secret")
   })
 
   it("routes bare ouro hatch through specialist when no explicit args given", async () => {

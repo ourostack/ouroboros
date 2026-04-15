@@ -49,7 +49,6 @@ export interface HatchFlowResult {
   bundleRoot: string
   selectedIdentity: string
   credentialPath: string
-  vaultUnlockSecret?: string
 }
 
 function requiredCredentialKeys(provider: AgentProvider): string[] {
