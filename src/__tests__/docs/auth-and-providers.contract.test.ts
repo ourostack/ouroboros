@@ -34,6 +34,26 @@ describe("auth/provider documentation contract", () => {
     expect(readme).toContain("bundle plus vault")
   })
 
+  it("documents how to migrate old auth-style agents without legacy credential paths", () => {
+    const authGuide = readRepoFile("docs", "auth-and-providers.md")
+    const machineGuide = readRepoFile("docs", "cross-machine-setup.md")
+    const retiredCredentialDir = [".agent", "secrets"].join("")
+
+    expect(authGuide).toContain("## Old Auth-Style Agents")
+    expect(authGuide).toContain("predates the vault-backed credential model")
+    expect(authGuide).toContain("ouro vault status --agent <agent>")
+    expect(authGuide).toContain("ouro vault create --agent <agent> --generate-unlock-secret")
+    expect(authGuide).toContain("ouro auth --agent <agent> --provider <provider>")
+    expect(authGuide).toContain("ouro vault config set --agent <agent> --key bluebubbles.serverUrl")
+    expect(authGuide).toContain("ouro use --agent <agent> --lane outward --provider <provider> --model <model>")
+    expect(authGuide).toContain("Do not copy old local credential files into the bundle.")
+    expect(authGuide).not.toContain(`~/${retiredCredentialDir}`)
+    expect(authGuide).not.toContain(retiredCredentialDir)
+
+    expect(machineGuide).toContain("Old Auth-Style Agents")
+    expect(machineGuide).toContain("predates the vault-backed auth model")
+  })
+
   it("keeps Ouro-owned credential sources to the bundle and agent vault", () => {
     const corpus = [
       readRepoFile("README.md"),
