@@ -141,7 +141,7 @@ jobs:
           if [ "$LOCAL" = "$PUBLISHED" ]; then
             echo "@ouro.bot/cli@${LOCAL} already published — skipping"
           else
-            npm publish --access public --provenance --tag latest
+            npm publish --access public --provenance --tag alpha
           fi
 
       - name: Build for wrapper publish guard
@@ -189,7 +189,7 @@ jobs:
         if: steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
-          npm publish --access public --provenance --tag latest
+          npm publish --access public --provenance --tag alpha
 
       - name: Verify supported npm dist-tags
         run: |
@@ -216,8 +216,8 @@ jobs:
             return 1
           }
 
-          verify_tag "@ouro.bot/cli@latest" "$LOCAL"
-          verify_tag "ouro.bot@latest" "$LOCAL"
+          verify_tag "@ouro.bot/cli@alpha" "$LOCAL"
+          verify_tag "ouro.bot@alpha" "$LOCAL"
 
           echo "supported npm dist-tags verified for ${LOCAL}"
 
