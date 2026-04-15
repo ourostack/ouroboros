@@ -53,7 +53,7 @@ describe("checkForUpdate", () => {
     expect(result.latestVersion).toBe("0.1.0-alpha.3")
   })
 
-  it("reads the configured dist-tag (alpha by default)", async () => {
+  it("reads the configured dist-tag", async () => {
     const deps = makeDeps({
       fetchRegistryJson: vi.fn().mockResolvedValue({
         "dist-tags": { alpha: "0.2.0-alpha.1", latest: "0.1.0" },
@@ -66,7 +66,7 @@ describe("checkForUpdate", () => {
     expect(result.latestVersion).toBe("0.2.0-alpha.1")
   })
 
-  it("supports configurable dist-tag for future stable releases", async () => {
+  it("supports latest dist-tag releases", async () => {
     const deps = makeDeps({
       fetchRegistryJson: vi.fn().mockResolvedValue({
         "dist-tags": { alpha: "0.2.0-alpha.1", latest: "1.0.0" },

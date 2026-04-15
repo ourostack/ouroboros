@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.391",
+      "changes": [
+        "`@ouro.bot/cli` now publishes and verifies the `latest` dist-tag, so the direct CLI package and the `ouro.bot` bootstrap wrapper point at the same current runtime channel.",
+        "The `ouro.bot` wrapper, daemon update checks, Teams startup script, and version status output now resolve `@ouro.bot/cli@latest` instead of the stale-prone `@alpha` tag.",
+        "Dev-mode guidance now tells operators to bootstrap with `npx ouro.bot`, matching the supported human install path.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the npm dist-tag alignment release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.390",
       "changes": [
         "Interactive SerpentGuide adoption now asks the human for the hatchling vault unlock secret through the shared hidden terminal prompt instead of generating and printing one.",

@@ -27,7 +27,7 @@ exec node "$ENTRY" "$@"
 
 function resolveLatestVersion() {
   try {
-    const raw = execSync("npm view @ouro.bot/cli@alpha version", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+    const raw = execSync("npm view @ouro.bot/cli@latest version", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
     return raw.trim();
   } catch {
     console.error("failed to resolve latest @ouro.bot/cli version from npm registry.");
