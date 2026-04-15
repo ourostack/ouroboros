@@ -1,5 +1,4 @@
 import type OpenAI from "openai"
-import * as crypto from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import { baseToolDefinitions, settleTool } from "../../repertoire/tools-base"
@@ -16,7 +15,7 @@ const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "complete_adoption",
     description:
-      "finalize the agent bundle and hatch the new agent. call this only when you have written all 5 psyche files and agent.json to the temp directory, and the human has approved the bundle.",
+      "finalize the agent bundle and hatch the new agent. call this only when you have written all 5 psyche files and agent.json to the temp directory, and the human has approved the bundle. tool execution asks the human for the hatchling vault unlock secret through a hidden terminal prompt; do not ask for or include vault unlock secrets in chat or tool args.",
     parameters: {
       type: "object",
       properties: {
@@ -72,6 +71,7 @@ export interface SpecialistExecToolDeps {
   bundlesRoot: string
   animationWriter?: (text: string) => void
   humanName?: string
+  promptSecret?: (question: string) => Promise<string>
 }
 
 const PSYCHE_FILES = ["SOUL.md", "IDENTITY.md", "LORE.md", "TACIT.md", "ASPIRATIONS.md"]
@@ -163,6 +163,21 @@ async function execCompleteAdoption(
     return `error: bundle '${name}.ouro' already exists at ${deps.bundlesRoot}. choose a different name.`
   }
 
+  if (!deps.promptSecret) {
+    return "error: complete_adoption requires an interactive vault unlock secret prompt. Re-run `ouro hatch` in a terminal so the human can enter a hatchling vault unlock secret without echoing it."
+  }
+
+  const vault = resolveVaultConfig(name)
+  let vaultUnlockSecret: string
+  try {
+    vaultUnlockSecret = (await deps.promptSecret(`Choose Ouro vault unlock secret for ${vault.email}: `)).trim()
+  } catch (error) {
+    return `error: failed to read hatchling vault unlock secret: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
+  }
+  if (!vaultUnlockSecret) {
+    return "error: hatchling vault creation requires an unlock secret. Re-run `ouro hatch` in an interactive terminal and enter a human-chosen unlock secret."
+  }
+
   // Scaffold structural dirs into tempDir
   scaffoldBundle(deps.tempDir)
 
@@ -170,16 +185,12 @@ async function execCompleteAdoption(
   moveDir(deps.tempDir, targetBundle)
 
   // Write secrets
-  let generatedVaultUnlockSecret: string | null = null
   try {
-    const vault = resolveVaultConfig(name)
-    const vaultUnlockSecret = crypto.randomBytes(32).toString("base64")
     const vaultResult = await createVaultAccount(name, vault.serverUrl, vault.email, vaultUnlockSecret)
     if (!vaultResult.success) {
       throw new Error(`failed to create vault: ${vaultResult.error}`)
     }
     storeVaultUnlockSecret({ agentName: name, email: vault.email, serverUrl: vault.serverUrl }, vaultUnlockSecret)
-    generatedVaultUnlockSecret = vaultUnlockSecret
     await storeHatchlingProviderCredentials(name, deps.provider, deps.credentials)
   } catch (e) {
     // Rollback: remove the moved bundle
@@ -225,14 +236,6 @@ async function execCompleteAdoption(
   /* v8 ignore next -- UI-only: handoff message display, covered by integration @preserve */
   if (handoffMessage && deps.animationWriter) {
     deps.animationWriter(`\n${handoffMessage}\n`)
-  }
-  if (generatedVaultUnlockSecret && deps.animationWriter) {
-    deps.animationWriter([
-      "",
-      `Vault unlock secret for ${name}: ${generatedVaultUnlockSecret}`,
-      `Use this with \`ouro vault unlock --agent ${name}\` on another machine.`,
-      "",
-    ].join("\n"))
   }
 
   emitNervesEvent({
