@@ -44,6 +44,16 @@ function isProviderLane(value: unknown): value is ProviderLane {
   return value === "outward" || value === "inner"
 }
 
+function helpCommandName(args: string[]): string | undefined {
+  const positional: string[] = []
+  for (const arg of args) {
+    if (arg === "--help" || arg === "-h") break
+    if (arg.startsWith("-")) break
+    positional.push(arg)
+  }
+  return positional.length > 0 ? positional.join(" ") : undefined
+}
+
 function extractLaneFlag(args: string[]): { lane?: ProviderLane; rest: string[] } {
   const idx = args.indexOf("--lane")
   if (idx === -1 || idx + 1 >= args.length) return { rest: args }
@@ -950,12 +960,14 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
 
   // ── help command ──
   if (head === "help") {
-    return second ? { kind: "help", command: second } : { kind: "help" }
+    const command = helpCommandName(args.slice(1))
+    return command ? { kind: "help", command } : { kind: "help" }
   }
 
   // ── per-command --help ──
-  if (args.includes("--help")) {
-    return { kind: "help", command: head }
+  if (args.includes("--help") || args.includes("-h")) {
+    const command = helpCommandName(args)
+    return command ? { kind: "help", command } : { kind: "help" }
   }
 
   if (head === "--agent" && second) {
