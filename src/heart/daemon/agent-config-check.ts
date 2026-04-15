@@ -304,7 +304,7 @@ function invalidPoolResult(
     return {
       ok: false,
       error: `${lane} provider ${provider} model ${model} cannot read provider credentials because ${agentName}'s credential vault is locked on this machine.`,
-      fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro up' again.`,
+      fix: vaultUnlockOrRecoverFix(agentName),
     }
   }
   if (pool.reason === "invalid") {
@@ -317,13 +317,21 @@ function invalidPoolResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault at ${pool.poolPath}: ${pool.error}`,
-    fix: `Run 'ouro vault unlock --agent ${agentName}', then run 'ouro up' again. If the credential is missing or stale after unlock, run 'ouro auth --agent ${agentName} --provider ${provider}'.`,
+    fix: vaultUnlockOrRecoverFix(agentName, `Then run 'ouro up' again. If the credential is missing or stale after unlock or recovery, run 'ouro auth --agent ${agentName} --provider ${provider}'.`),
   }
 }
 
 function isVaultLockedError(error: string): boolean {
   const normalized = error.toLowerCase()
   return /(?:ouro )?credential vault is locked|vault(?: is)? locked/.test(normalized)
+}
+
+export function vaultUnlockOrRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
+  return [
+    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
+    `If nobody saved it, run 'ouro vault recover --agent ${agentName} --from <json>' with a local credential export.`,
+    nextStep,
+  ].join(" ")
 }
 
 function failedPingResult(

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.385",
+      "changes": [
+        "`ouro up` provider-check repair hints for locked agent vaults now mention both normal unlock and lost-secret `ouro vault recover --agent <agent> --from <json>` recovery.",
+        "Provider health checks now share the locked-vault unlock-or-recover wording so compact degraded summaries do not send operators back to a secret they never saved.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the locked-vault repair-hint release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.384",
       "changes": [
         "Added `ouro vault recover --agent <agent> --from <json>` for existing alpha agents whose vault coordinates exist but whose unlock secret was never saved.",
