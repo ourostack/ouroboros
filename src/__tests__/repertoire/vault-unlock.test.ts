@@ -212,6 +212,7 @@ describe("vault unlock local stores", () => {
     expect(message).toContain("new computer")
 	    expect(message).toContain("local profile or hostname migration")
 	    expect(message).toContain("enter the saved agent vault unlock secret")
+	    expect(message).toContain("ouro vault replace --agent slugger")
 	    expect(message).toContain("ouro vault recover --agent slugger --from <json>")
 	    expect(message).not.toContain("operator password manager")
 	  })

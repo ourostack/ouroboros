@@ -150,7 +150,7 @@ describe("runInteractiveRepair", () => {
 
     expect(result).toEqual({ repairsAttempted: true })
     expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro vault unlock --agent slugger` now? [y/n] ",
+      "run `ouro vault unlock --agent slugger` now? Only say yes if you have the saved unlock secret. [y/n] ",
     )
     expect(deps.promptInput).not.toHaveBeenCalledWith(
       expect.stringContaining("ouro auth"),
@@ -191,7 +191,7 @@ describe("runInteractiveRepair", () => {
       {
         agent: "slugger",
         errorReason: "credential vault is locked",
-        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+        fixHint: "Run 'ouro vault unlock --agent slugger' if you have the saved secret. If nobody saved it, run 'ouro vault replace --agent slugger'. Then run 'ouro up' again.",
       },
     ]
 
@@ -279,7 +279,7 @@ describe("runInteractiveRepair", () => {
       {
         agent: "slugger",
         errorReason: "credential vault is locked",
-        fixHint: "Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
+        fixHint: "Run 'ouro vault unlock --agent slugger' if you have the saved secret. If nobody saved it, run 'ouro vault replace --agent slugger'. Then run 'ouro up' again.",
       },
     ]
 
@@ -288,6 +288,9 @@ describe("runInteractiveRepair", () => {
     expect(result).toEqual({ repairsAttempted: false })
     expect(deps.writeStdout).toHaveBeenCalledWith(
       "repair skipped for slugger; run `ouro vault unlock --agent slugger` later.",
+    )
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      "repair options for slugger: Run 'ouro vault unlock --agent slugger' if you have the saved secret. If nobody saved it, run 'ouro vault replace --agent slugger'. Then run 'ouro up' again.",
     )
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
@@ -398,7 +401,7 @@ describe("runInteractiveRepair", () => {
       ].join("\n"),
     )
     expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro vault unlock --agent ouroboros` now? [y/n] ",
+      "run `ouro vault unlock --agent ouroboros` now? Only say yes if you have the saved unlock secret. [y/n] ",
     )
     expect(deps.promptInput).toHaveBeenCalledWith(
       "run `ouro auth --agent slugger --provider openai-codex` now? [y/n] ",

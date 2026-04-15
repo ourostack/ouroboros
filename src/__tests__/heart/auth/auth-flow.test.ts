@@ -161,7 +161,7 @@ describe("runtime auth flow", () => {
         provider: "minimax",
         promptInput: async () => "minimax-key",
       }),
-    ).rejects.toThrow("Run `ouro vault unlock --agent MiniBot`, then retry auth.")
+    ).rejects.toThrow("ouro vault replace --agent MiniBot")
   })
 
   it("reads agent config and rewrites provider selection", () => {

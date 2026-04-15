@@ -92,6 +92,9 @@ export function isAffirmativeAnswer(answer: string): boolean {
 
 function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: InteractiveRepairDeps): void {
   deps.writeStdout(`repair skipped for ${degraded.agent}; run \`${command}\` later.`)
+  if (degraded.fixHint.includes("ouro vault replace") || degraded.fixHint.includes("ouro vault recover")) {
+    deps.writeStdout(`repair options for ${degraded.agent}: ${degraded.fixHint}`)
+  }
 }
 
 function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction | undefined {
@@ -149,7 +152,7 @@ export async function runInteractiveRepair(
 
     if (action?.kind === "vault-unlock") {
       const answer = await deps.promptInput(
-        `run \`${action.command}\` now? [y/n] `,
+        `run \`${action.command}\` now? Only say yes if you have the saved unlock secret. [y/n] `,
       )
       if (isAffirmativeAnswer(answer)) {
         try {

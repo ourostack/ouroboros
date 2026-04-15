@@ -179,6 +179,16 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("--from <json>")
     expect(result).not.toContain("--generate-unlock-secret")
   })
+
+  it("returns focused help for vault replace", () => {
+    const result = getCommandHelp("vault replace")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("vault replace")
+    expect(result).toContain("no unlock secret or JSON export exists")
+    expect(result).not.toContain("--from <json>")
+    expect(result).not.toContain("--generate-unlock-secret")
+  })
 })
 
 // ── Unit 1a: Levenshtein distance + "did you mean?" ──
@@ -280,6 +290,10 @@ describe("parseOuroCommand help handling", () => {
   })
 
   it("parses nested command help before flags", () => {
+    expect(parseOuroCommand(["vault", "replace", "--help"])).toEqual({ kind: "help", command: "vault replace" })
+    expect(parseOuroCommand(["vault", "replace", "--agent", "slugger", "--help"]))
+      .toEqual({ kind: "help", command: "vault replace" })
+    expect(parseOuroCommand(["help", "vault", "replace"])).toEqual({ kind: "help", command: "vault replace" })
     expect(parseOuroCommand(["vault", "recover", "--help"])).toEqual({ kind: "help", command: "vault recover" })
     expect(parseOuroCommand(["vault", "recover", "--agent", "slugger", "--help"]))
       .toEqual({ kind: "help", command: "vault recover" })
@@ -341,6 +355,17 @@ describe("runOuroCli help execution", () => {
 
     expect(result).toContain("vault recover")
     expect(result).toContain("--from <json>")
+    expect(result).not.toContain("--generate-unlock-secret")
+    expect(deps.writeStdout).toHaveBeenCalledWith(result)
+  })
+
+  it("ouro vault replace --help outputs no-export replacement options", async () => {
+    const deps = makeDeps()
+    const result = await runOuroCli(["vault", "replace", "--help"], deps)
+
+    expect(result).toContain("vault replace")
+    expect(result).toContain("no unlock secret or JSON export exists")
+    expect(result).not.toContain("--from <json>")
     expect(result).not.toContain("--generate-unlock-secret")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
   })

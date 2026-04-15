@@ -43,6 +43,9 @@ describe("auth/provider documentation contract", () => {
     expect(authGuide).toContain("predates the vault-backed credential model")
     expect(authGuide).toContain("ouro vault status --agent <agent>")
     expect(authGuide).toContain("ouro vault create --agent <agent>")
+    expect(authGuide).toContain("ouro vault replace --agent <agent>")
+    expect(authGuide).toContain("no local credential export")
+    expect(authGuide).toContain("vault locator: not configured in agent.json")
     expect(authGuide).toContain("The prompt does not echo the secret.")
     expect(authGuide).toContain("ouro auth --agent <agent> --provider <provider>")
     expect(authGuide).toContain("ouro vault config set --agent <agent> --key bluebubbles.serverUrl")
@@ -53,6 +56,7 @@ describe("auth/provider documentation contract", () => {
 
     expect(machineGuide).toContain("Old Auth-Style Agents")
     expect(machineGuide).toContain("predates the vault-backed auth model")
+    expect(machineGuide).toContain("ouro vault replace --agent <agent>")
   })
 
   it("keeps Ouro-owned credential sources to the bundle and agent vault", () => {

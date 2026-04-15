@@ -199,10 +199,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   vault: {
     category: "Auth",
-    description: "Create, recover, unlock, inspect, and populate the agent credential vault",
-    usage: "ouro vault <create|recover|unlock|status|config> --agent <name>",
+    description: "Create, replace, recover, unlock, inspect, and populate the agent credential vault",
+    usage: "ouro vault <create|replace|recover|unlock|status|config> --agent <name>",
     example: "ouro vault status --agent ouroboros",
-    subcommands: ["create", "recover", "unlock", "status", "config set", "config status"],
+    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status"],
   },
   thoughts: {
     category: "Internal",
@@ -284,6 +284,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Create an agent credential vault and store local unlock material",
     usage: "ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",
     example: "ouro vault create --agent ouroboros --email ouroboros@ouro.bot",
+  },
+  "vault replace": {
+    description: "Create an empty replacement agent vault when no unlock secret or JSON export exists",
+    usage: "ouro vault replace --agent <name> [--email <email>] [--server <url>] [--store <store>]",
+    example: "ouro vault replace --agent ouroboros",
   },
   "vault recover": {
     description: "Create a replacement agent vault and import local JSON credential exports",
