@@ -77,6 +77,7 @@ export function usage(): string {
     "  ouro auth verify --agent <name> [--provider <provider>]",
     "  ouro auth switch --agent <name> --provider <provider>",
     "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>] [--generate-unlock-secret]",
+    "  ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>] [--generate-unlock-secret]",
     "  ouro vault unlock --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault status --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault config set --agent <name> --key <path> [--value <value>]",
@@ -460,6 +461,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   let serverUrl: string | undefined
   let store: VaultUnlockStoreKind | undefined
   let generateUnlockSecret = false
+  const sources: string[] = []
 
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i]
@@ -482,20 +484,41 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    if (token === "--from") {
+      const value = rest[i + 1]
+      if (!value) throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json>]")
+      sources.push(value)
+      i += 1
+      continue
+    }
     if (token === "--generate-unlock-secret") {
       generateUnlockSecret = true
       continue
     }
-    throw new Error("Usage: ouro vault create|unlock|status --agent <name>")
+    throw new Error("Usage: ouro vault create|recover|unlock|status --agent <name>")
   }
 
-  if (!agent || (sub !== "create" && sub !== "unlock" && sub !== "status")) {
-    throw new Error("Usage: ouro vault create|unlock|status --agent <name>")
+  if (!agent || (sub !== "create" && sub !== "recover" && sub !== "unlock" && sub !== "status")) {
+    throw new Error("Usage: ouro vault create|recover|unlock|status --agent <name>")
   }
   if (sub === "create") {
     return {
       kind: "vault.create",
       agent,
+      ...(email ? { email } : {}),
+      ...(serverUrl ? { serverUrl } : {}),
+      ...(store ? { store } : {}),
+      ...(generateUnlockSecret ? { generateUnlockSecret: true } : {}),
+    }
+  }
+  if (sub === "recover") {
+    if (sources.length === 0) {
+      throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json>]")
+    }
+    return {
+      kind: "vault.recover",
+      agent,
+      sources,
       ...(email ? { email } : {}),
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
