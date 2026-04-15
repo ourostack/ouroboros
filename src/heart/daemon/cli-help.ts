@@ -245,6 +245,39 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
 }
 
+const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
+  "vault create": {
+    description: "Create an agent credential vault and store local unlock material",
+    usage: "ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>] [--generate-unlock-secret]",
+    example: "ouro vault create --agent ouroboros --email ouroboros@ouro.bot --generate-unlock-secret",
+  },
+  "vault recover": {
+    description: "Create a replacement agent vault and import local JSON credential exports",
+    usage: "ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>] [--generate-unlock-secret]",
+    example: "ouro vault recover --agent ouroboros --from ./credentials.json --generate-unlock-secret",
+  },
+  "vault unlock": {
+    description: "Unlock an existing agent credential vault on this machine",
+    usage: "ouro vault unlock --agent <name> [--store <store>]",
+    example: "ouro vault unlock --agent ouroboros",
+  },
+  "vault status": {
+    description: "Show whether this machine can unlock an agent credential vault",
+    usage: "ouro vault status --agent <name> [--store <store>]",
+    example: "ouro vault status --agent ouroboros",
+  },
+  "vault config set": {
+    description: "Write runtime configuration into the agent credential vault",
+    usage: "ouro vault config set --agent <name> --key <path> [--value <value>]",
+    example: "ouro vault config set --agent ouroboros --key senses/outlook/clientId",
+  },
+  "vault config status": {
+    description: "List runtime configuration keys stored in the agent credential vault",
+    usage: "ouro vault config status --agent <name>",
+    example: "ouro vault config status --agent ouroboros",
+  },
+}
+
 // ── Levenshtein distance ──
 
 export function levenshteinDistance(a: string, b: string): number {
@@ -329,7 +362,7 @@ export function getGroupedHelp(): string {
 // ── Per-command help ──
 
 export function getCommandHelp(name: string): string | null {
-  const entry = COMMAND_REGISTRY[name]
+  const entry = SUBCOMMAND_HELP[name] ?? COMMAND_REGISTRY[name]
   if (!entry) return null
 
   const lines: string[] = [
