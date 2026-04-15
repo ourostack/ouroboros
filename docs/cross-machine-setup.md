@@ -92,6 +92,8 @@ ouro auth --agent <agent>
 
 This walks you through authenticating with your model provider (Anthropic, Azure, GitHub Copilot, etc.). On WSL/Linux, vault unlock uses Linux Secret Service (`secret-tool`) by default. If that's not available, it falls back to explicit plaintext with user confirmation.
 
+If this agent predates the vault-backed auth model, follow the **Old Auth-Style Agents** checklist in [docs/auth-and-providers.md](auth-and-providers.md) before relying on `ouro up`.
+
 ## Step 4: Start the daemon
 
 If you skipped the guided prompt:
