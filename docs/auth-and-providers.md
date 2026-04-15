@@ -242,7 +242,7 @@ For an existing agent with no vault locator, run `ouro vault create --agent <age
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
-For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create or rotate a vault and re-auth/re-enter credentials into the new vault.
+For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement vault and re-auth/re-enter credentials into the new vault. If the human still has a local JSON credential export from an earlier alpha, `ouro vault recover` can create that replacement vault and import the JSON once without printing credential values.
 
 ## Old Auth-Style Agents
 
@@ -270,13 +270,23 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
    Save the printed unlock secret outside Ouro. Another machine cannot unlock this agent vault without it.
 
-3. Unlock the vault on this machine.
+3. If the bundle has vault coordinates but nobody saved an unlock secret, create a replacement vault from any local JSON credential export the human still controls.
+
+   ```bash
+   ouro vault recover --agent <agent> --from <json> --generate-unlock-secret
+   ```
+
+   Repeat `--from <json>` for each local JSON export that should be imported. Save the printed replacement unlock secret outside Ouro immediately. The command stores the new vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
+
+4. Unlock the vault on this machine.
 
    ```bash
    ouro vault unlock --agent <agent>
    ```
 
-4. Re-enter provider credentials into the agent vault.
+   If you just ran `ouro vault recover`, this machine is already unlocked for the replacement vault; run `ouro vault status --agent <agent>` to confirm.
+
+5. Re-enter provider credentials into the agent vault if recovery did not import them or if they are stale.
 
    ```bash
    ouro auth --agent <agent> --provider <provider>
@@ -284,7 +294,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
    Repeat for every provider the agent should be able to use. Do not copy old local credential files into the bundle. Do not paste raw secrets into chat.
 
-5. Re-enter runtime, sense, integration, travel, and tool credentials into vault items.
+6. Re-enter runtime, sense, integration, travel, and tool credentials into vault items if recovery did not import them or if they are stale.
 
    ```bash
    ouro vault config set --agent <agent> --key bluebubbles.serverUrl
@@ -294,14 +304,14 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
    Use the relevant field names for the senses and integrations that agent actually uses.
 
-6. Choose this machine's provider/model lanes.
+7. Choose this machine's provider/model lanes.
 
    ```bash
    ouro use --agent <agent> --lane outward --provider <provider> --model <model>
    ouro use --agent <agent> --lane inner --provider <provider> --model <model>
    ```
 
-7. Refresh, verify, and start.
+8. Refresh, verify, and start.
 
    ```bash
    ouro provider refresh --agent <agent>
@@ -310,7 +320,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro up
    ```
 
-8. After vault-backed auth verifies, remove obsolete local credential artifacts by hand. They are not a supported fallback and must not be committed.
+9. After vault-backed auth verifies, remove obsolete local credential artifacts by hand. They are not a supported fallback and must not be committed.
 
 ## Command Vocabulary
 
@@ -319,6 +329,7 @@ Keep the core auth/provider vocabulary small:
 ```bash
 ouro vault unlock --agent <agent>
 ouro vault status --agent <agent>
+ouro vault recover --agent <agent> --from <json> [--from <json>]
 ouro vault config set --agent <agent> --key <field>
 ouro vault config status --agent <agent>
 ouro auth --agent <agent> --provider <provider>

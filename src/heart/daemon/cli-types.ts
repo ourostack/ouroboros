@@ -31,6 +31,7 @@ export type OuroCliCommand =
   | { kind: "provider.status"; agent: string }
   | { kind: "provider.refresh"; agent: string }
   | { kind: "vault.create"; agent: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
+  | { kind: "vault.recover"; agent: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
   | { kind: "vault.unlock"; agent: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.status"; agent: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent: string; key: string; value?: string }
@@ -200,7 +201,7 @@ export type AuthCliCommand = Extract<OuroCliCommand, { kind: "auth.run" }>
 export type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify" }>
 export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" } | { kind: "provider.refresh" }>
-export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" }>
+export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
