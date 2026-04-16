@@ -299,7 +299,7 @@ function missingCredentialResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} has no credentials in ${agentName}'s vault at ${credentialPath}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate this machine, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to choose a working provider/model.`,
+    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate.`,
     issue: providerCredentialMissingIssue({
       agentName,
       lane,
@@ -310,6 +310,16 @@ function missingCredentialResult(
   }
 }
 
+function isTransientVaultError(error: string): boolean {
+  const normalized = error.toLowerCase()
+  return (
+    normalized.includes("timed out") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("etimedout")
+  )
+}
+
 function invalidPoolResult(
   agentName: string,
   lane: ProviderLane,
@@ -317,6 +327,13 @@ function invalidPoolResult(
   model: string,
   pool: { ok: false; reason: "invalid" | "unavailable"; poolPath: string; error: string },
 ): ConfigCheckResult {
+  if (pool.reason === "unavailable" && isTransientVaultError(pool.error)) {
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault: ${pool.error}`,
+      fix: `Vault read timed out -- this usually resolves on retry. Run 'ouro up' again.`,
+    }
+  }
   if (pool.reason === "unavailable" && isVaultLockedError(pool.error)) {
     return {
       ok: false,
@@ -369,7 +386,7 @@ function failedPingResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to switch this lane.`,
+    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials.`,
     issue: providerLiveCheckFailedIssue({
       agentName,
       lane,

@@ -114,13 +114,8 @@ function missingSecureStoreMessage(config: VaultUnlockConfig): string {
   ].join("\n")
 }
 
-export function vaultUnlockReplaceRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
-  return [
-    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
-    `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
-    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create the agent vault and import it.`,
-    nextStep,
-  ].join(" ")
+export function vaultUnlockReplaceRecoverFix(agentName: string, _nextStep?: string): string {
+  return `Run 'ouro vault unlock --agent ${agentName}' or 'ouro vault replace --agent ${agentName}' if the secret is lost.`
 }
 
 export function credentialVaultNotConfiguredError(agentName: string, configPath: string): string {
@@ -134,12 +129,8 @@ export function isCredentialVaultNotConfiguredError(message: string): boolean {
   return message.includes(CREDENTIAL_VAULT_NOT_CONFIGURED_PREFIX)
 }
 
-export function vaultCreateRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
-  return [
-    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
-    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
-    nextStep,
-  ].join(" ")
+export function vaultCreateRecoverFix(agentName: string, _nextStep?: string): string {
+  return `Run 'ouro vault create --agent ${agentName}' to set up this agent's vault.`
 }
 
 function vaultUnlockSecretStrengthIssues(secret: string): string[] {

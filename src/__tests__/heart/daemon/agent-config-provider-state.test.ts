@@ -401,9 +401,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials because slugger's credential vault is not configured in agent.json")
-    expect(result.fix).toContain("ouro vault create --agent slugger")
-    expect(result.fix).toContain("ouro vault recover --agent slugger --from <json>")
-    expect(result.fix).toContain("ouro auth --agent slugger --provider minimax")
+    expect(result.fix).toBe("Run 'ouro vault create --agent slugger' to set up this agent's vault.")
     expect(result.issue).toMatchObject({
       kind: "vault-unconfigured",
       severity: "blocked",
@@ -434,7 +432,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("slugger's vault at vault:slugger:providers/*")
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
-    expect(result.fix).toContain("ouro use --agent slugger --lane outward")
+    expect(result.fix).toBe("Run 'ouro auth --agent slugger --provider minimax' to authenticate.")
     expect(result.issue).toMatchObject({
       kind: "provider-credentials-missing",
       severity: "blocked",
@@ -464,10 +462,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials because slugger's credential vault is locked on this machine")
-    expect(result.fix).toContain("ouro vault unlock --agent slugger")
-    expect(result.fix).toContain("ouro vault replace --agent slugger")
-    expect(result.fix).toContain("ouro vault recover --agent slugger --from <json>")
-    expect(result.fix).toContain("ouro up")
+    expect(result.fix).toBe("Run 'ouro vault unlock --agent slugger' or 'ouro vault replace --agent slugger' if the secret is lost.")
     expect(result.fix).not.toContain("ouro auth")
     expect(result.issue).toMatchObject({
       kind: "vault-locked",
@@ -538,8 +533,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.error).toContain("openai-codex")
     expect(result.error).toContain("gpt-5.4")
     expect(result.error).toContain("400 status code (no body)")
-    expect(result.fix).toContain("ouro auth --agent slugger --provider openai-codex")
-    expect(result.fix).toContain("ouro use --agent slugger --lane inner")
+    expect(result.fix).toBe("Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.")
     expect(result.issue).toMatchObject({
       kind: "provider-live-check-failed",
       severity: "blocked",
