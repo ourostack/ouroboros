@@ -23,6 +23,7 @@ describe("auth/provider documentation contract", () => {
     for (const content of [authGuide, machineGuide]) {
       expect(content).toContain("Continue An Existing Agent Bundle")
       expect(content).toContain("ouro clone <bundle-git-remote>")
+      expect(content).toContain("ouro repair --agent <agent>")
       expect(content).toContain("ouro vault unlock --agent <agent>")
       expect(content).toContain("ouro provider refresh --agent <agent>")
       expect(content).toContain("ouro auth verify --agent <agent>")
@@ -63,6 +64,7 @@ describe("auth/provider documentation contract", () => {
     expect(machineGuide).toContain("predates the vault-backed auth model")
     expect(machineGuide).toContain("ouro vault replace --agent <agent>")
     expect(machineGuide).toContain("stable agent vault email")
+    expect((machineGuide.match(/```/g) ?? []).length % 2).toBe(0)
     expect(machineGuide).not.toContain("+replaced-")
     expect(machineGuide).not.toContain("+recovered-")
   })
