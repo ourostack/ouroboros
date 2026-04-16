@@ -5,12 +5,19 @@ vi.mock("../../../nerves/runtime", () => ({
 }))
 
 const mockRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
+const mockMachineRuntimeConfigs = vi.hoisted(() => new Map<string, any>())
 vi.mock("../../../heart/runtime-credentials", () => ({
   refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => mockRuntimeConfigs.get(agentName) ?? {
     ok: false,
     reason: "missing",
     itemPath: `vault:${agentName}:runtime/config`,
     error: `no runtime credentials stored at vault:${agentName}:runtime/config`,
+  }),
+  refreshMachineRuntimeCredentialConfig: vi.fn(async (agentName: string, machineId: string) => mockMachineRuntimeConfigs.get(agentName) ?? {
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:runtime/machines/${machineId}/config`,
+    error: `no machine runtime credentials stored at vault:${agentName}:runtime/machines/${machineId}/config`,
   }),
 }))
 
@@ -76,10 +83,18 @@ function seedRuntimeConfig(agentName: string, config: Record<string, unknown>): 
     revision: "runtime_test",
     updatedAt: "2026-04-14T00:00:00.000Z",
   })
+  mockMachineRuntimeConfigs.set(agentName, {
+    ok: true,
+    itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+    config,
+    revision: "runtime_machine_test",
+    updatedAt: "2026-04-14T00:00:00.000Z",
+  })
 }
 
 afterEach(() => {
   mockRuntimeConfigs.clear()
+  mockMachineRuntimeConfigs.clear()
 })
 
 describe("runDoctorChecks", () => {
@@ -669,7 +684,7 @@ describe("checkSenses", () => {
     }))
   })
 
-  it("fails enabled BlueBubbles config checks when runtime/config is missing", async () => {
+  it("treats missing enabled BlueBubbles machine config as not attached", async () => {
     const config = JSON.stringify({
       senses: {
         bluebubbles: { enabled: true },
@@ -689,21 +704,21 @@ describe("checkSenses", () => {
 
     expect(cat.checks).toContainEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
-      status: "fail",
-      detail: "missing vault runtime/config",
+      status: "pass",
+      detail: "not attached on this machine",
     }))
   })
 
-  it("fails enabled BlueBubbles config checks when runtime/config is invalid", async () => {
+  it("fails enabled BlueBubbles config checks when machine runtime config is invalid", async () => {
     const config = JSON.stringify({
       senses: {
         bluebubbles: { enabled: true },
       },
     })
-    mockRuntimeConfigs.set("test", {
+    mockMachineRuntimeConfigs.set("test", {
       ok: false,
       reason: "invalid",
-      itemPath: "vault:test:runtime/config",
+      itemPath: "vault:test:runtime/machines/machine_test/config",
       error: "runtime credential payload is malformed",
     })
     const deps = createMockDeps({
@@ -723,7 +738,7 @@ describe("checkSenses", () => {
     expect(cat.checks).toContainEqual(expect.objectContaining({
       label: "test.ouro bluebubbles config",
       status: "fail",
-      detail: "vault runtime/config unavailable: runtime credential payload is malformed",
+      detail: "machine runtime config unavailable: runtime credential payload is malformed",
     }))
   })
 })

@@ -710,6 +710,8 @@ describe("buildSystem", () => {
     expect(result).toContain("interactive = available when opened by the user")
     expect(result).toContain("disabled = turned off in agent.json")
     expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
+    expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
+    expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
     expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 

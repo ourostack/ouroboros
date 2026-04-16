@@ -15,7 +15,9 @@ import {
   splitProviderCredentialFields,
 } from "./provider-credentials"
 import {
+  cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
+  readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
   resetRuntimeCredentialConfigCache,
   type RuntimeCredentialConfig,
@@ -203,19 +205,26 @@ function localRuntimeFields(config: RuntimeCredentialConfig): RuntimeCredentialC
 }
 
 export function loadConfig(): OuroborosConfig {
-  const runtimeResult = readRuntimeCredentialConfig(getAgentName())
+  const agentName = getAgentName()
+  const runtimeResult = readRuntimeCredentialConfig(agentName)
+  const machineRuntimeResult = readMachineRuntimeCredentialConfig(agentName)
   const vaultData = runtimeResult.ok ? localRuntimeFields(runtimeResult.config) : {}
+  const machineVaultData = machineRuntimeResult.ok ? localRuntimeFields(machineRuntimeResult.config) : {}
 
   const mergedConfig = deepMerge(
     defaultRuntimeConfig() as unknown as Record<string, unknown>,
     vaultData as Record<string, unknown>,
   ) as unknown as OuroborosConfig
+  const mergedWithMachineConfig = deepMerge(
+    mergedConfig as unknown as Record<string, unknown>,
+    machineVaultData as Record<string, unknown>,
+  ) as unknown as OuroborosConfig
   const config = _runtimeConfigOverride
     ? deepMerge(
-      mergedConfig as unknown as Record<string, unknown>,
+      mergedWithMachineConfig as unknown as Record<string, unknown>,
       _runtimeConfigOverride as unknown as Record<string, unknown>,
     ) as unknown as OuroborosConfig
-    : mergedConfig
+    : mergedWithMachineConfig
   emitNervesEvent({
     event: "config.load",
     component: "config/identity",
@@ -223,6 +232,7 @@ export function loadConfig(): OuroborosConfig {
     meta: {
       source: runtimeResult.ok ? "vault-cache" : "defaults",
       used_defaults_only: !runtimeResult.ok,
+      machine_runtime_credentials: machineRuntimeResult.ok ? "available" : machineRuntimeResult.reason,
       override_applied: _runtimeConfigOverride !== null,
       runtime_credentials: runtimeResult.ok ? "available" : runtimeResult.reason,
     },
@@ -244,6 +254,10 @@ export type DeepPartial<T> = {
 
 export function cacheRuntimeConfigForTests(agentName: string, config: RuntimeCredentialConfig): void {
   cacheRuntimeCredentialConfig(agentName, config, new Date(0))
+}
+
+export function cacheMachineRuntimeConfigForTests(agentName: string, config: RuntimeCredentialConfig): void {
+  cacheMachineRuntimeCredentialConfig(agentName, config, new Date(0), "machine_test")
 }
 
 function seedProviderCredentialCache(providers?: ProviderConfigPatch): void {
@@ -375,10 +389,10 @@ export function getBlueBubblesConfig(): BlueBubblesConfig {
   const { serverUrl, password, accountId } = config.bluebubbles
 
   if (!serverUrl.trim()) {
-    throw new Error("bluebubbles.serverUrl is required in the agent vault runtime/config item to run the BlueBubbles sense.")
+    throw new Error("bluebubbles.serverUrl is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
   }
   if (!password.trim()) {
-    throw new Error("bluebubbles.password is required in the agent vault runtime/config item to run the BlueBubbles sense.")
+    throw new Error("bluebubbles.password is required in this machine's agent-vault runtime config. Run `ouro connect bluebubbles --agent <agent>`.")
   }
 
   return {

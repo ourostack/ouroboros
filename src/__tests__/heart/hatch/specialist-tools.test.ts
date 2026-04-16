@@ -32,9 +32,13 @@ vi.mock("../../../repertoire/vault-setup", () => ({
   createVaultAccount: mockCreateVaultAccount,
 }))
 
-vi.mock("../../../repertoire/vault-unlock", () => ({
-  storeVaultUnlockSecret: mockStoreVaultUnlockSecret,
-}))
+vi.mock("../../../repertoire/vault-unlock", async () => {
+  const actual = await vi.importActual<typeof import("../../../repertoire/vault-unlock")>("../../../repertoire/vault-unlock")
+  return {
+    promptConfirmedVaultUnlockSecret: actual.promptConfirmedVaultUnlockSecret,
+    storeVaultUnlockSecret: mockStoreVaultUnlockSecret,
+  }
+})
 
 vi.mock("../../../heart/auth/auth-flow", () => ({
   storeProviderCredentials: mockStoreProviderCredentials,
@@ -316,7 +320,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
     cleanup.push(bundlesRoot)
 
     const animChunks: string[] = []
-    const promptSecret = vi.fn(async () => "human-chosen-hatch-secret")
+    const promptSecret = vi.fn(async () => "Human-chosen-hatch-secret1!")
     const { createSpecialistExecTool } = await import("../../../heart/hatch/specialist-tools")
     const execTool = createSpecialistExecTool({
       tempDir: tmpDir,
@@ -362,13 +366,15 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       "TestAgent",
       expect.any(String),
       expect.any(String),
-      "human-chosen-hatch-secret",
+      "Human-chosen-hatch-secret1!",
     )
     expect(mockStoreVaultUnlockSecret).toHaveBeenCalledWith(
       expect.objectContaining({ agentName: "TestAgent" }),
-      "human-chosen-hatch-secret",
+      "Human-chosen-hatch-secret1!",
     )
     expect(promptSecret).toHaveBeenCalledWith("Choose Ouro vault unlock secret for testagent@ouro.bot: ")
+    expect(promptSecret).toHaveBeenCalledWith("Confirm Ouro vault unlock secret for testagent@ouro.bot: ")
+    expect(promptSecret).toHaveBeenCalledTimes(2)
     expect(mockStoreProviderCredentials).toHaveBeenCalledWith(
       "TestAgent",
       "anthropic",
@@ -379,8 +385,8 @@ describe("complete_adoption via createSpecialistExecTool", () => {
 
     // Animation should have played
     expect(animChunks.join("")).toContain("TestAgent")
-    expect(animChunks.join("")).not.toContain("human-chosen-hatch-secret")
-    expect(result).not.toContain("human-chosen-hatch-secret")
+    expect(animChunks.join("")).not.toContain("Human-chosen-hatch-secret1!")
+    expect(result).not.toContain("Human-chosen-hatch-secret1!")
   }, 20000)
 
   it("refuses adoption before moving the bundle when no hidden vault secret prompt is available", async () => {
@@ -481,7 +487,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       provider: "anthropic",
       bundlesRoot,
       animationWriter: () => {},
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -587,7 +593,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       provider: "anthropic",
       bundlesRoot,
       animationWriter: () => {},
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -614,7 +620,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       provider: "anthropic",
       bundlesRoot,
       animationWriter: () => {},
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -661,7 +667,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       bundlesRoot,
       animationWriter: () => {},
       humanName: "Ari",
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -695,7 +701,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       bundlesRoot,
       animationWriter: () => {},
       humanName: "Ari",
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -728,7 +734,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       bundlesRoot,
       animationWriter: () => {},
       // humanName intentionally omitted
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -758,7 +764,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       provider: "anthropic",
       bundlesRoot,
       animationWriter: () => {},
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {
@@ -785,7 +791,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       credentials: { setupToken: `sk-ant-oat01-${"a".repeat(80)}` },
       provider: "anthropic",
       bundlesRoot,
-      promptSecret: async () => "human-chosen-hatch-secret",
+      promptSecret: async () => "Human-chosen-hatch-secret1!",
     })
 
     const result = await execTool("complete_adoption", {

@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { execFileSync } from "child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
@@ -59,25 +60,29 @@ vi.mock("../../../repertoire/vault-setup", () => ({
   createVaultAccount: (...args: unknown[]) => mockVaultDeps.createVaultAccount(...args),
 }))
 
-vi.mock("../../../repertoire/vault-unlock", () => ({
-  credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
-    `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
-  storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
-  getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
-  isCredentialVaultNotConfiguredError: (message: string) =>
-    message.includes("credential vault is not configured in "),
-  vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
-    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
-    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
-    nextStep,
-  ].join(" "),
-  vaultUnlockReplaceRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
-    `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
-    `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
-    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
-    nextStep,
-  ].join(" "),
-}))
+vi.mock("../../../repertoire/vault-unlock", async () => {
+  const actual = await vi.importActual<typeof import("../../../repertoire/vault-unlock")>("../../../repertoire/vault-unlock")
+  return {
+    promptConfirmedVaultUnlockSecret: actual.promptConfirmedVaultUnlockSecret,
+    credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
+      `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
+    storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
+    getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
+    isCredentialVaultNotConfiguredError: (message: string) =>
+      message.includes("credential vault is not configured in "),
+    vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
+      `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
+      `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
+      nextStep,
+    ].join(" "),
+    vaultUnlockReplaceRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
+      `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
+      `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
+      `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
+      nextStep,
+    ].join(" "),
+  }
+})
 
 vi.mock("../../../repertoire/credential-access", () => ({
   resetCredentialStore: () => mockVaultDeps.resetCredentialStore(),
@@ -189,6 +194,22 @@ function writeRuntimeConfig(agentName: string, config: Record<string, unknown>):
   mockVaultDeps.rawSecrets.set(`${agentName}:runtime/config`, runtimeConfigSecret(config))
 }
 
+function writeMachineIdentity(homeDir: string, machineId = "machine_unit"): void {
+  const dir = path.join(homeDir, ".ouro-cli")
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, "machine.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    machineId,
+    createdAt: NOW,
+    updatedAt: NOW,
+    hostnameAliases: ["unit-host"],
+  }, null, 2)}\n`, "utf-8")
+}
+
+function readRuntimeSecret(agentName: string, itemName = "runtime/config"): { config: Record<string, unknown> } {
+  return JSON.parse(mockVaultDeps.rawSecrets.get(`${agentName}:${itemName}`) ?? "{}") as { config: Record<string, unknown> }
+}
+
 function readProviderCredentialPool(_homeDir: string, agentName = "Slugger"): ProviderCredentialPoolReadResult {
   return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
 }
@@ -222,6 +243,21 @@ function writeAgentConfig(bundlesRoot: string, agentName: string): void {
     phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
     context: { maxTokens: 80000, contextMargin: 20 },
   }, null, 2)}\n`, "utf-8")
+}
+
+function updateAgentConfig(bundlesRoot: string, agentName: string, update: (config: Record<string, unknown>) => void): void {
+  const configPath = path.join(agentRoot(bundlesRoot, agentName), "agent.json")
+  const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
+  update(config)
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8")
+}
+
+function initBundleGit(bundleRoot: string): void {
+  execFileSync("git", ["init"], { cwd: bundleRoot, stdio: "pipe" })
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: bundleRoot, stdio: "pipe" })
+  execFileSync("git", ["config", "user.name", "Ouro Test"], { cwd: bundleRoot, stdio: "pipe" })
+  execFileSync("git", ["add", "agent.json"], { cwd: bundleRoot, stdio: "pipe" })
+  execFileSync("git", ["commit", "-m", "initial bundle"], { cwd: bundleRoot, stdio: "pipe" })
 }
 
 function agentRoot(bundlesRoot: string, agentName: string): string {
@@ -555,6 +591,12 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       key: "bluebubbles.password",
     })
+    expect(parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--scope", "machine"])).toEqual({
+      kind: "vault.config.set",
+      agent: "Slugger",
+      key: "bluebubbles.password",
+      scope: "machine",
+    })
     expect(parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--value", "secret"])).toEqual({
       kind: "vault.config.set",
       agent: "Slugger",
@@ -565,12 +607,21 @@ describe("provider CLI command parsing", () => {
       kind: "vault.config.status",
       agent: "Slugger",
     })
+    expect(parseOuroCommand(["vault", "config", "status", "--agent", "Slugger", "--scope", "all"])).toEqual({
+      kind: "vault.config.status",
+      agent: "Slugger",
+      scope: "all",
+    })
     expect(() => parseOuroCommand(["vault", "config", "status", "--agent", "Slugger", "--key", "bluebubbles.password"]))
       .toThrow("ouro vault config status")
     expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger"]))
       .toThrow("ouro vault config set")
     expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--bad"]))
       .toThrow("ouro vault config set")
+    expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--scope", "planet"]))
+      .toThrow("vault config --scope")
+    expect(() => parseOuroCommand(["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password", "--scope", "all"]))
+      .toThrow("scope all is only valid for status")
     expect(() => parseOuroCommand(["vault", "config", "delete", "--agent", "Slugger"]))
       .toThrow("ouro vault config set")
     expect(() => parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "bad"]))
@@ -581,6 +632,33 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "status"]))
       .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
+  })
+
+  it("parses connect commands for guided integration onboarding", () => {
+    emitTestEvent("provider cli parse connect")
+
+    expect(parseOuroCommand(["connect", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+    })
+    expect(parseOuroCommand(["connect", "perplexity", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "perplexity",
+    })
+    expect(parseOuroCommand(["connect", "--agent", "Slugger", "perplexity-search"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "perplexity",
+    })
+    expect(parseOuroCommand(["connect", "bluebubbles", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "bluebubbles",
+    })
+    expect(() => parseOuroCommand(["connect"])).toThrow("ouro connect --agent <name>")
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("perplexity|bluebubbles")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("perplexity|bluebubbles")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -991,7 +1069,7 @@ describe("provider CLI command execution", () => {
       "--store",
       "plaintext-file",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-create-secret",
+      promptSecret: async () => "Chosen-create-secret1!",
     }))
 
     expect(created).toContain("vault created for Slugger")
@@ -1000,7 +1078,7 @@ describe("provider CLI command execution", () => {
       "Ouro credential vault",
       "https://vault.example.com",
       "operator@example.com",
-      "chosen-create-secret",
+      "Chosen-create-secret1!",
     )
     expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
       email: "operator@example.com",
@@ -1018,7 +1096,7 @@ describe("provider CLI command execution", () => {
       "--server",
       "https://vault.example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-create-secret",
+      promptSecret: async () => "Chosen-create-secret1!",
     }))
 
     expect(failed).toContain("vault create failed for Slugger: already exists")
@@ -1027,9 +1105,47 @@ describe("provider CLI command execution", () => {
 
   it("vault create defaults to the stable agent email when no locator exists", async () => {
     emitTestEvent("provider cli vault create stable default")
-    const bundlesRoot = makeTempDir("provider-cli-vault-create-default-bundles")
-    const homeDir = makeTempDir("provider-cli-vault-create-default-home")
+	    const bundlesRoot = makeTempDir("provider-cli-vault-create-default-bundles")
+	    const homeDir = makeTempDir("provider-cli-vault-create-default-home")
+	    writeAgentConfig(bundlesRoot, "Slugger")
+	    const promptQuestions: string[] = []
+
+	    const result = await runOuroCli([
+	      "vault",
+	      "create",
+	      "--agent",
+	      "Slugger",
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      promptSecret: async (question) => {
+	        promptQuestions.push(question)
+	        return "Chosen-vault-secret1!"
+	      },
+	    }))
+
+	    expect(result).toContain("vault created for Slugger")
+	    expect(result).toContain("vault: slugger@ouro.bot at https://vault.ouroboros.bot")
+	    expect(promptQuestions).toEqual([
+	      "Choose Ouro vault unlock secret for slugger@ouro.bot: ",
+	      "Confirm Ouro vault unlock secret for slugger@ouro.bot: ",
+	    ])
+	    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.ouroboros.bot",
+      "slugger@ouro.bot",
+      "Chosen-vault-secret1!",
+    )
+  })
+
+  it("runs bundle sync after vault create mutates a sync-enabled bundle", async () => {
+    emitTestEvent("provider cli vault create bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-sync-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    const root = agentRoot(bundlesRoot, "Slugger")
+    initBundleGit(root)
 
     const result = await runOuroCli([
       "vault",
@@ -1037,20 +1153,13 @@ describe("provider CLI command execution", () => {
       "--agent",
       "Slugger",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
-        return "chosen-vault-secret"
-      },
+      promptSecret: async () => "Chosen-vault-secret1!",
     }))
 
     expect(result).toContain("vault created for Slugger")
-    expect(result).toContain("vault: slugger@ouro.bot at https://vault.ouroboros.bot")
-    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
-      "Ouro credential vault",
-      "https://vault.ouroboros.bot",
-      "slugger@ouro.bot",
-      "chosen-vault-secret",
-    )
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: root, stdio: "pipe" }).toString().trim()).toBe("")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], { cwd: root, stdio: "pipe" }).toString()).toContain("sync: post-turn update")
   })
 
   it("ouro repair guides locked-vault repair with typed choices", async () => {
@@ -1130,28 +1239,33 @@ describe("provider CLI command execution", () => {
       "credential vault is not configured in /tmp/Slugger.ouro/agent.json. Run 'ouro vault create --agent Slugger' to create this agent's vault before loading or storing credentials.",
     )
 
-    const prompts: string[] = []
-    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async (prompt) => {
-        prompts.push(prompt)
-        return "1"
-      },
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
-        return "chosen-vault-secret"
-      },
-    }))
+	    const prompts: string[] = []
+	    const secretPrompts: string[] = []
+	    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+	      promptInput: async (prompt) => {
+	        prompts.push(prompt)
+	        return "1"
+	      },
+	      promptSecret: async (question) => {
+	        secretPrompts.push(question)
+	        return "Chosen-vault-secret1!"
+	      },
+	    }))
 
     expect(result).toContain("Slugger: vault not configured")
     expect(result).toContain("1. Create this agent's vault")
     expect(result).toContain("   ouro vault create --agent Slugger")
-    expect(result).toContain("repair step finished for Slugger.")
-    expect(prompts).toContain("Choose [1-3]: ")
-    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+	    expect(result).toContain("repair step finished for Slugger.")
+	    expect(prompts).toContain("Choose [1-3]: ")
+	    expect(secretPrompts).toEqual([
+	      "Choose Ouro vault unlock secret for slugger@ouro.bot: ",
+	      "Confirm Ouro vault unlock secret for slugger@ouro.bot: ",
+	    ])
+	    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.ouroboros.bot",
       "slugger@ouro.bot",
-      "chosen-vault-secret",
+      "Chosen-vault-secret1!",
     )
   })
 
@@ -1179,13 +1293,10 @@ describe("provider CLI command execution", () => {
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
-    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "2",
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
-        return "chosen-replacement-material"
-      },
-    }))
+	    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+	      promptInput: async () => "2",
+	      promptSecret: async () => "Chosen-replacement-material1!",
+	    }))
 
     expect(result).toContain("vault replaced for Slugger")
     expect(result).toContain("repair step finished for Slugger.")
@@ -1281,30 +1392,32 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async (question) => {
         prompts.push(`secret:${question}`)
-        return "chosen-unlock-material"
+        return "Chosen-unlock-material1!"
       },
     }))
 
     expect(result).toContain("vault created for Slugger")
     expect(result).not.toContain("vault unlock secret:")
     expect(result).toContain("local unlock store: macos-keychain")
-    expect(result).not.toContain("explicit plaintext fallback")
-    expect(prompts).toEqual([
-      "secret:Choose Ouro vault unlock secret for operator@example.com: ",
-    ])
+	    expect(result).not.toContain("explicit plaintext fallback")
+	    expect(prompts).toEqual([
+	      "secret:Choose Ouro vault unlock secret for operator@example.com: ",
+	      "secret:Confirm Ouro vault unlock secret for operator@example.com: ",
+	    ])
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.ouroboros.bot",
       "operator@example.com",
-      "chosen-unlock-material",
+      "Chosen-unlock-material1!",
     )
   })
 
   it("vault replace creates an empty vault at the stable agent email by default", async () => {
     emitTestEvent("provider cli vault replace")
-    const bundlesRoot = makeTempDir("provider-cli-vault-replace-bundles")
-    const homeDir = makeTempDir("provider-cli-vault-replace-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
+	    const bundlesRoot = makeTempDir("provider-cli-vault-replace-bundles")
+	    const homeDir = makeTempDir("provider-cli-vault-replace-home")
+	    writeAgentConfig(bundlesRoot, "Slugger")
+	    const promptQuestions: string[] = []
 
     const result = await runOuroCli([
       "vault",
@@ -1315,29 +1428,33 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      now: () => Date.parse(NOW),
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
-        return "chosen-replacement-secret"
-      },
-    }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      now: () => Date.parse(NOW),
+	      promptSecret: async (question) => {
+	        promptQuestions.push(question)
+	        return "Chosen-replacement-secret1!"
+	      },
+	    }))
 
     expect(result).toContain("vault replaced for Slugger")
     expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
     expect(result).toContain("imported: none")
     expect(result).toContain("next: ouro repair --agent Slugger")
-    expect(result).toContain("Keep the vault unlock secret saved outside Ouro")
-    expect(result).not.toContain("chosen-replacement-secret")
-    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+	    expect(result).toContain("Keep the vault unlock secret saved outside Ouro")
+	    expect(result).not.toContain("Chosen-replacement-secret1!")
+	    expect(promptQuestions).toEqual([
+	      "Choose new Ouro vault unlock secret for slugger@ouro.bot: ",
+	      "Confirm new Ouro vault unlock secret for slugger@ouro.bot: ",
+	    ])
+	    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.example.com",
       "slugger@ouro.bot",
-      "chosen-replacement-secret",
+      "Chosen-replacement-secret1!",
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.example.com" },
-      "chosen-replacement-secret",
+      "Chosen-replacement-secret1!",
       { homeDir, store: "plaintext-file" },
     )
     expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
@@ -1352,32 +1469,37 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-vault-replace-stable-bundles")
     const homeDir = makeTempDir("provider-cli-vault-replace-stable-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeAgentVaultLocator(bundlesRoot, "Slugger", {
-      email: "slugger+replaced-20260412201000+replaced-20260415233600@ouro.bot",
-      serverUrl: "https://vault.example.com",
-    })
+	    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+	      email: "slugger+replaced-20260412201000+replaced-20260415233600@ouro.bot",
+	      serverUrl: "https://vault.example.com",
+	    })
+	    const promptQuestions: string[] = []
 
     const result = await runOuroCli([
       "vault",
       "replace",
       "--agent",
       "Slugger",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      now: () => Date.parse(NOW),
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
-        return "chosen-replacement-secret"
-      },
-    }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      now: () => Date.parse(NOW),
+	      promptSecret: async (question) => {
+	        promptQuestions.push(question)
+	        return "Chosen-replacement-secret1!"
+	      },
+	    }))
 
-    expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
-    expect(result).not.toContain("+replaced-20260412201000")
+	    expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
+	    expect(promptQuestions).toEqual([
+	      "Choose new Ouro vault unlock secret for slugger@ouro.bot: ",
+	      "Confirm new Ouro vault unlock secret for slugger@ouro.bot: ",
+	    ])
+	    expect(result).not.toContain("+replaced-20260412201000")
     expect(result).not.toContain("+replaced-20260415233600")
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.example.com",
       "slugger@ouro.bot",
-      "chosen-replacement-secret",
+      "Chosen-replacement-secret1!",
     )
   })
 
@@ -1385,8 +1507,9 @@ describe("provider CLI command execution", () => {
     emitTestEvent("provider cli vault replace guards")
     const bundlesRoot = makeTempDir("provider-cli-vault-replace-guards-bundles")
     const homeDir = makeTempDir("provider-cli-vault-replace-guards-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
-    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({
+	    writeAgentConfig(bundlesRoot, "Slugger")
+	    const promptQuestions: string[] = []
+	    mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({
       kind: "macos-keychain",
       secure: true,
       location: "macOS Keychain",
@@ -1399,16 +1522,20 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--email",
       "slugger+manual@example.com",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose new Ouro vault unlock secret for slugger+manual@example.com: ")
-        return "chosen-replacement-secret"
-      },
-    }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      promptSecret: async (question) => {
+	        promptQuestions.push(question)
+	        return "Chosen-replacement-secret1!"
+	      },
+	    }))
     expect(prompted).toContain("vault replaced for Slugger")
-    expect(prompted).toContain("local unlock store: macos-keychain")
-    expect(prompted).not.toContain("explicit plaintext fallback")
-    expect(prompted).not.toContain("chosen-replacement-secret")
+	    expect(prompted).toContain("local unlock store: macos-keychain")
+	    expect(prompted).not.toContain("explicit plaintext fallback")
+	    expect(prompted).not.toContain("Chosen-replacement-secret1!")
+	    expect(promptQuestions).toEqual([
+	      "Choose new Ouro vault unlock secret for slugger+manual@example.com: ",
+	      "Confirm new Ouro vault unlock secret for slugger+manual@example.com: ",
+	    ])
 
     await expect(runOuroCli([
       "vault",
@@ -1425,7 +1552,7 @@ describe("provider CLI command execution", () => {
       promptSecret: async () => "   ",
     }))).rejects.toThrow("vault replace requires an unlock secret")
     await expect(runOuroCli(["vault", "replace", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-replacement-secret",
+      promptSecret: async () => "Chosen-replacement-secret1!",
     }))).rejects.toThrow("Replace the hatchling agent vault")
     await expect(runOuroCli([
       "vault",
@@ -1434,7 +1561,7 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--generate-unlock-secret",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-replacement-secret",
+      promptSecret: async () => "Chosen-replacement-secret1!",
     }))).rejects.toThrow("vault replace no longer supports --generate-unlock-secret")
 
     mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
@@ -1446,7 +1573,7 @@ describe("provider CLI command execution", () => {
       "--email",
       "slugger+manual@example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-replacement-secret",
+      promptSecret: async () => "Chosen-replacement-secret1!",
     }))
     expect(failed).toContain("vault replace failed for Slugger: already exists")
     expect(failed).toContain("If this is the existing vault, run:")
@@ -1460,6 +1587,7 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-vault-recover-home")
     const sourceDir = makeTempDir("provider-cli-vault-recover-source")
     writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_recover")
     const legacySecretsPath = path.join(sourceDir, "legacy-secrets.json")
     const providerPoolPath = path.join(sourceDir, "provider-pool.json")
     fs.writeFileSync(legacySecretsPath, JSON.stringify({
@@ -1499,13 +1627,14 @@ describe("provider CLI command execution", () => {
       "plaintext-file",
     ], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
-      promptSecret: async () => "chosen-recovery-secret",
+      promptSecret: async () => "Chosen-recovery-secret1!",
     }))
 
     expect(result).toContain("vault recovered for Slugger")
     expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
     expect(result).toContain("provider credentials imported: anthropic, github-copilot, minimax")
-	    expect(result).toContain("runtime credentials imported: bluebubbles.accountId, bluebubbles.password, bluebubbles.serverUrl, operatorNote")
+    expect(result).toContain("runtime credentials imported: operatorNote")
+    expect(result).toContain("machine runtime credentials imported: bluebubbles.accountId, bluebubbles.password, bluebubbles.serverUrl")
     expect(result).toContain("credential values were not printed")
     expect(result).not.toContain("mini-secret")
     expect(result).not.toContain("gh-secret")
@@ -1516,11 +1645,11 @@ describe("provider CLI command execution", () => {
       "Ouro credential vault",
       "https://vault.example.com",
       "slugger@ouro.bot",
-      "chosen-recovery-secret",
+      "Chosen-recovery-secret1!",
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.example.com" },
-      "chosen-recovery-secret",
+      "Chosen-recovery-secret1!",
       { homeDir, store: "plaintext-file" },
     )
     expect(readAgentConfig(bundlesRoot, "Slugger").vault).toEqual({
@@ -1546,13 +1675,18 @@ describe("provider CLI command execution", () => {
 	      provider: "anthropic",
 	      credentials: { setupToken: "anthropic-secret", expiresAt: 1_777_777_777 },
 	    })
-	    const runtimeRaw = mockVaultDeps.rawSecrets.get("Slugger:runtime/config")
+    const runtimeRaw = mockVaultDeps.rawSecrets.get("Slugger:runtime/config")
     expect(runtimeRaw).toBeDefined()
     const runtime = JSON.parse(runtimeRaw ?? "{}") as { config: Record<string, unknown> }
-	    expect(runtime.config).toEqual({
-	      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "bb-secret", accountId: "default" },
-	      operatorNote: "scalar-secret",
-	    })
+    expect(runtime.config).toEqual({
+      operatorNote: "scalar-secret",
+    })
+    const machineRuntimeRaw = mockVaultDeps.rawSecrets.get("Slugger:runtime/machines/machine_recover/config")
+    expect(machineRuntimeRaw).toBeDefined()
+    const machineRuntime = JSON.parse(machineRuntimeRaw ?? "{}") as { config: Record<string, unknown> }
+    expect(machineRuntime.config).toEqual({
+      bluebubbles: { serverUrl: "http://bluebubbles.local", password: "bb-secret", accountId: "default" },
+    })
     expect(runtime.config).not.toHaveProperty("providers")
     expect(runtime.config).not.toHaveProperty("vault")
   })
@@ -1570,9 +1704,10 @@ describe("provider CLI command execution", () => {
 	        anthropic: null,
 	        "not-a-provider": { apiKey: "ignored-secret" },
 	      },
-	    }), "utf-8")
+		    }), "utf-8")
+	    const promptQuestions: string[] = []
 
-    const prompted = await runOuroCli([
+	    const prompted = await runOuroCli([
       "vault",
       "recover",
       "--agent",
@@ -1581,17 +1716,22 @@ describe("provider CLI command execution", () => {
       emptySource,
       "--email",
       "slugger+manual@example.com",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async (question) => {
-        expect(question).toBe("Choose new Ouro vault unlock secret for slugger+manual@example.com: ")
-        return "chosen-recovery-secret"
-      },
-    }))
+	    ], makeCliDeps(homeDir, bundlesRoot, {
+	      promptSecret: async (question) => {
+	        promptQuestions.push(question)
+	        return "Chosen-recovery-secret1!"
+	      },
+	    }))
     expect(prompted).toContain("provider credentials imported: none")
     expect(prompted).toContain("runtime credentials imported: none")
-    expect(prompted).toContain("Keep the vault unlock secret saved outside Ouro")
-    expect(prompted).not.toContain("chosen-recovery-secret")
-    expect(prompted).not.toContain("ignored-secret")
+    expect(prompted).toContain("machine runtime credentials imported: none")
+	    expect(prompted).toContain("Keep the vault unlock secret saved outside Ouro")
+	    expect(prompted).not.toContain("Chosen-recovery-secret1!")
+	    expect(prompted).not.toContain("ignored-secret")
+	    expect(promptQuestions).toEqual([
+	      "Choose new Ouro vault unlock secret for slugger+manual@example.com: ",
+	      "Confirm new Ouro vault unlock secret for slugger+manual@example.com: ",
+	    ])
 
     await expect(runOuroCli([
       "vault",
@@ -1620,7 +1760,7 @@ describe("provider CLI command execution", () => {
       "--from",
       emptySource,
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-recovery-secret",
+      promptSecret: async () => "Chosen-recovery-secret1!",
     }))).rejects.toThrow("Recover the hatchling agent vault")
 
     mockVaultDeps.createVaultAccount.mockResolvedValueOnce({ success: false, error: "already exists" })
@@ -1634,7 +1774,7 @@ describe("provider CLI command execution", () => {
       "--email",
       "slugger+manual@example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "chosen-recovery-secret",
+      promptSecret: async () => "Chosen-recovery-secret1!",
     }))
     expect(failed).toContain("vault recover failed for Slugger: already exists")
     expect(failed).toContain("If this is the existing vault, run:")
@@ -1693,7 +1833,7 @@ describe("provider CLI command execution", () => {
 	      emptySource,
 	    ], makeCliDeps(homeDir, bundlesRoot, {
 	      now: () => Date.parse(NOW),
-	      promptSecret: async () => "chosen-recovery-secret",
+	      promptSecret: async () => "Chosen-recovery-secret1!",
 	    }))
 
 	    expect(recovered).toContain("vault: agent@ouro.bot at https://vault.ouroboros.bot")
@@ -1715,7 +1855,7 @@ describe("provider CLI command execution", () => {
 	      topLevelProviderSource,
 	    ], makeCliDeps(homeDir, bundlesRoot, {
 	      now: () => Date.parse(NOW),
-	      promptSecret: async () => "chosen-recovery-secret",
+	      promptSecret: async () => "Chosen-recovery-secret1!",
 	    }))
 
 	    expect(topLevelRecovered).toContain("provider credentials imported: minimax")
@@ -1731,7 +1871,7 @@ describe("provider CLI command execution", () => {
 
     await expect(runOuroCli(["vault", "create", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => "operator@example.com",
-      promptSecret: async () => "chosen-create-secret",
+      promptSecret: async () => "Chosen-create-secret1!",
     }))).rejects.toThrow("Create a vault for the hatchling agent")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
       .rejects.toThrow("vault create requires an interactive secret prompt")
@@ -1964,6 +2104,33 @@ describe("provider CLI command execution", () => {
     expect(invalidStatus).toContain("status: invalid")
     expect(invalidStatus).toContain("ouro vault unlock --agent Slugger")
 
+    mockVaultDeps.rawSecrets.clear()
+    resetRuntimeCredentialConfigCache()
+    const allScopesMissing = await runOuroCli(["vault", "config", "status", "--agent", "Slugger", "--scope", "all"], makeCliDeps(homeDir, bundlesRoot))
+    expect(allScopesMissing).toContain("agent runtime config item: vault:Slugger:runtime/config")
+    expect(allScopesMissing).toContain("machine runtime config item: vault:Slugger:runtime/machines/")
+    expect(allScopesMissing).toContain("ouro vault config set --agent Slugger --key <field> --scope machine")
+
+    writeMachineIdentity(homeDir, "machine_config")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_config/config", runtimeConfigSecret({
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234" },
+    }))
+    resetRuntimeCredentialConfigCache()
+    const machineSet = await runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--scope", "machine", "--key", "bluebubbles.password", "--value", "local-password"],
+      makeCliDeps(homeDir, bundlesRoot, { now: () => Date.parse(NOW) }),
+    )
+    expect(machineSet).toContain("stored bluebubbles.password for Slugger")
+    expect(machineSet).toContain("this machine's vault runtime config item")
+    expect(machineSet).not.toContain("local-password")
+    const machineStored = readRuntimeSecret("Slugger", "runtime/machines/machine_config/config")
+    expect(machineStored.config).toMatchObject({
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:1234",
+        password: "local-password",
+      },
+    })
+
     writeRuntimeConfig("Slugger", {
       bluebubbles: { serverUrl: "http://localhost:1234", password: "super-secret" },
     })
@@ -1976,6 +2143,321 @@ describe("provider CLI command execution", () => {
     }))
     expect(prompted).toContain("stored teams.clientId")
     expect(prompted).not.toContain("teams-client-id")
+
+    const promptedSecret = await runOuroCli(["vault", "config", "set", "--agent", "Slugger", "--key", "integrations.perplexityApiKey"], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async (question) => {
+        expect(question).toBe("Value for integrations.perplexityApiKey: ")
+        return "pplx-hidden"
+      },
+    }))
+    expect(promptedSecret).toContain("stored integrations.perplexityApiKey")
+    expect(promptedSecret).not.toContain("pplx-hidden")
+  })
+
+  it("connects Perplexity through a discoverable hidden-prompt flow", async () => {
+    emitTestEvent("provider cli connect perplexity")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        expect(question).toBe("Perplexity API key: ")
+        return "pplx-secret"
+      },
+    }))
+
+    expect(result).toContain("Perplexity connected for Slugger")
+    expect(result).toContain("Perplexity search")
+    expect(result).toContain("runtime/config")
+    expect(result).toContain("secret was not printed")
+    expect(result).not.toContain("pplx-secret")
+
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config).toMatchObject({
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+      },
+    })
+  })
+
+  it("connects BlueBubbles as a current-machine attachment", async () => {
+    emitTestEvent("provider cli connect bluebubbles")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        cli: { enabled: false },
+        teams: { enabled: true },
+        bluebubbles: { enabled: false, preserved: "yes" },
+      }
+    })
+    writeMachineIdentity(homeDir, "machine_bb")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async (question) => {
+        expect(question).not.toContain("password")
+        return answers.shift() ?? ""
+      },
+      promptSecret: async (question) => {
+        expect(question).toBe("BlueBubbles app password: ")
+        return "bb-password"
+      },
+    }))
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime/machines/machine_bb/config")
+    expect(result).toContain("secret was not printed")
+    expect(result).not.toContain("bb-password")
+
+    const stored = readRuntimeSecret("Slugger", "runtime/machines/machine_bb/config")
+    expect(stored.config).toMatchObject({
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:1234",
+        password: "bb-password",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/bb-webhook",
+        requestTimeoutMs: 12000,
+      },
+    })
+
+    const agentJson = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: { bluebubbles?: { enabled?: boolean; preserved?: string } }
+    }
+    expect(agentJson.senses?.bluebubbles?.enabled).toBe(true)
+    expect(agentJson.senses?.bluebubbles?.preserved).toBe("yes")
+  })
+
+  it("guards connect flows that cannot persist credentials", async () => {
+    emitTestEvent("provider cli connect guardrails")
+    const bundlesRoot = makeTempDir("provider-cli-connect-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-guards-home")
+
+    await expect(runOuroCli(
+      ["connect", "perplexity", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot, { promptSecret: async () => "pplx-secret" }),
+    )).rejects.toThrow("SerpentGuide has no persistent runtime credentials")
+
+    await expect(runOuroCli(
+      ["connect", "bluebubbles", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptInput: async () => "http://127.0.0.1:1234",
+        promptSecret: async () => "bb-password",
+      }),
+    )).rejects.toThrow("SerpentGuide has no persistent runtime credentials")
+  })
+
+  it("requires an interactive terminal for direct connect flows that need hidden input", async () => {
+    emitTestEvent("provider cli connect requires interactive terminal")
+    const bundlesRoot = makeTempDir("provider-cli-connect-interactive-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-interactive-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(
+      ["connect", "perplexity", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("Perplexity API key entry requires an interactive terminal")
+
+    await expect(runOuroCli(
+      ["connect", "bluebubbles", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot, { promptSecret: async () => "bb-password" }),
+    )).rejects.toThrow("BlueBubbles setup requires an interactive terminal")
+  })
+
+  it("rejects blank Perplexity API keys", async () => {
+    emitTestEvent("provider cli connect perplexity blank key")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-blank-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-blank-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "   ",
+    }))).rejects.toThrow("Perplexity API key cannot be blank")
+  })
+
+  it("validates BlueBubbles port and timeout prompts before storing the attachment", async () => {
+    emitTestEvent("provider cli connect bluebubbles prompt validation")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-validation-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-validation-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb")
+
+    await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "   ",
+      promptSecret: async () => "bb-password",
+    }))).rejects.toThrow("BlueBubbles server URL cannot be blank")
+
+    await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => question.includes("server URL") ? "http://127.0.0.1:1234" : "70000",
+      promptSecret: async () => "bb-password",
+    }))).rejects.toThrow("BlueBubbles webhook port must be an integer between 1 and 65535")
+
+    const timeoutAnswers = [
+      "http://127.0.0.1:1234",
+      "",
+      "",
+      "0",
+    ]
+    await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => timeoutAnswers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    }))).rejects.toThrow("BlueBubbles request timeout must be a positive integer")
+
+    await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => question.includes("server URL") ? "http://127.0.0.1:1234" : "",
+      promptSecret: async () => "",
+    }))).rejects.toThrow("BlueBubbles app password cannot be blank")
+  })
+
+  it("stops BlueBubbles setup before overwriting an unreadable machine runtime item", async () => {
+    emitTestEvent("provider cli connect bluebubbles unreadable machine item")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-unreadable-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-unreadable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_bb/config", JSON.stringify({ bad: true }))
+    resetRuntimeCredentialConfigCache()
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "",
+      "bb-webhook",
+      "",
+    ]
+    await expect(runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    }))).rejects.toThrow("cannot read existing machine runtime credentials")
+  })
+
+  it("preserves existing BlueBubbles machine runtime fields while attaching this machine", async () => {
+    emitTestEvent("provider cli connect bluebubbles preserves machine item")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-preserve-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-preserve-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_bb/config", runtimeConfigSecret({
+      localTool: { token: "keep-me" },
+    }))
+    resetRuntimeCredentialConfigCache()
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "",
+      "bb-webhook",
+      "",
+    ]
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    }))
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    const stored = readRuntimeSecret("Slugger", "runtime/machines/machine_bb/config")
+    expect(stored.config).toMatchObject({
+      localTool: { token: "keep-me" },
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-password" },
+      bluebubblesChannel: { webhookPath: "/bb-webhook" },
+    })
+  })
+
+  it("keeps BlueBubbles setup successful but reports bundle sync failure when sync is enabled without git", async () => {
+    emitTestEvent("provider cli connect bluebubbles sync failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-sync-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-sync-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+    writeMachineIdentity(homeDir, "machine_bb")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "",
+      "",
+      "",
+    ]
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    }))
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("bundle sync: could not push bundle changes")
+    expect(result).toContain("not a git repo")
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      bluebubbles: { enabled: true },
+    })
+  })
+
+  it("renders a compact connect menu and dispatches the selected onboarding path", async () => {
+    emitTestEvent("provider cli connect menu")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "1"
+      },
+      promptSecret: async () => "pplx-secret",
+    }))
+
+    expect(prompts.join("\n")).toContain("Connect Slugger")
+    expect(prompts.join("\n")).toContain("Perplexity search")
+    expect(prompts.join("\n")).toContain("BlueBubbles iMessage")
+    expect(result).toContain("Perplexity connected for Slugger")
+  })
+
+  it("keeps connect menu fallbacks compact for noninteractive shells and alternate choices", async () => {
+    emitTestEvent("provider cli connect menu fallbacks")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-fallbacks-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-fallbacks-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_menu")
+
+    const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    expect(noninteractive).toContain("Connect Slugger")
+    expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
+    expect(noninteractive).toContain("ouro connect bluebubbles --agent Slugger")
+
+    const blueBubblesAnswers = ["2", "http://127.0.0.1:1234", "", "", ""]
+    const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => blueBubblesAnswers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    }))
+    expect(blueBubbles).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(blueBubbles).toContain("runtime/machines/machine_menu/config")
+    expect(blueBubbles).not.toContain("bb-password")
+
+    const providerAuth = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "3",
+    }))
+    expect(providerAuth).toContain("Provider auth is its own flow")
+    expect(providerAuth).toContain("ouro auth --agent Slugger --provider <provider>")
+
+    const cancelled = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "4",
+    }))
+    expect(cancelled).toBe("connect cancelled.")
   })
 
   it("vault config guards unsupported agents, invalid keys, and unreadable runtime config", async () => {
@@ -1999,6 +2481,10 @@ describe("provider CLI command execution", () => {
     )).rejects.toThrow("runtime config key must be a dotted path")
     await expect(runOuroCli(
       ["vault", "config", "set", "--agent", "Slugger", "--key", "bluebubbles.password"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("secret entry requires an interactive terminal")
+    await expect(runOuroCli(
+      ["vault", "config", "set", "--agent", "Slugger", "--key", "teams.clientId"],
       makeCliDeps(homeDir, bundlesRoot),
     )).rejects.toThrow("vault config set requires --value")
     await expect(runOuroCli(

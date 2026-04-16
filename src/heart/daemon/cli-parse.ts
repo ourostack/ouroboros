@@ -85,6 +85,7 @@ export function usage(): string {
     "  ouro config model --agent <name> <model-name>",
     "  ouro config models --agent <name>",
     "  ouro auth --agent <name> [--provider <provider>]",
+    "  ouro connect [perplexity|bluebubbles] --agent <name>",
     "  ouro auth verify --agent <name> [--provider <provider>]",
     "  ouro auth switch --agent <name> --provider <provider>",
     "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",
@@ -92,8 +93,8 @@ export function usage(): string {
     "  ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
     "  ouro vault unlock --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault status --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
-    "  ouro vault config set --agent <name> --key <path> [--value <value>]",
-    "  ouro vault config status --agent <name>",
+    "  ouro vault config set --agent <name> --key <path> [--value <value>] [--scope agent|machine]",
+    "  ouro vault config status --agent <name> [--scope agent|machine|all]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -561,6 +562,7 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let key: string | undefined
   let value: string | undefined
+  let scope: "agent" | "machine" | "all" | undefined
 
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i]
@@ -574,6 +576,15 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    if (token === "--scope") {
+      const raw = rest[i + 1]
+      if (raw !== "agent" && raw !== "machine" && raw !== "all") {
+        throw new Error("vault config --scope must be agent, machine, or all")
+      }
+      scope = raw
+      i += 1
+      continue
+    }
     throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>] OR ouro vault config status --agent <name>")
   }
 
@@ -584,12 +595,28 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
     if (key || value) {
       throw new Error("Usage: ouro vault config status --agent <name>")
     }
-    return { kind: "vault.config.status", agent }
+    return { kind: "vault.config.status", agent, ...(scope ? { scope } : {}) }
   }
+  if (scope === "all") throw new Error("vault config --scope all is only valid for status")
   if (!key) {
     throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>]")
   }
-  return { kind: "vault.config.set", agent, key, ...(value !== undefined ? { value } : {}) }
+  return { kind: "vault.config.set", agent, key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
+}
+
+function normalizeConnectTarget(value: string | undefined): "perplexity" | "bluebubbles" | undefined {
+  if (!value) return undefined
+  if (value === "perplexity" || value === "perplexity-search") return "perplexity"
+  if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
+  throw new Error("Usage: ouro connect [perplexity|bluebubbles] --agent <name>")
+}
+
+function parseConnectCommand(args: string[]): OuroCliCommand {
+  const { agent, rest } = extractAgentFlag(args)
+  if (!agent) throw new Error("Usage: ouro connect --agent <name> [perplexity|bluebubbles]")
+  if (rest.length > 1) throw new Error("Usage: ouro connect [perplexity|bluebubbles] --agent <name>")
+  const target = normalizeConnectTarget(rest[0])
+  return { kind: "connect", agent, ...(target ? { target } : {}) }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
@@ -1045,6 +1072,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
+  if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))
   if (head === "reminder") return parseReminderCommand(args.slice(1))
