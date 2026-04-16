@@ -66,7 +66,7 @@ describe("bluebubbles health diagnostics", () => {
     expect(result.status).toBe(401)
     expect(result.reason).toBe("unauthorized")
     expect(result.detail).toContain("BlueBubbles auth failed at http://bluebubbles.local (HTTP 401)")
-    expect(result.detail).toContain("Check `bluebubbles.password`")
+    expect(result.detail).toContain("ouro connect bluebubbles --agent <agent>")
   })
 
   it("classifies upstream 5xx responses as server failures even when the body cannot be read", async () => {
@@ -150,7 +150,7 @@ describe("bluebubbles health diagnostics", () => {
     expect(stringifyBlueBubblesHealthError(new Error(""))).toBe("Error")
     expect(stringifyBlueBubblesHealthError(namelessError)).toBe("unknown")
     expect(formatBlueBubblesHealthcheckFailure(" ", "")).toContain("Raw error: unknown")
-    expect(redactBlueBubblesHealthDetailForNerves("Check `bluebubbles.password` in secrets.json")).toContain(
+    expect(redactBlueBubblesHealthDetailForNerves("Check `bluebubbles.password` in this machine runtime item")).toContain(
       "bluebubbles credential",
     )
 

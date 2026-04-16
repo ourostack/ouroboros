@@ -28,7 +28,7 @@ import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { getTaskModule } from "../../repertoire/tasks"
 import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
 import { createVaultAccount } from "../../repertoire/vault-setup"
-import { getVaultUnlockStatus, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
+import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
 import type { TaskModule } from "../../repertoire/tasks/types"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
@@ -46,7 +46,9 @@ import {
   type ProviderCredentialRecord,
 } from "../provider-credentials"
 import {
+  refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
+  upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
   type RuntimeCredentialConfig,
 } from "../runtime-credentials"
@@ -55,6 +57,7 @@ import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProvider
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import { postTurnPush } from "../sync"
 
 import type {
   OuroCliCommand,
@@ -88,6 +91,7 @@ import type {
   CloneCliCommand,
   DoctorCliCommand,
   HelpCliCommand,
+  RuntimeConfigScope,
 } from "./cli-types"
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
@@ -717,7 +721,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" }>): DaemonCommand {
   return command
 }
 
@@ -763,6 +767,37 @@ function providerCliAgentRoot(command: { agent: string }, deps: OuroCliDeps): st
 
 function providerCliNow(deps: OuroCliDeps): Date {
   return new Date((deps.now ?? Date.now)())
+}
+
+function readAgentSyncConfigForCliMutation(agent: string, deps: OuroCliDeps): { enabled: boolean; remote: string } {
+  try {
+    const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as { sync?: { enabled?: unknown; remote?: unknown } }
+    return {
+      enabled: parsed.sync?.enabled === true,
+      remote: typeof parsed.sync?.remote === "string" && parsed.sync.remote.trim() ? parsed.sync.remote : "origin",
+    }
+  } catch {
+    /* v8 ignore next -- defensive: post-mutation sync should not break an already-successful CLI repair if agent.json becomes unreadable @preserve */
+    return { enabled: false, remote: "origin" }
+  }
+}
+
+function pushAgentBundleAfterCliMutation(agent: string, deps: OuroCliDeps): string | null {
+  const sync = readAgentSyncConfigForCliMutation(agent, deps)
+  if (!sync.enabled) return null
+
+  const agentRoot = providerCliAgentRoot({ agent }, deps)
+  const result = postTurnPush(agentRoot, { enabled: true, remote: sync.remote })
+  if (result.ok) {
+    return `bundle sync: ran post-change sync (remote: ${sync.remote})`
+  }
+  return `bundle sync: could not push bundle changes (${result.error})`
+}
+
+function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return syncSummary ? `${message}\n${syncSummary}` : message
 }
 
 function writeAgentVaultConfig(
@@ -848,6 +883,7 @@ function recoverProviderImports(raw: JsonRecord): VaultRecoverSourceImport["prov
 }
 
 const RECOVER_RUNTIME_EXCLUDED_TOP_LEVEL = new Set(["providers", "vault", "context", "schemaVersion", "updatedAt"])
+const MACHINE_RUNTIME_CONFIG_TOP_LEVEL = new Set(["bluebubbles", "bluebubblesChannel"])
 
 function recoverRuntimeConfig(raw: JsonRecord): RuntimeCredentialConfig {
   const config: RuntimeCredentialConfig = {}
@@ -868,6 +904,19 @@ function mergeRuntimeConfig(a: RuntimeCredentialConfig, b: RuntimeCredentialConf
     }
   }
   return merged
+}
+
+function splitRuntimeConfigByScope(config: RuntimeCredentialConfig): {
+  agentConfig: RuntimeCredentialConfig
+  machineConfig: RuntimeCredentialConfig
+} {
+  const agentConfig: RuntimeCredentialConfig = {}
+  const machineConfig: RuntimeCredentialConfig = {}
+  for (const [key, value] of Object.entries(config)) {
+    const target = MACHINE_RUNTIME_CONFIG_TOP_LEVEL.has(key) ? machineConfig : agentConfig
+    target[key] = isJsonRecord(value) ? cloneJsonRecord(value) : value
+  }
+  return { agentConfig, machineConfig }
 }
 
 function readVaultRecoverSource(sourcePath: string): VaultRecoverSourceImport {
@@ -986,10 +1035,12 @@ async function executeVaultCreate(
   const email = command.email ?? config.vault?.email ?? configuredVault.email
   const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create")
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
-  if (!unlockSecret) {
-    throw new Error("vault create requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
-  }
+  const unlockSecret = await promptConfirmedVaultUnlockSecret({
+    promptSecret,
+    question: `Choose Ouro vault unlock secret for ${email}: `,
+    confirmQuestion: `Confirm Ouro vault unlock secret for ${email}: `,
+    emptyError: "vault create requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
+  })
   const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
   if (!result.success) {
     const message = [
@@ -1009,13 +1060,13 @@ async function executeVaultCreate(
   }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
   resetCredentialStore()
   await getCredentialStore(command.agent).get("__ouro_vault_probe__")
-  const message = [
+  const message = appendBundleSyncSummary([
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
     "All raw credentials for this agent will be stored in this Ouro credential vault.",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n")
+  ].join("\n"), command.agent, deps)
   deps.writeStdout(message)
   return message
 }
@@ -1033,10 +1084,12 @@ async function executeVaultReplace(
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose new Ouro vault unlock secret for ${email}: `)).trim()
-  if (!unlockSecret) {
-    throw new Error("vault replace requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
-  }
+  const unlockSecret = await promptConfirmedVaultUnlockSecret({
+    promptSecret,
+    question: `Choose new Ouro vault unlock secret for ${email}: `,
+    confirmQuestion: `Confirm new Ouro vault unlock secret for ${email}: `,
+    emptyError: "vault replace requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
+  })
 
   const repair = await createRepairVaultForAgent({
     action: "replace",
@@ -1051,14 +1104,14 @@ async function executeVaultReplace(
   })
   if (!repair.ok) return repair.message
 
-  const message = [
+  const message = appendBundleSyncSummary([
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
     "imported: none",
     `next: ouro repair --agent ${command.agent}`,
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n")
+  ].join("\n"), command.agent, deps)
   deps.writeStdout(message)
   return message
 }
@@ -1078,10 +1131,12 @@ async function executeVaultRecover(
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose new Ouro vault unlock secret for ${email}: `)).trim()
-  if (!unlockSecret) {
-    throw new Error("vault recover requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
-  }
+  const unlockSecret = await promptConfirmedVaultUnlockSecret({
+    promptSecret,
+    question: `Choose new Ouro vault unlock secret for ${email}: `,
+    confirmQuestion: `Confirm new Ouro vault unlock secret for ${email}: `,
+    emptyError: "vault recover requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
+  })
 
   const repair = await createRepairVaultForAgent({
     action: "recover",
@@ -1097,7 +1152,7 @@ async function executeVaultRecover(
   if (!repair.ok) return repair.message
 
   const importedProviders = new Set<AgentProvider>()
-  let mergedRuntimeConfig: RuntimeCredentialConfig = {}
+  let mergedRecoveredRuntimeConfig: RuntimeCredentialConfig = {}
   for (const source of sourceImports) {
     for (const provider of source.providers) {
       await upsertProviderCredential({
@@ -1110,24 +1165,31 @@ async function executeVaultRecover(
       })
       importedProviders.add(provider.provider)
     }
-    mergedRuntimeConfig = mergeRuntimeConfig(mergedRuntimeConfig, source.runtimeConfig)
+    mergedRecoveredRuntimeConfig = mergeRuntimeConfig(mergedRecoveredRuntimeConfig, source.runtimeConfig)
   }
 
+  const { agentConfig: mergedRuntimeConfig, machineConfig: mergedMachineRuntimeConfig } =
+    splitRuntimeConfigByScope(mergedRecoveredRuntimeConfig)
   const runtimeFields = summarizeRuntimeConfigFields(mergedRuntimeConfig)
+  const machineRuntimeFields = summarizeRuntimeConfigFields(mergedMachineRuntimeConfig)
   if (runtimeFields.length > 0) {
     await upsertRuntimeCredentialConfig(command.agent, mergedRuntimeConfig, now)
   }
+  if (machineRuntimeFields.length > 0) {
+    await upsertMachineRuntimeCredentialConfig(command.agent, currentMachineId(deps), mergedMachineRuntimeConfig, now)
+  }
   const providerList = [...importedProviders].sort()
-  const message = [
+  const message = appendBundleSyncSummary([
     `vault recovered for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
     `sources imported: ${sourceImports.length}`,
     `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
     `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
+    `machine runtime credentials imported: ${machineRuntimeFields.length === 0 ? "none" : machineRuntimeFields.join(", ")}`,
     "credential values were not printed",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n")
+  ].join("\n"), command.agent, deps)
   deps.writeStdout(message)
   return message
 }
@@ -1250,6 +1312,58 @@ function summarizeRuntimeConfigFields(config: RuntimeCredentialConfig): string[]
   return fields.filter(Boolean).sort()
 }
 
+function isSensitiveRuntimeConfigKey(key: string): boolean {
+  const lastSegment = key.split(".").pop()!
+  return /(password|secret|token|api[-_]?key|key)$/i.test(lastSegment)
+}
+
+function currentMachineId(deps: OuroCliDeps): string {
+  return loadOrCreateMachineIdentity({
+    homeDir: providerCliHomeDir(deps),
+    now: () => providerCliNow(deps),
+  }).machineId
+}
+
+async function promptRuntimeConfigValue(
+  command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.value !== undefined) return command.value
+  if (isSensitiveRuntimeConfigKey(command.key)) {
+    if (!deps.promptSecret) {
+      throw new Error("secret entry requires an interactive terminal so the value can be hidden. Re-run without --value in a terminal, or pass --value only from a trusted non-logged script.")
+    }
+    return deps.promptSecret(`Value for ${command.key}: `)
+  }
+  const prompt = deps.promptInput
+  return prompt ? prompt(`Value for ${command.key}: `) : ""
+}
+
+function runtimeScopeLabel(scope: RuntimeConfigScope): string {
+  return scope === "machine" ? "this machine's vault runtime config item" : "the agent vault runtime/config item"
+}
+
+async function storeRuntimeConfigKey(input: {
+  agent: string
+  key: string
+  value: string
+  scope: RuntimeConfigScope
+  deps: OuroCliDeps
+}): Promise<{ revision: string; itemPath: string; machineId?: string }> {
+  const machineId = input.scope === "machine" ? currentMachineId(input.deps) : undefined
+  const current = input.scope === "machine"
+    ? await refreshMachineRuntimeCredentialConfig(input.agent, machineId!, { preserveCachedOnFailure: true })
+    : await refreshRuntimeCredentialConfig(input.agent, { preserveCachedOnFailure: true })
+  if (!current.ok && current.reason !== "missing") {
+    throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+  }
+  const nextConfig = setRuntimeConfigValue(current.ok ? current.config : {}, input.key, input.value)
+  const stored = input.scope === "machine"
+    ? await upsertMachineRuntimeCredentialConfig(input.agent, machineId!, nextConfig, providerCliNow(input.deps))
+    : await upsertRuntimeCredentialConfig(input.agent, nextConfig, providerCliNow(input.deps))
+  return { revision: stored.revision, itemPath: stored.itemPath, ...(machineId ? { machineId } : {}) }
+}
+
 async function executeVaultConfigSet(
   command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
   deps: OuroCliDeps,
@@ -1257,20 +1371,22 @@ async function executeVaultConfigSet(
   if (command.agent === "SerpentGuide") {
     throw new Error("SerpentGuide does not have persistent runtime credentials. Store credentials in the hatchling agent vault.")
   }
-  const prompt = deps.promptInput
-  const value = command.value ?? (prompt ? await prompt(`Value for ${command.key}: `) : "")
+  const scope = command.scope ?? "agent"
+  const value = await promptRuntimeConfigValue(command, deps)
   if (!value) {
     throw new Error("vault config set requires --value <value> or an interactive prompt")
   }
-  const current = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-  if (!current.ok && current.reason !== "missing") {
-    throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
-  }
-  const nextConfig = setRuntimeConfigValue(current.ok ? current.config : {}, command.key, value)
-  const stored = await upsertRuntimeCredentialConfig(command.agent, nextConfig, providerCliNow(deps))
+  const stored = await storeRuntimeConfigKey({
+    agent: command.agent,
+    key: command.key,
+    value,
+    scope,
+    deps,
+  })
   const message = [
-    `stored ${command.key} for ${command.agent} in the agent vault runtime/config item`,
+    `stored ${command.key} for ${command.agent} in ${runtimeScopeLabel(scope)}`,
     `runtime credentials: ${stored.revision}`,
+    `item: ${stored.itemPath}`,
     "value was not printed",
   ].join("\n")
   deps.writeStdout(message)
@@ -1286,20 +1402,218 @@ async function executeVaultConfigStatus(
     deps.writeStdout(message)
     return message
   }
-  const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-  const lines = [`agent: ${command.agent}`, `runtime config item: ${runtime.itemPath}`]
-  if (runtime.ok) {
-    lines.push(`status: available (${runtime.revision})`)
-    const fields = summarizeRuntimeConfigFields(runtime.config)
-    lines.push(`fields: ${fields.length === 0 ? "none stored" : fields.join(", ")}`)
-  } else {
-    lines.push(`status: ${runtime.reason}`)
-    lines.push(`error: ${runtime.error}`)
-    lines.push(runtime.reason === "missing"
-      ? `fix: Run 'ouro vault config set --agent ${command.agent} --key <field>' to store runtime credentials.`
-      : `fix: ${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro vault config status'.")}`)
+  const scopes = command.scope === "all" ? ["agent", "machine"] as const : [command.scope ?? "agent"] as const
+  const lines = [`agent: ${command.agent}`]
+  for (const scope of scopes) {
+    const machineId = scope === "machine" ? currentMachineId(deps) : undefined
+    const runtime = scope === "machine"
+      ? await refreshMachineRuntimeCredentialConfig(command.agent, machineId!, { preserveCachedOnFailure: true })
+      : await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+    if (scopes.length > 1) lines.push("")
+    lines.push(`${scope} runtime config item: ${runtime.itemPath}`)
+    if (runtime.ok) {
+      lines.push(`status: available (${runtime.revision})`)
+      const fields = summarizeRuntimeConfigFields(runtime.config)
+      lines.push(`fields: ${fields.length === 0 ? "none stored" : fields.join(", ")}`)
+    } else {
+      lines.push(`status: ${runtime.reason}`)
+      lines.push(`error: ${runtime.error}`)
+      lines.push(runtime.reason === "missing"
+        ? `fix: Run 'ouro vault config set --agent ${command.agent} --key <field>${scope === "machine" ? " --scope machine" : ""}' to store runtime credentials.`
+        : `fix: ${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro vault config status'.")}`)
+    }
   }
   const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+function requirePromptSecret(deps: OuroCliDeps, purpose: string): (question: string) => Promise<string> {
+  if (deps.promptSecret) return deps.promptSecret
+  throw new Error(`${purpose} requires an interactive terminal so the secret can be hidden.`)
+}
+
+function requirePromptInput(deps: OuroCliDeps, purpose: string): (question: string) => Promise<string> {
+  if (deps.promptInput) return deps.promptInput
+  throw new Error(`${purpose} requires an interactive terminal.`)
+}
+
+function parseOptionalPort(value: string, fallback: number, label: string): number {
+  const trimmed = value.trim()
+  if (!trimmed) return fallback
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`${label} must be an integer between 1 and 65535`)
+  }
+  return parsed
+}
+
+function parseOptionalPositiveInteger(value: string, fallback: number, label: string): number {
+  const trimmed = value.trim()
+  if (!trimmed) return fallback
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`)
+  }
+  return parsed
+}
+
+function normalizeWebhookPath(value: string, fallback: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return fallback
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+}
+
+function enableAgentSense(agent: string, sense: "bluebubbles", deps: OuroCliDeps): void {
+  const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
+  const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
+    ? raw.senses as Record<string, unknown>
+    : {}
+  const existing = senses[sense] && typeof senses[sense] === "object" && !Array.isArray(senses[sense])
+    ? senses[sense] as Record<string, unknown>
+    : {}
+  raw.senses = {
+    ...senses,
+    cli: senses.cli ?? { enabled: true },
+    teams: senses.teams ?? { enabled: false },
+    [sense]: { ...existing, enabled: true },
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
+}
+
+function connectMenu(agent: string): string {
+  return [
+    `Connect ${agent}`,
+    "",
+    "Portable agent capabilities",
+    "  1. Perplexity search",
+    "     stores: agent vault runtime/config -> integrations.perplexityApiKey",
+    "",
+    "This machine only",
+    "  2. BlueBubbles iMessage",
+    "     stores: agent vault runtime/machines/<this-machine>/config",
+    "",
+    "Model providers",
+    "  3. Provider auth",
+    `     runs separately: ouro auth --agent ${agent} --provider <provider>`,
+    "",
+    "  4. Cancel",
+    "",
+    "Choose [1-4]: ",
+  ].join("\n")
+}
+
+async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promise<string> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Connect Perplexity on the hatchling agent instead.")
+  }
+  const promptSecret = requirePromptSecret(deps, "Perplexity API key entry")
+  const key = (await promptSecret("Perplexity API key: ")).trim()
+  if (!key) throw new Error("Perplexity API key cannot be blank")
+  const stored = await storeRuntimeConfigKey({
+    agent,
+    key: "integrations.perplexityApiKey",
+    value: key,
+    scope: "agent",
+    deps,
+  })
+  const message = [
+    `Perplexity connected for ${agent}`,
+    "capability: Perplexity search",
+    `stored: ${stored.itemPath}`,
+    "secret was not printed",
+    "",
+    "Next: ask the agent to search, or run `ouro up` again if the daemon was already running.",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Promise<string> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Attach BlueBubbles on the hatchling agent instead.")
+  }
+  const promptInput = requirePromptInput(deps, "BlueBubbles setup")
+  const promptSecret = requirePromptSecret(deps, "BlueBubbles password entry")
+  const serverUrl = (await promptInput("BlueBubbles server URL for this machine: ")).trim()
+  if (!serverUrl) throw new Error("BlueBubbles server URL cannot be blank")
+  const password = (await promptSecret("BlueBubbles app password: ")).trim()
+  if (!password) throw new Error("BlueBubbles app password cannot be blank")
+  const port = parseOptionalPort(await promptInput("Local webhook port [18790]: "), 18790, "BlueBubbles webhook port")
+  const webhookPath = normalizeWebhookPath(await promptInput("Local webhook path [/bluebubbles-webhook]: "), "/bluebubbles-webhook")
+  const requestTimeoutMs = parseOptionalPositiveInteger(await promptInput("Request timeout ms [30000]: "), 30000, "BlueBubbles request timeout")
+  const machineId = currentMachineId(deps)
+
+  const current = await refreshMachineRuntimeCredentialConfig(agent, machineId, { preserveCachedOnFailure: true })
+  if (!current.ok && current.reason !== "missing") {
+    throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
+  }
+  const nextConfig: RuntimeCredentialConfig = {
+    ...(current.ok ? current.config : {}),
+    bluebubbles: {
+      serverUrl,
+      password,
+      accountId: "default",
+    },
+    bluebubblesChannel: {
+      port,
+      webhookPath,
+      requestTimeoutMs,
+    },
+  }
+  const stored = await upsertMachineRuntimeCredentialConfig(agent, machineId, nextConfig, providerCliNow(deps))
+  enableAgentSense(agent, "bluebubbles", deps)
+
+  const message = appendBundleSyncSummary([
+    `BlueBubbles attached for ${agent} on this machine`,
+    `machine: ${machineId}`,
+    `stored: ${stored.itemPath}`,
+    "agent.json: senses.bluebubbles.enabled = true",
+    "secret was not printed",
+    "",
+    "Next: point BlueBubbles at this machine's webhook, then run `ouro up`.",
+  ].join("\n"), agent, deps)
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeConnect(
+  command: Extract<OuroCliCommand, { kind: "connect" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.target === "perplexity") return executeConnectPerplexity(command.agent, deps)
+  if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
+
+  const promptInput = deps.promptInput
+  if (!promptInput) {
+    const message = [
+      connectMenu(command.agent).replace(/\nChoose \[1-4\]: $/, ""),
+      "",
+      `Run: ouro connect perplexity --agent ${command.agent}`,
+      `Or:  ouro connect bluebubbles --agent ${command.agent}`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  const answer = (await promptInput(connectMenu(command.agent))).trim().toLowerCase()
+  if (answer === "1" || answer === "perplexity" || answer === "perplexity-search") {
+    return executeConnectPerplexity(command.agent, deps)
+  }
+  if (answer === "2" || answer === "bluebubbles" || answer === "imessage" || answer === "messages") {
+    return executeConnectBlueBubbles(command.agent, deps)
+  }
+  if (answer === "3" || answer === "provider" || answer === "providers" || answer === "auth") {
+    const message = [
+      "Provider auth is its own flow:",
+      `  ouro auth --agent ${command.agent} --provider <provider>`,
+      "",
+      "Use `ouro connect` for integrations and local senses after provider auth is ready.",
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  const message = "connect cancelled."
   deps.writeStdout(message)
   return message
 }
@@ -2476,6 +2790,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       : formatBlueBubblesReplayText(replay)
     deps.writeStdout(text)
     return text
+  }
+
+  if (command.kind === "connect") {
+    return executeConnect(command, deps)
   }
 
   if (command.kind === "daemon.up") {
@@ -3990,8 +4308,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     // 8. Output success message
     emitNervesEvent({ component: "daemon", event: "daemon.clone_complete", message: "clone complete", meta: { agentName, targetPath } })
+    const syncSummary = syncEnabled ? pushAgentBundleAfterCliMutation(agentName, deps) : null
     const syncMsg = syncEnabled ? "\nsync enabled (remote: origin)" : "\nwarning: no agent.json found — this may not be a valid agent bundle"
-    deps.writeStdout(`cloned ${agentName} to ${targetPath}${syncMsg}`)
+    const syncPushMsg = syncSummary ? `\n${syncSummary}` : ""
+    deps.writeStdout(`cloned ${agentName} to ${targetPath}${syncMsg}${syncPushMsg}`)
 
     // 9. Guided post-clone flow (when interactive)
     if (deps.promptInput) {
