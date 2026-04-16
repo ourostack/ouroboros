@@ -19,6 +19,10 @@ import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 
+export type RuntimeConfigScope = "agent" | "machine"
+export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
+export type ConnectTarget = "perplexity" | "bluebubbles"
+
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
   | { kind: "daemon.stop" }
@@ -36,8 +40,9 @@ export type OuroCliCommand =
   | { kind: "vault.recover"; agent: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
   | { kind: "vault.unlock"; agent: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.status"; agent: string; store?: VaultUnlockStoreKind }
-  | { kind: "vault.config.set"; agent: string; key: string; value?: string }
-  | { kind: "vault.config.status"; agent: string }
+  | { kind: "vault.config.set"; agent: string; key: string; value?: string; scope?: RuntimeConfigScope }
+  | { kind: "vault.config.status"; agent: string; scope?: RuntimeConfigStatusScope }
+  | { kind: "connect"; agent: string; target?: ConnectTarget }
   | { kind: "auth.run"; agent: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent: string; provider: AgentProvider; facing?: Facing }

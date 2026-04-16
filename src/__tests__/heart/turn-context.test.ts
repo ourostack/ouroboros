@@ -451,7 +451,7 @@ describe("buildTurnContext", () => {
     expect(ctx.senseStatusLines).toEqual([
       "- CLI: interactive",
       "- Teams: needs_config",
-      "- BlueBubbles: needs_config",
+      "- BlueBubbles: not_attached",
     ])
   })
 

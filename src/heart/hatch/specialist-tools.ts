@@ -8,7 +8,7 @@ import { createBundleMeta } from "../../mind/bundle-manifest"
 import { resolveVaultConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createVaultAccount } from "../../repertoire/vault-setup"
-import { storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
+import { promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret } from "../../repertoire/vault-unlock"
 
 const completeAdoptionTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
@@ -170,12 +170,14 @@ async function execCompleteAdoption(
   const vault = resolveVaultConfig(name)
   let vaultUnlockSecret: string
   try {
-    vaultUnlockSecret = (await deps.promptSecret(`Choose Ouro vault unlock secret for ${vault.email}: `)).trim()
+    vaultUnlockSecret = await promptConfirmedVaultUnlockSecret({
+      promptSecret: deps.promptSecret,
+      question: `Choose Ouro vault unlock secret for ${vault.email}: `,
+      confirmQuestion: `Confirm Ouro vault unlock secret for ${vault.email}: `,
+      emptyError: "hatchling vault creation requires an unlock secret. Re-run `ouro hatch` in an interactive terminal and enter a human-chosen unlock secret.",
+    })
   } catch (error) {
     return `error: failed to read hatchling vault unlock secret: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-  }
-  if (!vaultUnlockSecret) {
-    return "error: hatchling vault creation requires an unlock secret. Re-run `ouro hatch` in an interactive terminal and enter a human-chosen unlock secret."
   }
 
   // Scaffold structural dirs into tempDir
