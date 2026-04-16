@@ -18,11 +18,12 @@ import {
   type ProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
-import { vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
+import { isCredentialVaultNotConfiguredError, vaultCreateRecoverFix, vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 import {
   providerCredentialMissingIssue,
   providerLiveCheckFailedIssue,
   vaultLockedIssue,
+  vaultUnconfiguredIssue,
   type AgentReadinessIssue,
 } from "./readiness-repair"
 
@@ -321,6 +322,17 @@ function invalidPoolResult(
       error: `${lane} provider ${provider} model ${model} cannot read provider credentials because ${agentName}'s credential vault is locked on this machine.`,
       fix: vaultUnlockOrRecoverFix(agentName),
       issue: vaultLockedIssue(agentName),
+    }
+  }
+  if (pool.reason === "unavailable" && isCredentialVaultNotConfiguredError(pool.error)) {
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials because ${agentName}'s credential vault is not configured in agent.json.`,
+      fix: vaultCreateRecoverFix(
+        agentName,
+        `Then run 'ouro auth --agent ${agentName} --provider ${provider}' and rerun 'ouro up'.`,
+      ),
+      issue: vaultUnconfiguredIssue(agentName),
     }
   }
   if (pool.reason === "invalid") {

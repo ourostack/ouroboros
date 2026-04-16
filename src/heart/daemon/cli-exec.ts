@@ -1672,6 +1672,10 @@ async function executeReadinessRepairAction(
   action: RepairAction,
   deps: OuroCliDeps,
 ): Promise<void> {
+  if (action.kind === "vault-create") {
+    await executeVaultCreate({ kind: "vault.create", agent }, deps)
+    return
+  }
   if (action.kind === "vault-unlock") {
     await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
     return
