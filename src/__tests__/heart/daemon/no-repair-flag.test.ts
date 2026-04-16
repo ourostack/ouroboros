@@ -111,8 +111,8 @@ describe("--no-repair flag: daemon.up handler", () => {
     const allOutput = writeStdout.mock.calls.map((c: any[]) => c[0]).join("\n")
     expect(allOutput).toContain("slugger")
     expect(allOutput).toContain("helper: stopped")
-    expect(allOutput).toContain("fix: run ouro auth slugger")
-    expect(allOutput).toMatch(/degrad/i)
+    expect(allOutput).toContain("next: run ouro auth slugger")
+    expect(allOutput).toContain("Provider checks need repair:")
   })
 
   it("ouro up --no-repair reports degraded agents when the daemon is already running", async () => {
@@ -163,12 +163,12 @@ describe("--no-repair flag: daemon.up handler", () => {
     const allOutput = writeStdout.mock.calls.map((c: any[]) => c[0]).join("\n")
     expect(allOutput).toContain("daemon already running (/tmp/ouro-test.sock)")
     expect(allOutput).toContain("ouroboros: missing github-copilot provider")
-    expect(allOutput).toContain("fix: run ouro auth ouroboros")
+    expect(allOutput).toContain("next: run ouro auth ouroboros")
   })
 
   it("ouro up (no flag) with degraded agents enters interactive repair", async () => {
     emitNervesEvent({ component: "daemon", event: "daemon.no_flag_degraded_test", message: "test" })
-    const promptInput = vi.fn(async () => "n")
+    const promptInput = vi.fn(async () => "y")
     mocks.pollDaemonStartup.mockResolvedValueOnce({
       stable: [],
       degraded: [

@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.397",
+      "changes": [
+        "`ouro up` provider repair output now uses compact readiness cards and `need repair` progress labels instead of dense degraded-agent prose.",
+        "Guided readiness repair and post-repair summaries now share the same typed issue renderer, so locked vaults, missing provider credentials, and generic repair hints show consistent `next`/`or` commands.",
+        "`ouro vault replace` now prompts for a `new` unlock secret and prints a short recovery handoff to `ouro repair --agent <agent>` instead of dumping generic provider/runtime credential commands into the middle of `ouro up`.",
+        "`ouro vault recover` also prompts for a `new` unlock secret while continuing to avoid printing credential values or portable unlock material.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the provider repair visual cleanup release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.396",
       "changes": [
         "Added `ouro repair [--agent <agent>]`, a deterministic vault/provider readiness guide that uses typed repair issues and clear human choices instead of asking for AI diagnosis on known failures.",
