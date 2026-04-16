@@ -354,4 +354,64 @@ describe("UpProgress", () => {
       expect(betaIdx).toBeLessThan(gammaIdx)
     })
   })
+
+  // ── updateDetail ──
+
+  describe("updateDetail", () => {
+    it("appends detail text after elapsed time in TTY render", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("provider checks")
+      progress["currentPhase"] = { label: "provider checks", startedAt: 0 }
+      progress.updateDetail("slugger: reading vault...")
+
+      const output = progress.render(4200)
+      // Should contain the detail after the elapsed time, separated by --
+      expect(output).toContain("provider checks")
+      expect(output).toMatch(/\d+\.\d+s/)
+      expect(output).toContain("\u2014")
+      expect(output).toContain("slugger: reading vault...")
+    })
+
+    it("is a no-op when no phase is active (no crash)", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      // No startPhase called — updateDetail should not throw
+      expect(() => progress.updateDetail("some detail")).not.toThrow()
+      const output = progress.render(1000)
+      // Should not contain the detail text
+      expect(output).not.toContain("some detail")
+    })
+
+    it("clears detail when startPhase is called", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("phase one")
+      progress.updateDetail("detail for phase one")
+      progress.startPhase("phase two")
+
+      const output = progress.render(1000)
+      // Detail from phase one should not appear on the current spinner
+      expect(output).not.toContain("detail for phase one")
+    })
+
+    it("clears detail when completePhase is called", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("loading")
+      progress.updateDetail("step 1")
+      progress.completePhase("loading", "done")
+
+      const output = progress.render(1000)
+      // Completed output should not carry the sub-step detail
+      expect(output).not.toContain("step 1")
+    })
+
+    it("is a no-op in non-TTY mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("loading")
+      progress.updateDetail("some detail")
+      // Should not write anything for updateDetail in non-TTY
+      expect(write).not.toHaveBeenCalled()
+      const output = progress.render(1000)
+      expect(output).toBe("")
+    })
+  })
 })

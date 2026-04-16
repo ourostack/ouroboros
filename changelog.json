@@ -2,13 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.413",
+      "version": "0.1.0-alpha.414",
       "changes": [
         "`openai-codex` live checks now use the same Responses API request shape as real Codex turns, so `ouro up` and `ouro auth verify` stop reporting false `400 status code (no body)` failures for healthy GPT-5.4 credentials.",
         "`ouro up` now detects daemon roster drift when enabled agent bundles change on disk and restarts the stale daemon, which removes ghost agents like a locally-removed `ouroboros` from the repair queue instead of pretending they still live here.",
         "Bundle skeleton contract coverage now validates whichever local agent bundles actually exist, so one-agent machines can keep `slugger` installed without failing the full test suite just because `ouroboros` was intentionally removed.",
         "Expanded Codex provider runtime coverage to exercise the real turn path, preserved output-item turn state, runtime error classification, and the ping callback bundle, which keeps the global 100% coverage gate green for this repair.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the Codex live-check and daemon-roster drift repair release."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.413",
+      "changes": [
+        "`ouro up` now shows real-time per-agent progress during provider checks -- the spinner displays which agent and vault operation is in progress (`slugger: reading vault items...`) instead of a static label with no detail.",
+        "Added `onProgress` callback to `refreshProviderCredentialPool` and `updateDetail()` method to `UpProgress` for sub-step spinner detail, threaded through the full `executeUpCommand` -> `checkAgentProviders` -> provider health check chain.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the progress threading release."
       ]
     },
     {

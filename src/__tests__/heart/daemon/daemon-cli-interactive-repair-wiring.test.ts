@@ -822,7 +822,11 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+      "test-agent",
+      "/tmp/bundles",
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
     expect(mocks.runInteractiveRepair).toHaveBeenCalledWith(
       [{
         agent: "test-agent",
@@ -941,7 +945,11 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("healthy-agent", "/tmp/bundles")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+      "healthy-agent",
+      "/tmp/bundles",
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
