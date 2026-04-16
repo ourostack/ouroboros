@@ -48,7 +48,7 @@ export interface DaemonProcessManagerOptions {
   setTimeoutFn?: (cb: () => void, delay: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
   existsSync?: (p: string) => boolean
-  configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string } | Promise<{ ok: boolean; error?: string; fix?: string }>
+  configCheck?: (agent: string) => { ok: boolean; error?: string; fix?: string; skip?: boolean } | Promise<{ ok: boolean; error?: string; fix?: string; skip?: boolean }>
   /** Human-visible writer for daemon status lines such as config-check
    *  failures. Defaults to stderr; tests can inject a quieter sink. */
   statusWriter?: (text: string) => void
@@ -89,7 +89,7 @@ export class DaemonProcessManager {
   private readonly cooldownRecoveryMs: number
   private readonly maxCooldownRetries: number
   private readonly existsSyncFn: ((p: string) => boolean) | null
-  private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string } | Promise<{ ok: boolean; error?: string; fix?: string }>) | null
+  private readonly configCheckFn: ((agent: string) => { ok: boolean; error?: string; fix?: string; skip?: boolean } | Promise<{ ok: boolean; error?: string; fix?: string; skip?: boolean }>) | null
   private readonly statusWriterFn: (text: string) => void
   private readonly onSnapshotChangeFn: ((snapshot: DaemonAgentSnapshot) => void) | null
 
@@ -197,6 +197,19 @@ export class DaemonProcessManager {
 
     if (this.configCheckFn) {
       const result = await this.configCheckFn(agent)
+      if (result.skip) {
+        state.snapshot.status = "stopped"
+        state.snapshot.errorReason = null
+        state.snapshot.fixHint = null
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.agent_config_skipped",
+          message: result.error ?? "agent start skipped by config check",
+          meta: { agent, fix: result.fix ?? null },
+        })
+        this.notifySnapshotChange(state.snapshot)
+        return
+      }
       if (!result.ok) {
         state.snapshot.status = "crashed"
         // Surface the error and fix to the snapshot so sibling agents can

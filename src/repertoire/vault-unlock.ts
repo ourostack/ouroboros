@@ -36,6 +36,13 @@ export interface VaultUnlockReadResult {
   store: VaultUnlockStoreSelection
 }
 
+export interface ConfirmVaultUnlockSecretPrompt {
+  promptSecret: (question: string) => Promise<string>
+  question: string
+  confirmQuestion: string
+  emptyError: string
+}
+
 export interface VaultUnlockStatus {
   configured: boolean
   stored: boolean
@@ -133,6 +140,32 @@ export function vaultCreateRecoverFix(agentName: string, nextStep = "Then run 'o
     `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
     nextStep,
   ].join(" ")
+}
+
+function vaultUnlockSecretStrengthIssues(secret: string): string[] {
+  const issues: string[] = []
+  if (secret.length < 8) issues.push("at least 8 characters")
+  if (!/[a-z]/.test(secret)) issues.push("a lowercase letter")
+  if (!/[A-Z]/.test(secret)) issues.push("an uppercase letter")
+  if (!/[0-9]/.test(secret)) issues.push("a number")
+  if (!/[^A-Za-z0-9]/.test(secret)) issues.push("a special character")
+  return issues
+}
+
+export async function promptConfirmedVaultUnlockSecret(input: ConfirmVaultUnlockSecretPrompt): Promise<string> {
+  const secret = (await input.promptSecret(input.question)).trim()
+  if (!secret) {
+    throw new Error(input.emptyError)
+  }
+  const issues = vaultUnlockSecretStrengthIssues(secret)
+  if (issues.length > 0) {
+    throw new Error(`vault unlock secret is too weak: add ${issues.join(", ")}. Use at least 8 characters with uppercase and lowercase letters, one number, and one special character.`)
+  }
+  const confirmation = (await input.promptSecret(input.confirmQuestion)).trim()
+  if (secret !== confirmation) {
+    throw new Error("vault unlock secrets did not match. Re-run the command and enter the same secret twice.")
+  }
+  return secret
 }
 
 function lostUnlockSecretGuidance(config: VaultUnlockConfig): string {

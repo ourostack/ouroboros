@@ -761,6 +761,32 @@ describe("getBlueBubblesConfig", () => {
     expect(bb.accountId).toBe("personal")
   })
 
+  it("prefers current-machine bluebubbles config over agent-wide runtime/config", async () => {
+    const config = await importConfigModule({
+      integrations: {
+        perplexityApiKey: "pplx-portable",
+      },
+      bluebubbles: {
+        serverUrl: "http://portable.example",
+        password: "portable-pass",
+        accountId: "portable",
+      },
+    })
+    config.cacheMachineRuntimeConfigForTests("testagent", {
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:1234",
+        password: "local-pass",
+        accountId: "local",
+      },
+    })
+
+    const bb = config.getBlueBubblesConfig()
+    expect(bb.serverUrl).toBe("http://127.0.0.1:1234")
+    expect(bb.password).toBe("local-pass")
+    expect(bb.accountId).toBe("local")
+    expect(config.getIntegrationsConfig().perplexityApiKey).toBe("pplx-portable")
+  })
+
   it("falls back to default accountId when the configured value is blank", async () => {
     const { getBlueBubblesConfig } = await importConfigModule({
       bluebubbles: {
@@ -829,6 +855,22 @@ describe("getBlueBubblesChannelConfig", () => {
     expect(bb.port).toBe(18888)
     expect(bb.webhookPath).toBe("/hooks/imessage")
     expect(bb.requestTimeoutMs).toBe(12345)
+  })
+
+  it("prefers current-machine bluebubblesChannel config over agent-wide defaults", async () => {
+    const config = await importConfigModule()
+    config.cacheMachineRuntimeConfigForTests("testagent", {
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/local-bluebubbles",
+        requestTimeoutMs: 12000,
+      },
+    })
+
+    const bb = config.getBlueBubblesChannelConfig()
+    expect(bb.port).toBe(18888)
+    expect(bb.webhookPath).toBe("/local-bluebubbles")
+    expect(bb.requestTimeoutMs).toBe(12000)
   })
 })
 

@@ -16,7 +16,8 @@ import type {
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
-import { refreshRuntimeCredentialConfig } from "../runtime-credentials"
+import { refreshMachineRuntimeCredentialConfig } from "../runtime-credentials"
+import { loadOrCreateMachineIdentity } from "../machine-identity"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
 
@@ -214,14 +215,21 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
       }
 
       if (sense === "bluebubbles" && senseObj.enabled === true) {
-        const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+        const machineId = loadOrCreateMachineIdentity({ homeDir: deps.homedir }).machineId
+        const runtimeConfig = await refreshMachineRuntimeCredentialConfig(agentName, machineId, { preserveCachedOnFailure: true })
         if (!runtimeConfig.ok) {
+          if (runtimeConfig.reason === "missing") {
+            checks.push({
+              label: `${agentDir} bluebubbles config`,
+              status: "pass",
+              detail: "not attached on this machine",
+            })
+            continue
+          }
           checks.push({
             label: `${agentDir} bluebubbles config`,
             status: "fail",
-            detail: runtimeConfig.reason === "missing"
-              ? "missing vault runtime/config"
-              : `vault runtime/config unavailable: ${runtimeConfig.error}`,
+            detail: `machine runtime config unavailable: ${runtimeConfig.error}`,
           })
           continue
         }
