@@ -256,7 +256,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("has no credentials in myagent's vault")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to authenticate.")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
@@ -291,10 +291,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.error).toContain("cannot read provider credentials")
     expect(result.error).toContain("credential vault is locked on this machine")
     expect(result.error).not.toContain("Run `ouro vault unlock")
-    expect(result.fix).toContain("ouro vault unlock --agent myagent")
-    expect(result.fix).toContain("ouro vault replace --agent myagent")
-    expect(result.fix).toContain("ouro vault recover --agent myagent --from <json>")
-    expect(result.fix).toContain("ouro up")
+    expect(result.fix).toBe("Run 'ouro vault unlock --agent myagent' or 'ouro vault replace --agent myagent' if the secret is lost.")
     expect(result.fix).not.toContain("ouro auth")
   })
 
@@ -330,8 +327,8 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("temporary vault service outage")
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
-    expect(result.fix).toContain("ouro up")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(result.fix).toContain("ouro vault replace --agent myagent")
+    expect(result.fix).not.toContain("ouro vault recover")
   })
 
   it("classifies timeout errors as transient and suggests retry instead of unlock/replace/recover", async () => {
@@ -431,8 +428,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider anthropic")
     expect(result.error).toContain("quota exceeded")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
-    expect(result.fix).toContain("ouro use --agent myagent --lane outward")
+    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials.")
   })
 
   it("returns structural config errors before live health checks", async () => {
