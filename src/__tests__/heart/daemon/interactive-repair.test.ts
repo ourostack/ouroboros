@@ -741,4 +741,49 @@ describe("runInteractiveRepair", () => {
       expect(stdoutText(deps)).not.toContain("recovered")
     })
   })
+
+  describe("terminal done message", () => {
+    it("prints 'Repair flow complete.' when repairsAttempted is true", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair flow complete.")
+    })
+
+    it("does not print terminal message when repairsAttempted is false (all declined)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair flow complete.")
+    })
+
+    it("does not print terminal message for empty degraded list", async () => {
+      const deps = makeDeps()
+
+      await runInteractiveRepair([], deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair flow complete.")
+    })
+  })
 })
