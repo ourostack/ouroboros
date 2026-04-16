@@ -497,6 +497,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
 
     // Sync vault data after obtaining a fresh session token
+    /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
     await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
   }
 
