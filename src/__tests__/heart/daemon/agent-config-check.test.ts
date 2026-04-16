@@ -387,6 +387,22 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.issue).toBeUndefined()
   })
 
+  it("classifies ETIMEDOUT errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "connect ETIMEDOUT 10.0.0.1:443",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
   it("still classifies vault locked errors correctly after transient check is added", async () => {
     refreshProviderCredentialPoolMock.mockResolvedValue({
       ok: false,
