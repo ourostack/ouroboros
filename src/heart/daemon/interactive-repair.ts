@@ -238,7 +238,7 @@ async function attemptVaultUnlock(
 ): Promise<RepairStepOutcome> {
   deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
   const answer = await deps.promptInput(
-    "Unlock it now? [y/N] ",
+    `Unlock ${entry.agent}'s vault now? [y/N] `,
   )
   if (!isAffirmativeAnswer(answer)) {
     writeDeclinedRepair(entry, action.command, deps)
@@ -272,7 +272,7 @@ async function attemptProviderAuth(
 ): Promise<RepairStepOutcome> {
   deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
   const answer = await deps.promptInput(
-    "Open the auth flow now? [y/N] ",
+    `Open the auth flow for ${entry.agent} now? [y/N] `,
   )
   if (!isAffirmativeAnswer(answer)) {
     writeDeclinedRepair(entry, action.command, deps)
