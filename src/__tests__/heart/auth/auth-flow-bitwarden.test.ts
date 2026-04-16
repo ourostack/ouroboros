@@ -318,7 +318,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     await expect(promise).rejects.toThrow(
       "provider authentication succeeded, but storing minimax credentials in VaultLockedBot's vault failed: bw CLI error: bw CLI could not use the local Bitwarden session because it is locked, missing, or expired",
     )
-    await expect(promise).rejects.toThrow("Run 'ouro vault unlock --agent VaultLockedBot' if you have the saved vault unlock secret.")
+    await expect(promise).rejects.toThrow("Run 'ouro vault unlock --agent VaultLockedBot' or 'ouro vault replace --agent VaultLockedBot' if the secret is lost.")
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
       "opening VaultLockedBot's vault session...",
