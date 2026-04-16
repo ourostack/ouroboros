@@ -32,24 +32,38 @@ describe("coverage workflow contract", () => {
   })
 
   it("requires version bumps for releasable src changes, not src test-only churn", () => {
+    const script = readFileSync(
+      join(process.cwd(), "scripts", "release-preflight.cjs"),
+      "utf8",
+    )
+
+    expect(script).toContain('file.startsWith("skills/")')
+    expect(script).toContain('(file.startsWith("src/") && !file.startsWith("src/__tests__/"))')
+  })
+
+  it("runs the shared release preflight before coverage on pull requests", () => {
     const workflow = readFileSync(
       join(process.cwd(), ".github", "workflows", "coverage.yml"),
       "utf8",
     )
+    const packageJson = readFileSync(
+      join(process.cwd(), "package.json"),
+      "utf8",
+    )
 
-    expect(workflow).toContain('git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ skills/ ":(exclude)src/__tests__/**"')
-    expect(workflow).toContain("grep -Eq '^(src/|skills/)'")
+    expect(workflow).toContain("Release preflight (PRs only)")
+    expect(workflow).toContain('npm run release:preflight -- --base-ref "origin/${{ github.base_ref }}"')
+    expect(packageJson).toContain('"release:preflight": "node scripts/release-preflight.cjs"')
   })
 
   it("requires version bumps for packaged skill changes", () => {
-    const workflow = readFileSync(
-      join(process.cwd(), ".github", "workflows", "coverage.yml"),
+    const script = readFileSync(
+      join(process.cwd(), "scripts", "release-preflight.cjs"),
       "utf8",
     )
 
-    expect(workflow).toContain('git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- src/ skills/ ":(exclude)src/__tests__/**"')
-    expect(workflow).toContain("grep -Eq '^(src/|skills/)'")
-    expect(workflow).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
+    expect(script).toContain('file.startsWith("skills/")')
+    expect(script).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
   })
 
   it("publishes the CLI and bootstrap wrapper on the supported latest npm channel", () => {
