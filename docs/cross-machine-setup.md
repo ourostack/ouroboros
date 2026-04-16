@@ -99,7 +99,7 @@ If this agent predates the vault-backed auth model, follow the **Old Auth-Style 
 
 If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the old-auth checklist instead of `ouro vault unlock`.
 
-If there is no local credential export because the agent predates vault-backed provider storage, create an empty agent vault and re-enter credentials:
+If the bundle already has vault coordinates but there is no local credential export because the agent predates vault-backed provider storage, create an empty agent vault and re-enter credentials:
 
 ```bash
 ouro vault replace --agent <agent>
@@ -190,6 +190,6 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
-**Agent can't reach model provider** — Run `ouro repair --agent <name>` first. If you have the saved vault unlock secret, it will point you to `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If nobody ever saved an unlock secret for this existing agent, use `ouro vault replace --agent <name>`, then re-enter credentials with `ouro auth --agent <name>`.
+**Agent can't reach model provider** — Run `ouro repair --agent <name>` first. If you have the saved vault unlock secret, it will point you to `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If the bundle has no vault locator yet, use `ouro vault create --agent <name>`. If the bundle already has vault coordinates but nobody ever saved the unlock secret, use `ouro vault replace --agent <name>`. Then re-enter credentials with `ouro auth --agent <name>`.
 
 **WSL setup can't find `claude.exe`** — Make sure Claude Code is installed on Windows and that Windows executables are accessible from WSL (this is the default). Check that `/etc/wsl.conf` doesn't have `appendWindowsPath = false`.

@@ -246,9 +246,9 @@ For an existing agent with no vault locator, run `ouro vault create --agent <age
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
-For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create the agent vault and re-auth/re-enter credentials into it.
+For an existing agent whose `agent.json` already has vault coordinates but whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement agent vault and re-auth/re-enter credentials into it.
 
-Use `ouro vault replace --agent <agent>` when there is no local credential export to import. This is the normal path for pre-vault agents that were updated after they already existed. By default it uses the stable agent vault email, `<agent>@ouro.bot`; it does not invent timestamped `+replaced` addresses. It creates an empty vault, writes vault coordinates to `agent.json`, stores local unlock material on this machine, and imports nothing.
+Use `ouro vault replace --agent <agent>` only when the bundle already has vault coordinates and there is no local credential export to import. By default it uses the stable agent vault email, `<agent>@ouro.bot`; it does not invent timestamped `+replaced` addresses. It creates an empty vault, writes vault coordinates to `agent.json`, stores local unlock material on this machine, and imports nothing.
 
 Use `ouro vault recover --agent <agent> --from <json>` only when the human still has a local JSON credential export from an earlier alpha. By default it uses the stable agent vault email and imports the JSON once without printing credential values.
 
