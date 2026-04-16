@@ -12,6 +12,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "coding_status",
   "coding_tail",
   "credential_delete",
+  "credential_generate_password",
   "credential_get",
   "credential_list",
   "credential_store",

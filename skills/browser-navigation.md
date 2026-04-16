@@ -46,6 +46,13 @@ Follow this pattern for every page interaction:
 5. Wait for redirect, then verify login succeeded via snapshot
 6. NEVER hardcode credentials -- use `credential_get` to retrieve login info
 
+### Sign-up Flows
+1. Use `credential_generate_password` to mint a strong password for the target domain
+2. Fill the signup form with that password
+3. If the site rejects the password policy, generate a new one that matches the site rules
+4. Once the site accepts the exact password, call `credential_store` immediately
+5. Do not claim a new credential is saved until `credential_store` succeeds
+
 ### Search Forms (Hotels, Flights, Rentals)
 1. Navigate to the search page
 2. Snapshot to identify input fields
@@ -98,7 +105,7 @@ The stealth configuration handles most fingerprinting automatically. Additionall
 - **CAPTCHAs**: Stop and ask the user to solve manually.
 - **Stale elements**: Re-snapshot the page and retry the interaction.
 - **Blocked/403**: The site may have detected automation. Wait 30 seconds and try with a different approach (e.g., direct URL instead of navigation).
-- **Session expired**: Re-login using stored stored credentials.
+- **Session expired**: Re-login using stored credentials.
 
 ## Human Confirmation Gates
 

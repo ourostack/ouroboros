@@ -155,10 +155,27 @@ describe("getUserProfile", () => {
     expect(result).toBeNull()
   })
 
-  it("returns null for invalid JSON in vault", async () => {
-    mockStore.getRawSecret.mockResolvedValue("not-valid-json{{{")
+  it("returns null when missing-profile errors arrive as plain strings", async () => {
+    mockStore.getRawSecret.mockRejectedValue('field "password" not found for domain "user-profile/friend-123"')
     const result = await getUserProfile("friend-123", mockStore as any)
     expect(result).toBeNull()
+  })
+
+  it("throws for invalid JSON in vault", async () => {
+    mockStore.getRawSecret.mockResolvedValue("not-valid-json{{{")
+    await expect(getUserProfile("friend-123", mockStore as any))
+      .rejects.toThrow("stored user profile for friend-123 is malformed")
+  })
+
+  it("throws when the vault payload parses but is not an object", async () => {
+    mockStore.getRawSecret.mockResolvedValue(JSON.stringify("not-an-object"))
+    await expect(getUserProfile("friend-123", mockStore as any))
+      .rejects.toThrow("stored user profile for friend-123 is malformed")
+  })
+
+  it("rethrows vault access failures instead of treating them as missing profiles", async () => {
+    mockStore.getRawSecret.mockRejectedValue(new Error("vault locked"))
+    await expect(getUserProfile("friend-123", mockStore as any)).rejects.toThrow("vault locked")
   })
 
   it("emits nerves events", async () => {
@@ -343,5 +360,25 @@ describe("updateUserProfileFields", () => {
     }, mockStore as any)
 
     expect(nervesEvents.some((e) => e.event === "repertoire.user_profile_update")).toBe(true)
+  })
+
+  it("fails closed when the existing profile cannot be loaded", async () => {
+    mockStore.getRawSecret.mockRejectedValue(new Error("vault locked"))
+
+    await expect(updateUserProfileFields("friend-123", {
+      email: "newemail@example.com",
+    }, mockStore as any)).rejects.toThrow("vault locked")
+
+    expect(mockStore.store).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when the stored profile payload is malformed", async () => {
+    mockStore.getRawSecret.mockResolvedValue("not-valid-json{{{")
+
+    await expect(updateUserProfileFields("friend-123", {
+      email: "newemail@example.com",
+    }, mockStore as any)).rejects.toThrow("stored user profile for friend-123 is malformed")
+
+    expect(mockStore.store).not.toHaveBeenCalled()
   })
 })

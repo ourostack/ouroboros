@@ -151,6 +151,7 @@ describe("tool registry contract", () => {
 
     // Added in credential access layer: 4 credential tools (replaced 5 vault tools)
     expect(names).toContain("credential_get");
+    expect(names).toContain("credential_generate_password");
     expect(names).toContain("credential_store");
     expect(names).toContain("credential_list");
     expect(names).toContain("credential_delete");
@@ -179,7 +180,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 57 tools total including the shared attachment and image recovery tools
-    expect(names).toHaveLength(57);
+    // Exact count: 58 tools total including the shared attachment and image recovery tools
+    expect(names).toHaveLength(58);
   });
 });
