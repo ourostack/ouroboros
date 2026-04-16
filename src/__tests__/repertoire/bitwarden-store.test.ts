@@ -1608,6 +1608,123 @@ describe("BitwardenCredentialStore", () => {
     })
   })
 
+  describe("timeout error message", () => {
+    it("produces an actionable timeout message with retry guidance", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.list()
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      // New actionable message format
+      expect(thrown!.message).toBe(
+        "bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.",
+      )
+      // Must NOT contain the old "waiting for a vault response" phrasing
+      expect(thrown!.message).not.toContain("waiting for a vault response")
+      // Must NOT suggest unlock/replace/recover actions
+      expect(thrown!.message).not.toContain("unlock")
+      expect(thrown!.message).not.toContain("replace")
+      expect(thrown!.message).not.toContain("recover")
+    })
+
+    it("includes the operation name in the timeout message", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get") {
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{
+            id: "1", name: "test.com",
+            login: { username: "u", password: "p" },
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Get triggers findItemById which calls execBw(["get", "item", id])
+      // but we need to trigger a get via the store API. Store.store does that after create.
+      // Easier: just verify via store.list() that uses "list items"
+      // Let's use a direct approach through the store's internal methods.
+      // Actually, let's just check the message format through store's API.
+      // The test above already covers list -- let's test store (create path with timeout).
+
+      // For store create, the mock needs to handle create with timeout
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else if (args[0] === "create") {
+          const err = new Error("timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+        } else {
+          cb(null, "", "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("test.com", { password: "pass" })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toContain("create item timed out")
+      expect(thrown!.message).toContain("usually resolves on retry")
+      expect(thrown!.message).not.toContain("waiting for a vault response")
+    })
+  })
+
   describe("list", () => {
     it("returns all vault items as CredentialMeta", async () => {
       setupExecMock({
