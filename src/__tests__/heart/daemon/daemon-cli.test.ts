@@ -7140,3 +7140,52 @@ describe("chat provider health check", () => {
     )
   })
 })
+
+describe("ouro up per-agent progress threading", () => {
+  const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+
+  it("passes onProgress callback to checkAgentConfigWithProviderHealth during ouro up provider checks", async () => {
+    mockHealthCheck.mockResolvedValue({ ok: true })
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupStabilityWindowMs: 15,
+      startupTimeoutMs: 60,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    // checkAgentConfigWithProviderHealth should have been called for slugger
+    // with deps that include onProgress callback
+    expect(mockHealthCheck).toHaveBeenCalled()
+    const healthCheckCalls = mockHealthCheck.mock.calls
+    const callWithOnProgress = healthCheckCalls.find(
+      (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
+    )
+    expect(callWithOnProgress).toBeDefined()
+  })
+})
