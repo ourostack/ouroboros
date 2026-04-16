@@ -46,6 +46,7 @@ export interface ProviderCredentialInput {
 export interface ProviderCredentialUpsertInput extends ProviderCredentialInput {
   agentName: string
   now?: Date
+  onProgress?: (message: string) => void
 }
 
 export interface ProviderCredentialRuntimeRecordInput extends ProviderCredentialInput {
@@ -389,12 +390,15 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
     },
   }
   const record = recordFromPayload(payload)
+  input.onProgress?.(`opening ${input.agentName}'s vault session...`)
   const store = getCredentialStore(input.agentName)
+  input.onProgress?.(`storing ${input.provider} credentials in ${input.agentName}'s vault...`)
   await store.store(providerCredentialItemName(input.provider), {
     username: input.provider,
     password: JSON.stringify(payload),
     notes: "Ouro provider credentials. The vault item password is a versioned JSON payload.",
   })
+  input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
   const refreshResult = await refreshProviderCredentialPool(input.agentName)
   if (!refreshResult.ok) {
     throw new Error(

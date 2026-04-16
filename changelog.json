@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.406",
+      "changes": [
+        "`ouro auth --agent <agent> --provider <provider>` now keeps narrating the post-login vault save path with `opening ... vault session`, `storing ... credentials`, and `refreshing local provider snapshot`, so a successful browser login no longer drops into a silent cursor while secrets are being persisted.",
+        "Bitwarden-backed provider saves now classify timeouts and empty command failures by operation and redact raw `bw create item ...` command text, encoded payloads, and prompt echoes from auth output.",
+        "Auth, repair CLI, and Bitwarden regression coverage now encodes the reported post-login save failure shapes so the same leak-prone path stays guarded.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the post-login vault save hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.405",
       "changes": [
         "`ouro up` now keeps walking the guided repair path when one successful fix reveals the next runnable issue for the same agent, instead of stopping after the first pass and making you rerun the command.",
