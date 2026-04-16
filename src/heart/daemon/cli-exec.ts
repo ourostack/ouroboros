@@ -1743,15 +1743,74 @@ function readinessReportsFromDegraded(degraded: DegradedAgent[]): AgentReadiness
   }))
 }
 
+function degradedEntrySignature(entry: DegradedAgent): string {
+  const issue = readinessIssueFromDegraded(entry)
+  return JSON.stringify({
+    agent: entry.agent,
+    kind: issue.kind,
+    summary: issue.summary,
+    detail: issue.detail ?? "",
+    actions: issue.actions.map((action) => `${action.kind}:${action.command}:${action.executable === false ? "manual" : "run"}`),
+  })
+}
+
+function mergeRemainingDegraded(
+  untouched: DegradedAgent[],
+  rechecked: DegradedAgent[],
+): DegradedAgent[] {
+  const byAgent = new Map<string, DegradedAgent>()
+  for (const entry of untouched) byAgent.set(entry.agent, entry)
+  for (const entry of rechecked) byAgent.set(entry.agent, entry)
+  return [...byAgent.values()]
+}
+
 async function runReadinessRepairForDegraded(
   degraded: DegradedAgent[],
   deps: OuroCliDeps,
-): Promise<{ repairsAttempted: boolean }> {
-  return runGuidedReadinessRepair(readinessReportsFromDegraded(degraded), {
-    promptInput: deps.promptInput,
-    writeStdout: deps.writeStdout,
-    runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, deps),
-  })
+): Promise<{ repairsAttempted: boolean; remainingDegraded: DegradedAgent[] }> {
+  let current = degraded
+  let repairsAttempted = false
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    const attemptedAgents = new Set<string>()
+    const result = await runGuidedReadinessRepair(readinessReportsFromDegraded(current), {
+      promptInput: deps.promptInput,
+      writeStdout: deps.writeStdout,
+      onActionAttempted: (agentName) => {
+        attemptedAgents.add(agentName)
+      },
+      runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, deps),
+    })
+    if (!result.repairsAttempted) {
+      return { repairsAttempted, remainingDegraded: current }
+    }
+    repairsAttempted = true
+    /* v8 ignore next -- onActionAttempted runs before any runnable repair action, so repairsAttempted implies at least one attempted agent @preserve */
+    if (attemptedAgents.size === 0) {
+      return { repairsAttempted, remainingDegraded: current }
+    }
+
+    const previousByAgent = new Map<string, string>()
+    for (const entry of current) {
+      if (attemptedAgents.has(entry.agent)) {
+        previousByAgent.set(entry.agent, degradedEntrySignature(entry))
+      }
+    }
+    const untouched = current.filter((entry) => !attemptedAgents.has(entry.agent))
+    const rechecked = await checkAgentProviders(deps, [...attemptedAgents])
+    const remaining = mergeRemainingDegraded(untouched, rechecked)
+    if (remaining.length === 0) {
+      return { repairsAttempted, remainingDegraded: remaining }
+    }
+
+    const nextPrompt = rechecked.filter((entry) => previousByAgent.get(entry.agent) !== degradedEntrySignature(entry))
+    if (nextPrompt.length === 0) {
+      return { repairsAttempted, remainingDegraded: remaining }
+    }
+    current = nextPrompt
+  }
+
+  return { repairsAttempted, remainingDegraded: current }
 }
 
 async function executeLegacyAuthSwitch(
@@ -2603,21 +2662,20 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
         const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
         if (!repairResult.repairsAttempted) {
-          writeProviderRepairSummary(deps, "Provider checks still need repair:", preflightProviderDegraded)
+          writeProviderRepairSummary(deps, "Provider checks still need repair:", repairResult.remainingDegraded)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           deps.writeStdout(message)
           return message
         }
 
-        const remainingDegraded = await reportPostRepairProviderHealth(
-          deps,
-          preflightProviderDegraded.map((entry) => entry.agent),
-        )
+        const remainingDegraded = repairResult.remainingDegraded
         if (remainingDegraded.length > 0) {
+          writeProviderRepairSummary(deps, "Still blocked:", remainingDegraded)
           const message = "daemon not started: provider checks still need repair."
           deps.writeStdout(message)
           return message
         }
+        deps.writeStdout("provider checks recovered after repair")
       }
     }
 
