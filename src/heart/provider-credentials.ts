@@ -395,7 +395,13 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
     password: JSON.stringify(payload),
     notes: "Ouro provider credentials. The vault item password is a versioned JSON payload.",
   })
-  await refreshProviderCredentialPool(input.agentName)
+  const refreshResult = await refreshProviderCredentialPool(input.agentName)
+  if (!refreshResult.ok) {
+    throw new Error(
+      `credential stored in vault, but the local provider snapshot could not be refreshed: ${refreshResult.error}. ` +
+      `Run 'ouro provider refresh --agent ${input.agentName}' after fixing vault access, then run 'ouro auth verify --agent ${input.agentName}'.`,
+    )
+  }
   emitNervesEvent({
     component: "config/identity",
     event: "config.provider_credential_upserted",

@@ -217,6 +217,33 @@ function writeAuthProgress(input: { onProgress?: (message: string) => void }, me
   input.onProgress?.(message)
 }
 
+function isVaultStoreUnlockError(message: string): boolean {
+  return (
+    message.includes("bw CLI could not use the local Bitwarden session because it is locked, missing, or expired") ||
+    message.includes("bw CLI rejected the saved vault unlock secret for this machine")
+  )
+}
+
+function formatVaultStoreError(agentName: string, provider: AgentProvider, error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.startsWith("credential stored in vault, but the local provider snapshot could not be refreshed:")) {
+    return new Error(
+      `provider authentication succeeded and ${provider} credentials were stored in ${agentName}'s vault, ` +
+      `but the local provider snapshot refresh failed: ${message.replace("credential stored in vault, but the local provider snapshot could not be refreshed: ", "")}`,
+    )
+  }
+  const retry = `Then retry 'ouro auth --agent ${agentName} --provider ${provider}'.`
+  if (isVaultStoreUnlockError(message)) {
+    return new Error(
+      `provider authentication succeeded, but storing ${provider} credentials in ${agentName}'s vault failed: ${message}\n` +
+      vaultUnlockReplaceRecoverFix(agentName, retry),
+    )
+  }
+  return new Error(
+    `provider authentication succeeded, but storing ${provider} credentials in ${agentName}'s vault failed: ${message}\n${retry}`,
+  )
+}
+
 function validateAnthropicToken(token: string): string {
   const trimmed = token.trim()
   if (!trimmed) {
@@ -421,7 +448,12 @@ export async function runRuntimeAuthFlow(
 
   const credentials = await collectRuntimeAuthCredentials(input, deps)
   writeAuthProgress(input, `${input.provider} credentials collected; storing in ${input.agentName}'s vault...`)
-  const { credentialPath } = await storeProviderCredentials(input.agentName, input.provider, credentials)
+  let credentialPath: string
+  try {
+    ;({ credentialPath } = await storeProviderCredentials(input.agentName, input.provider, credentials))
+  } catch (error) {
+    throw formatVaultStoreError(input.agentName, input.provider, error)
+  }
   writeAuthProgress(input, `credentials stored at ${credentialPath}; local provider snapshot refreshed.`)
 
   emitNervesEvent({

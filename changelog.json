@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.400",
+      "changes": [
+        "Bitwarden-backed provider-vault writes now treat search/list failures as real vault errors instead of silently collapsing them into \"missing credential\" fallthroughs.",
+        "Expired local Bitwarden sessions during provider credential search, create, edit, and list operations now retry once with a fresh session before surfacing a clear locked/missing/expired session error.",
+        "`bw config server` no longer swallows unrelated failures, and malformed `bw list items` output now reports a short invalid-JSON error instead of crashing through a raw parse exception.",
+        "Provider credential upserts now fail explicitly when the vault write succeeded but the local provider snapshot refresh did not, with follow-up guidance to run `ouro provider refresh --agent <agent>` and `ouro auth verify --agent <agent>`.",
+        "Added regression coverage for the real runtime auth -> Bitwarden save path, plus store/provider tests for session-expiry retries, pre-create lookup failures, and post-save snapshot-refresh failures.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault-save error hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.399",
       "changes": [
         "Bitwarden-backed credential writes now pipe provider vault item payloads to `bw create item` and `bw edit item` over stdin instead of putting encoded credential JSON in process arguments.",
