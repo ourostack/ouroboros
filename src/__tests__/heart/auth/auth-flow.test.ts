@@ -212,6 +212,7 @@ describe("runtime auth flow", () => {
     emitTestEvent("always refreshes codex token")
     const homeDir = makeTempDir("auth-flow-home-codex-existing")
     const agentName = "CodexExisting"
+    const progress: string[] = []
     fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
     fs.writeFileSync(
       path.join(homeDir, ".codex", "auth.json"),
@@ -224,6 +225,7 @@ describe("runtime auth flow", () => {
       {
         agentName,
         provider: "openai-codex",
+        onProgress: (message) => progress.push(message),
       },
       {
         homeDir,
@@ -232,6 +234,13 @@ describe("runtime auth flow", () => {
     )
 
     expect(result.message).toBe(`authenticated ${agentName} with openai-codex`)
+    expect(progress).toEqual([
+      `checking ${agentName}'s vault access...`,
+      "starting openai-codex browser login...",
+      "openai-codex login complete; reading local Codex token...",
+      `openai-codex credentials collected; storing in ${agentName}'s vault...`,
+      "credentials stored at providers/openai-codex; local provider snapshot refreshed.",
+    ])
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))
 
     expect(result.credentialPath).toBe("providers/openai-codex")
@@ -584,6 +593,7 @@ describe("runtime auth flow", () => {
       agentName: "SharedAnthropic",
       provider: "anthropic",
       promptInput,
+      onProgress: undefined,
     })
     expect(promptInput).not.toHaveBeenCalledWith("Anthropic setup-token: ")
     expect(credentials).toEqual({

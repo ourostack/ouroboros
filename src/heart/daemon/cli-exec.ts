@@ -743,6 +743,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
     credentials: command.credentials,
     promptInput: prompt,
     runAuthFlow: deps.runAuthFlow,
+    onProgress: deps.writeStdout,
   })
 
   return {
@@ -1690,6 +1691,7 @@ async function executeReadinessRepairAction(
       agentName: agent,
       provider,
       promptInput: deps.promptInput,
+      onProgress: deps.writeStdout,
     })
     deps.writeStdout(result.message)
     await executeProviderRefresh({ kind: "provider.refresh", agent }, deps)
@@ -2686,7 +2688,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             const provider = providerOverride ?? config.humanFacing.provider
             /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
             const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
-            await authRunner({ agentName: agent, provider, promptInput: deps.promptInput })
+            await authRunner({ agentName: agent, provider, promptInput: deps.promptInput, onProgress: deps.writeStdout })
           },
           runVaultUnlock: async (agent: string) => {
             await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
@@ -3351,6 +3353,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       agentName: command.agent,
       provider,
       promptInput: deps.promptInput,
+      onProgress: deps.writeStdout,
     })
     // Behavior: ouro auth stores credentials only — does NOT switch provider.
     // Use `ouro auth switch` to change the active provider.
@@ -3359,6 +3362,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // Verify the credentials actually work by pinging the provider
     /* v8 ignore start -- integration: real API ping after auth @preserve */
     try {
+      deps.writeStdout(`verifying ${provider} credentials...`)
       const credential = await readProviderCredentialRecord(command.agent, provider, deps)
       const status = credential.ok
         ? await verifyProviderCredentials(provider, {

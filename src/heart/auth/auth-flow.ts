@@ -23,6 +23,7 @@ export interface RuntimeAuthInput {
   agentName: string
   provider: AgentProvider
   promptInput?: (question: string) => Promise<string>
+  onProgress?: (message: string) => void
 }
 
 export interface RuntimeAuthDeps {
@@ -45,6 +46,7 @@ export interface HatchCredentialResolutionInput {
   credentials?: HatchCredentialsInput
   promptInput?: (question: string) => Promise<string>
   runAuthFlow?: (input: RuntimeAuthInput) => Promise<RuntimeAuthResult>
+  onProgress?: (message: string) => void
 }
 
 function assertPersistentProviderCredentialsAllowed(agentName: string): void {
@@ -211,6 +213,10 @@ function ensurePromptInput(promptInput: RuntimeAuthInput["promptInput"], provide
   throw new Error(`No prompt input is available for ${provider} authentication.`)
 }
 
+function writeAuthProgress(input: { onProgress?: (message: string) => void }, message: string): void {
+  input.onProgress?.(message)
+}
+
 function validateAnthropicToken(token: string): string {
   const trimmed = token.trim()
   if (!trimmed) {
@@ -235,10 +241,12 @@ export async function collectRuntimeAuthCredentials(
   if (input.provider === "github-copilot") {
     let token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || ""
     if (!token) {
+      writeAuthProgress(input, "checking GitHub CLI credentials...")
       const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8" })
       token = (result.status === 0 && result.stdout ? result.stdout.trim() : "")
     }
     if (!token) {
+      writeAuthProgress(input, "starting GitHub login...")
       emitNervesEvent({
         component: "daemon",
         event: "daemon.auth_gh_login_start",
@@ -257,6 +265,7 @@ export async function collectRuntimeAuthCredentials(
         throw new Error("gh auth login completed but no token was found. Run `gh auth login` and try again.")
       }
     }
+    writeAuthProgress(input, "checking GitHub Copilot access...")
     const response = await fetch("https://api.github.com/copilot_internal/user", {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -282,6 +291,7 @@ export async function collectRuntimeAuthCredentials(
       message: "starting codex login for runtime auth",
       meta: { agentName: input.agentName },
     })
+    writeAuthProgress(input, "starting openai-codex browser login...")
     const result = spawnSync("codex", ["login"], { stdio: "inherit" })
     if (result.error) {
       throw new Error(`Failed to run 'codex login': ${result.error.message}`)
@@ -289,6 +299,7 @@ export async function collectRuntimeAuthCredentials(
     if (result.status !== 0) {
       throw new Error(`'codex login' exited with status ${result.status}.`)
     }
+    writeAuthProgress(input, "openai-codex login complete; reading local Codex token...")
     const token = readCodexAccessToken(homeDir)
     if (!token) {
       throw new Error("Codex login completed but no token was found in ~/.codex/auth.json. Re-run `codex login` and try again.")
@@ -303,6 +314,7 @@ export async function collectRuntimeAuthCredentials(
       message: "starting claude setup-token for runtime auth",
       meta: { agentName: input.agentName },
     })
+    writeAuthProgress(input, "starting anthropic setup-token flow...")
     const result = spawnSync("claude", ["setup-token"], { stdio: "inherit" })
     if (result.error) {
       throw new Error(`Failed to run 'claude setup-token': ${result.error.message}`)
@@ -319,6 +331,7 @@ export async function collectRuntimeAuthCredentials(
     /* v8 ignore start -- token exchange: requires live Anthropic OAuth endpoint @preserve */
     try {
       const { refreshAnthropicToken } = await import("../providers/anthropic-token")
+      writeAuthProgress(input, "exchanging anthropic setup token...")
       const tokenState = await refreshAnthropicToken(setupToken)
       if (tokenState) {
         return {
@@ -364,6 +377,7 @@ export async function resolveHatchCredentials(
       agentName: input.agentName,
       provider: input.provider,
       promptInput: input.promptInput,
+      onProgress: input.onProgress,
     })
     Object.assign(credentials, result.credentials)
     /* v8 ignore next 3 -- branch: auth flow always fills all required fields in production @preserve */
@@ -399,13 +413,16 @@ export async function runRuntimeAuthFlow(
     meta: { agentName: input.agentName, provider: input.provider },
   })
 
+  writeAuthProgress(input, `checking ${input.agentName}'s vault access...`)
   const vault = await refreshProviderCredentialPool(input.agentName)
   if (!vault.ok && vault.reason === "unavailable") {
     throw new Error(`${vault.error}\n${vaultUnlockReplaceRecoverFix(input.agentName, `Then retry 'ouro auth --agent ${input.agentName} --provider ${input.provider}'.`)}`)
   }
 
   const credentials = await collectRuntimeAuthCredentials(input, deps)
+  writeAuthProgress(input, `${input.provider} credentials collected; storing in ${input.agentName}'s vault...`)
   const { credentialPath } = await storeProviderCredentials(input.agentName, input.provider, credentials)
+  writeAuthProgress(input, `credentials stored at ${credentialPath}; local provider snapshot refreshed.`)
 
   emitNervesEvent({
     component: "daemon",

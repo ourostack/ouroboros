@@ -804,7 +804,9 @@ describe("ouro CLI execution", () => {
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
         agentName: tmp.agentName,
         provider: "anthropic",
+        onProgress: deps.writeStdout,
       }))
+      expect(deps.writeStdout).toHaveBeenCalledWith("verifying anthropic credentials...")
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
@@ -846,7 +848,9 @@ describe("ouro CLI execution", () => {
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
         agentName: tmp.agentName,
         provider: "openai-codex",
+        onProgress: deps.writeStdout,
       }))
+      expect(deps.writeStdout).toHaveBeenCalledWith("verifying openai-codex credentials...")
       // Behavior change: auth stores credentials but does NOT switch
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as { provider: string }
       expect(updated.provider).toBe("anthropic")
@@ -903,6 +907,7 @@ describe("ouro CLI execution", () => {
         agentName: "slugger",
         provider: "minimax",
         promptInput: deps.promptInput,
+        onProgress: deps.writeStdout,
       })
       expect(writeAgentProviderSelection).not.toHaveBeenCalled()
     } finally {
@@ -2357,6 +2362,7 @@ describe("ouro CLI execution", () => {
       agentName: "ClaudeSprout",
       provider: "anthropic",
       promptInput,
+      onProgress: deps.writeStdout,
     })
     expect(promptInput).not.toHaveBeenCalledWith("Anthropic setup-token: ")
     expect(runHatchFlow).toHaveBeenCalledWith({
@@ -2418,6 +2424,7 @@ describe("ouro CLI execution", () => {
       agentName: "CodexSprout",
       provider: "openai-codex",
       promptInput,
+      onProgress: deps.writeStdout,
     })
     expect(promptInput).not.toHaveBeenCalledWith("OpenAI Codex OAuth token: ")
     expect(runHatchFlow).toHaveBeenCalledWith({
