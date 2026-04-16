@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.399",
+      "changes": [
+        "Bitwarden-backed credential writes now pipe provider vault item payloads to `bw create item` and `bw edit item` over stdin instead of putting encoded credential JSON in process arguments.",
+        "Bitwarden CLI failures are now sanitized before they reach CLI output, so `Command failed: bw ...` argv, encoded payloads, raw provider tokens, and vault item passwords are not printed.",
+        "Bitwarden master-password prompts during credential writes now surface as a short locked/expired local session message instead of dumping the failed command invocation.",
+        "The nerves redaction audit now looks for credential-shaped text instead of failing on ordinary file paths or branch names that contain words like `secret`, `password`, or `api-key`.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the Bitwarden secret redaction release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.398",
       "changes": [
         "`ouro auth --agent <agent> --provider <provider>` now prints safe progress breadcrumbs while it checks vault access, runs provider login, stores credentials in the agent vault, refreshes the local provider snapshot, and verifies the provider.",
