@@ -19,6 +19,10 @@ function makeDeps(overrides: Partial<InteractiveRepairDeps> = {}): InteractiveRe
   }
 }
 
+function stdoutText(deps: InteractiveRepairDeps): string {
+  return (deps.writeStdout as any).mock.calls.map((call: any[]) => call[0]).join("\n")
+}
+
 describe("runInteractiveRepair", () => {
   it("returns immediately with repairsAttempted false when no degraded agents", async () => {
     const deps = makeDeps()
@@ -38,9 +42,8 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      expect.stringContaining("ouro auth slugger"),
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro auth slugger")
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger")
     expect(emitNervesEvent).toHaveBeenCalled()
   })
@@ -85,9 +88,8 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro auth --agent slugger --provider github-copilot` now? [y/n] ",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger --provider github-copilot")
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger", "github-copilot")
   })
 
@@ -106,9 +108,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro auth --agent slugger --provider github-copilot` now? [y/n] ",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger --provider github-copilot")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
@@ -128,9 +129,8 @@ describe("runInteractiveRepair", () => {
 
     expect(result).toEqual({ repairsAttempted: false })
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      "repair skipped for slugger; run `ouro auth --agent slugger --provider github-copilot` later.",
-    )
+    expect(stdoutText(deps)).toContain("Leaving slugger for later.")
+    expect(stdoutText(deps)).toContain("next: ouro auth --agent slugger --provider github-copilot")
   })
 
   it("prompts for vault unlock before auth when provider credentials are blocked by a locked vault", async () => {
@@ -150,9 +150,9 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro vault unlock --agent slugger` now? Only say yes if you have the saved unlock secret. [y/n] ",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
+    expect(stdoutText(deps)).toContain("note:  use the saved vault unlock secret")
     expect(deps.promptInput).not.toHaveBeenCalledWith(
       expect.stringContaining("ouro auth"),
     )
@@ -198,9 +198,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro vault unlock --agent slugger` now? Only say yes if you have the saved unlock secret. [y/n] ",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
     expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
   })
 
@@ -233,7 +232,7 @@ describe("runInteractiveRepair", () => {
 
     expect(result).toEqual({ repairsAttempted: false })
     expect(deps.promptInput).not.toHaveBeenCalled()
-    expect(deps.writeStdout).toHaveBeenCalledWith("slugger: provider failed")
+    expect(deps.writeStdout).toHaveBeenCalledWith("slugger\n  provider failed")
   })
 
   it("falls back to an agent-scoped command for typed provider auth actions with an empty command", async () => {
@@ -265,10 +264,9 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith("run `ouro auth --agent slugger` now? [y/n] ")
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      "repair skipped for slugger; run `ouro auth --agent slugger` later.",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger")
+    expect(stdoutText(deps)).toContain("next: ouro auth --agent slugger")
   })
 
 
@@ -290,9 +288,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      expect.stringContaining("vault unlock error for slugger: operator cancelled unlock"),
-    )
+    expect(stdoutText(deps)).toContain("Vault unlock did not finish for slugger.")
+    expect(stdoutText(deps)).toContain("operator cancelled unlock")
     expect(deps.writeStdout).not.toHaveBeenCalledWith(
       expect.stringContaining("auth flow error"),
     )
@@ -316,9 +313,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      expect.stringContaining("vault unlock error for slugger: operator cancelled unlock"),
-    )
+    expect(stdoutText(deps)).toContain("Vault unlock did not finish for slugger.")
+    expect(stdoutText(deps)).toContain("operator cancelled unlock")
   })
 
   it("shows the vault unlock fix hint when no unlock runner is available", async () => {
@@ -336,9 +332,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      "fix hint for slugger: Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.",
-    )
+    expect(stdoutText(deps)).toContain("slugger\n  needs manual attention")
+    expect(stdoutText(deps)).toContain("next: Run 'ouro vault unlock --agent slugger', then run 'ouro up' again.")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
@@ -357,9 +352,8 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      expect.stringContaining("ouro vault unlock --agent slugger"),
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
@@ -378,13 +372,51 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      "repair skipped for slugger; run `ouro vault unlock --agent slugger` later.",
-    )
-    expect(deps.writeStdout).toHaveBeenCalledWith(
-      "repair options for slugger: Run 'ouro vault unlock --agent slugger' if you have the saved secret. If nobody saved it, run 'ouro vault replace --agent slugger'. Then run 'ouro up' again.",
-    )
+    expect(stdoutText(deps)).toContain("Leaving slugger for later.")
+    expect(stdoutText(deps)).toContain("next: ouro vault unlock --agent slugger")
+    expect(stdoutText(deps)).toContain("or: ouro vault replace --agent slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
+  })
+
+  it("deduplicates overlapping fallback commands in deferred repair guidance", async () => {
+    const issue: AgentReadinessIssue = {
+      kind: "vault-locked",
+      severity: "blocked",
+      actor: "human-required",
+      summary: "slugger: vault locked",
+      actions: [
+        {
+          kind: "vault-unlock",
+          label: "Unlock with saved secret",
+          command: "ouro vault unlock --agent slugger",
+          actor: "human-required",
+        },
+        {
+          kind: "vault-replace",
+          label: "Create empty replacement vault",
+          command: "ouro vault replace --agent slugger",
+          actor: "human-required",
+        },
+      ],
+    }
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "vault locked",
+        fixHint: "Run 'ouro vault unlock --agent slugger'. If nobody saved it, run 'ouro vault replace --agent slugger'.",
+        issue,
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(stdoutText(deps)).toContain("next: ouro vault unlock --agent slugger")
+    expect(stdoutText(deps)).toContain("or: ouro vault replace --agent slugger")
+    expect(stdoutText(deps)).not.toContain("or: ouro vault unlock --agent slugger")
   })
 
   it("skips auth flow when user says n for missing credentials", async () => {
@@ -409,9 +441,8 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      expect.stringContaining("ouro auth --agent slugger"),
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
 
@@ -487,17 +518,18 @@ describe("runInteractiveRepair", () => {
     expect(deps.writeStdout).toHaveBeenNthCalledWith(
       1,
       [
-        "repair queue:",
-        "  - ouroboros: vault unlock: `ouro vault unlock --agent ouroboros`",
-        "  - slugger: provider auth: `ouro auth --agent slugger --provider openai-codex`",
+        "Repair queue",
+        "2 agents need attention before startup can finish.",
+        "",
+        "ouroboros - vault unlock",
+        "  ouro vault unlock --agent ouroboros",
+        "",
+        "slugger - provider auth",
+        "  ouro auth --agent slugger --provider openai-codex",
       ].join("\n"),
     )
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro vault unlock --agent ouroboros` now? Only say yes if you have the saved unlock secret. [y/n] ",
-    )
-    expect(deps.promptInput).toHaveBeenCalledWith(
-      "run `ouro auth --agent slugger --provider openai-codex` now? [y/n] ",
-    )
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
   })
 
   it("catches auth flow errors and continues to next agent", async () => {

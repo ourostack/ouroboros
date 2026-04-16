@@ -277,7 +277,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("Provider checks need repair:")
+    expect(output).toContain("Provider checks need attention")
     expect(output).toContain("test-agent: vault locked")
     expect(output).toContain("next: ouro vault unlock --agent test-agent")
     expect(result).toContain("daemon not started: provider checks need repair")
@@ -379,7 +379,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("authenticated test-agent with anthropic")
-    expect(output).toContain("provider checks recovered after repair")
+    expect(output).toContain("Provider checks recovered after repair")
     expect(result).not.toContain("daemon not started: provider checks still need repair")
   })
 
@@ -460,7 +460,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("manual step for test-agent: ouro use --agent test-agent --lane inner --provider minimax --model MiniMax-M2.5")
-    expect(output).toContain("provider checks recovered after repair")
+    expect(output).toContain("Provider checks recovered after repair")
   })
 
   it("stops after an attempted preflight repair when the remaining issue is unchanged", async () => {
@@ -525,7 +525,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(startDaemonProcess).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("authenticated test-agent with anthropic")
-    expect(output).toContain("Still blocked:")
+    expect(output).toContain("Still needs attention")
     expect(output).toContain("source: vault:test-agent:providers/*")
     expect(result).toContain("daemon not started: provider checks still need repair")
   })
@@ -587,7 +587,7 @@ describe("ouro up: interactive repair wiring", () => {
     expect(startDaemonProcess).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("authenticated test-agent with anthropic")
-    expect(output).toContain("Still blocked:")
+    expect(output).toContain("Still needs attention")
     expect(output).toContain("other-agent: other-agent provider failed without a repair hint")
     expect(result).toContain("daemon not started: provider checks still need repair")
   })
@@ -856,7 +856,7 @@ describe("ouro up: interactive repair wiring", () => {
 
     expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("provider checks recovered after repair")
+    expect(output).toContain("Provider checks recovered after repair")
   })
 
   it("reports remaining provider degradation after an attempted repair", async () => {
@@ -885,7 +885,7 @@ describe("ouro up: interactive repair wiring", () => {
     await runOuroCli(["up"], deps)
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("Still blocked:")
+    expect(output).toContain("Still needs attention")
     expect(output).toContain("test-agent: selected provider openai-codex for humanFacing failed health check")
     expect(output).toContain("next: Run 'ouro auth --agent test-agent --provider openai-codex' to refresh credentials.")
     expect(output).toContain("Run `ouro up` again after these are fixed.")
@@ -916,7 +916,7 @@ describe("ouro up: interactive repair wiring", () => {
     await runOuroCli(["up"], deps)
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("Still blocked:")
+    expect(output).toContain("Still needs attention")
     expect(output).toContain("test-agent: selected provider health check failed")
     expect(output).not.toContain("    next:")
   })
