@@ -9,10 +9,13 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import {
+  credentialVaultNotConfiguredError,
   getVaultUnlockStatus,
+  isCredentialVaultNotConfiguredError,
   readVaultUnlockSecret,
   resolveVaultUnlockStore,
   storeVaultUnlockSecret,
+  vaultCreateRecoverFix,
   type VaultUnlockConfig,
   type VaultUnlockDeps,
 } from "../../repertoire/vault-unlock"
@@ -143,6 +146,43 @@ describe("vault unlock local stores", () => {
       stored: false,
     })
     expect(status.fix).toContain("No supported secure local secret store was found")
+  })
+
+  it("renders explicit create-first guidance for agents without a configured vault locator", () => {
+    emitTestEvent("vault unlock missing locator guidance")
+
+    const error = credentialVaultNotConfiguredError("slugger", "/bundles/slugger.ouro/agent.json")
+    expect(error).toContain("credential vault is not configured in /bundles/slugger.ouro/agent.json")
+    expect(error).toContain("ouro vault create --agent slugger")
+    expect(isCredentialVaultNotConfiguredError(error)).toBe(true)
+    expect(isCredentialVaultNotConfiguredError("vault locked")).toBe(false)
+
+    const fix = vaultCreateRecoverFix("slugger", "Then retry 'ouro auth --agent slugger --provider minimax'.")
+    expect(fix).toContain("ouro vault create --agent slugger")
+    expect(fix).toContain("ouro vault recover --agent slugger --from <json>")
+    expect(fix).toContain("Then retry 'ouro auth --agent slugger --provider minimax'.")
+  })
+
+  it("falls back to the module spawnSync when linux store probing has no injected runner", async () => {
+    emitTestEvent("vault unlock default spawnSync fallback")
+    vi.resetModules()
+
+    const defaultSpawnSync = vi.fn(() => ok("secret-tool 1.0\n"))
+    vi.doMock("node:child_process", () => ({
+      spawnSync: (...args: unknown[]) => defaultSpawnSync(...args),
+    }))
+    vi.doMock("../../nerves/runtime", () => ({
+      emitNervesEvent: (...args: unknown[]) => mockEmitNervesEvent(...args),
+    }))
+
+    const { resolveVaultUnlockStore: resolveVaultUnlockStoreWithDefaultSpawn } = await import("../../repertoire/vault-unlock")
+    const store = resolveVaultUnlockStoreWithDefaultSpawn(config, { platform: "linux" })
+
+    expect(store).toMatchObject({
+      kind: "linux-secret-service",
+      secure: true,
+    })
+    expect(defaultSpawnSync).toHaveBeenCalledWith("secret-tool", ["--version"], { encoding: "utf8" })
   })
 
   it("writes and reads explicit plaintext unlock material with private file mode", () => {

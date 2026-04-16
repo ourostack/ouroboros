@@ -7,6 +7,8 @@ vi.mock("../../nerves/runtime", () => ({
 
 const mockReadVaultUnlockSecret = vi.fn(() => ({ secret: "unlock-secret" }))
 vi.mock("../../repertoire/vault-unlock", () => ({
+  credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
+    `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
   readVaultUnlockSecret: (...args: unknown[]) => mockReadVaultUnlockSecret(...args),
 }))
 
@@ -92,16 +94,13 @@ describe("credential access", () => {
     }))
   })
 
-  it("defaults the vault coordinates from the agent name when agent.json has no vault section", () => {
+  it("fails fast when agent.json has no vault section yet", () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ version: 2 }))
 
-    getCredentialStore("ouroboros")
-
-    expect(mockReadVaultUnlockSecret).toHaveBeenCalledWith({
-      agentName: "ouroboros",
-      email: "ouroboros@ouro.bot",
-      serverUrl: "https://vault.ouroboros.bot",
-    })
+    expect(() => getCredentialStore("ouroboros")).toThrow(
+      "credential vault is not configured in /bundles/ouroboros.ouro/agent.json. Run 'ouro vault create --agent ouroboros' to create this agent's vault before loading or storing credentials.",
+    )
+    expect(mockReadVaultUnlockSecret).not.toHaveBeenCalled()
   })
 
   it("caches stores by agent and vault coordinates until reset", () => {
@@ -118,7 +117,10 @@ describe("credential access", () => {
 
   it("uses the current agent name when no agent is supplied", () => {
     mockGetAgentName.mockReturnValue("current-agent")
-    mockReadFileSync.mockReturnValue(JSON.stringify({ version: 2 }))
+    mockReadFileSync.mockReturnValue(JSON.stringify({
+      version: 2,
+      vault: { email: "current-agent@ouro.bot" },
+    }))
 
     getCredentialStore()
 
