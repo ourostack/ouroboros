@@ -299,7 +299,7 @@ function missingCredentialResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} has no credentials in ${agentName}'s vault at ${credentialPath}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate this machine, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to choose a working provider/model.`,
+    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate.`,
     issue: providerCredentialMissingIssue({
       agentName,
       lane,
@@ -386,7 +386,7 @@ function failedPingResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to switch this lane.`,
+    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials.`,
     issue: providerLiveCheckFailedIssue({
       agentName,
       lane,
