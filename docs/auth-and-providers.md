@@ -4,6 +4,8 @@ This is the locked runtime contract for credentials, provider selection, repair,
 
 The short version: each agent owns one vault. Provider/model choice is local to each machine. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
 
+The mental model is simple: an agent needs a password manager in the same way a human does. The agent vault is that password manager. Most items are just the agent's stored credentials for tools and services; a few well-known items are harness-readable because Ouro must use them on the agent's behalf, such as model providers, Perplexity search, Teams, and local sense attachments.
+
 ## Sources Of Truth
 
 | Concept | Source Of Truth | Notes |
@@ -11,7 +13,8 @@ The short version: each agent owns one vault. Provider/model choice is local to 
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
 | Provider/model selection on this machine | `~/AgentBundles/<agent>.ouro/state/providers.json` | Two lanes: `outward` and `inner`. There is no silent fallback between lanes. |
 | Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No machine-wide provider credential pool. |
-| Runtime/sense/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, BlueBubbles, OAuth connection names, Perplexity, embeddings, and similar runtime credentials. |
+| Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, and similar credentials that should travel with the agent. |
+| Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
 | Travel/tool credentials | Ordinary items in the agent's Bitwarden/Vaultwarden vault | Examples: `duffel.com`, `stripe.com`, or other service domains. |
 | Vault unlock material on this machine | Local unlock store | Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service. Plaintext fallback is allowed only by explicit human choice. |
 | Hot runtime | Process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
@@ -63,14 +66,29 @@ ouro provider refresh --agent <agent>
 
 Refresh means: read the latest provider credential snapshot from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
 
-Runtime/sense/integration credentials are stored field by field with:
+Guided integration and local-sense setup starts with:
 
 ```bash
-ouro vault config set --agent <agent> --key bluebubbles.password
-ouro vault config set --agent <agent> --key teams.clientSecret
+ouro connect --agent <agent>
+ouro connect perplexity --agent <agent>
+ouro connect bluebubbles --agent <agent>
 ```
 
-The values are written into the `runtime/config` vault item and are not printed back.
+`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
+
+`ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. It does not make that local Mac Messages bridge portable to every machine.
+
+When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
+
+Low-level runtime fields can still be stored directly:
+
+```bash
+ouro vault config set --agent <agent> --key teams.clientSecret
+ouro vault config set --agent <agent> --key integrations.perplexityApiKey
+ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
+```
+
+The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
 
 ## Runtime Caching
 
@@ -96,9 +114,10 @@ The daemon may read the vault at these boundaries:
 - `ouro auth verify`
 - `ouro provider refresh`
 - `ouro use` provider/model checks
+- `ouro connect`
 - one bounded refresh attempt during provider failure retry
 
-The daemon should keep provider credentials only in process memory after loading them. There is no local provider-key cache on disk. The vault remains the credential source of truth.
+The daemon should keep provider and runtime credentials only in process memory after loading them. There is no local provider-key or runtime-secret cache on disk. The vault remains the credential source of truth.
 
 ## Failure And Repair
 
@@ -186,22 +205,22 @@ Interactive hatch should bootstrap SerpentGuide like this:
 4. Guide the human through provider-specific auth without asking for secrets in chat.
 5. Ping-check the selected provider credentials.
 6. Use the selected credentials to run SerpentGuide in memory.
-7. Prompt the human outside model context for a human-chosen hatchling vault unlock secret.
+7. Prompt the human outside model context for a human-chosen hatchling vault unlock secret, confirm it, and enforce the same strength rules used by `ouro vault create`.
 8. Create/configure the hatchling bundle and hatchling vault.
 9. Store the selected provider credentials into the hatchling vault.
 
-The hatchling vault unlock secret is not generated, printed, included in tool arguments, or sent through chat. The terminal secret prompt does not echo it. The human must save the hatchling vault unlock secret outside Ouro if they want to unlock that new agent on another machine.
+The hatchling vault unlock secret is not generated, printed, included in tool arguments, or sent through chat. The terminal secret prompt does not echo it and asks for confirmation. The human must save the hatchling vault unlock secret outside Ouro if they want to unlock that new agent on another machine.
 
 Interactive hatch must not create, mutate, or persist a SerpentGuide vault. Persistent SerpentGuide provider credentials are not a supported state: there is no durable human-custody path for a SerpentGuide vault unlock secret, and a packaged bootstrap specialist should not become a hidden credential owner.
 
-Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only. If the flow needs to create a hatchling vault, it still requires a non-echoing human-provided vault unlock secret prompt; it must not generate and print one.
+Direct/noninteractive hatch may accept explicit provider credentials to run the flow, but must store them in the hatchling vault only. If the flow needs to create a hatchling vault, it still requires a non-echoing human-provided vault unlock secret prompt with confirmation; it must not generate and print one.
 
 ## Continue An Existing Agent Bundle
 
 When a bundle is copied, pulled, or cloned onto a machine, the durable Ouro-owned story is bundle plus vault:
 
 1. The bundle brings identity, vault coordinates, sync settings, and local-state templates.
-2. The remote vault brings raw provider, runtime, sense, integration, travel, and tool credentials.
+2. The remote vault brings raw provider, portable runtime/integration, local machine attachment, travel, and tool credentials.
 3. The remote vault does not live inside the bundle, and raw credentials do not live in the bundle.
 4. Local unlock material is recreated per machine by unlocking the agent vault once.
 
@@ -232,6 +251,12 @@ Start the daemon when the vault and provider state are ready:
 ouro up
 ```
 
+Local attachments are per machine. If BlueBubbles is enabled for the agent but this computer is not attached, run:
+
+```bash
+ouro connect bluebubbles --agent <agent>
+```
+
 Windows DPAPI means a CurrentUser-protected encrypted local unlock file. Windows keeps the protection keys; Ouro stores only the encrypted blob. This fits local unlock caching because the blob is usable by the same Windows user on the same machine, not as a portable credential source.
 
 Linux Secret Service is the freedesktop desktop-secret API usually backed by GNOME Keyring, KWallet, or another `libsecret` provider. It is often unavailable on headless servers, minimal Linux installs, and WSL.
@@ -242,7 +267,7 @@ If the machine has no usable local secret store, the harness may offer an explic
 
 There is no hidden recovery path for a lost vault unlock secret.
 
-For an existing agent with no vault locator, run `ouro vault create --agent <agent>`. The command prompts for a human-chosen vault unlock secret without echoing it, writes vault coordinates to `agent.json`, and stores local unlock material for this machine. The human must keep that unlock secret outside Ouro; Ouro will not print it, write a portable copy into the bundle, or store it inside the vault.
+For an existing agent with no vault locator, run `ouro vault create --agent <agent>`. The command prompts twice for a human-chosen vault unlock secret without echoing it, writes vault coordinates to `agent.json`, and stores local unlock material for this machine. New unlock secrets must be at least 8 characters and include uppercase and lowercase letters, one number, and one special character. The human must keep that unlock secret outside Ouro; Ouro will not print it, write a portable copy into the bundle, or store it inside the vault.
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
@@ -278,7 +303,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro vault create --agent <agent>
    ```
 
-   Enter a human-chosen unlock secret when prompted. The prompt does not echo the secret. Save that unlock secret outside Ouro immediately. Another machine cannot unlock this agent vault without it. After this, re-enter provider/runtime credentials with the auth and vault config commands below.
+   Enter and confirm a human-chosen unlock secret when prompted. The prompt does not echo the secret. Save that unlock secret outside Ouro immediately. Another machine cannot unlock this agent vault without it. After this, re-enter provider/runtime credentials with the auth and vault config commands below.
 
 3. If the bundle has vault coordinates but nobody saved an unlock secret, choose the repair path that matches what actually exists.
 
@@ -288,7 +313,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro vault replace --agent <agent>
    ```
 
-   This is the expected path for agents that already existed before provider credentials moved into per-agent vaults. Enter a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json` and imports no credentials.
+   This is the expected path for agents that already existed before provider credentials moved into per-agent vaults. Enter and confirm a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json` and imports no credentials.
 
    If the human does have a local JSON credential export, recover into the agent vault and import it:
 
@@ -296,7 +321,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro vault recover --agent <agent> --from <json>
    ```
 
-   Repeat `--from <json>` for each local JSON export that should be imported. Enter a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
+   Repeat `--from <json>` for each local JSON export that should be imported. Enter and confirm a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports portable runtime/integration credentials into `runtime/config`, imports BlueBubbles local attachment fields into `runtime/machines/<machine-id>/config`, and prints only field/provider summaries.
 
 4. Unlock the vault on this machine.
 
@@ -317,12 +342,14 @@ Use this checklist for any existing agent that predates the vault-backed credent
 6. Re-enter runtime, sense, integration, travel, and tool credentials into vault items if recovery did not import them or if they are stale.
 
    ```bash
-   ouro vault config set --agent <agent> --key bluebubbles.serverUrl
-   ouro vault config set --agent <agent> --key bluebubbles.password
+   ouro connect perplexity --agent <agent>
+   ouro connect bluebubbles --agent <agent>
    ouro vault config set --agent <agent> --key teams.clientId
+   ouro vault config set --agent <agent> --key teams.clientSecret
+   ouro vault config set --agent <agent> --key teams.tenantId
    ```
 
-   Use the relevant field names for the senses and integrations that agent actually uses.
+   Use `ouro connect` when a guided connector exists. Use the relevant field names for integrations that do not have a guided connector yet. BlueBubbles is a local attachment; run `ouro connect bluebubbles` separately on each machine that should bridge iMessage.
 
 7. Choose this machine's provider/model lanes.
 
@@ -353,7 +380,11 @@ ouro vault status --agent <agent>
 ouro vault replace --agent <agent>
 ouro vault recover --agent <agent> --from <json> [--from <json> ...]
 ouro vault config set --agent <agent> --key <field>
-ouro vault config status --agent <agent>
+ouro vault config set --agent <agent> --key <field> --scope machine
+ouro vault config status --agent <agent> [--scope agent|machine|all]
+ouro connect --agent <agent>
+ouro connect perplexity --agent <agent>
+ouro connect bluebubbles --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
 ouro repair --agent <agent>

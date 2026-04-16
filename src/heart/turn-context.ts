@@ -218,7 +218,7 @@ function readSenseStatusLines(): string[] {
     },
     {
       label: "BlueBubbles",
-      status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "needs_config",
+      status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
     },
   ]
 

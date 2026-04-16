@@ -178,6 +178,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro auth --agent ouroboros",
     subcommands: ["verify", "switch"],
   },
+  connect: {
+    category: "Auth",
+    description: "Connect integrations and local senses such as Perplexity search and BlueBubbles iMessage",
+    usage: "ouro connect [perplexity|bluebubbles] --agent <name>",
+    example: "ouro connect perplexity --agent ouroboros",
+    subcommands: ["perplexity", "bluebubbles"],
+  },
   use: {
     category: "Auth",
     description: "Choose this machine's provider/model lane for an agent",
@@ -281,6 +288,16 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     usage: "ouro auth switch --agent <name> --provider <provider> [--facing human|agent]",
     example: "ouro auth switch --agent ouroboros --provider minimax",
   },
+  "connect perplexity": {
+    description: "Connect Perplexity search for this agent",
+    usage: "ouro connect perplexity --agent <name>",
+    example: "ouro connect perplexity --agent ouroboros",
+  },
+  "connect bluebubbles": {
+    description: "Attach BlueBubbles iMessage to this machine only",
+    usage: "ouro connect bluebubbles --agent <name>",
+    example: "ouro connect bluebubbles --agent ouroboros",
+  },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into daemon memory",
     usage: "ouro provider refresh --agent <name>",
@@ -312,14 +329,14 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro vault status --agent ouroboros",
   },
   "vault config set": {
-    description: "Write runtime configuration into the agent credential vault",
-    usage: "ouro vault config set --agent <name> --key <path> [--value <value>]",
-    example: "ouro vault config set --agent ouroboros --key senses/outlook/clientId",
+    description: "Write runtime configuration into the agent credential vault without printing values",
+    usage: "ouro vault config set --agent <name> --key <path> [--value <value>] [--scope agent|machine]",
+    example: "ouro vault config set --agent ouroboros --key teams.clientSecret",
   },
   "vault config status": {
     description: "List runtime configuration keys stored in the agent credential vault",
-    usage: "ouro vault config status --agent <name>",
-    example: "ouro vault config status --agent ouroboros",
+    usage: "ouro vault config status --agent <name> [--scope agent|machine|all]",
+    example: "ouro vault config status --agent ouroboros --scope all",
   },
 }
 

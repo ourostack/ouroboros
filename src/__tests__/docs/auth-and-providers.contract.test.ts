@@ -28,6 +28,7 @@ describe("auth/provider documentation contract", () => {
       expect(content).toContain("ouro provider refresh --agent <agent>")
       expect(content).toContain("ouro auth verify --agent <agent>")
       expect(content).toContain("ouro vault config status --agent <agent>")
+      expect(content).toContain("ouro connect bluebubbles --agent <agent>")
       expect(content).toContain("ouro up")
     }
 
@@ -53,7 +54,9 @@ describe("auth/provider documentation contract", () => {
     expect(authGuide).toContain("vault locator: not configured in agent.json")
     expect(authGuide).toContain("The prompt does not echo the secret.")
     expect(authGuide).toContain("ouro auth --agent <agent> --provider <provider>")
-    expect(authGuide).toContain("ouro vault config set --agent <agent> --key bluebubbles.serverUrl")
+    expect(authGuide).toContain("ouro connect perplexity --agent <agent>")
+    expect(authGuide).toContain("ouro connect bluebubbles --agent <agent>")
+    expect(authGuide).toContain("runtime/machines/<machine-id>/config")
     expect(authGuide).toContain("ouro use --agent <agent> --lane outward --provider <provider> --model <model>")
     expect(authGuide).toContain("Do not copy old local credential files into the bundle.")
     expect(authGuide).not.toContain(`~/${retiredCredentialDir}`)
@@ -84,6 +87,8 @@ describe("auth/provider documentation contract", () => {
 
     expect(corpus).toContain("The only Ouro-owned durable credential locations are the bundle and the agent vault.")
     expect(corpus).toContain("Local unlock material is a machine-local cache, not a credential source of truth.")
+    expect(corpus).toContain("the agent's password manager")
+    expect(corpus).toContain("bundle sync:")
     expect(corpus).not.toContain("operator password manager")
   })
 
@@ -91,9 +96,9 @@ describe("auth/provider documentation contract", () => {
     const authGuide = readRepoFile("docs", "auth-and-providers.md")
     const specialistPrompt = readRepoFile("src", "heart", "hatch", "specialist-prompt.ts")
 
-    expect(authGuide).toContain("Prompt the human outside model context for a human-chosen hatchling vault unlock secret.")
+    expect(authGuide).toContain("Prompt the human outside model context for a human-chosen hatchling vault unlock secret, confirm it")
     expect(authGuide).toContain("The hatchling vault unlock secret is not generated, printed, included in tool arguments, or sent through chat.")
-    expect(specialistPrompt).toContain("complete_adoption tool triggers a hidden terminal prompt")
+    expect(specialistPrompt).toContain("complete_adoption tool triggers hidden terminal prompts")
     expect(specialistPrompt).toContain("I must never ask the human to type the vault unlock secret into chat")
   })
 
