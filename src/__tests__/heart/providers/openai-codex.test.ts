@@ -76,6 +76,18 @@ function buildToken(accountId: string): string {
   return `${encode({ alg: "none", typ: "JWT" })}.${encode({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })}.signature`
 }
 
+function createCallbacks() {
+  return {
+    onModelStart: vi.fn(),
+    onModelStreamStart: vi.fn(),
+    onTextChunk: vi.fn(),
+    onReasoningChunk: vi.fn(),
+    onToolStart: vi.fn(),
+    onToolEnd: vi.fn(),
+    onError: vi.fn(),
+  }
+}
+
 async function setupConfig(token = buildToken("acct-test-123")) {
   const config = await import("../../../heart/config")
   config.resetConfigCache()
@@ -140,5 +152,114 @@ describe("createOpenAICodexProviderRuntime", () => {
       undefined,
     )
     expect(mockResponsesCreate).not.toHaveBeenCalled()
+
+    const pingCallbacks = mockStreamResponsesApi.mock.calls[0]?.[2]
+    pingCallbacks.onModelStart()
+    pingCallbacks.onModelStreamStart()
+    pingCallbacks.onTextChunk("pong")
+    pingCallbacks.onReasoningChunk("thinking")
+    pingCallbacks.onToolStart({ type: "function", name: "settle" })
+    pingCallbacks.onToolEnd({ type: "function", name: "settle" })
+    pingCallbacks.onError(new Error("noop"))
+  })
+
+  it("streamTurn reuses the shared Responses payload shape, forwards tool choices, and preserves turn state", async () => {
+    await setupConfig()
+    const assistantOutput = {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "done" }],
+    }
+    mockToResponsesInput.mockReturnValue({
+      instructions: "sys-turn",
+      input: [{ role: "user", content: "hello" }],
+    })
+    mockToResponsesTools
+      .mockReturnValueOnce([{ type: "function", name: "settle" }])
+      .mockReturnValueOnce([])
+    mockStreamResponsesApi
+      .mockResolvedValueOnce({ content: "done", toolCalls: [], outputItems: [assistantOutput] })
+      .mockResolvedValueOnce({ content: "again", toolCalls: [], outputItems: [] })
+
+    const { createOpenAICodexProviderRuntime } = await import("../../../heart/providers/openai-codex")
+    const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
+    const callbacks = createCallbacks()
+
+    runtime.resetTurnState([
+      { role: "system", content: "sys-turn" } as any,
+      { role: "user", content: "hello" } as any,
+    ])
+    runtime.appendToolOutput("call-1", "tool ok")
+    const firstResult = await runtime.streamTurn({
+      messages: [{ role: "user", content: "hello" } as any],
+      callbacks,
+      signal: undefined,
+      eagerSettleStreaming: false,
+      activeTools: [{ name: "settle" } as any],
+      toolChoiceRequired: true,
+      reasoningEffort: "high",
+    })
+
+    expect(firstResult).toEqual({ content: "done", toolCalls: [], outputItems: [assistantOutput] })
+    expect(mockToResponsesTools).toHaveBeenCalledWith([{ name: "settle" }])
+    expect(mockStreamResponsesApi).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        model: "gpt-5.4",
+        input: [
+          { role: "user", content: "hello" },
+          { type: "function_call_output", call_id: "call-1", output: "tool ok" },
+          assistantOutput,
+        ],
+        instructions: "sys-turn",
+        tools: [{ type: "function", name: "settle" }],
+        tool_choice: "required",
+        reasoning: { effort: "high", summary: "detailed" },
+        stream: true,
+        store: false,
+        include: ["reasoning.encrypted_content"],
+      }),
+      callbacks,
+      undefined,
+      false,
+    )
+
+    await runtime.streamTurn({
+      messages: [{ role: "user", content: "hello" } as any],
+      callbacks,
+      signal: undefined,
+      eagerSettleStreaming: false,
+      activeTools: [],
+      toolChoiceRequired: false,
+      reasoningEffort: undefined,
+    })
+
+    expect(mockStreamResponsesApi).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        model: "gpt-5.4",
+        input: [
+          { role: "user", content: "hello" },
+          { type: "function_call_output", call_id: "call-1", output: "tool ok" },
+          assistantOutput,
+        ],
+        instructions: "sys-turn",
+        tools: [],
+        reasoning: { effort: "medium", summary: "detailed" },
+      }),
+      callbacks,
+      undefined,
+      false,
+    )
+  })
+
+  it("runtime classifyError delegates to the shared Codex error classifier", async () => {
+    await setupConfig()
+    const { createOpenAICodexProviderRuntime } = await import("../../../heart/providers/openai-codex")
+    const runtime = createOpenAICodexProviderRuntime("gpt-5.4")
+
+    expect(runtime.classifyError(Object.assign(new Error("Unauthorized"), { status: 401 }))).toBe("auth-failure")
   })
 })
