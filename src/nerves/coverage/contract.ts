@@ -9,11 +9,11 @@ export const REQUIRED_ENVELOPE_FIELDS = [
 ] as const
 
 export const SENSITIVE_PATTERNS: RegExp[] = [
-  /\btoken\s*[:=]/i,
-  /\bapi[_-]?key\b/i,
-  /\bpassword\b/i,
-  /\bsecret\b/i,
-  /\bauthorization\b/i,
+  /\btoken\b["']?\s*[:=]/i,
+  /\bapi[_-]?key\b["']?\s*[:=]/i,
+  /\bpassword\b["']?\s*[:=]/i,
+  /\bsecret\b["']?\s*[:=]/i,
+  /\bauthorization\b["']?\s*[:=]/i,
 ]
 
 export function eventKey(component: string, event: string): string {
