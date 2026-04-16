@@ -238,6 +238,103 @@ describe("BitwardenCredentialStore", () => {
     })
   })
 
+  describe("bw sync after login/unlock", () => {
+    it("calls bw sync after unlock (locked status)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "unlocked-session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // After unlock, bw sync should have been called with the new session token
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      // sync should come AFTER unlock
+      const unlockIdx = calls.findIndex((c) => c[0] === "unlock")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(unlockIdx)
+    })
+
+    it("calls bw sync after login (unauthenticated status)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"session-token"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // After login, bw sync should have been called
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      // sync should come AFTER login
+      const loginIdx = calls.findIndex((c) => c[0] === "login")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(loginIdx)
+    })
+
+    it("calls bw sync after unlock (unlocked status, re-unlock for session)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      const unlockIdx = calls.findIndex((c) => c[0] === "unlock")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(unlockIdx)
+    })
+  })
+
   describe("get", () => {
     it("returns credential metadata for a domain", async () => {
       setupExecMock({
