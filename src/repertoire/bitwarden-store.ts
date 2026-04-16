@@ -17,9 +17,26 @@ import { ensureBwCli } from "./bw-installer"
 // bw CLI wrapper
 // ---------------------------------------------------------------------------
 
+function isBwSessionUnavailableMessage(message: string): boolean {
+  return (
+    /master password/i.test(message) ||
+    /vault is locked/i.test(message) ||
+    /not logged in/i.test(message) ||
+    /session key/i.test(message) ||
+    /local bitwarden session/i.test(message)
+  )
+}
+
+function isBwInvalidUnlockSecretMessage(message: string): boolean {
+  return /invalid master password/i.test(message) || /saved vault unlock secret/i.test(message)
+}
+
 function sanitizeBwErrorDetail(message: string): string {
-  if (/master password/i.test(message)) {
-    return "bw CLI requested a master password; the local Bitwarden session is locked or expired"
+  if (isBwInvalidUnlockSecretMessage(message)) {
+    return "bw CLI rejected the saved vault unlock secret for this machine"
+  }
+  if (isBwSessionUnavailableMessage(message)) {
+    return "bw CLI could not use the local Bitwarden session because it is locked, missing, or expired"
   }
   const withoutCommandLine = message
     .split(/\r?\n/)
@@ -34,6 +51,15 @@ function sanitizeBwErrorDetail(message: string): string {
 function formatBwCliError(err: Error, stderr = ""): Error {
   const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
   return new Error(`bw CLI error: ${detail}`)
+}
+
+function isBwSessionAuthError(err: Error): boolean {
+  return isBwSessionUnavailableMessage(err.message) || isBwInvalidUnlockSecretMessage(err.message)
+}
+
+function isBwConfigLogoutRequired(err: Error): boolean {
+  const message = err.message.toLowerCase()
+  return message.includes("logout") && message.includes("required")
 }
 
 function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
@@ -86,6 +112,18 @@ const BASE_BACKOFF_MS = 1000
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function parseBwItems(stdout: string, context: string): BwLoginItem[] {
+  try {
+    const parsed = JSON.parse(stdout) as unknown
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected item array")
+    }
+    return parsed as BwLoginItem[]
+  } catch {
+    throw new Error(`bw CLI error: invalid JSON from ${context}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +233,12 @@ export class BitwardenCredentialStore implements CredentialStore {
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
         await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
-      } catch {
-        // "Logout required" means already logged in — that's fine, skip config
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        // "Logout required" means already logged in — that's fine, skip config.
+        if (!isBwConfigLogoutRequired(err)) {
+          throw err
+        }
       }
     }
 
@@ -228,6 +270,23 @@ export class BitwardenCredentialStore implements CredentialStore {
     return this.sessionToken ?? undefined
   }
 
+  private async withSessionRetry<T>(operation: (session: string | undefined) => Promise<T>): Promise<T> {
+    let attemptedFreshSession = false
+    while (true) {
+      const session = await this.ensureSession()
+      try {
+        return await operation(session)
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        if (attemptedFreshSession || !isBwSessionAuthError(err)) {
+          throw err
+        }
+        this.sessionToken = null
+        attemptedFreshSession = true
+      }
+    }
+  }
+
   async get(domain: string): Promise<CredentialMeta | null> {
     emitNervesEvent({
       event: "repertoire.bw_credential_get_start",
@@ -236,8 +295,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const session = await this.ensureSession()
-    const item = await this.findItemByDomain(domain, session)
+    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
 
     if (!item) {
       emitNervesEvent({
@@ -265,8 +323,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   async getRawSecret(domain: string, field: string): Promise<string> {
-    const session = await this.ensureSession()
-    const item = await this.findItemByDomain(domain, session)
+    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
 
     if (!item) {
       throw new Error(`no credential found for domain "${domain}"`)
@@ -300,27 +357,27 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const session = await this.ensureSession()
+    await this.withSessionRetry(async (session) => {
+      const existing = await this.findItemByDomain(domain, session)
+      const item = {
+        ...(existing ?? {}),
+        type: 1, // Login type
+        name: domain,
+        login: {
+          username: data.username ?? "",
+          password: data.password,
+          uris: [{ match: null, uri: `https://${domain}` }],
+        },
+        notes: data.notes ?? null,
+      }
 
-    const existing = await this.findItemByDomain(domain, session)
-    const item = {
-      ...(existing ?? {}),
-      type: 1, // Login type
-      name: domain,
-      login: {
-        username: data.username ?? "",
-        password: data.password,
-        uris: [{ match: null, uri: `https://${domain}` }],
-      },
-      notes: data.notes ?? null,
-    }
-
-    const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
-    if (existing) {
-      await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
-    } else {
-      await execBw(["create", "item"], session, this.appDataDir, encoded)
-    }
+      const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
+      if (existing) {
+        await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+      } else {
+        await execBw(["create", "item"], session, this.appDataDir, encoded)
+      }
+    })
 
     emitNervesEvent({
       event: "repertoire.bw_credential_store_end",
@@ -338,36 +395,24 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { backend: "bitwarden" },
     })
 
-    const session = await this.ensureSession()
+    const stdout = await this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir))
+    const items = parseBwItems(stdout, "bw list items")
 
-    try {
-      const stdout = await execBw(["list", "items"], session, this.appDataDir)
-      const items: BwLoginItem[] = JSON.parse(stdout)
+    const results: CredentialMeta[] = items.map((item) => ({
+      domain: item.name,
+      username: item.login?.username,
+      notes: item.notes ?? undefined,
+      createdAt: item.revisionDate ?? new Date().toISOString(),
+    }))
 
-      const results: CredentialMeta[] = items.map((item) => ({
-        domain: item.name,
-        username: item.login?.username,
-        notes: item.notes ?? undefined,
-        createdAt: item.revisionDate ?? new Date().toISOString(),
-      }))
+    emitNervesEvent({
+      event: "repertoire.bw_credential_list_end",
+      component: "repertoire",
+      message: "bw credentials listed",
+      meta: { backend: "bitwarden", count: results.length },
+    })
 
-      emitNervesEvent({
-        event: "repertoire.bw_credential_list_end",
-        component: "repertoire",
-        message: "bw credentials listed",
-        meta: { backend: "bitwarden", count: results.length },
-      })
-
-      return results
-    } catch {
-      emitNervesEvent({
-        event: "repertoire.bw_credential_list_end",
-        component: "repertoire",
-        message: "bw credential list failed",
-        meta: { backend: "bitwarden", count: 0 },
-      })
-      return []
-    }
+    return results
   }
 
   async delete(domain: string): Promise<boolean> {
@@ -378,8 +423,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const session = await this.ensureSession()
-    const item = await this.findItemByDomain(domain, session)
+    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
 
     if (!item) {
       emitNervesEvent({
@@ -391,7 +435,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await execBw(["delete", "item", item.id], session, this.appDataDir)
+    await this.withSessionRetry((session) => execBw(["delete", "item", item.id], session, this.appDataDir))
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -406,14 +450,10 @@ export class BitwardenCredentialStore implements CredentialStore {
   // --- Private ---
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
-    try {
-      const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
-      const items: BwLoginItem[] = JSON.parse(stdout)
+    const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
+    const items = parseBwItems(stdout, "bw list items --search")
 
-      // Find exact match by name
-      return items.find((item) => item.name === domain) ?? items[0] ?? null
-    } catch {
-      return null
-    }
+    // Find exact match by name
+    return items.find((item) => item.name === domain) ?? items[0] ?? null
   }
 }

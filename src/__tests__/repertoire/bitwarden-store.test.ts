@@ -153,6 +153,22 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.login()).rejects.toThrow(/bw CLI error/)
     })
 
+    it("does not swallow config-server failures that are not logout-required", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(new Error("server unavailable"), "", "server unavailable")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow("bw CLI error: server unavailable")
+    })
+
     it("uses an isolated Bitwarden app data directory when configured", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-appdata-"))
       const envCaptures: Array<Record<string, string | undefined>> = []
@@ -210,11 +226,10 @@ describe("BitwardenCredentialStore", () => {
       expect(result).toBeNull()
     })
 
-    it("returns null when bw CLI fails during search", async () => {
+    it("throws when bw CLI fails during search", async () => {
       setupExecMock({ stdout: "", error: new Error("vault is locked") })
 
-      const result = await store.get("test.com")
-      expect(result).toBeNull()
+      await expect(store.get("test.com")).rejects.toThrow("bw CLI error:")
     })
 
     it("emits nerves events", async () => {
@@ -427,7 +442,7 @@ describe("BitwardenCredentialStore", () => {
       }
 
       expect(thrown).not.toBeNull()
-      expect(thrown!.message).toContain("local Bitwarden session is locked or expired")
+      expect(thrown!.message).toContain("local Bitwarden session")
       expect(thrown!.message).not.toContain(leakedEncodedPayload)
       expect(thrown!.message).not.toContain(rawSecret)
       expect(thrown!.message).not.toContain("bw create item")
@@ -470,8 +485,171 @@ describe("BitwardenCredentialStore", () => {
       expect(thrown!.message).not.toContain("bw create item")
     })
 
+    it("retries with a fresh session when search fails with an expired session", async () => {
+      const stdinWrites: string[] = []
+      const createCalls: string[][] = []
+      let unlockCount = 0
+      let searchCount = 0
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount += 1
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          searchCount += 1
+          if (searchCount === 1) {
+            cb(new Error("Command failed: bw list items --search providers/openai-codex"), "", "Not logged in")
+            return
+          }
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "create") {
+          createCalls.push(args)
+          cb(null, '{"id":"created-after-retry"}', "")
+          return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })
+
+      expect(unlockCount).toBe(2)
+      expect(searchCount).toBe(2)
+      expect(createCalls).toEqual([["create", "item"]])
+      expect(stdinWrites).toHaveLength(1)
+    })
+
+    it("retries once when create fails because the local session expired", async () => {
+      const stdinWrites: string[] = []
+      let unlockCount = 0
+      let searchCount = 0
+      let createCount = 0
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount += 1
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          searchCount += 1
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "create") {
+          createCount += 1
+          if (createCount === 1) {
+            cb(new Error("Command failed: bw create item"), "", "Session key is invalid or expired")
+          } else {
+            cb(null, '{"id":"created-after-create-retry"}', "")
+          }
+          return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/minimax", {
+        username: "minimax",
+        password: "minimax-token",
+      })
+
+      expect(unlockCount).toBe(2)
+      expect(searchCount).toBe(2)
+      expect(createCount).toBe(2)
+      expect(stdinWrites).toHaveLength(2)
+    })
+
+    it("stops before create when the pre-create lookup fails for a non-session reason", async () => {
+      let createAttempted = false
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(new Error("Command failed: bw list items --search providers/anthropic"), "", "server unavailable")
+          return
+        }
+        if (args[0] === "create") {
+          createAttempted = true
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/anthropic", {
+        username: "anthropic",
+        password: "anthropic-token",
+      })).rejects.toThrow("bw CLI error: server unavailable")
+      expect(createAttempted).toBe(false)
+    })
+
+    it("gives up after one fresh-session retry when create still needs re-auth", async () => {
+      let unlockCount = 0
+      let createCount = 0
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount += 1
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "create") {
+          createCount += 1
+          cb(new Error("Command failed: bw create item"), "", "? Master password: [input is hidden]")
+          return { stdin: { end: vi.fn() } }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/github-copilot", {
+        username: "github-copilot",
+        password: "gh-token",
+      })).rejects.toThrow("bw CLI error: bw CLI could not use the local Bitwarden session because it is locked, missing, or expired")
+
+      expect(unlockCount).toBe(2)
+      expect(createCount).toBe(2)
+    })
+
     it("emits nerves events", async () => {
-      setupExecMock({ stdout: '{"id":"new-item"}' })
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else {
+          cb(null, '{"id":"new-item"}', "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
 
       await store.store("test.com", { password: "pass" })
 
@@ -537,15 +715,16 @@ describe("BitwardenCredentialStore", () => {
       expect(results).toEqual([])
     })
 
-    it("returns empty array and emits error event when bw CLI fails", async () => {
+    it("throws when bw CLI fails", async () => {
       setupExecMock({ stdout: "", error: new Error("vault is locked") })
 
-      const results = await store.list()
+      await expect(store.list()).rejects.toThrow("bw CLI error:")
+    })
 
-      expect(results).toEqual([])
-      expect(nervesEvents.some((e) =>
-        e.event === "repertoire.bw_credential_list_end" && (e.meta as any).count === 0,
-      )).toBe(true)
+    it("throws a sanitized error when bw returns invalid JSON", async () => {
+      setupExecMock({ stdout: "{not-json" })
+
+      await expect(store.list()).rejects.toThrow("bw CLI error: invalid JSON from bw list items")
     })
   })
 
