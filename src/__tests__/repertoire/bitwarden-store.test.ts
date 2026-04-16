@@ -336,9 +336,19 @@ describe("BitwardenCredentialStore", () => {
   describe("store", () => {
     it("creates a new vault item via bw create", async () => {
       const createCalls: string[][] = []
+      const stdinWrites: string[] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         createCalls.push(args)
-        cb(null, '{"id":"new-item-1"}', "")
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else {
+          cb(null, '{"id":"new-item-1"}', "")
+        }
+        return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
       })
 
       await store.store("newsite.com", {
@@ -347,14 +357,18 @@ describe("BitwardenCredentialStore", () => {
         notes: "a note",
       })
 
-      // Should call "bw create item <encoded-json>"
       expect(createCalls.length).toBeGreaterThanOrEqual(1)
       const createCall = createCalls.find((c) => c[0] === "create")
-      expect(createCall).toBeDefined()
+      expect(createCall).toEqual(["create", "item"])
+      expect(createCall?.join(" ")).not.toContain("newpass")
+      expect(stdinWrites).toHaveLength(1)
+      const decoded = JSON.parse(Buffer.from(stdinWrites[0]!, "base64").toString("utf8")) as { login: { password: string } }
+      expect(decoded.login.password).toBe("newpass")
     })
 
     it("edits an existing vault item instead of creating a duplicate", async () => {
       const calls: string[][] = []
+      const stdinWrites: string[] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
@@ -366,6 +380,7 @@ describe("BitwardenCredentialStore", () => {
         } else {
           cb(null, '{"id":"existing-id"}', "")
         }
+        return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
       })
 
       await store.store("existing.com", {
@@ -374,8 +389,85 @@ describe("BitwardenCredentialStore", () => {
         notes: "new note",
       })
 
-      expect(calls.find((call) => call[0] === "edit")).toEqual(["edit", "item", "existing-id", expect.any(String)])
+      expect(calls.find((call) => call[0] === "edit")).toEqual(["edit", "item", "existing-id"])
+      expect(calls.find((call) => call[0] === "edit")?.join(" ")).not.toContain("newpass")
+      expect(stdinWrites).toHaveLength(1)
       expect(calls.find((call) => call[0] === "create")).toBeUndefined()
+    })
+
+    it("redacts command argv and encoded payloads from bw CLI failures", async () => {
+      const rawSecret = "provider-token-should-not-leak"
+      const leakedEncodedPayload = Buffer
+        .from(JSON.stringify({ login: { password: rawSecret } }))
+        .toString("base64")
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else if (args[0] === "create") {
+          cb(new Error(`Command failed: bw create item ${leakedEncodedPayload}\n? Master password: [input is hidden]`), "", "")
+        } else {
+          cb(null, "", "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("providers/openai-codex", {
+          username: "openai-codex",
+          password: rawSecret,
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toContain("local Bitwarden session is locked or expired")
+      expect(thrown!.message).not.toContain(leakedEncodedPayload)
+      expect(thrown!.message).not.toContain(rawSecret)
+      expect(thrown!.message).not.toContain("bw create item")
+    })
+
+    it("redacts command-only bw CLI failures even without stderr", async () => {
+      const leakedEncodedPayload = Buffer
+        .from(JSON.stringify({ login: { password: "another-secret" } }))
+        .toString("base64")
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else if (args[0] === "create") {
+          cb(new Error(`Command failed: bw create item ${leakedEncodedPayload}`), "", "")
+        } else {
+          cb(null, "", "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("providers/minimax", {
+          username: "minimax",
+          password: "another-secret",
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toBe("bw CLI error: command failed")
+      expect(thrown!.message).not.toContain(leakedEncodedPayload)
+      expect(thrown!.message).not.toContain("another-secret")
+      expect(thrown!.message).not.toContain("bw create item")
     })
 
     it("emits nerves events", async () => {
