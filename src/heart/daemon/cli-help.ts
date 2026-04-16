@@ -286,12 +286,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro vault create --agent ouroboros --email ouroboros@ouro.bot",
   },
   "vault replace": {
-    description: "Create an empty replacement agent vault when no unlock secret or JSON export exists",
+    description: "Create an empty agent vault at the stable agent email when no unlock secret or JSON export exists",
     usage: "ouro vault replace --agent <name> [--email <email>] [--server <url>] [--store <store>]",
     example: "ouro vault replace --agent ouroboros",
   },
   "vault recover": {
-    description: "Create a replacement agent vault and import local JSON credential exports",
+    description: "Create an agent vault at the stable agent email and import local JSON credential exports",
     usage: "ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
     example: "ouro vault recover --agent ouroboros --from ./credentials.json",
   },

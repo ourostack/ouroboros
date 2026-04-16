@@ -838,21 +838,23 @@ function readVaultRecoverSource(sourcePath: string): VaultRecoverSourceImport {
   }
 }
 
-function defaultReplacementVaultEmail(agentName: string, now: Date, action: "recovered" | "replaced"): string {
+function defaultStableVaultEmail(agentName: string): string {
   const local = agentName
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "") || "agent"
-  const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)
-  return `${local}+${action}-${stamp}@ouro.bot`
+  return `${local}@ouro.bot`
 }
 
-function defaultRecoveredVaultEmail(agentName: string, now: Date): string {
-  return defaultReplacementVaultEmail(agentName, now, "recovered")
+function isGeneratedRepairVaultEmail(email: string): boolean {
+  const [local, domain] = email.trim().split("@")
+  return domain?.toLowerCase() === "ouro.bot" && /\+(?:replaced|recovered)-\d{14}(?:$|\+)/i.test(local)
 }
 
-function defaultReplacedVaultEmail(agentName: string, now: Date): string {
-  return defaultReplacementVaultEmail(agentName, now, "replaced")
+function defaultRepairVaultEmail(agentName: string, config: AgentConfig): string {
+  const configuredEmail = config.vault?.email?.trim()
+  if (configuredEmail && !isGeneratedRepairVaultEmail(configuredEmail)) return configuredEmail
+  return defaultStableVaultEmail(agentName)
 }
 
 function ensureVaultSecretPrompt(promptSecret: OuroCliDeps["promptSecret"], action: "create" | "replace" | "recover" | "unlock"): (question: string) => Promise<string> {
@@ -864,7 +866,7 @@ function rejectGeneratedVaultUnlockSecret(action: "create" | "replace" | "recove
   throw new Error(`vault ${action} no longer supports --generate-unlock-secret. Re-run without that flag and enter a human-chosen unlock secret; Ouro will not print vault unlock secrets.`)
 }
 
-async function createReplacementVaultForAgent(input: {
+async function createRepairVaultForAgent(input: {
   action: "replace" | "recover"
   agentName: string
   email: string
@@ -880,7 +882,11 @@ async function createReplacementVaultForAgent(input: {
     const message = [
       `vault ${input.action} failed for ${input.agentName}: ${result.error}`,
       "",
-      "This creates a replacement vault. If that vault account already exists, retry with a fresh --email value.",
+      "Could not create the selected vault account.",
+      "If this is the existing vault, run:",
+      `  ouro vault unlock --agent ${input.agentName}`,
+      "If the unlock secret is lost and you intentionally need a different vault account, rerun with --email <email>.",
+      "If this looks like a server or network issue, check --server and retry.",
     ].join("\n")
     input.deps.writeStdout(message)
     return { ok: false, message }
@@ -984,17 +990,16 @@ async function executeVaultReplace(
   }
   if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("replace")
   const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "replace")
-  const now = providerCliNow(deps)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
-  const email = command.email ?? defaultReplacedVaultEmail(command.agent, now)
+  const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose replacement Ouro vault unlock secret for ${email}: `)).trim()
+  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
   if (!unlockSecret) {
-    throw new Error("vault replace requires a replacement unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
+    throw new Error("vault replace requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
 
-  const replacement = await createReplacementVaultForAgent({
+  const repair = await createRepairVaultForAgent({
     action: "replace",
     agentName: command.agent,
     email,
@@ -1005,12 +1010,12 @@ async function executeVaultReplace(
     configPath,
     config,
   })
-  if (!replacement.ok) return replacement.message
+  if (!repair.ok) return repair.message
 
   const message = [
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${replacement.store.kind}${replacement.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
     "credentials imported: none",
     "This is the no-export path for agents that predate vault auth or lost an unsaved unlock secret.",
     "Re-auth/re-enter the credentials this agent should use:",
@@ -1018,7 +1023,7 @@ async function executeVaultReplace(
     `  ouro vault config set --agent ${command.agent} --key <field>`,
     `  ouro provider refresh --agent ${command.agent}`,
     `  ouro auth verify --agent ${command.agent}`,
-    "Keep the replacement vault unlock secret saved outside Ouro. Another machine will need it once.",
+    "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -1037,14 +1042,14 @@ async function executeVaultRecover(
   const now = providerCliNow(deps)
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
-  const email = command.email ?? defaultRecoveredVaultEmail(command.agent, now)
+  const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose replacement Ouro vault unlock secret for ${email}: `)).trim()
+  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
   if (!unlockSecret) {
-    throw new Error("vault recover requires a replacement unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
+    throw new Error("vault recover requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
 
-  const replacement = await createReplacementVaultForAgent({
+  const repair = await createRepairVaultForAgent({
     action: "recover",
     agentName: command.agent,
     email,
@@ -1055,7 +1060,7 @@ async function executeVaultRecover(
     configPath,
     config,
   })
-  if (!replacement.ok) return replacement.message
+  if (!repair.ok) return repair.message
 
   const importedProviders = new Set<AgentProvider>()
   let mergedRuntimeConfig: RuntimeCredentialConfig = {}
@@ -1082,12 +1087,12 @@ async function executeVaultRecover(
   const message = [
     `vault recovered for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${replacement.store.kind}${replacement.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
     `sources imported: ${sourceImports.length}`,
     `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
     `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
     "credential values were not printed",
-    "Keep the replacement vault unlock secret saved outside Ouro. Another machine will need it once.",
+    "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
   ].join("\n")
   deps.writeStdout(message)
   return message

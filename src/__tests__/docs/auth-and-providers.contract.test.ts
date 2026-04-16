@@ -45,6 +45,9 @@ describe("auth/provider documentation contract", () => {
     expect(authGuide).toContain("ouro vault create --agent <agent>")
     expect(authGuide).toContain("ouro vault replace --agent <agent>")
     expect(authGuide).toContain("no local credential export")
+    expect(authGuide).toContain("stable agent vault email")
+    expect(authGuide).toContain("does not invent timestamped `+replaced` addresses")
+    expect(authGuide).toContain("only use `--email <email>` when intentionally moving the agent")
     expect(authGuide).toContain("vault locator: not configured in agent.json")
     expect(authGuide).toContain("The prompt does not echo the secret.")
     expect(authGuide).toContain("ouro auth --agent <agent> --provider <provider>")
@@ -53,10 +56,15 @@ describe("auth/provider documentation contract", () => {
     expect(authGuide).toContain("Do not copy old local credential files into the bundle.")
     expect(authGuide).not.toContain(`~/${retiredCredentialDir}`)
     expect(authGuide).not.toContain(retiredCredentialDir)
+    expect(authGuide).not.toContain("+replaced-")
+    expect(authGuide).not.toContain("+recovered-")
 
     expect(machineGuide).toContain("Old Auth-Style Agents")
     expect(machineGuide).toContain("predates the vault-backed auth model")
     expect(machineGuide).toContain("ouro vault replace --agent <agent>")
+    expect(machineGuide).toContain("stable agent vault email")
+    expect(machineGuide).not.toContain("+replaced-")
+    expect(machineGuide).not.toContain("+recovered-")
   })
 
   it("keeps Ouro-owned credential sources to the bundle and agent vault", () => {

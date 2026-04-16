@@ -245,11 +245,13 @@ For an existing agent with no vault locator, run `ouro vault create --agent <age
 
 For an existing agent with a vault locator and a saved unlock secret, run `ouro vault unlock --agent <agent>` on each new machine and enter the saved agent vault unlock secret from the human/operator who controls that vault. Ouro stores only local unlock material for that machine.
 
-For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement vault and re-auth/re-enter credentials into the new vault.
+For an existing agent whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create the agent vault and re-auth/re-enter credentials into it.
 
-Use `ouro vault replace --agent <agent>` when there is no local credential export to import. This is the normal path for pre-vault agents that were updated after they already existed. It creates a new empty vault, writes the new vault coordinates to `agent.json`, stores local unlock material on this machine, and imports nothing.
+Use `ouro vault replace --agent <agent>` when there is no local credential export to import. This is the normal path for pre-vault agents that were updated after they already existed. By default it uses the stable agent vault email, `<agent>@ouro.bot`; it does not invent timestamped `+replaced` addresses. It creates an empty vault, writes vault coordinates to `agent.json`, stores local unlock material on this machine, and imports nothing.
 
-Use `ouro vault recover --agent <agent> --from <json>` only when the human still has a local JSON credential export from an earlier alpha. It creates a replacement vault and imports the JSON once without printing credential values.
+Use `ouro vault recover --agent <agent> --from <json>` only when the human still has a local JSON credential export from an earlier alpha. By default it uses the stable agent vault email and imports the JSON once without printing credential values.
+
+If the stable vault account already exists, the command stops. If the human has the unlock secret, run `ouro vault unlock --agent <agent>`. If the unlock secret is truly lost and the operator intentionally wants a different vault account, only use `--email <email>` when intentionally moving the agent; rerun `replace` or `recover` with that explicit address.
 
 ## Old Auth-Style Agents
 
@@ -277,23 +279,23 @@ Use this checklist for any existing agent that predates the vault-backed credent
 
    Enter a human-chosen unlock secret when prompted. The prompt does not echo the secret. Save that unlock secret outside Ouro immediately. Another machine cannot unlock this agent vault without it. After this, re-enter provider/runtime credentials with the auth and vault config commands below.
 
-3. If the bundle has vault coordinates but nobody saved an unlock secret, choose the replacement path that matches what actually exists.
+3. If the bundle has vault coordinates but nobody saved an unlock secret, choose the repair path that matches what actually exists.
 
-   If there is no local credential export, create an empty replacement vault:
+   If there is no local credential export, create an empty agent vault:
 
    ```bash
    ouro vault replace --agent <agent>
    ```
 
-   This is the expected path for agents that already existed before provider credentials moved into per-agent vaults. Enter a human-chosen replacement unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores new vault coordinates in `agent.json` and imports no credentials.
+   This is the expected path for agents that already existed before provider credentials moved into per-agent vaults. Enter a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json` and imports no credentials.
 
-   If the human does have a local JSON credential export, recover into a replacement vault and import it:
+   If the human does have a local JSON credential export, recover into the agent vault and import it:
 
    ```bash
    ouro vault recover --agent <agent> --from <json>
    ```
 
-   Repeat `--from <json>` for each local JSON export that should be imported. Enter a human-chosen replacement unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores the new vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
+   Repeat `--from <json>` for each local JSON export that should be imported. Enter a human-chosen unlock secret when prompted, and save it outside Ouro immediately. The prompt does not echo the secret. The command stores vault coordinates in `agent.json`, imports provider credentials into `providers/*`, imports runtime/sense/integration credentials into `runtime/config`, and prints only field/provider summaries.
 
 4. Unlock the vault on this machine.
 
@@ -301,7 +303,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro vault unlock --agent <agent>
    ```
 
-   If you just ran `ouro vault replace` or `ouro vault recover`, this machine is already unlocked for the replacement vault; run `ouro vault status --agent <agent>` to confirm.
+   If you just ran `ouro vault replace` or `ouro vault recover`, this machine is already unlocked for the agent vault; run `ouro vault status --agent <agent>` to confirm.
 
 5. Re-enter provider credentials into the agent vault if recovery did not import them or if they are stale.
 

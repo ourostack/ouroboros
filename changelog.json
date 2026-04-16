@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.395",
+      "changes": [
+        "`ouro vault replace` and `ouro vault recover` now default to the stable agent vault email, `<agent>@ouro.bot`, instead of timestamped `+replaced` or `+recovered` addresses.",
+        "Vault repair now treats previously generated repair emails as stale defaults and repairs back to the stable agent email unless the human explicitly supplies `--email <email>`.",
+        "Existing-account repair guidance now tells operators to unlock the stable vault when possible and use `--email` only when intentionally moving an agent to a different vault account.",
+        "Auth/provider docs and CLI help now describe stable vault identity repair for old auth-style agents without implying that Ouro can recover a forgotten unlock secret.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the stable vault identity repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.394",
       "changes": [
         "Added `ouro vault replace --agent <agent>` for existing pre-vault agents whose bundle has vault coordinates but no saved unlock secret and no local JSON credential export.",
