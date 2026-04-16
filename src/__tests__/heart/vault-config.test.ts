@@ -33,4 +33,9 @@ describe("resolveVaultConfig", () => {
     const result = resolveVaultConfig("my-agent", undefined)
     expect(result.email).toBe("my-agent@ouro.bot")
   })
+
+  it("normalizes derived vault emails for stable account identity", () => {
+    const result = resolveVaultConfig("Slugger Prime!", undefined)
+    expect(result.email).toBe("slugger-prime@ouro.bot")
+  })
 })

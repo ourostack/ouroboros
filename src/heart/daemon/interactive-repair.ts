@@ -7,11 +7,13 @@
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import type { AgentReadinessIssue, RepairAction } from "./readiness-repair"
 
 export interface DegradedAgent {
   agent: string
   errorReason: string
   fixHint: string
+  issue?: AgentReadinessIssue
 }
 
 export interface InteractiveRepairDeps {
@@ -45,6 +47,9 @@ function isConfigError(degraded: DegradedAgent): boolean {
 }
 
 export function hasRunnableInteractiveRepair(degraded: DegradedAgent): boolean {
+  if (degraded.issue?.actions.some((action) => typedActionToRunnable(degraded, action) !== undefined)) {
+    return true
+  }
   return isVaultUnlockIssue(degraded) || isCredentialIssue(degraded)
 }
 
@@ -98,6 +103,11 @@ function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: Int
 }
 
 function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction | undefined {
+  const typedAction = degraded.issue?.actions
+    .map((action) => typedActionToRunnable(degraded, action))
+    .find((action): action is RunnableRepairAction => action !== undefined)
+  if (typedAction) return typedAction
+
   if (isVaultUnlockIssue(degraded)) {
     return { kind: "vault-unlock", label: "vault unlock", command: vaultUnlockCommandFor(degraded) }
   }
@@ -111,6 +121,22 @@ function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction 
     }
   }
 
+  return undefined
+}
+
+function typedActionToRunnable(degraded: DegradedAgent, action: RepairAction): RunnableRepairAction | undefined {
+  if (action.executable === false || action.command.includes("<")) return undefined
+  if (action.kind === "vault-unlock") {
+    return { kind: "vault-unlock", label: "vault unlock", command: action.command }
+  }
+  if (action.kind === "provider-auth") {
+    return {
+      kind: "provider-auth",
+      label: "provider auth",
+      command: action.command || `ouro auth --agent ${degraded.agent}`,
+      provider: action.provider,
+    }
+  }
   return undefined
 }
 

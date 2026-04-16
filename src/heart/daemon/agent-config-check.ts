@@ -19,11 +19,18 @@ import {
   type ProviderCredentialRecord,
 } from "../provider-credentials"
 import { vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
+import {
+  providerCredentialMissingIssue,
+  providerLiveCheckFailedIssue,
+  vaultLockedIssue,
+  type AgentReadinessIssue,
+} from "./readiness-repair"
 
 export interface ConfigCheckResult {
   ok: boolean
   error?: string
   fix?: string
+  issue?: AgentReadinessIssue
 }
 
 export type ProviderPing = (
@@ -291,6 +298,13 @@ function missingCredentialResult(
     ok: false,
     error: `${lane} provider ${provider} model ${model} has no credentials in ${agentName}'s vault at ${credentialPath}`,
     fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to authenticate this machine, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to choose a working provider/model.`,
+    issue: providerCredentialMissingIssue({
+      agentName,
+      lane,
+      provider,
+      model,
+      credentialPath,
+    }),
   }
 }
 
@@ -306,6 +320,7 @@ function invalidPoolResult(
       ok: false,
       error: `${lane} provider ${provider} model ${model} cannot read provider credentials because ${agentName}'s credential vault is locked on this machine.`,
       fix: vaultUnlockOrRecoverFix(agentName),
+      issue: vaultLockedIssue(agentName),
     }
   }
   if (pool.reason === "invalid") {
@@ -342,6 +357,13 @@ function failedPingResult(
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
     fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials, or run 'ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>' to switch this lane.`,
+    issue: providerLiveCheckFailedIssue({
+      agentName,
+      lane,
+      provider,
+      model,
+      message: result.message,
+    }),
   }
 }
 
