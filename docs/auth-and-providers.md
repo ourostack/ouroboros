@@ -220,6 +220,7 @@ ouro vault unlock --agent <agent>
 Then refresh and verify what this machine can use:
 
 ```bash
+ouro repair --agent <agent>
 ouro provider refresh --agent <agent>
 ouro auth verify --agent <agent>
 ouro vault config status --agent <agent>
@@ -333,6 +334,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
 8. Refresh, verify, and start.
 
    ```bash
+   ouro repair --agent <agent>
    ouro provider refresh --agent <agent>
    ouro auth verify --agent <agent>
    ouro vault config status --agent <agent>
@@ -354,6 +356,7 @@ ouro vault config set --agent <agent> --key <field>
 ouro vault config status --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
+ouro repair --agent <agent>
 ouro provider refresh --agent <agent>
 ouro use --agent <agent> --lane outward|inner --provider <provider> --model <model>
 ```

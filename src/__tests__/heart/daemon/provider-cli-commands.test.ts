@@ -930,7 +930,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("vault unlocked for Slugger")
     expect(result).toContain("explicit plaintext fallback")
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "Slugger", email: "Slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
       { homeDir, store: "plaintext-file" },
     )
@@ -1028,17 +1028,17 @@ describe("provider CLI command execution", () => {
       "Slugger",
     ], makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for Slugger@ouro.bot: ")
+        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
         return "chosen-vault-secret"
       },
     }))
 
     expect(result).toContain("vault created for Slugger")
-    expect(result).toContain("vault: Slugger@ouro.bot at https://vault.ouroboros.bot")
+    expect(result).toContain("vault: slugger@ouro.bot at https://vault.ouroboros.bot")
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.ouroboros.bot",
-      "Slugger@ouro.bot",
+      "slugger@ouro.bot",
       "chosen-vault-secret",
     )
   })
@@ -1079,7 +1079,7 @@ describe("provider CLI command execution", () => {
     )
   })
 
-  it("vault create can prompt for email and unlock material", async () => {
+  it("vault create can use an explicit email and prompted unlock material", async () => {
     emitTestEvent("provider cli vault create prompts")
     const bundlesRoot = makeTempDir("provider-cli-vault-create-prompt-bundles")
     const homeDir = makeTempDir("provider-cli-vault-create-prompt-home")
@@ -1087,14 +1087,10 @@ describe("provider CLI command execution", () => {
     const prompts: string[] = []
     mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({ kind: "macos-keychain", secure: true, location: "macOS Keychain" })
 
-    const result = await runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async (question) => {
-        prompts.push(`input:${question}`)
-        return "operator@example.com"
-      },
+    const result = await runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async (question) => {
         prompts.push(`secret:${question}`)
-        return question.includes("email") ? "operator@example.com" : "chosen-unlock-material"
+        return "chosen-unlock-material"
       },
     }))
 
@@ -1103,7 +1099,6 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("local unlock store: macos-keychain")
     expect(result).not.toContain("explicit plaintext fallback")
     expect(prompts).toEqual([
-      "input:Ouro credential vault email: ",
       "secret:Choose Ouro vault unlock secret for operator@example.com: ",
     ])
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
@@ -1550,7 +1545,7 @@ describe("provider CLI command execution", () => {
       promptSecret: async () => "chosen-create-secret",
     }))).rejects.toThrow("Create a vault for the hatchling agent")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
-      .rejects.toThrow("vault create requires --email")
+      .rejects.toThrow("vault create requires an interactive secret prompt")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot)))
       .rejects.toThrow("vault create requires an interactive secret prompt")
     await expect(runOuroCli(["vault", "create", "--agent", "Slugger", "--email", "operator@example.com"], makeCliDeps(homeDir, bundlesRoot, {
