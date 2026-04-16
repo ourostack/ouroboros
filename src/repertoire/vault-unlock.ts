@@ -45,6 +45,7 @@ export interface VaultUnlockStatus {
 }
 
 const VAULT_UNLOCK_SERVICE = "ouro.vault"
+const CREDENTIAL_VAULT_NOT_CONFIGURED_PREFIX = "credential vault is not configured in "
 const PLAINTEXT_UNLOCK_DIR = path.join(".ouro-cli", "vault-unlock")
 const WINDOWS_DPAPI_UNLOCK_DIR = path.join(".ouro-cli", "vault-unlock-dpapi")
 const SUPPORTED_STORES: VaultUnlockStoreKind[] = ["auto", "macos-keychain", "windows-dpapi", "linux-secret-service", "plaintext-file"]
@@ -111,6 +112,25 @@ export function vaultUnlockReplaceRecoverFix(agentName: string, nextStep = "Then
     `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
     `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
     `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create the agent vault and import it.`,
+    nextStep,
+  ].join(" ")
+}
+
+export function credentialVaultNotConfiguredError(agentName: string, configPath: string): string {
+  return (
+    `${CREDENTIAL_VAULT_NOT_CONFIGURED_PREFIX}${configPath}. ` +
+    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`
+  )
+}
+
+export function isCredentialVaultNotConfiguredError(message: string): boolean {
+  return message.includes(CREDENTIAL_VAULT_NOT_CONFIGURED_PREFIX)
+}
+
+export function vaultCreateRecoverFix(agentName: string, nextStep = "Then run 'ouro up' again."): string {
+  return [
+    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
+    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
     nextStep,
   ].join(" ")
 }

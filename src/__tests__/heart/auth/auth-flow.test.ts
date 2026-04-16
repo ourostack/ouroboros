@@ -168,6 +168,28 @@ describe("runtime auth flow", () => {
     ).rejects.toThrow("ouro vault replace --agent MiniBot")
   })
 
+  it("asks the operator to create the agent vault before auth when no vault locator exists yet", async () => {
+    emitTestEvent("auth flow vault unconfigured")
+    mockRefreshProviderCredentialPool.mockResolvedValueOnce({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:MiniBot:providers/*",
+      error: "credential vault is not configured in /tmp/MiniBot.ouro/agent.json. Run 'ouro vault create --agent MiniBot' to create this agent's vault before loading or storing credentials.",
+    })
+
+    const promise = runRuntimeAuthFlow({
+      agentName: "MiniBot",
+      provider: "minimax",
+      promptInput: async () => "minimax-key",
+    })
+
+    await expect(promise).rejects.toThrow("ouro vault create --agent MiniBot")
+    await promise.catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      expect(message).not.toContain("ouro vault replace --agent MiniBot")
+    })
+  })
+
   it("reads agent config and rewrites provider selection", () => {
     emitTestEvent("reads and rewrites agent config")
     const bundlesRoot = makeTempDir("auth-flow-bundles")

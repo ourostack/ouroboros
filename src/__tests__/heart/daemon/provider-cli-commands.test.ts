@@ -60,8 +60,17 @@ vi.mock("../../../repertoire/vault-setup", () => ({
 }))
 
 vi.mock("../../../repertoire/vault-unlock", () => ({
+  credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
+    `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
   storeVaultUnlockSecret: (...args: unknown[]) => mockVaultDeps.storeVaultUnlockSecret(...args),
   getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
+  isCredentialVaultNotConfiguredError: (message: string) =>
+    message.includes("credential vault is not configured in "),
+  vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
+    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
+    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
+    nextStep,
+  ].join(" "),
   vaultUnlockReplaceRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
     `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
     `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
@@ -1108,6 +1117,42 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Slugger: ready")
     expect(promptInput).not.toHaveBeenCalled()
+  })
+
+  it("ouro repair offers vault creation when an existing agent has no vault locator yet", async () => {
+    emitTestEvent("provider cli repair missing vault locator")
+    const bundlesRoot = makeTempDir("provider-cli-repair-create-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-create-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeUnavailableProviderCredentialPool(
+      "Slugger",
+      "credential vault is not configured in /tmp/Slugger.ouro/agent.json. Run 'ouro vault create --agent Slugger' to create this agent's vault before loading or storing credentials.",
+    )
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (prompt) => {
+        prompts.push(prompt)
+        return "1"
+      },
+      promptSecret: async (question) => {
+        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
+        return "chosen-vault-secret"
+      },
+    }))
+
+    expect(result).toContain("Slugger: vault not configured")
+    expect(result).toContain("1. Create this agent's vault")
+    expect(result).toContain("   ouro vault create --agent Slugger")
+    expect(result).toContain("repair step finished for Slugger.")
+    expect(prompts).toContain("Choose [1-3]: ")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.ouroboros.bot",
+      "slugger@ouro.bot",
+      "chosen-vault-secret",
+    )
   })
 
   it("ouro repair renders readiness-check failures as generic repair guidance", async () => {

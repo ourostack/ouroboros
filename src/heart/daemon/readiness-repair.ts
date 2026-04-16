@@ -6,6 +6,7 @@ export type RepairActor = "agent-runnable" | "human-required" | "human-choice"
 export type RepairSeverity = "blocked" | "degraded" | "advisory"
 
 export type RepairActionKind =
+  | "vault-create"
   | "vault-unlock"
   | "vault-replace"
   | "vault-recover"
@@ -13,6 +14,7 @@ export type RepairActionKind =
   | "provider-use"
 
 export type AgentReadinessIssueKind =
+  | "vault-unconfigured"
   | "vault-locked"
   | "provider-credentials-missing"
   | "provider-live-check-failed"
@@ -31,6 +33,7 @@ export interface ProviderAuthRepairAction extends RepairActionBase {
 }
 
 export type RepairAction =
+  | (RepairActionBase & { kind: "vault-create" })
   | (RepairActionBase & { kind: "vault-unlock" })
   | (RepairActionBase & { kind: "vault-replace" })
   | (RepairActionBase & { kind: "vault-recover" })
@@ -84,6 +87,31 @@ export function vaultLockedIssue(agentName: string): AgentReadinessIssue {
         kind: "vault-replace",
         label: "Create empty replacement vault",
         command: `ouro vault replace --agent ${agentName}`,
+        actor: "human-required",
+      },
+      {
+        kind: "vault-recover",
+        label: "Recover from JSON export",
+        command: `ouro vault recover --agent ${agentName} --from <json>`,
+        actor: "human-required",
+        executable: false,
+      },
+    ],
+  }
+}
+
+export function vaultUnconfiguredIssue(agentName: string): AgentReadinessIssue {
+  return {
+    kind: "vault-unconfigured",
+    severity: "blocked",
+    actor: "human-required",
+    summary: `${agentName}: vault not configured`,
+    detail: "This bundle does not have a vault locator in agent.json yet. Create the agent vault before authenticating providers.",
+    actions: [
+      {
+        kind: "vault-create",
+        label: "Create this agent's vault",
+        command: `ouro vault create --agent ${agentName}`,
         actor: "human-required",
       },
       {

@@ -381,6 +381,41 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(pingProvider).not.toHaveBeenCalledWith("anthropic", expect.anything(), expect.anything())
   })
 
+  it("reports missing vault configuration before treating provider credentials as missing", async () => {
+    emitTestEvent("agent config missing vault locator")
+    const homeDir = makeTempHome()
+    cleanup.push(homeDir)
+    const bundlesRoot = path.join(homeDir, "AgentBundles")
+    const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
+      humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+    })
+    writeProviderState(agentRoot, providerState())
+    writeUnavailableProviderCredentialPool(
+      "slugger",
+      "credential vault is not configured in /tmp/slugger.ouro/agent.json. Run 'ouro vault create --agent slugger' to create this agent's vault before loading or storing credentials.",
+    )
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 cannot read provider credentials because slugger's credential vault is not configured in agent.json")
+    expect(result.fix).toContain("ouro vault create --agent slugger")
+    expect(result.fix).toContain("ouro vault recover --agent slugger --from <json>")
+    expect(result.fix).toContain("ouro auth --agent slugger --provider minimax")
+    expect(result.issue).toMatchObject({
+      kind: "vault-unconfigured",
+      severity: "blocked",
+      actor: "human-required",
+      actions: [
+        { kind: "vault-create", command: "ouro vault create --agent slugger" },
+        { kind: "vault-recover", command: "ouro vault recover --agent slugger --from <json>" },
+      ],
+    })
+    expect(pingProvider).not.toHaveBeenCalled()
+  })
+
   it("reports missing agent-vault credentials when the selected provider is absent", async () => {
     emitTestEvent("agent config missing vault provider credentials")
     const homeDir = makeTempHome()
@@ -389,6 +424,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     const agentRoot = writeAgentConfig(bundlesRoot, "slugger", {
       humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
       agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+      vault: { email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
     })
     writeProviderState(agentRoot, providerState())
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
