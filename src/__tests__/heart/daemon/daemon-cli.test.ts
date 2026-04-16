@@ -3352,7 +3352,7 @@ describe("ensureDaemonRunning", () => {
             senseCount: 0,
           },
           senses: [],
-          workers: [],
+          workers: [{ agent: "slugger", worker: "inner-dialog", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
         },
       })),
       startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
@@ -3381,12 +3381,14 @@ describe("ensureDaemonRunning", () => {
       localLastUpdated: "2026-03-09T11:00:00.000Z",
       localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
       localConfigFingerprint: "cfg-local",
+      localManagedAgents: "slugger",
     }))
     await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
       version: "0.1.0-alpha.20",
       lastUpdated: "2026-03-09T11:00:00.000Z",
       repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
       configFingerprint: "cfg-running",
+      managedAgents: "slugger",
     })
   })
 
