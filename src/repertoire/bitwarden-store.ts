@@ -9,6 +9,7 @@
 
 import { execFile as execFileCb } from "node:child_process"
 import * as fs from "node:fs"
+import * as path from "node:path"
 import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 import { ensureBwCli } from "./bw-installer"
@@ -117,6 +118,115 @@ function isBwConfigLogoutRequired(err: Error): boolean {
   return message.includes("logout") && message.includes("required")
 }
 
+// ---------------------------------------------------------------------------
+// Cross-process bw CLI lock
+// ---------------------------------------------------------------------------
+// The bw CLI cannot handle concurrent access to the same app data directory.
+// Two processes (e.g. daemon worker + ouro up CLI) hitting the same dir
+// simultaneously corrupt bw's local state, producing empty/garbled output.
+//
+// We use two layers:
+//   1. In-process async mutex: a Map<string, Promise<void>> keyed by appDataDir
+//      serializes calls within a single Node.js process.
+//   2. Cross-process file lock: fs.openSync(lockPath, 'wx') with PID stale
+//      detection serializes across processes.
+// ---------------------------------------------------------------------------
+
+const BW_LOCK_FILENAME = ".ouro-bw.lock"
+const BW_LOCK_TIMEOUT_MS = 30_000
+const BW_LOCK_POLL_MS = 100
+
+/** In-process async mutex keyed by appDataDir. */
+const inProcessLocks = new Map<string, Promise<void>>()
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function acquireFileLock(lockPath: string): void {
+  const content = `${process.pid}\n`
+  const deadline = Date.now() + BW_LOCK_TIMEOUT_MS
+
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL)
+      fs.writeSync(fd, content)
+      fs.closeSync(fd)
+      return
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw err
+      }
+      // Lock file exists -- check for stale lock
+      try {
+        const existing = fs.readFileSync(lockPath, "utf8").trim()
+        const pid = parseInt(existing, 10)
+        if (!isNaN(pid) && !isPidAlive(pid)) {
+          // Stale lock -- remove and retry immediately
+          try { fs.unlinkSync(lockPath) } catch { /* race with another cleaner is fine */ }
+          continue
+        }
+      } catch {
+        // Lock file disappeared between open and read -- retry
+        continue
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`bw CLI lock timeout: could not acquire ${lockPath} within ${BW_LOCK_TIMEOUT_MS}ms`)
+      }
+      // Busy-wait (synchronous -- this runs inside an async wrapper)
+      const waitUntil = Date.now() + BW_LOCK_POLL_MS
+      while (Date.now() < waitUntil) { /* spin */ }
+    }
+  }
+}
+
+function releaseFileLock(lockPath: string): void {
+  try {
+    fs.unlinkSync(lockPath)
+  } catch {
+    // Already removed or never created -- safe to ignore
+  }
+}
+
+async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T>): Promise<T> {
+  if (!appDataDir) {
+    // No appDataDir means the default bw data location. Still need in-process
+    // serialization but cannot do cross-process file lock without a dir.
+    return fn()
+  }
+
+  const lockKey = appDataDir
+  const lockPath = path.join(appDataDir, BW_LOCK_FILENAME)
+
+  // In-process serialization: chain onto the previous promise for this key
+  const previous = inProcessLocks.get(lockKey) ?? Promise.resolve()
+  let releaseLock: () => void
+  const current = new Promise<void>((resolve) => { releaseLock = resolve })
+  inProcessLocks.set(lockKey, current)
+
+  await previous
+
+  // Cross-process file lock
+  acquireFileLock(lockPath)
+
+  try {
+    return await fn()
+  } finally {
+    releaseFileLock(lockPath)
+    releaseLock!()
+    // Clean up the map entry if we are the latest
+    if (inProcessLocks.get(lockKey) === current) {
+      inProcessLocks.delete(lockKey)
+    }
+  }
+}
+
 function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
   const env = {
     ...process.env,
@@ -124,22 +234,25 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
     ...(appDataDir ? { BITWARDENCLI_APPDATA_DIR: appDataDir } : {}),
   }
 
-  return new Promise((resolve, reject) => {
-    const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
-      if (err) {
-        if (isBwNotInstalled(err)) {
-          reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
+  const runCommand = (): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
+        if (err) {
+          if (isBwNotInstalled(err)) {
+            reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
+            return
+          }
+          reject(formatBwCliError(err, stderr, args))
           return
         }
-        reject(formatBwCliError(err, stderr, args))
-        return
+        resolve(stdout)
+      })
+      if (stdin !== undefined) {
+        child?.stdin?.end(stdin)
       }
-      resolve(stdout)
     })
-    if (stdin !== undefined) {
-      child?.stdin?.end(stdin)
-    }
-  })
+
+  return withBwLock(appDataDir, runCommand)
 }
 
 /** Check if the error indicates the bw CLI binary is not installed. */
