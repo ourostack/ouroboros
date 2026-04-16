@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { getOpenAICodexConfig, type OpenAICodexProviderConfig } from "../config";
 import { getAgentName } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
-import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
+import type { ChannelCallbacks, ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem } from "../streaming";
 import { streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
@@ -16,6 +16,16 @@ const OPENAI_CODEX_AUTH_FAILURE_MARKERS = [
   "invalid bearer token",
 ]
 const OPENAI_CODEX_BACKEND_BASE_URL = "https://chatgpt.com/backend-api/codex";
+const OPENAI_CODEX_PING_INPUT: ResponseItem[] = [{ role: "user", content: "ping" }];
+const OPENAI_CODEX_PING_CALLBACKS: ChannelCallbacks = {
+  onModelStart() {},
+  onModelStreamStart() {},
+  onTextChunk() {},
+  onReasoningChunk() {},
+  onToolStart() {},
+  onToolEnd() {},
+  onError() {},
+};
 
 type JsonRecord = Record<string, unknown>;
 
@@ -83,6 +93,19 @@ function getChatGPTAccountIdFromToken(token: string): string {
   return accountId.trim();
 }
 
+function createOpenAICodexResponsesParams(input: ResponseItem[], instructions: string, model: string, reasoningEffort: string): Record<string, unknown> {
+  return {
+    model,
+    input,
+    instructions,
+    tools: [],
+    reasoning: { effort: reasoningEffort, summary: "detailed" },
+    stream: true,
+    store: false,
+    include: ["reasoning.encrypted_content"],
+  };
+}
+
 export function createOpenAICodexProviderRuntime(model: string, codexConfig: OpenAICodexProviderConfig = getOpenAICodexConfig()): ProviderRuntime {
   emitNervesEvent({
     component: "engine",
@@ -147,16 +170,13 @@ export function createOpenAICodexProviderRuntime(model: string, codexConfig: Ope
     },
     async streamTurn(request: ProviderTurnRequest) {
       if (!nativeInput) this.resetTurnState(request.messages);
-      const params: Record<string, unknown> = {
-        model: this.model,
-        input: nativeInput,
-        instructions: nativeInstructions,
-        tools: toResponsesTools(request.activeTools),
-        reasoning: { effort: request.reasoningEffort ?? "medium", summary: "detailed" },
-        stream: true,
-        store: false,
-        include: ["reasoning.encrypted_content"],
-      };
+      const params: Record<string, unknown> = createOpenAICodexResponsesParams(
+        nativeInput!,
+        nativeInstructions,
+        this.model,
+        request.reasoningEffort ?? "medium",
+      );
+      params.tools = toResponsesTools(request.activeTools);
       if (request.toolChoiceRequired) params.tool_choice = "required";
       try {
         const result = await streamResponsesApi(
@@ -174,9 +194,11 @@ export function createOpenAICodexProviderRuntime(model: string, codexConfig: Ope
     },
     /* v8 ignore start -- ping: tested via provider-ping.test.ts @preserve */
     async ping(signal?: AbortSignal): Promise<void> {
-      await (this.client as OpenAI).responses.create(
-        { model: this.model, input: "ping", max_output_tokens: 16 } as any,
-        { signal },
+      await streamResponsesApi(
+        this.client as OpenAI,
+        createOpenAICodexResponsesParams(OPENAI_CODEX_PING_INPUT, "", this.model, "medium"),
+        OPENAI_CODEX_PING_CALLBACKS,
+        signal,
       )
     },
     /* v8 ignore stop */

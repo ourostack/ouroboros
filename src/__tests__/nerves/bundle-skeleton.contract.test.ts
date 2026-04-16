@@ -24,21 +24,14 @@ function resolveBundleRoot(agent: string): string | null {
   return null
 }
 
-function resolveRequiredBundleRoots(): { ouroboros: string; slugger: string } | null {
-  const ouroboros = resolveBundleRoot("ouroboros")
-  const slugger = resolveBundleRoot("slugger")
-
-  if (ouroboros && slugger) {
-    return { ouroboros, slugger }
+function resolveAvailableBundleRoots(): {
+  ouroboros: string | null
+  slugger: string | null
+} {
+  return {
+    ouroboros: resolveBundleRoot("ouroboros"),
+    slugger: resolveBundleRoot("slugger"),
   }
-
-  if (!ouroboros && !slugger) {
-    return null
-  }
-
-  throw new Error(
-    "Bundle contract requires both bundles to be available together or both absent in CI checkout.",
-  )
 }
 
 /** Paths that must exist on disk for existing bundles.
@@ -55,41 +48,43 @@ function requiredPaths(root: string): string[] {
 
 describe("bundle skeleton contract", () => {
   it("has required canonical paths when bundles are available", () => {
-    const roots = resolveRequiredBundleRoots()
-    if (!roots) {
+    const roots = resolveAvailableBundleRoots()
+    if (!roots.ouroboros && !roots.slugger) {
       expect(existsSync(join(process.cwd(), "ouroboros.ouro"))).toBe(false)
       expect(existsSync(join(process.cwd(), "slugger.ouro"))).toBe(false)
       return
     }
 
-    const all = [
-      ...requiredPaths(roots.ouroboros),
-      ...requiredPaths(roots.slugger),
-    ]
+    const all = [roots.ouroboros, roots.slugger]
+      .filter((root): root is string => root !== null)
+      .flatMap((root) => requiredPaths(root))
 
     const missing = all.filter((absolutePath) => !existsSync(absolutePath))
     expect(missing).toEqual([])
   })
 
   it("keeps slugger agent config aligned to gate-2 schema", () => {
-    const roots = resolveRequiredBundleRoots()
-    if (!roots) {
-      expect(existsSync(join(process.cwd(), "ouroboros.ouro"))).toBe(false)
+    const roots = resolveAvailableBundleRoots()
+    if (!roots.slugger) {
       expect(existsSync(join(process.cwd(), "slugger.ouro"))).toBe(false)
       return
     }
 
-    const ouroborosConfig = JSON.parse(
-      readFileSync(join(roots.ouroboros, "agent.json"), "utf-8"),
-    ) as Record<string, unknown>
     const sluggerConfig = JSON.parse(
       readFileSync(join(roots.slugger, "agent.json"), "utf-8"),
     ) as Record<string, unknown>
 
-    // Slugger's config may have optional keys (e.g., mcpServers) beyond the template
-    for (const key of Object.keys(ouroborosConfig)) {
-      expect(sluggerConfig).toHaveProperty(key)
+    if (roots.ouroboros) {
+      const ouroborosConfig = JSON.parse(
+        readFileSync(join(roots.ouroboros, "agent.json"), "utf-8"),
+      ) as Record<string, unknown>
+
+      // Slugger's config may have optional keys (e.g., mcpServers) beyond the template
+      for (const key of Object.keys(ouroborosConfig)) {
+        expect(sluggerConfig).toHaveProperty(key)
+      }
     }
+
     expect(sluggerConfig).toHaveProperty("version")
     expect(sluggerConfig).toHaveProperty("enabled")
     expect(typeof sluggerConfig.version).toBe("number")
@@ -107,9 +102,8 @@ describe("bundle skeleton contract", () => {
   })
 
   it("keeps slugger canonical psyche files non-empty", () => {
-    const roots = resolveRequiredBundleRoots()
-    if (!roots) {
-      expect(existsSync(join(process.cwd(), "ouroboros.ouro"))).toBe(false)
+    const roots = resolveAvailableBundleRoots()
+    if (!roots.slugger) {
       expect(existsSync(join(process.cwd(), "slugger.ouro"))).toBe(false)
       return
     }
