@@ -148,7 +148,7 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-function acquireFileLock(lockPath: string): void {
+async function acquireFileLock(lockPath: string): Promise<void> {
   const content = `${process.pid}\n`
   const deadline = Date.now() + BW_LOCK_TIMEOUT_MS
 
@@ -171,17 +171,15 @@ function acquireFileLock(lockPath: string): void {
           try { fs.unlinkSync(lockPath) } catch { /* race with another cleaner is fine */ }
           continue
         }
-      } catch {
-        // Lock file disappeared between open and read -- retry
+      } catch { /* v8 ignore next -- race: lock file disappeared between openSync and readFileSync @preserve */
         continue
       }
 
       if (Date.now() >= deadline) {
         throw new Error(`bw CLI lock timeout: could not acquire ${lockPath} within ${BW_LOCK_TIMEOUT_MS}ms`)
       }
-      // Busy-wait (synchronous -- this runs inside an async wrapper)
-      const waitUntil = Date.now() + BW_LOCK_POLL_MS
-      while (Date.now() < waitUntil) { /* spin */ }
+      // Yield to the event loop before retrying
+      await delay(BW_LOCK_POLL_MS)
     }
   }
 }
@@ -212,13 +210,17 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
 
   await previous
 
-  // Cross-process file lock
-  acquireFileLock(lockPath)
-
+  let fileLockAcquired = false
   try {
+    // Cross-process file lock
+    await acquireFileLock(lockPath)
+    fileLockAcquired = true
+
     return await fn()
   } finally {
-    releaseFileLock(lockPath)
+    if (fileLockAcquired) {
+      releaseFileLock(lockPath)
+    }
     releaseLock!()
     // Clean up the map entry if we are the latest
     if (inProcessLocks.get(lockKey) === current) {
