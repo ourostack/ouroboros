@@ -16,6 +16,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Use feature branches and pull requests for every logical change.
 - Keep commits atomic and descriptive.
 - Never force-push or rewrite history for shared branches.
+- Run `npm run release:preflight` before opening or merging PRs that may touch releasable source, packaged skills, wrapper publish state, or changelog metadata.
 - Keep `npm test` green.
 - Keep `npx tsc --noEmit` green.
 - Maintain complete coverage for new and modified code.
