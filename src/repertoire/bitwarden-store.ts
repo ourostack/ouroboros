@@ -100,7 +100,7 @@ function sanitizeBwErrorDetail(message: string): string {
 function formatBwCliError(err: Error, stderr = "", args: string[] = []): Error {
   const operation = formatBwOperation(args)
   if (isBwTimeoutError(err)) {
-    return new Error(`bw CLI error: ${operation} timed out while waiting for a vault response`)
+    return new Error(`bw CLI error: ${operation} timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.`)
   }
   const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
   if (detail === "command failed") {
