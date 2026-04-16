@@ -6,12 +6,14 @@ export interface DaemonRuntimeSyncDeps {
   localLastUpdated?: string
   localRepoRoot?: string
   localConfigFingerprint?: string
+  localManagedAgents?: string
   fetchRunningVersion: () => Promise<string>
   fetchRunningRuntimeMetadata?: () => Promise<{
     version?: string
     lastUpdated?: string
     repoRoot?: string
     configFingerprint?: string
+    managedAgents?: string
   }>
   stopDaemon: () => Promise<void>
   cleanupStaleSocket: (socketPath: string) => void
@@ -57,10 +59,11 @@ interface RuntimeIdentity {
   lastUpdated: string
   repoRoot: string
   configFingerprint: string
+  managedAgents: string
 }
 
 interface RuntimeDriftReason {
-  key: "version" | "lastUpdated" | "repoRoot" | "configFingerprint"
+  key: "version" | "lastUpdated" | "repoRoot" | "configFingerprint" | "managedAgents"
   label: string
   local: string
   running: string
@@ -74,6 +77,7 @@ function normalizeRuntimeIdentity(
     lastUpdated: typeof value.lastUpdated === "string" ? value.lastUpdated : "unknown",
     repoRoot: typeof value.repoRoot === "string" ? value.repoRoot : "unknown",
     configFingerprint: typeof value.configFingerprint === "string" ? value.configFingerprint : "unknown",
+    managedAgents: typeof value.managedAgents === "string" ? value.managedAgents : "unknown",
   }
 }
 
@@ -122,6 +126,18 @@ function collectRuntimeDriftReasons(
       running: running.configFingerprint,
     })
   }
+  if (
+    isKnownRuntimeValue(local.managedAgents)
+    && isKnownRuntimeValue(running.managedAgents)
+    && local.managedAgents !== running.managedAgents
+  ) {
+    reasons.push({
+      key: "managedAgents",
+      label: "managed agents",
+      local: local.managedAgents,
+      running: running.managedAgents,
+    })
+  }
 
   return reasons
 }
@@ -147,6 +163,7 @@ export async function ensureCurrentDaemonRuntime(
     lastUpdated: deps.localLastUpdated,
     repoRoot: deps.localRepoRoot,
     configFingerprint: deps.localConfigFingerprint,
+    managedAgents: deps.localManagedAgents,
   })
 
   try {
@@ -179,10 +196,12 @@ export async function ensureCurrentDaemonRuntime(
             localLastUpdated: localRuntime.lastUpdated,
             localRepoRoot: localRuntime.repoRoot,
             localConfigFingerprint: localRuntime.configFingerprint,
+            localManagedAgents: localRuntime.managedAgents,
             runningVersion,
             runningLastUpdated: runningRuntime.lastUpdated,
             runningRepoRoot: runningRuntime.repoRoot,
             runningConfigFingerprint: runningRuntime.configFingerprint,
+            runningManagedAgents: runningRuntime.managedAgents,
             action: "stale_replace_failed",
             driftKeys: driftReasons.map((entry) => entry.key),
             reason,
@@ -215,10 +234,12 @@ export async function ensureCurrentDaemonRuntime(
           localLastUpdated: localRuntime.lastUpdated,
           localRepoRoot: localRuntime.repoRoot,
           localConfigFingerprint: localRuntime.configFingerprint,
+          localManagedAgents: localRuntime.managedAgents,
           runningVersion,
           runningLastUpdated: runningRuntime.lastUpdated,
           runningRepoRoot: runningRuntime.repoRoot,
           runningConfigFingerprint: runningRuntime.configFingerprint,
+          runningManagedAgents: runningRuntime.managedAgents,
           action: "stale_restarted",
           driftKeys: driftReasons.map((entry) => entry.key),
           pid: started.pid ?? null,
@@ -242,10 +263,12 @@ export async function ensureCurrentDaemonRuntime(
           localLastUpdated: localRuntime.lastUpdated,
           localRepoRoot: localRuntime.repoRoot,
           localConfigFingerprint: localRuntime.configFingerprint,
+          localManagedAgents: localRuntime.managedAgents,
           runningVersion,
           runningLastUpdated: runningRuntime.lastUpdated,
           runningRepoRoot: runningRuntime.repoRoot,
           runningConfigFingerprint: runningRuntime.configFingerprint,
+          runningManagedAgents: runningRuntime.managedAgents,
           action: "unknown_version",
         },
       })
@@ -268,6 +291,7 @@ export async function ensureCurrentDaemonRuntime(
         localLastUpdated: localRuntime.lastUpdated,
         localRepoRoot: localRuntime.repoRoot,
         localConfigFingerprint: localRuntime.configFingerprint,
+        localManagedAgents: localRuntime.managedAgents,
         action: "status_lookup_failed",
         reason,
       },
@@ -291,6 +315,7 @@ export async function ensureCurrentDaemonRuntime(
       localLastUpdated: localRuntime.lastUpdated,
       localRepoRoot: localRuntime.repoRoot,
       localConfigFingerprint: localRuntime.configFingerprint,
+      localManagedAgents: localRuntime.managedAgents,
       action: "already_current",
     },
   })
