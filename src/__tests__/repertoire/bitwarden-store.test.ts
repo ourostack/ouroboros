@@ -1806,4 +1806,259 @@ describe("BitwardenCredentialStore", () => {
       )).toBe(true)
     })
   })
+
+  describe("cross-process bw CLI lock", () => {
+    /**
+     * Helper: creates a deferred promise pair so we can control when a bw
+     * command "completes" from inside the test.
+     */
+    function deferred(): { promise: Promise<void>; resolve: () => void } {
+      let resolve!: () => void
+      const promise = new Promise<void>((r) => { resolve = r })
+      return { promise, resolve }
+    }
+
+    it("serializes concurrent execBw calls for the same appDataDir", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-same-"))
+      const storeA = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+      const storeB = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      // Track the order in which "list items" commands START executing
+      const executionOrder: string[] = []
+      const firstListDeferred = deferred()
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          const tag = executionOrder.length === 0 ? "first" : "second"
+          executionOrder.push(`${tag}-start`)
+          if (tag === "first") {
+            // First call: don't complete until we say so
+            firstListDeferred.promise.then(() => {
+              executionOrder.push("first-end")
+              cb(null, "[]", "")
+            })
+          } else {
+            executionOrder.push("second-end")
+            cb(null, "[]", "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Start both list() calls concurrently
+      const listA = storeA.list()
+      const listB = storeB.list()
+
+      // Give microtasks time to propagate
+      await new Promise((r) => setTimeout(r, 50))
+
+      // At this point, only the first call should have started its bw command
+      expect(executionOrder).toEqual(["first-start"])
+
+      // Now complete the first call
+      firstListDeferred.resolve()
+      await listA
+      await listB
+
+      // The second call should have started only after the first completed
+      expect(executionOrder).toEqual([
+        "first-start",
+        "first-end",
+        "second-start",
+        "second-end",
+      ])
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("allows concurrent execBw calls for DIFFERENT appDataDirs", async () => {
+      const appDataDirA = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-a-"))
+      const appDataDirB = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-b-"))
+      const storeA = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirA },
+      )
+      const storeB = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirB },
+      )
+
+      const executionOrder: string[] = []
+      const deferredA = deferred()
+      const deferredB = deferred()
+
+      let listCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCount++
+          const dir = opts?.env?.BITWARDENCLI_APPDATA_DIR
+          const tag = dir === appDataDirA ? "A" : "B"
+          executionOrder.push(`${tag}-start`)
+          const d = tag === "A" ? deferredA : deferredB
+          d.promise.then(() => {
+            executionOrder.push(`${tag}-end`)
+            cb(null, "[]", "")
+          })
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const listA = storeA.list()
+      const listB = storeB.list()
+
+      // Give microtasks time to propagate
+      await new Promise((r) => setTimeout(r, 50))
+
+      // BOTH calls should have started (no serialization across different dirs)
+      expect(executionOrder).toContain("A-start")
+      expect(executionOrder).toContain("B-start")
+
+      deferredA.resolve()
+      deferredB.resolve()
+      await listA
+      await listB
+
+      fs.rmSync(appDataDirA, { recursive: true, force: true })
+      fs.rmSync(appDataDirB, { recursive: true, force: true })
+    })
+
+    it("releases the lock after execBw completes successfully", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-release-"))
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // First call succeeds
+      await storeInstance.list()
+
+      // Second call should also succeed (lock was released)
+      await storeInstance.list()
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("releases the lock after execBw fails with an error", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-error-"))
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      let listCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            // First call fails
+            const err = new Error("bw exploded") as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }
+            err.code = "ETIMEDOUT"
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            // Second call succeeds
+            cb(null, "[]", "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // First call fails
+      await expect(storeInstance.list()).rejects.toThrow()
+
+      // Second call should succeed because the lock was released despite the error
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("releases the lock when the bw process is killed (timeout)", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-timeout-"))
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      let listCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            }
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            cb(null, "[]", "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // First call times out
+      await expect(storeInstance.list()).rejects.toThrow("timed out")
+
+      // Lock should be released — second call succeeds
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+  })
 })
