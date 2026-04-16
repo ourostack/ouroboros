@@ -176,7 +176,7 @@ describe("getCommandHelp()", () => {
 
     expect(result).not.toBeNull()
     expect(result).toContain("vault recover")
-    expect(result).toContain("--from <json>")
+    expect(result).toContain("--from <json> [--from <json> ...]")
     expect(result).not.toContain("--generate-unlock-secret")
   })
 
@@ -354,7 +354,7 @@ describe("runOuroCli help execution", () => {
     const result = await runOuroCli(["vault", "recover", "--help"], deps)
 
     expect(result).toContain("vault recover")
-    expect(result).toContain("--from <json>")
+    expect(result).toContain("--from <json> [--from <json> ...]")
     expect(result).not.toContain("--generate-unlock-secret")
     expect(deps.writeStdout).toHaveBeenCalledWith(result)
   })
@@ -375,7 +375,7 @@ describe("runOuroCli help execution", () => {
     const result = await runOuroCli(["help", "vault", "recover"], deps)
 
     expect(result).toContain("vault recover")
-    expect(result).toContain("--from <json>")
+    expect(result).toContain("--from <json> [--from <json> ...]")
     expect(result).not.toContain("--generate-unlock-secret")
   })
 
