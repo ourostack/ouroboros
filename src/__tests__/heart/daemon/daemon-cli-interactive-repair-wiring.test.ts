@@ -76,7 +76,16 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
 }))
 
 vi.mock("../../../repertoire/vault-unlock", () => ({
+  credentialVaultNotConfiguredError: (agentName: string, configPath: string) =>
+    `credential vault is not configured in ${configPath}. Run 'ouro vault create --agent ${agentName}' to create this agent's vault before loading or storing credentials.`,
+  isCredentialVaultNotConfiguredError: (message: string) =>
+    message.includes("credential vault is not configured in "),
   storeVaultUnlockSecret: (...args: unknown[]) => vaultMocks.storeVaultUnlockSecret(...args),
+  vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
+    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
+    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
+    nextStep,
+  ].join(" "),
   getVaultUnlockStatus: vi.fn(),
 }))
 

@@ -76,6 +76,30 @@ import { runRuntimeAuthFlow } from "../../../heart/auth/auth-flow"
 import { readProviderCredentialRecord, resetProviderCredentialCache } from "../../../heart/provider-credentials"
 import { resetCredentialStore } from "../../../repertoire/credential-access"
 
+function writeAgentConfig(homeDir: string, agentName: string): void {
+  const agentRoot = path.join(homeDir, "AgentBundles", `${agentName}.ouro`)
+  fs.mkdirSync(agentRoot, { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+    version: 2,
+    enabled: true,
+    humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+    agentFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+    phrases: {
+      thinking: ["working"],
+      tool: ["running tool"],
+      followup: ["processing"],
+    },
+    context: {
+      maxTokens: 80000,
+      contextMargin: 20,
+    },
+    vault: {
+      email: `${agentName.toLowerCase()}@ouro.bot`,
+      serverUrl: "https://vault.ouroboros.bot",
+    },
+  }, null, 2)}\n`, "utf8")
+}
+
 function installBwExecHarness(): void {
   mockExecFile.mockImplementation((_cmd: string, args: string[], opts: { env?: Record<string, string | undefined> } | undefined, cb: Function) => {
     const session = opts?.env?.BW_SESSION
@@ -209,6 +233,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "VaultSaveBot")
 
     const progress: string[] = []
     const result = await runRuntimeAuthFlow({
@@ -251,6 +276,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "VaultRefreshBot")
 
     const progress: string[] = []
 
@@ -278,6 +304,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "VaultLockedBot")
 
     const progress: string[] = []
 
@@ -306,6 +333,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "VaultServerBot")
 
     const progress: string[] = []
 
@@ -331,6 +359,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
+    writeAgentConfig(tempHome, "VaultPromptBot")
 
     const progress: string[] = []
 

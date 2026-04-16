@@ -16,7 +16,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as identity from "../heart/identity"
 import { BitwardenCredentialStore } from "./bitwarden-store"
-import { readVaultUnlockSecret } from "./vault-unlock"
+import { credentialVaultNotConfiguredError, readVaultUnlockSecret } from "./vault-unlock"
 
 export interface CredentialMeta {
   domain: string
@@ -37,13 +37,16 @@ export interface CredentialStore {
 
 let stores = new Map<string, CredentialStore>()
 
-function loadVaultSectionForAgent(agentName: string): identity.AgentConfig["vault"] | undefined {
+function loadVaultSectionForAgent(agentName: string): {
+  configPath: string
+  vault?: identity.AgentConfig["vault"]
+} {
   const configPath = path.join(identity.getAgentRoot(agentName), "agent.json")
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Partial<identity.AgentConfig>
-    return parsed.vault
+    return { configPath, vault: parsed.vault }
   } catch {
-    return undefined
+    return { configPath }
   }
 }
 
@@ -61,7 +64,11 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
   if (agentName === "SerpentGuide") {
     throw new Error("SerpentGuide does not have a persistent credential vault; hatch bootstrap uses provider credentials in memory only.")
   }
-  const vaultConfig = identity.resolveVaultConfig(agentName, loadVaultSectionForAgent(agentName))
+  const { configPath, vault } = loadVaultSectionForAgent(agentName)
+  if (!vault || typeof vault.email !== "string" || vault.email.trim().length === 0) {
+    throw new Error(credentialVaultNotConfiguredError(agentName, configPath))
+  }
+  const vaultConfig = identity.resolveVaultConfig(agentName, vault)
   const cacheKey = `${agentName}:${vaultConfig.serverUrl}:${vaultConfig.email}`
   const cached = stores.get(cacheKey)
   if (cached) return cached

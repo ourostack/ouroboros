@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.408",
+      "changes": [
+        "Existing agents without a `vault` block in `agent.json` now fail fast with explicit `ouro vault create --agent <agent>` guidance instead of silently deriving a stable vault account and misreporting missing provider credentials.",
+        "`ouro auth`, `ouro up`, and `ouro repair` now treat a missing agent vault locator as a first-class readiness state with create/recover choices, then continue through the normal provider-auth repair path after the vault exists.",
+        "Runtime credential access now requires an explicit agent vault locator before opening Bitwarden or Vaultwarden, which keeps provider, runtime, travel, and tool credential flows truthful for pre-vault agent migrations.",
+        "Added regression coverage for missing-vault-locator auth, provider readiness, guided repair, and the real Bitwarden-backed auth path, plus the default local `spawnSync` fallback used by Linux secure-store probing.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the pre-vault agent locator repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.407",
       "changes": [
         "`credential_store` now uses the same Bitwarden-derived error scrubber as provider auth, so agent-saved secret flows redact raw `bw ...` command lines, encoded payload blobs, and hidden prompt echoes instead of free-styling their own failure cleanup.",

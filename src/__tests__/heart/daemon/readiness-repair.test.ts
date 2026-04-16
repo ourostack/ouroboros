@@ -9,6 +9,7 @@ import {
   renderReadinessIssueNextSteps,
   runGuidedReadinessRepair,
   vaultLockedIssue,
+  vaultUnconfiguredIssue,
   type AgentReadinessReport,
 } from "../../../heart/daemon/readiness-repair"
 
@@ -40,6 +41,26 @@ describe("readiness repair guidance", () => {
     expect(issue.actions[2]).toMatchObject({
       label: "Recover from JSON export",
       command: "ouro vault recover --agent slugger --from <json>",
+      actor: "human-required",
+    })
+  })
+
+  it("builds a vault-unconfigured issue with create-first guidance", () => {
+    const issue = vaultUnconfiguredIssue("slugger")
+
+    expect(issue).toMatchObject({
+      kind: "vault-unconfigured",
+      severity: "blocked",
+      actor: "human-required",
+      summary: "slugger: vault not configured",
+    })
+    expect(issue.actions.map((action) => action.kind)).toEqual([
+      "vault-create",
+      "vault-recover",
+    ])
+    expect(issue.actions[0]).toMatchObject({
+      label: "Create this agent's vault",
+      command: "ouro vault create --agent slugger",
       actor: "human-required",
     })
   })
