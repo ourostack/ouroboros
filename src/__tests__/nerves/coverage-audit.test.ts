@@ -83,6 +83,43 @@ describe("observability/coverage audit - schema_redaction", () => {
     expect(report.nerves_coverage.schema_redaction.status).toBe("pass")
   })
 
+  it("allows file paths and branch names that contain sensitive-looking words", () => {
+    const eventsPath = makeEventsPath([
+      {
+        ts: "2026-03-02T18:00:00.000Z",
+        level: "info",
+        event: "daemon.runtime_metadata_read",
+        trace_id: "trace-1",
+        component: "daemon",
+        message: "runtime metadata read",
+        meta: {
+          repoRoot: "/tmp/ouroboros-bw-secret-redaction",
+          branchPath: "/tmp/api-key-cleanup/password-reset/token-refresh/authorization-flow",
+        },
+      },
+    ])
+    const report = auditNervesCoverage({ eventsPath })
+
+    expect(report.nerves_coverage.schema_redaction.status).toBe("pass")
+  })
+
+  it("still rejects credential-shaped text in messages and metadata", () => {
+    const eventsPath = makeEventsPath([
+      {
+        ts: "2026-03-02T18:00:00.000Z",
+        level: "info",
+        event: "engine.turn_start",
+        trace_id: "trace-1",
+        component: "engine",
+        message: "password=swordfish",
+        meta: { item: "secret: swordfish" },
+      },
+    ])
+    const report = auditNervesCoverage({ eventsPath })
+
+    expect(report.nerves_coverage.schema_redaction.status).toBe("fail")
+  })
+
   it("passes when events file is missing (no events to check)", () => {
     const runDir = mkdtempSync(join(tmpdir(), "ouro-nerves-audit-"))
     const report = auditNervesCoverage({ eventsPath: join(runDir, "missing.ndjson") })
