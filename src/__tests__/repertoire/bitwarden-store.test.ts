@@ -396,18 +396,49 @@ describe("BitwardenCredentialStore", () => {
     it("creates a new vault item via bw create", async () => {
       const createCalls: string[][] = []
       const stdinWrites: string[] = []
+      let savedItem: Record<string, unknown> | null = null
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         createCalls.push(args)
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
-        } else if (args[0] === "unlock") {
-          cb(null, "session-token", "")
-        } else if (args[0] === "list") {
-          cb(null, "[]", "")
-        } else {
-          cb(null, '{"id":"new-item-1"}', "")
+          return { stdin: { end: vi.fn() } }
         }
-        return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                stdinWrites.push(value)
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "new-item-1",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                  revisionDate: "2026-04-15T23:00:00.000Z",
+                }
+                cb(null, '{"id":"new-item-1"}', "")
+              }),
+            },
+          }
+        }
+        cb(null, "", "")
+        return { stdin: { end: vi.fn() } }
       })
 
       await store.store("newsite.com", {
@@ -428,18 +459,55 @@ describe("BitwardenCredentialStore", () => {
     it("edits an existing vault item instead of creating a duplicate", async () => {
       const calls: string[][] = []
       const stdinWrites: string[] = []
+      let savedItem = {
+        id: "existing-id",
+        name: "existing.com",
+        login: { username: "old", password: "old" },
+        notes: null as string | null,
+        revisionDate: "2026-04-15T22:58:00.000Z",
+      }
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
-        } else if (args[0] === "unlock") {
-          cb(null, "session-token", "")
-        } else if (args[0] === "list") {
-          cb(null, JSON.stringify([{ id: "existing-id", name: "existing.com", login: { username: "old", password: "old" } }]), "")
-        } else {
-          cb(null, '{"id":"existing-id"}', "")
+          return { stdin: { end: vi.fn() } }
         }
-        return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([savedItem]), "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "edit") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                stdinWrites.push(value)
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "existing-id",
+                  name: decoded.name,
+                  login: decoded.login ?? {},
+                  notes: decoded.notes ?? null,
+                  revisionDate: "2026-04-15T23:00:00.000Z",
+                }
+                cb(null, '{"id":"existing-id"}', "")
+              }),
+            },
+          }
+        }
+        cb(null, "", "")
+        return { stdin: { end: vi.fn() } }
       })
 
       await store.store("existing.com", {
@@ -452,6 +520,393 @@ describe("BitwardenCredentialStore", () => {
       expect(calls.find((call) => call[0] === "edit")?.join(" ")).not.toContain("newpass")
       expect(stdinWrites).toHaveLength(1)
       expect(calls.find((call) => call[0] === "create")).toBeUndefined()
+    })
+
+    it("fails clearly when the saved item cannot be read back after write", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, "{}", "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })).rejects.toThrow(
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item could not be read back after write",
+      )
+    })
+
+    it("fails clearly when the saved item readback does not match the requested secret", async () => {
+      const rawSecret = "provider-token-should-not-leak"
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify({
+            id: "created-id",
+            name: "providers/openai-codex",
+            login: { username: "openai-codex", password: "wrong-password" },
+            notes: null,
+          }), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("providers/openai-codex", {
+          username: "openai-codex",
+          password: rawSecret,
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toBe(
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested field password",
+      )
+      expect(thrown!.message).not.toContain(rawSecret)
+      expect(thrown!.message).not.toContain("wrong-password")
+    })
+
+    it.each([
+      [
+        "name",
+        { name: "providers/openai-codex-stale", login: { username: "openai-codex", password: "oauth-token" }, notes: null },
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested field name",
+      ],
+      [
+        "username",
+        { name: "providers/openai-codex", login: { username: "wrong-user", password: "oauth-token" }, notes: null },
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested field username",
+      ],
+      [
+        "notes",
+        { name: "providers/openai-codex", login: { username: "openai-codex", password: "oauth-token" }, notes: "wrong-note" },
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested field notes",
+      ],
+    ])("fails clearly when the saved item readback mismatches requested %s", async (_label, item, expectedMessage) => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify({ id: "created-id", ...item }), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })).rejects.toThrow(expectedMessage)
+    })
+
+    it("uses pluralized mismatch guidance when several saved fields are wrong", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify({
+            id: "created-id",
+            name: "providers/openai-codex-stale",
+            login: { username: "wrong-user", password: "oauth-token" },
+            notes: null,
+          }), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+        notes: "expected-note",
+      })).rejects.toThrow(
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested fields name, username, notes",
+      )
+    })
+
+    it("falls back to exact-name search when bw create does not return parseable JSON", async () => {
+      let listCount = 0
+      let savedItem: Record<string, unknown> | null = null
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCount += 1
+          cb(null, JSON.stringify(listCount === 1 ? [] : [savedItem]), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "created-after-fallback",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, "not-json", "")
+              }),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/minimax", {
+        username: "minimax",
+        password: "minimax-token",
+      })
+
+      expect(listCount).toBe(2)
+    })
+
+    it("falls back to the existing item id when bw edit does not return a usable id", async () => {
+      let savedItem = {
+        id: "existing-id",
+        name: "providers/minimax",
+        login: { username: "old-user", password: "old-token" },
+        notes: null as string | null,
+      }
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([savedItem]), "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return
+        }
+        if (args[0] === "edit") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "existing-id",
+                  name: decoded.name,
+                  login: decoded.login ?? {},
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, "[]", "")
+              }),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/minimax", {
+        username: "minimax",
+        password: "minimax-token",
+      })
+    })
+
+    it("throws a sanitized error when bw get item returns malformed data", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify({ id: "created-id" }), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })).rejects.toThrow("bw CLI error: invalid item from bw get item")
+    })
+
+    it("throws a sanitized error when bw get item returns invalid JSON", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, "{not-json", "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })).rejects.toThrow("bw CLI error: invalid JSON from bw get item")
+    })
+
+    it("fails clearly when the saved item readback omits login fields", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify({
+            id: "created-id",
+            name: "providers/openai-codex",
+            notes: null,
+          }), "")
+          return
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn(() => cb(null, '{"id":"created-id"}', "")),
+            },
+          }
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })).rejects.toThrow(
+        "bw CLI error: credential save verification failed for providers/openai-codex: saved item did not match requested fields username, password",
+      )
     })
 
     it("redacts command argv and encoded payloads from bw CLI failures", async () => {
@@ -534,6 +989,7 @@ describe("BitwardenCredentialStore", () => {
       const createCalls: string[][] = []
       let unlockCount = 0
       let searchCount = 0
+      let savedItem: Record<string, unknown> | null = null
 
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -556,8 +1012,29 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "create") {
           createCalls.push(args)
-          cb(null, '{"id":"created-after-retry"}', "")
-          return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                stdinWrites.push(value)
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "created-after-retry",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, '{"id":"created-after-retry"}', "")
+              }),
+            },
+          }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return
         }
         cb(null, "", "")
       })
@@ -578,6 +1055,7 @@ describe("BitwardenCredentialStore", () => {
       let unlockCount = 0
       let searchCount = 0
       let createCount = 0
+      let savedItem: Record<string, unknown> | null = null
 
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -599,9 +1077,31 @@ describe("BitwardenCredentialStore", () => {
           if (createCount === 1) {
             cb(new Error("Command failed: bw create item"), "", "Session key is invalid or expired")
           } else {
-            cb(null, '{"id":"created-after-create-retry"}', "")
+            return {
+              stdin: {
+                end: vi.fn((value: string) => {
+                  stdinWrites.push(value)
+                  const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                    name: string
+                    login?: { username?: string; password?: string }
+                    notes?: string | null
+                  }
+                  savedItem = {
+                    id: "created-after-create-retry",
+                    name: decoded.name,
+                    login: decoded.login,
+                    notes: decoded.notes ?? null,
+                  }
+                  cb(null, '{"id":"created-after-create-retry"}', "")
+                }),
+              },
+            }
           }
           return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return
         }
         cb(null, "", "")
       })
@@ -622,6 +1122,12 @@ describe("BitwardenCredentialStore", () => {
       let unlockCount = 0
       let searchCount = 0
       let editCount = 0
+      let savedItem = {
+        id: "existing-id",
+        name: "providers/minimax",
+        login: { username: "minimax", password: "old-token" },
+        notes: null as string | null,
+      }
 
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -635,7 +1141,7 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "list") {
           searchCount += 1
-          cb(null, JSON.stringify([{ id: "existing-id", name: "providers/minimax" }]), "")
+          cb(null, JSON.stringify([savedItem]), "")
           return
         }
         if (args[0] === "edit") {
@@ -643,9 +1149,31 @@ describe("BitwardenCredentialStore", () => {
           if (editCount === 1) {
             cb(new Error("Command failed: bw edit item existing-id"), "", "Session key is invalid or expired")
           } else {
-            cb(null, '{"id":"existing-id"}', "")
+            return {
+              stdin: {
+                end: vi.fn((value: string) => {
+                  stdinWrites.push(value)
+                  const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                    name: string
+                    login?: { username?: string; password?: string }
+                    notes?: string | null
+                  }
+                  savedItem = {
+                    id: "existing-id",
+                    name: decoded.name,
+                    login: decoded.login ?? {},
+                    notes: decoded.notes ?? null,
+                  }
+                  cb(null, '{"id":"existing-id"}', "")
+                }),
+              },
+            }
           }
           return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return
         }
         cb(null, "", "")
       })
@@ -659,6 +1187,100 @@ describe("BitwardenCredentialStore", () => {
       expect(searchCount).toBe(2)
       expect(editCount).toBe(2)
       expect(stdinWrites).toHaveLength(2)
+    })
+
+    it("retries the whole write once when post-save verification hits an expired local session", async () => {
+      let unlockCount = 0
+      let listCount = 0
+      let createCount = 0
+      let editCount = 0
+      let getCount = 0
+      let savedItem: {
+        id: string
+        name: string
+        login?: { username?: string; password?: string }
+        notes?: string | null
+      } | null = null
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount += 1
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          listCount += 1
+          cb(null, JSON.stringify(savedItem ? [savedItem] : []), "")
+          return
+        }
+        if (args[0] === "create") {
+          createCount += 1
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "item-1",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, '{"id":"item-1"}', "")
+              }),
+            },
+          }
+        }
+        if (args[0] === "edit") {
+          editCount += 1
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "item-1",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, '{"id":"item-1"}', "")
+              }),
+            },
+          }
+        }
+        if (args[0] === "get") {
+          getCount += 1
+          if (getCount === 1) {
+            cb(new Error("Command failed: bw get item item-1"), "", "Session key is invalid or expired")
+            return
+          }
+          cb(null, JSON.stringify(savedItem), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/minimax", {
+        username: "minimax",
+        password: "minimax-token",
+      })
+
+      expect(unlockCount).toBe(2)
+      expect(listCount).toBe(2)
+      expect(createCount).toBe(1)
+      expect(editCount).toBe(1)
+      expect(getCount).toBe(2)
     })
 
     it("stops before create when the pre-create lookup fails for a non-session reason", async () => {
@@ -692,6 +1314,7 @@ describe("BitwardenCredentialStore", () => {
 
     it("creates a new item when search returns only fuzzy matches", async () => {
       const calls: string[][] = []
+      let savedItem: Record<string, unknown> | null = null
 
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -707,9 +1330,29 @@ describe("BitwardenCredentialStore", () => {
           cb(null, JSON.stringify([{ id: "wrong-item", name: "providers/openai-codex-old" }]), "")
           return
         }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return
+        }
         if (args[0] === "create") {
-          cb(null, '{"id":"created-exact"}', "")
-          return { stdin: { end: vi.fn() } }
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "created-exact",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, '{"id":"created-exact"}', "")
+              }),
+            },
+          }
         }
         cb(null, "", "")
       })
@@ -782,6 +1425,7 @@ describe("BitwardenCredentialStore", () => {
     })
 
     it("emits nerves events", async () => {
+      let savedItem: Record<string, unknown> | null = null
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "unlocked" }), "")
@@ -789,6 +1433,27 @@ describe("BitwardenCredentialStore", () => {
           cb(null, "session-token", "")
         } else if (args[0] === "list") {
           cb(null, "[]", "")
+        } else if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+        } else if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "new-item",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                }
+                cb(null, '{"id":"new-item"}', "")
+              }),
+            },
+          }
         } else {
           cb(null, '{"id":"new-item"}', "")
         }

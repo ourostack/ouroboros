@@ -161,6 +161,33 @@ function parseBwItems(stdout: string, context: string): BwLoginItem[] {
   }
 }
 
+function parseBwItem(stdout: string, context: string): BwLoginItem {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout) as unknown
+    if (!isBwLoginItem(parsed)) {
+      throw new Error("expected login item")
+    }
+    return parsed
+  } catch {
+    if (parsed !== undefined) {
+      throw new Error(`bw CLI error: invalid item from ${context}`)
+    }
+    throw new Error(`bw CLI error: invalid JSON from ${context}`)
+  }
+}
+
+function parseBwItemId(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    const id = (parsed as Record<string, unknown>).id
+    return typeof id === "string" && id.trim().length > 0 ? id : null
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Bitwarden vault item types (subset of bw CLI output)
 // ---------------------------------------------------------------------------
@@ -407,11 +434,19 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
 
       const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
+      let savedItem: BwLoginItem | null
       if (existing) {
-        await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+        const stdout = await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+        const savedItemId = parseBwItemId(stdout) ?? existing.id
+        savedItem = await this.findItemById(savedItemId, session)
       } else {
-        await execBw(["create", "item"], session, this.appDataDir, encoded)
+        const stdout = await execBw(["create", "item"], session, this.appDataDir, encoded)
+        const savedItemId = parseBwItemId(stdout)
+        savedItem = savedItemId
+          ? await this.findItemById(savedItemId, session)
+          : await this.findItemByDomain(domain, session)
       }
+      this.assertStoredCredentialMatches(domain, data, savedItem)
     })
 
     emitNervesEvent({
@@ -490,5 +525,33 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     // Find exact match by name
     return items.find((item) => item.name === domain) ?? null
+  }
+
+  private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
+    const stdout = await execBw(["get", "item", id], session, this.appDataDir)
+    return parseBwItem(stdout, "bw get item")
+  }
+
+  private assertStoredCredentialMatches(
+    domain: string,
+    data: { username?: string; password: string; notes?: string },
+    item: BwLoginItem | null,
+  ): void {
+    if (!item) {
+      throw new Error(`bw CLI error: credential save verification failed for ${domain}: saved item could not be read back after write`)
+    }
+
+    const mismatches: string[] = []
+    if (item.name !== domain) mismatches.push("name")
+    if ((item.login?.username ?? "") !== (data.username ?? "")) mismatches.push("username")
+    if ((item.login?.password ?? "") !== data.password) mismatches.push("password")
+    if ((item.notes ?? null) !== (data.notes ?? null)) mismatches.push("notes")
+
+    if (mismatches.length > 0) {
+      const label = mismatches.length === 1 ? "field" : "fields"
+      throw new Error(
+        `bw CLI error: credential save verification failed for ${domain}: saved item did not match requested ${label} ${mismatches.join(", ")}`,
+      )
+    }
   }
 }

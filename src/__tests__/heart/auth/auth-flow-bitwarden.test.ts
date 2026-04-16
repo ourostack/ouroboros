@@ -117,6 +117,21 @@ function installBwExecHarness(): void {
       return
     }
 
+    if (args[0] === "get" && args[1] === "item") {
+      if (session !== bwHarness.validSession) {
+        cb(new Error("Command failed: bw get item"), "", "Session key is invalid or expired")
+        return
+      }
+      const id = args[2]
+      const item = [...bwHarness.items.values()].find((entry) => entry.id === id)
+      if (!item) {
+        cb(new Error("Command failed: bw get item"), "", "Not found.")
+        return
+      }
+      cb(null, JSON.stringify(item), "")
+      return
+    }
+
     const finishWrite = (stdin: string | undefined): void => {
       commandRecord.stdin = stdin
       if (session !== bwHarness.validSession) {
