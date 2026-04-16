@@ -365,6 +365,10 @@ export async function runInteractiveRepair(
     if (result.attempted) repairsAttempted = true
   }
 
+  if (repairsAttempted) {
+    deps.writeStdout("Repair flow complete.")
+  }
+
   emitNervesEvent({
     level: "info",
     component: "daemon",
