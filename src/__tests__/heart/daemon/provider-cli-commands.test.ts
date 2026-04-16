@@ -350,6 +350,7 @@ describe("provider CLI command parsing", () => {
       kind: "repair",
       agent: "Slugger",
     })
+    expect(() => parseOuroCommand(["repair", "slugger"])).toThrow("Usage: ouro repair [--agent <name>]")
   })
 
   it("maps legacy facing flags to provider lanes", () => {
@@ -1077,6 +1078,145 @@ describe("provider CLI command execution", () => {
       "saved-unlock-secret",
       { homeDir, store: undefined },
     )
+  })
+
+  it("ouro repair explains when no agents are available", async () => {
+    emitTestEvent("provider cli repair no agents")
+    const bundlesRoot = makeTempDir("provider-cli-repair-empty-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-empty-home")
+
+    const result = await runOuroCli(["repair"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => [],
+    }))
+
+    expect(result).toBe("no agents found to repair.")
+  })
+
+  it("ouro repair reports ready agents without prompting", async () => {
+    emitTestEvent("provider cli repair ready agent")
+    const bundlesRoot = makeTempDir("provider-cli-repair-ready-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-ready-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+    const promptInput = vi.fn(async () => "1")
+
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput,
+    }))
+
+    expect(result).toContain("Slugger: ready")
+    expect(promptInput).not.toHaveBeenCalled()
+  })
+
+  it("ouro repair renders readiness-check failures as generic repair guidance", async () => {
+    emitTestEvent("provider cli repair readiness check failure")
+    const bundlesRoot = makeTempDir("provider-cli-repair-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-missing-home")
+
+    const result = await runOuroCli(["repair", "--agent", "Missing"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("agent.json not found")
+    expect(result).toContain("Run 'ouro hatch Missing' to create the agent bundle")
+    expect(result).toContain("manual repair required for Missing")
+  })
+
+  it("ouro repair can replace a locked vault from the typed repair menu", async () => {
+    emitTestEvent("provider cli repair vault replace")
+    const bundlesRoot = makeTempDir("provider-cli-repair-replace-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-replace-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+      email: "slugger@ouro.bot",
+      serverUrl: "https://vault.ouroboros.bot",
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "2",
+      promptSecret: async (question) => {
+        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
+        return "chosen-replacement-material"
+      },
+    }))
+
+    expect(result).toContain("vault replaced for Slugger")
+    expect(result).toContain("repair attempted for Slugger")
+  })
+
+  it("ouro repair can refresh provider credentials from the typed repair menu", async () => {
+    emitTestEvent("provider cli repair provider auth")
+    const bundlesRoot = makeTempDir("provider-cli-repair-auth-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-auth-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    mockProviderCredentials.refreshProviderCredentialPool
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: "missing",
+        poolPath: "vault:Slugger:providers/*",
+        error: "provider credentials have not been loaded from vault",
+      })
+      .mockResolvedValueOnce(okCredentialPool("Slugger", credentialPool()))
+    mockProviderCredentials.pools.set(
+      "Slugger",
+      okCredentialPool("Slugger", credentialPool()),
+    )
+    const runAuthFlow = vi.fn(async () => ({ ok: true, message: "authenticated Slugger with anthropic" }))
+
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "1",
+      runAuthFlow,
+    }))
+
+    expect(runAuthFlow).toHaveBeenCalledWith({
+      agentName: "Slugger",
+      provider: "anthropic",
+      promptInput: expect.any(Function),
+    })
+    expect(result).toContain("authenticated Slugger with anthropic")
+    expect(result).toContain("refreshed provider credential snapshot for Slugger")
+    expect(result).toContain("repair attempted for Slugger")
+  })
+
+  it("ouro repair uses the default auth flow when no test runner is injected", async () => {
+    emitTestEvent("provider cli repair default provider auth")
+    const bundlesRoot = makeTempDir("provider-cli-repair-default-auth-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-default-auth-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+    }))
+    writeMissingProviderCredentialPool("Slugger")
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return question.startsWith("Choose ") ? "1" : "minimax-secret"
+      },
+    }))
+
+    expect(prompts).toContain("Choose [1-3]: ")
+    expect(prompts).toContain("MiniMax API key: ")
+    expect(mockVaultDeps.rawSecrets.get("Slugger:providers/minimax")).toContain("minimax-secret")
+    expect(result).toContain("authenticated Slugger with minimax")
+    expect(result).toContain("repair attempted for Slugger")
   })
 
   it("vault create can use an explicit email and prompted unlock material", async () => {
