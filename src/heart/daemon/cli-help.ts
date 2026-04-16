@@ -298,7 +298,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "vault recover": {
     description: "Create an agent vault at the stable agent email and import local JSON credential exports",
-    usage: "ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
+    usage: "ouro vault recover --agent <name> --from <json> [--from <json> ...] [--email <email>] [--server <url>] [--store <store>]",
     example: "ouro vault recover --agent ouroboros --from ./credentials.json",
   },
   "vault unlock": {

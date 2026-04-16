@@ -501,7 +501,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
         throw new Error("--from is only valid with `ouro vault recover`; use `ouro vault replace` when there is no JSON export to import.")
       }
       const value = rest[i + 1]
-      if (!value) throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json>]")
+      if (!value) throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json> ...]")
       sources.push(value)
       i += 1
       continue
@@ -538,7 +538,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   }
   if (sub === "recover") {
     if (sources.length === 0) {
-      throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json>]")
+      throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json> ...]")
     }
     return {
       kind: "vault.recover",

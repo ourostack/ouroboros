@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.403",
+      "changes": [
+        "Vault recovery help and parser usage now render repeatable `--from <json>` imports explicitly as `--from <json> [--from <json> ...]`, so the rescue command reads like a repeatable flag instead of a duplicated typo.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault recovery help clarity release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.402",
       "changes": [
         "Added `credential_generate_password`, a family-trusted credential tool that mints strong signup passwords and tells the agent to persist the exact accepted password with `credential_store` once the site accepts it.",
