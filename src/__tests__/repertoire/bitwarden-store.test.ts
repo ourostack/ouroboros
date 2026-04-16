@@ -1119,7 +1119,7 @@ describe("BitwardenCredentialStore", () => {
       }
 
       expect(thrown).not.toBeNull()
-      expect(thrown!.message).toBe("bw CLI error: create item timed out while waiting for a vault response")
+      expect(thrown!.message).toBe("bw CLI error: create item timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
       expect(thrown!.message).not.toContain(leakedEncodedPayload)
       expect(thrown!.message).not.toContain("slow-secret")
       expect(thrown!.message).not.toContain("bw create item")
@@ -2016,7 +2016,7 @@ describe("BitwardenCredentialStore", () => {
 
     it("recognizes formatted timeout errors as transient (killed process with SIGTERM)", async () => {
       // After formatBwCliError, the message is "bw CLI error: status timed out while
-      // waiting for a vault response" which should still be treated as transient.
+      // usually resolves on retry..." which should still be treated as transient.
       let statusCallCount = 0
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -2048,7 +2048,7 @@ describe("BitwardenCredentialStore", () => {
 
     it("recognizes formatted timeout errors from inner operations as transient", async () => {
       // When an inner bw command (e.g. unlock) times out, the formatted error
-      // message is "bw CLI error: unlock timed out while waiting for a vault response".
+      // message is "bw CLI error: unlock timed out -- usually resolves on retry...".
       // The login retry loop should recognize this as transient.
       let unlockCallCount = 0
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -2142,7 +2142,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "list") {
           listCallCount++
           if (listCallCount === 1) {
-            const err = new Error("bw CLI error: list items timed out while waiting for a vault response")
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
             cb(err, "", "")
           } else {
             cb(null, JSON.stringify([{
@@ -2178,7 +2178,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "list") {
           listCallCount++
           if (listCallCount === 1) {
-            const err = new Error("bw CLI error: list items timed out while waiting for a vault response")
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
             cb(err, "", "")
           } else {
             cb(null, JSON.stringify([{
@@ -2211,7 +2211,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "list") {
           listCallCount++
           if (listCallCount === 1) {
-            const err = new Error("bw CLI error: list items timed out while waiting for a vault response")
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
             cb(err, "", "")
           } else {
             cb(null, JSON.stringify([{
@@ -2320,7 +2320,7 @@ describe("BitwardenCredentialStore", () => {
           } else if (listCallCount === 2) {
             // After session refresh, the SECOND list call still gets a session error
             // (This tests that transient retry wraps the entire session-retry flow)
-            const err = new Error("bw CLI error: list items timed out while waiting for a vault response")
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
             cb(err, "", "")
           } else {
             // Third call succeeds
