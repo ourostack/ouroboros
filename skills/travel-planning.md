@@ -74,10 +74,13 @@ Present top 3-5 options comparing:
 
 Credentials are managed through the credential access layer, which stores
 agent-owned secrets in the agent's Bitwarden/Vaultwarden credential vault.
-Raw passwords never enter model context.
+Stored passwords stay in the vault. A brand-new signup password may enter
+model context briefly when the agent explicitly generates or types it during
+an interactive sign-up flow.
 
 - Use `credential_get` to check what credentials exist for a domain (metadata only, never passwords)
-- Use `credential_store` to save credentials the agent acquired (e.g., during sign-up for a service)
+- Use `credential_generate_password` to mint a strong password for a new sign-up
+- Use `credential_store` to save credentials the agent acquired after the site accepts them
 - The credential gateway automatically injects secrets into API requests via `getRawSecret()`
 - Use browser-navigation skill form patterns for entering credentials during interactive sessions
 
@@ -85,7 +88,7 @@ Raw passwords never enter model context.
 - Agent-owned credentials live in the agent's Bitwarden/Vaultwarden vault
 - Travel credentials such as Duffel and Stripe are ordinary vault credential items
 - The agent can sign up for services and store its own credentials
-- Stored passwords are never returned to the model — only metadata (domain, username, notes)
+- Existing stored passwords are never returned to the model — only metadata (domain, username, notes)
 
 ### Post-Booking
 - Save confirmation details (confirmation number, dates, hotel name, airline, booking reference)
@@ -117,9 +120,10 @@ Track and reference these travel preferences:
 - `travel_advisory` - US State Dept advisory by country code
 - `geocode_search` - Location/POI search with coordinates
 - `credential_get` - Check credential metadata for a domain (never returns passwords)
-- `credential_store` - Store credentials the agent acquired (family trust, confirmation required)
+- `credential_generate_password` - Generate a strong password for a new sign-up (family trust)
+- `credential_store` - Store credentials the agent acquired (family trust)
 - `credential_list` - List stored credential domains
-- `credential_delete` - Delete stored credentials (family trust, confirmation required)
+- `credential_delete` - Delete stored credentials (family trust)
 
 ### MCP Tools (when configured)
 - Browser tools via `@playwright/mcp` - see `browser-navigation` skill
