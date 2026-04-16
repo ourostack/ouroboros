@@ -6,6 +6,7 @@ import {
   providerCredentialMissingIssue,
   providerLiveCheckFailedIssue,
   renderReadinessIssue,
+  renderReadinessIssueNextSteps,
   runGuidedReadinessRepair,
   vaultLockedIssue,
   type AgentReadinessReport,
@@ -188,6 +189,18 @@ describe("readiness repair guidance", () => {
     expect(isKnownReadinessIssue(genericWithFix)).toBe(false)
     expect(isKnownReadinessIssue(undefined)).toBe(false)
     expect(renderReadinessIssue(genericWithoutFix)).toContain("1. Skip for now")
+  })
+
+  it("includes non-vault detail lines in next-step summaries", () => {
+    const issue = providerCredentialMissingIssue({
+      agentName: "slugger",
+      lane: "outward",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      credentialPath: "vault:slugger:providers/*",
+    })
+
+    expect(renderReadinessIssueNextSteps(issue)).toContain("    source: vault:slugger:providers/*")
   })
 
   it("handles ready reports, manual mode, invalid choices, manual actions, and missing runners", async () => {
