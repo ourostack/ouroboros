@@ -202,6 +202,11 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
   return []
 }
 
+function managedAgentsSignature(agentNames: string[]): string {
+  const unique = [...new Set(agentNames.map((agent) => agent.trim()).filter((agent) => agent.length > 0))].sort()
+  return unique.length > 0 ? unique.join(",") : "(none)"
+}
+
 async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<DegradedAgent[]> {
   return checkAgentProviders(deps, undefined, onProgress)
 }
@@ -332,11 +337,15 @@ export async function ensureDaemonRunning(
   const alive = options.initialAlive ?? await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
     const localRuntime = getRuntimeMetadata()
+    const localManagedAgents = managedAgentsSignature(listEnabledBundleAgents({
+      bundlesRoot: deps.bundlesRoot ?? getAgentBundlesRoot(),
+    }))
     let runningRuntimePromise: Promise<{
       version: string
       lastUpdated: string
       repoRoot: string
       configFingerprint: string
+      managedAgents: string
     }> | null = null
     const fetchRunningRuntimeMetadata = async () => {
       runningRuntimePromise ??= (async () => {
@@ -347,6 +356,9 @@ export async function ensureDaemonRunning(
           lastUpdated: payload?.overview.lastUpdated ?? "unknown",
           repoRoot: payload?.overview.repoRoot ?? "unknown",
           configFingerprint: payload?.overview.configFingerprint ?? "unknown",
+          managedAgents: payload && payload.workers.length > 0
+            ? managedAgentsSignature(payload.workers.map((worker) => worker.agent))
+            : "unknown",
         }
       })()
       return runningRuntimePromise
@@ -358,6 +370,7 @@ export async function ensureDaemonRunning(
       localLastUpdated: localRuntime.lastUpdated,
       localRepoRoot: localRuntime.repoRoot,
       localConfigFingerprint: localRuntime.configFingerprint,
+      localManagedAgents,
       fetchRunningVersion: async () => (await fetchRunningRuntimeMetadata()).version,
       fetchRunningRuntimeMetadata,
       stopDaemon: async () => {
