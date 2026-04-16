@@ -27,7 +27,7 @@ describe("COMMAND_REGISTRY", () => {
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
       "doctor", "outlook", "whoami", "config", "changelog", "chat", "msg", "task",
       "reminder", "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
-      "attention", "session", "mcp", "mcp-serve", "setup", "hook", "bluebubbles",
+      "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
     ]
     for (const cmd of expectedCommands) {
       expect(COMMAND_REGISTRY).toHaveProperty(cmd)
@@ -101,6 +101,9 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("chat")
     // task should appear in the Tasks section
     expect(result).toContain("task")
+    // connect should appear in the Auth section
+    expect(result).toContain("connect")
+    expect(result).toContain("Connect integrations and local senses")
   })
 
   it("includes a Usage header line", () => {
@@ -188,6 +191,15 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("no unlock secret or JSON export exists")
     expect(result).not.toContain("--from <json>")
     expect(result).not.toContain("--generate-unlock-secret")
+  })
+
+  it("returns focused help for connect", () => {
+    const result = getCommandHelp("connect")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("ouro connect [perplexity|bluebubbles] --agent <name>")
+    expect(result).toContain("Perplexity")
+    expect(result).toContain("BlueBubbles")
   })
 })
 

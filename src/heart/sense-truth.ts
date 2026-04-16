@@ -1,10 +1,11 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "./identity"
 
-export type SenseStatus = "disabled" | "needs_config" | "ready" | "running" | "interactive" | "error"
+export type SenseStatus = "disabled" | "not_attached" | "needs_config" | "ready" | "running" | "interactive" | "error"
 
 export interface SenseRuntimeInfo {
   configured?: boolean
+  optional?: boolean
   runtime?: "running" | "error"
   detail?: string
 }
@@ -47,6 +48,9 @@ function resolveStatus(
   }
   if (runtimeInfo?.runtime === "running") {
     return "running"
+  }
+  if (runtimeInfo?.configured === false && runtimeInfo.optional) {
+    return "not_attached"
   }
   if (runtimeInfo?.configured === false) {
     return "needs_config"

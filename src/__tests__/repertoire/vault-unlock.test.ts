@@ -12,6 +12,7 @@ import {
   credentialVaultNotConfiguredError,
   getVaultUnlockStatus,
   isCredentialVaultNotConfiguredError,
+  promptConfirmedVaultUnlockSecret,
   readVaultUnlockSecret,
   resolveVaultUnlockStore,
   storeVaultUnlockSecret,
@@ -85,6 +86,57 @@ describe("vault unlock local stores", () => {
     for (const dir of createdDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it("confirms new vault unlock secrets before returning them", async () => {
+    emitTestEvent("vault unlock confirmed prompt")
+    const prompts: string[] = []
+    const secret = await promptConfirmedVaultUnlockSecret({
+      promptSecret: async (question) => {
+        prompts.push(question)
+        return "Strong-secret1!"
+      },
+      question: "Choose secret: ",
+      confirmQuestion: "Confirm secret: ",
+      emptyError: "empty secret",
+    })
+
+    expect(secret).toBe("Strong-secret1!")
+    expect(prompts).toEqual(["Choose secret: ", "Confirm secret: "])
+  })
+
+  it("rejects weak or mismatched new vault unlock secrets with actionable errors", async () => {
+    emitTestEvent("vault unlock confirmed prompt guards")
+    const weakPrompt = vi.fn(async () => "weak")
+    await expect(promptConfirmedVaultUnlockSecret({
+      promptSecret: weakPrompt,
+      question: "Choose secret: ",
+      confirmQuestion: "Confirm secret: ",
+      emptyError: "empty secret",
+    })).rejects.toThrow("add at least 8 characters, an uppercase letter, a number, a special character")
+    expect(weakPrompt).toHaveBeenCalledTimes(1)
+
+    await expect(promptConfirmedVaultUnlockSecret({
+      promptSecret: async () => "PASSWORD1!",
+      question: "Choose secret: ",
+      confirmQuestion: "Confirm secret: ",
+      emptyError: "empty secret",
+    })).rejects.toThrow("add a lowercase letter")
+
+    const mismatchAnswers = ["Strong-secret1!", "Other-secret1!"]
+    await expect(promptConfirmedVaultUnlockSecret({
+      promptSecret: async () => mismatchAnswers.shift() ?? "",
+      question: "Choose secret: ",
+      confirmQuestion: "Confirm secret: ",
+      emptyError: "empty secret",
+    })).rejects.toThrow("vault unlock secrets did not match")
+
+    await expect(promptConfirmedVaultUnlockSecret({
+      promptSecret: async () => "   ",
+      question: "Choose secret: ",
+      confirmQuestion: "Confirm secret: ",
+      emptyError: "empty secret",
+    })).rejects.toThrow("empty secret")
   })
 
   it("selects platform secure stores and explicit plaintext fallback", () => {

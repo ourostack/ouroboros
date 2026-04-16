@@ -4,11 +4,14 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_AGENT_SENSES, type AgentSensesConfig, type SenseName } from "../identity"
 import {
+  readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
 } from "../runtime-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
+import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
 
 export interface DaemonSenseRow {
@@ -40,6 +43,7 @@ export interface DaemonSenseManagerOptions {
 interface SenseConfigFacts {
   configured: boolean
   detail: string
+  optional?: boolean
 }
 
 interface SenseRuntimeFacts {
@@ -127,14 +131,16 @@ function runtimeConfigUnavailableDetail(
   runtimeConfig: RuntimeCredentialConfigReadResult,
 ): string {
   if (runtimeConfig.ok) return ""
-  if (runtimeConfig.reason === "missing") return `missing vault runtime/config (${agent})`
-  return `vault runtime/config unavailable (${compactRuntimeConfigError(agent, runtimeConfig.error)})`
+  const itemName = /^vault:[^:]+:(.+)$/.exec(runtimeConfig.itemPath)?.[1] ?? "runtime/config"
+  if (runtimeConfig.reason === "missing") return `missing vault ${itemName} (${agent})`
+  return `vault ${itemName} unavailable (${compactRuntimeConfigError(agent, runtimeConfig.error)})`
 }
 
 function senseFactsFromRuntimeConfig(
   agent: string,
   senses: AgentSensesConfig,
   runtimeConfig: RuntimeCredentialConfigReadResult,
+  machineRuntimeConfig: RuntimeCredentialConfigReadResult = readMachineRuntimeCredentialConfig(agent),
 ): Record<SenseName, SenseConfigFacts> {
   const base: Record<SenseName, SenseConfigFacts> = {
     cli: { configured: true, detail: "local interactive terminal" },
@@ -146,8 +152,9 @@ function senseFactsFromRuntimeConfig(
   const unavailableDetail = runtimeConfigUnavailableDetail(agent, runtimeConfig)
   const teams = payload.teams as Record<string, unknown> | undefined
   const teamsChannel = payload.teamsChannel as Record<string, unknown> | undefined
-  const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
-  const bluebubblesChannel = payload.bluebubblesChannel as Record<string, unknown> | undefined
+  const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
+  const bluebubbles = machinePayload.bluebubbles as Record<string, unknown> | undefined
+  const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -162,7 +169,9 @@ function senseFactsFromRuntimeConfig(
         }
       : {
           configured: false,
-          detail: runtimeConfig.ok ? `missing ${missing.join("/")}` : unavailableDetail,
+          detail: runtimeConfig.ok
+              ? `missing ${missing.join("/")}`
+              : unavailableDetail,
         }
   }
 
@@ -178,7 +187,12 @@ function senseFactsFromRuntimeConfig(
         }
       : {
           configured: false,
-          detail: runtimeConfig.ok ? `missing ${missing.join("/")}` : unavailableDetail,
+          optional: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing",
+          detail: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing"
+            ? "not attached on this machine"
+            : machineRuntimeConfig.ok
+              ? `missing ${missing.join("/")}`
+              : runtimeConfigUnavailableDetail(agent, machineRuntimeConfig),
         }
   }
 
@@ -189,7 +203,11 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "teams") {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
   }
-  return `Run 'ouro vault config set --agent ${agent} --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.`
+  return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
+}
+
+function currentMachineId(): string {
+  return loadOrCreateMachineIdentity({ homeDir: os.homedir() }).machineId
 }
 
 function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName } | null {
@@ -289,7 +307,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     this.contexts = new Map(
       options.agents.map((agent) => {
         const senses = readAgentSenses(path.join(bundlesRoot, `${agent}.ouro`, "agent.json"))
-        const facts = senseFactsFromRuntimeConfig(agent, senses, readRuntimeCredentialConfig(agent))
+        const facts = senseFactsFromRuntimeConfig(agent, senses, readRuntimeCredentialConfig(agent), readMachineRuntimeCredentialConfig(agent))
         return [agent, { senses, facts }]
       }),
     )
@@ -314,9 +332,19 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
         const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed)
+        const machineRefreshed = parsed.sense === "bluebubbles"
+          ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
+          : readMachineRuntimeCredentialConfig(parsed.agent)
+        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
         const fact = context.facts[parsed.sense]
         if (fact.configured) return { ok: true }
+        if (fact.optional) {
+          return {
+            ok: false,
+            skip: true,
+            error: `${parsed.sense} is enabled for ${parsed.agent} but not attached on this machine`,
+          }
+        }
         return {
           ok: false,
           error: `${parsed.sense} is enabled for ${parsed.agent} but runtime credentials are not ready: ${fact.detail}`,
@@ -363,7 +391,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     }
 
     const rows = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, readRuntimeCredentialConfig(agent))
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, readRuntimeCredentialConfig(agent), readMachineRuntimeCredentialConfig(agent))
       const blueBubblesRuntimeFacts = readBlueBubblesRuntimeFacts(agent, this.bundlesRoot, runtime.get(agent)?.bluebubbles)
       const runtimeInfo: Partial<Record<SenseName, SenseRuntimeInfo>> = {
         cli: { configured: true },
@@ -373,6 +401,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         },
         bluebubbles: {
           configured: context.facts.bluebubbles.configured,
+          optional: context.facts.bluebubbles.optional,
           ...blueBubblesRuntimeFacts,
         },
       }
