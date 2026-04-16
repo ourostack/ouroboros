@@ -324,6 +324,7 @@ describe("ouro up: interactive repair wiring", () => {
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("repair step finished for test-agent.")
     expect(output).toContain("Still blocked:")
+    expect(output).toContain("Still blocked:\n\n  test-agent: missing anthropic credentials (outward, claude-opus-4-6)")
     expect(output).toContain("test-agent: missing anthropic credentials (outward, claude-opus-4-6)")
     expect(output).toContain("next: ouro auth --agent test-agent --provider anthropic")
     expect(result).toContain("daemon not started: provider checks still need repair")
