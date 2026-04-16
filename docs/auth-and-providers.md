@@ -351,7 +351,7 @@ Keep the core auth/provider vocabulary small:
 ouro vault unlock --agent <agent>
 ouro vault status --agent <agent>
 ouro vault replace --agent <agent>
-ouro vault recover --agent <agent> --from <json> [--from <json>]
+ouro vault recover --agent <agent> --from <json> [--from <json> ...]
 ouro vault config set --agent <agent> --key <field>
 ouro vault config status --agent <agent>
 ouro auth --agent <agent> --provider <provider>
