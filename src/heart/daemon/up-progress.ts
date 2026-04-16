@@ -30,6 +30,7 @@ interface CompletedPhase {
 interface CurrentPhase {
   label: string
   startedAt: number
+  detail?: string
 }
 
 export interface UpProgressOptions {
@@ -72,6 +73,16 @@ export class UpProgress {
   announceStep(label: string): void {
     if (this.isTTY) return
     this.write(label)
+  }
+
+  /**
+   * Update the sub-step detail on the current spinner phase. Rendered as
+   * "label (Xs) -- detail" in TTY mode. No-op in non-TTY mode or when
+   * no phase is active.
+   */
+  updateDetail(detail: string): void {
+    if (!this.isTTY || !this.currentPhase) return
+    this.currentPhase.detail = detail
   }
 
   /**
@@ -123,7 +134,8 @@ export class UpProgress {
       const elapsedSec = (elapsed / 1000).toFixed(1)
       const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
       const spinner = SPINNER_FRAMES[frameIndex]
-      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${RESET}`)
+      const detailSuffix = this.currentPhase.detail ? ` \u2014 ${this.currentPhase.detail}` : ""
+      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${detailSuffix}${RESET}`)
     }
 
     let output = ""
