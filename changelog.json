@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.411",
+      "changes": [
+        "`ouro up` interactive repair now re-evaluates each agent after a successful vault-unlock or provider-auth, so users see immediate confirmation or an updated next step instead of stale context.",
+        "Repair prompts now include agent names (`Unlock slugger's vault now?`) instead of generic phrasing.",
+        "Terminal `Repair flow complete.` message printed when at least one repair was attempted, giving clear closure to the interactive flow.",
+        "Redundant repair queue summary suppressed in the post-daemon-start path where the status block already listed degraded agents."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.410",
       "changes": [
         "Added guided `ouro connect` onboarding for Perplexity search and local BlueBubbles attachment setup, with hidden secret prompts and compact success output.",
