@@ -13,6 +13,43 @@ import type { CredentialMeta, CredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 import { ensureBwCli } from "./bw-installer"
 
+const MAX_ERROR_DETAIL_LENGTH = 500
+const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
+
+function uniqueSecrets(secrets: Array<string | undefined>): string[] {
+  return [...new Set(
+    secrets.filter((value): value is string => typeof value === "string" && value.length >= 4),
+  )].sort((left, right) => right.length - left.length)
+}
+
+export function sanitizeCredentialErrorDetail(
+  message: string,
+  options: { secrets?: Array<string | undefined> } = {},
+): string {
+  const filtered = message
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith("Command failed:")) return false
+      if (trimmed.includes("[input is hidden]")) return false
+      return true
+    })
+    .join("\n")
+    .trim()
+
+  let sanitized = filtered || "command failed"
+  for (const secret of uniqueSecrets(options.secrets ?? [])) {
+    sanitized = sanitized.split(secret).join("[redacted]")
+  }
+
+  sanitized = sanitized.replace(LONG_ENCODED_TOKEN_PATTERN, "[redacted]")
+  if (sanitized.replace(/\[redacted\]/g, "").trim().length === 0) {
+    return "command failed"
+  }
+
+  return sanitized.slice(0, MAX_ERROR_DETAIL_LENGTH)
+}
+
 // ---------------------------------------------------------------------------
 // bw CLI wrapper
 // ---------------------------------------------------------------------------
@@ -56,14 +93,7 @@ function sanitizeBwErrorDetail(message: string): string {
   if (isBwSessionUnavailableMessage(message)) {
     return "bw CLI could not use the local Bitwarden session because it is locked, missing, or expired"
   }
-  const withoutCommandLine = message
-    .split(/\r?\n/)
-    .filter((line) => !line.trim().startsWith("Command failed:"))
-    .join("\n")
-    .trim()
-  return (withoutCommandLine || "command failed")
-    .replace(/[A-Za-z0-9+/=]{80,}/g, "[redacted]")
-    .slice(0, 500)
+  return sanitizeCredentialErrorDetail(message)
 }
 
 function formatBwCliError(err: Error, stderr = "", args: string[] = []): Error {
