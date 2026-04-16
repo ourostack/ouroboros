@@ -110,7 +110,7 @@ export function vaultUnlockReplaceRecoverFix(agentName: string, nextStep = "Then
   return [
     `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
     `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
-    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
+    `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create the agent vault and import it.`,
     nextStep,
   ].join(" ")
 }

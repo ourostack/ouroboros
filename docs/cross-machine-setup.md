@@ -98,17 +98,19 @@ If this agent predates the vault-backed auth model, follow the **Old Auth-Style 
 
 If the bundle already has vault coordinates but nobody ever saved an unlock secret, use the old-auth checklist instead of `ouro vault unlock`.
 
-If there is no local credential export because the agent predates vault-backed provider storage, create an empty replacement vault and re-enter credentials:
+If there is no local credential export because the agent predates vault-backed provider storage, create an empty agent vault and re-enter credentials:
 
 ```bash
 ouro vault replace --agent <agent>
 ```
 
-If the human does have a local JSON credential export, recover into a replacement vault and import it once:
+If the human does have a local JSON credential export, recover into the agent vault and import it once:
 
 ```bash
 ouro vault recover --agent <agent> --from <json>
 ```
+
+Both commands use the stable agent vault email by default, such as `<agent>@ouro.bot`. They do not invent timestamped `+replaced` or `+recovered` addresses. If that vault account already exists, unlock it if the secret exists; only use `--email <email>` when intentionally moving the agent to a different vault account.
 
 ## Step 4: Start the daemon
 
