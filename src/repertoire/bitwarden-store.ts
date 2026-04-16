@@ -31,6 +31,24 @@ function isBwInvalidUnlockSecretMessage(message: string): boolean {
   return /invalid master password/i.test(message) || /saved vault unlock secret/i.test(message)
 }
 
+function isBwTimeoutError(err: Error): boolean {
+  const timeoutErr = err as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }
+  const message = err.message.toLowerCase()
+  return (
+    timeoutErr.code === "ETIMEDOUT" ||
+    timeoutErr.killed === true ||
+    timeoutErr.signal === "SIGTERM" ||
+    message.includes("timed out")
+  )
+}
+
+function formatBwOperation(args: string[]): string {
+  const [command, target] = args
+  /* v8 ignore next -- defensive: all execBw call sites pass a concrete bw subcommand @preserve */
+  if (!command) return "bw command"
+  return [command, target].filter(Boolean).join(" ")
+}
+
 function sanitizeBwErrorDetail(message: string): string {
   if (isBwInvalidUnlockSecretMessage(message)) {
     return "bw CLI rejected the saved vault unlock secret for this machine"
@@ -48,8 +66,15 @@ function sanitizeBwErrorDetail(message: string): string {
     .slice(0, 500)
 }
 
-function formatBwCliError(err: Error, stderr = ""): Error {
+function formatBwCliError(err: Error, stderr = "", args: string[] = []): Error {
+  const operation = formatBwOperation(args)
+  if (isBwTimeoutError(err)) {
+    return new Error(`bw CLI error: ${operation} timed out while waiting for a vault response`)
+  }
   const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
+  if (detail === "command failed") {
+    return new Error(`bw CLI error: ${operation} failed without error detail`)
+  }
   return new Error(`bw CLI error: ${detail}`)
 }
 
@@ -76,7 +101,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
           reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
           return
         }
-        reject(formatBwCliError(err, stderr))
+        reject(formatBwCliError(err, stderr, args))
         return
       }
       resolve(stdout)
