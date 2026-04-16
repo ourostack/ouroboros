@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.411",
+      "changes": [
+        "`ouro up` now shows real-time per-agent progress during provider checks -- the spinner displays which agent and vault operation is in progress (`slugger: reading vault items...`) instead of a static label with no detail.",
+        "Added `onProgress` callback to `refreshProviderCredentialPool` and `updateDetail()` method to `UpProgress` for sub-step spinner detail, threaded through the full `executeUpCommand` -> `checkAgentProviders` -> provider health check chain.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the progress threading release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.410",
       "changes": [
         "Added guided `ouro connect` onboarding for Perplexity search and local BlueBubbles attachment setup, with hidden secret prompts and compact success output.",
