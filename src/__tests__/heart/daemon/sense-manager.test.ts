@@ -14,6 +14,11 @@ async function cacheRuntimeConfig(agent: string, payload: Record<string, unknown
   cacheRuntimeCredentialConfig(agent, payload, new Date(0))
 }
 
+async function cacheMachineRuntimeConfig(agent: string, payload: Record<string, unknown>): Promise<void> {
+  const { cacheMachineRuntimeCredentialConfig } = await import("../../../heart/runtime-credentials")
+  cacheMachineRuntimeCredentialConfig(agent, payload, new Date(0), "machine_test")
+}
+
 describe("daemon sense manager", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -49,7 +54,7 @@ describe("daemon sense manager", () => {
     expect(processManager.stopAll).toHaveBeenCalledTimes(1)
   })
 
-  it("reports needs_config for enabled senses when vault runtime/config is missing", async () => {
+  it("reports needs_config for Teams and not_attached for local BlueBubbles when vault runtime/config is missing", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -77,7 +82,7 @@ describe("daemon sense manager", () => {
     expect(manager.listSenseRows()).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
-      expect.objectContaining({ sense: "bluebubbles", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
+      expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
     ])
   })
 
@@ -103,6 +108,8 @@ describe("daemon sense manager", () => {
       teamsChannel: {
         port: 5000,
       },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -150,7 +157,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -215,7 +222,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -280,7 +287,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -344,7 +351,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -407,7 +414,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -472,7 +479,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -554,6 +561,8 @@ describe("daemon sense manager", () => {
         clientSecret: "secret",
         tenantId: "tenant",
       },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -619,6 +628,8 @@ describe("daemon sense manager", () => {
         clientSecret: "secret",
         tenantId: "tenant",
       },
+    }
+    let machineRuntimeConfig: Record<string, unknown> | null = {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
@@ -661,6 +672,34 @@ describe("daemon sense manager", () => {
         revision: "runtime_test",
         updatedAt: new Date(0).toISOString(),
       }),
+      readMachineRuntimeCredentialConfig: (agentName: string) => machineRuntimeConfig
+        ? {
+            ok: true,
+            itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+            config: machineRuntimeConfig,
+            revision: "runtime_machine_test",
+            updatedAt: new Date(0).toISOString(),
+          }
+        : {
+            ok: false,
+            reason: "missing",
+            itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+            error: "missing",
+          },
+      refreshMachineRuntimeCredentialConfig: async (agentName: string) => machineRuntimeConfig
+        ? {
+            ok: true,
+            itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+            config: machineRuntimeConfig,
+            revision: "runtime_machine_test",
+            updatedAt: new Date(0).toISOString(),
+          }
+        : {
+            ok: false,
+            reason: "missing",
+            itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+            error: "missing",
+          },
     }))
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
@@ -677,10 +716,6 @@ describe("daemon sense manager", () => {
     await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
 
     runtimeConfig = {
-      bluebubbles: {
-        serverUrl: "http://localhost:1234",
-        password: "pw",
-      },
     }
     const missingTeams = await options.configCheck("slugger:teams")
     expect(missingTeams).toEqual({
@@ -696,11 +731,24 @@ describe("daemon sense manager", () => {
         tenantId: "tenant",
       },
     }
+    machineRuntimeConfig = null
     const missingBlueBubbles = await options.configCheck("slugger:bluebubbles")
     expect(missingBlueBubbles).toEqual({
       ok: false,
-      error: "bluebubbles is enabled for slugger but runtime credentials are not ready: missing bluebubbles.serverUrl/bluebubbles.password",
-      fix: "Run 'ouro vault config set --agent slugger --key bluebubbles.serverUrl' and bluebubbles.password; then run 'ouro up' again.",
+      skip: true,
+      error: "bluebubbles is enabled for slugger but not attached on this machine",
+    })
+
+    machineRuntimeConfig = {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+      },
+    }
+    const incompleteBlueBubbles = await options.configCheck("slugger:bluebubbles")
+    expect(incompleteBlueBubbles).toEqual({
+      ok: false,
+      error: "bluebubbles is enabled for slugger but runtime credentials are not ready: missing bluebubbles.password",
+      fix: "Run 'ouro connect bluebubbles --agent slugger' to attach BlueBubbles on this machine; then run 'ouro up' again.",
     })
   })
 
@@ -738,8 +786,146 @@ describe("daemon sense manager", () => {
     )
     expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
       expect.objectContaining({
+        status: "not_attached",
+        detail: "not attached on this machine",
+      }),
+    )
+  })
+
+  it("reports incomplete BlueBubbles machine attachments as needs_config", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
+      expect.objectContaining({
         status: "needs_config",
-        detail: "missing bluebubbles.serverUrl/bluebubbles.password",
+        detail: "missing bluebubbles.password",
+      }),
+    )
+  })
+
+  it("reports unavailable BlueBubbles machine attachments distinctly from not_attached", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/config",
+        error: "missing",
+      }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "machine vault locked",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/machines/machine_test/config unavailable (vault locked; run 'ouro vault unlock --agent slugger' if you have the saved secret, or 'ouro vault replace --agent slugger' if none was saved)",
+      }),
+    )
+  })
+
+  it("falls back to runtime/config wording for unavailable runtime item paths without a vault prefix", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "missing",
+        itemPath: "runtime/config",
+        error: "missing",
+      }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "runtime/machines/machine_test/config",
+        error: "machine vault not ready",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/config unavailable (machine vault not ready)",
       }),
     )
   })
@@ -847,7 +1033,14 @@ describe("daemon sense manager", () => {
           "Run `ouro vault unlock --agent slugger` and enter the saved agent vault unlock secret.",
         ].join("\n"),
       }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing",
+      }),
       refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
     }))
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
@@ -890,7 +1083,14 @@ describe("daemon sense manager", () => {
         itemPath: "vault:slugger:runtime/config",
         error: "runtime credential payload\nis malformed",
       }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing",
+      }),
       refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
     }))
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
@@ -933,7 +1133,14 @@ describe("daemon sense manager", () => {
         itemPath: "vault:slugger:runtime/config",
         error: "  \n\t ",
       }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "missing",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "missing",
+      }),
       refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
     }))
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")

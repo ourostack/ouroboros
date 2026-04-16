@@ -23,8 +23,10 @@ interface RuntimeCredentialVaultPayload {
 }
 
 export const RUNTIME_CONFIG_ITEM_NAME = "runtime/config"
+export const MACHINE_RUNTIME_CONFIG_ITEM_PREFIX = "runtime/machines"
 
 let cachedRuntimeConfigs = new Map<string, RuntimeCredentialConfigReadResult>()
+let cachedMachineRuntimeConfigs = new Map<string, RuntimeCredentialConfigReadResult>()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -38,8 +40,14 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function runtimeConfigVaultPath(agentName: string): string {
-  return `vault:${agentName}:${RUNTIME_CONFIG_ITEM_NAME}`
+function runtimeConfigVaultPath(agentName: string, itemName = RUNTIME_CONFIG_ITEM_NAME): string {
+  return `vault:${agentName}:${itemName}`
+}
+
+export function machineRuntimeConfigItemName(machineId: string): string {
+  const normalized = machineId.trim()
+  if (!normalized) throw new Error("machineId must be non-empty")
+  return `${MACHINE_RUNTIME_CONFIG_ITEM_PREFIX}/${normalized}/config`
 }
 
 function runtimeConfigRevision(payload: RuntimeCredentialVaultPayload): string {
@@ -71,12 +79,26 @@ function resultFromPayload(agentName: string, payload: RuntimeCredentialVaultPay
   }
 }
 
-function missingRuntimeConfig(agentName: string): RuntimeCredentialConfigReadResult {
+function resultFromPayloadForItem(
+  agentName: string,
+  itemName: string,
+  payload: RuntimeCredentialVaultPayload,
+): RuntimeCredentialConfigReadSuccess {
+  return {
+    ok: true,
+    itemPath: runtimeConfigVaultPath(agentName, itemName),
+    config: { ...payload.config },
+    revision: runtimeConfigRevision(payload),
+    updatedAt: payload.updatedAt,
+  }
+}
+
+function missingRuntimeConfig(agentName: string, itemName = RUNTIME_CONFIG_ITEM_NAME): RuntimeCredentialConfigReadResult {
   return {
     ok: false,
     reason: "missing",
-    itemPath: runtimeConfigVaultPath(agentName),
-    error: `no runtime credentials stored at ${runtimeConfigVaultPath(agentName)}`,
+    itemPath: runtimeConfigVaultPath(agentName, itemName),
+    error: `no runtime credentials stored at ${runtimeConfigVaultPath(agentName, itemName)}`,
   }
 }
 
@@ -85,8 +107,26 @@ function cacheResult(agentName: string, result: RuntimeCredentialConfigReadResul
   return result
 }
 
+function cacheMachineResult(agentName: string, result: RuntimeCredentialConfigReadResult): RuntimeCredentialConfigReadResult {
+  cachedMachineRuntimeConfigs.set(agentName, result)
+  return result
+}
+
+function missingMachineRuntimeConfig(agentName: string): RuntimeCredentialConfigReadResult {
+  return {
+    ok: false,
+    reason: "missing",
+    itemPath: `vault:${agentName}:${MACHINE_RUNTIME_CONFIG_ITEM_PREFIX}/<this-machine>/config`,
+    error: `no machine runtime credentials loaded for ${agentName}`,
+  }
+}
+
 export function readRuntimeCredentialConfig(agentName: string = getAgentName()): RuntimeCredentialConfigReadResult {
   return cachedRuntimeConfigs.get(agentName) ?? missingRuntimeConfig(agentName)
+}
+
+export function readMachineRuntimeCredentialConfig(agentName: string = getAgentName()): RuntimeCredentialConfigReadResult {
+  return cachedMachineRuntimeConfigs.get(agentName) ?? missingMachineRuntimeConfig(agentName)
 }
 
 export function cacheRuntimeCredentialConfig(
@@ -103,26 +143,45 @@ export function cacheRuntimeCredentialConfig(
   return cacheResult(agentName, resultFromPayload(agentName, payload))
 }
 
-export async function refreshRuntimeCredentialConfig(
+export function cacheMachineRuntimeCredentialConfig(
   agentName: string,
+  config: RuntimeCredentialConfig,
+  now: Date = new Date(),
+  machineId = "<this-machine>",
+): RuntimeCredentialConfigReadResult {
+  const payload: RuntimeCredentialVaultPayload = {
+    schemaVersion: 1,
+    kind: "runtime-config",
+    updatedAt: now.toISOString(),
+    config: { ...config },
+  }
+  return cacheMachineResult(agentName, resultFromPayloadForItem(agentName, machineRuntimeConfigItemName(machineId), payload))
+}
+
+async function refreshRuntimeCredentialConfigItem(
+  agentName: string,
+  itemName: string,
+  cache: (agentName: string, result: RuntimeCredentialConfigReadResult) => RuntimeCredentialConfigReadResult,
   options: RefreshRuntimeCredentialConfigOptions = {},
 ): Promise<RuntimeCredentialConfigReadResult> {
   try {
     const store = getCredentialStore(agentName)
-    const raw = await store.getRawSecret(RUNTIME_CONFIG_ITEM_NAME, "password")
+    const raw = await store.getRawSecret(itemName, "password")
     const payload = validateRuntimeCredentialPayload(JSON.parse(raw) as unknown)
-    const result = resultFromPayload(agentName, payload)
+    const result = resultFromPayloadForItem(agentName, itemName, payload)
     emitNervesEvent({
       component: "config/identity",
       event: "config.runtime_credentials_loaded",
       message: "loaded runtime credentials from vault",
       meta: { agentName, itemPath: result.itemPath, revision: result.revision },
     })
-    return cacheResult(agentName, result)
+    return cache(agentName, result)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const cached = cachedRuntimeConfigs.get(agentName)
-    const reason = message.includes(`no credential found for domain "${RUNTIME_CONFIG_ITEM_NAME}"`)
+    const existing = cache === cacheMachineResult
+      ? cachedMachineRuntimeConfigs.get(agentName)
+      : cachedRuntimeConfigs.get(agentName)
+    const reason = message.includes(`no credential found for domain "${itemName}"`)
       ? "missing"
       : message.includes("runtime credential payload")
         ? "invalid"
@@ -130,8 +189,8 @@ export async function refreshRuntimeCredentialConfig(
     const result: RuntimeCredentialConfigReadResult = {
       ok: false,
       reason,
-      itemPath: runtimeConfigVaultPath(agentName),
-      error: reason === "missing" ? `no runtime credentials stored at ${runtimeConfigVaultPath(agentName)}` : message,
+      itemPath: runtimeConfigVaultPath(agentName, itemName),
+      error: reason === "missing" ? `no runtime credentials stored at ${runtimeConfigVaultPath(agentName, itemName)}` : message,
     }
     emitNervesEvent({
       level: reason === "missing" ? "warn" : "error",
@@ -140,9 +199,24 @@ export async function refreshRuntimeCredentialConfig(
       message: "runtime credentials unavailable",
       meta: { agentName, reason, itemPath: result.itemPath },
     })
-    if (options.preserveCachedOnFailure && cached?.ok) return cached
-    return cacheResult(agentName, result)
+    if (options.preserveCachedOnFailure && existing?.ok) return existing
+    return cache(agentName, result)
   }
+}
+
+export async function refreshRuntimeCredentialConfig(
+  agentName: string,
+  options: RefreshRuntimeCredentialConfigOptions = {},
+): Promise<RuntimeCredentialConfigReadResult> {
+  return refreshRuntimeCredentialConfigItem(agentName, RUNTIME_CONFIG_ITEM_NAME, cacheResult, options)
+}
+
+export async function refreshMachineRuntimeCredentialConfig(
+  agentName: string,
+  machineId: string,
+  options: RefreshRuntimeCredentialConfigOptions = {},
+): Promise<RuntimeCredentialConfigReadResult> {
+  return refreshRuntimeCredentialConfigItem(agentName, machineRuntimeConfigItemName(machineId), cacheMachineResult, options)
 }
 
 export async function upsertRuntimeCredentialConfig(
@@ -173,6 +247,37 @@ export async function upsertRuntimeCredentialConfig(
   return result
 }
 
+export async function upsertMachineRuntimeCredentialConfig(
+  agentName: string,
+  machineId: string,
+  config: RuntimeCredentialConfig,
+  now: Date = new Date(),
+): Promise<RuntimeCredentialConfigReadSuccess> {
+  const payload: RuntimeCredentialVaultPayload = {
+    schemaVersion: 1,
+    kind: "runtime-config",
+    updatedAt: now.toISOString(),
+    config: { ...config },
+  }
+  const itemName = machineRuntimeConfigItemName(machineId)
+  const store = getCredentialStore(agentName)
+  await store.store(itemName, {
+    username: itemName,
+    password: JSON.stringify(payload),
+    notes: "Ouro machine-local runtime credentials for senses attached to one machine. Portable runtime credentials live in runtime/config.",
+  })
+  const result = resultFromPayloadForItem(agentName, itemName, payload)
+  emitNervesEvent({
+    component: "config/identity",
+    event: "config.runtime_credentials_upserted",
+    message: "upserted machine runtime credential config in vault",
+    meta: { agentName, itemPath: result.itemPath, revision: result.revision },
+  })
+  cacheMachineResult(agentName, result)
+  return result
+}
+
 export function resetRuntimeCredentialConfigCache(): void {
   cachedRuntimeConfigs = new Map()
+  cachedMachineRuntimeConfigs = new Map()
 }

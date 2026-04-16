@@ -119,6 +119,57 @@ describe("daemon process manager", () => {
     expect(snap?.fixHint).toContain("ouro auth")
   })
 
+  it("leaves an agent stopped when configCheck asks to skip startup", async () => {
+    const onSnapshotChange = vi.fn()
+    const configCheck = vi.fn().mockReturnValue({
+      ok: false,
+      skip: true,
+      error: "bluebubbles is enabled but not attached on this machine",
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+      onSnapshotChange,
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(onSnapshotChange).toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")).toEqual(
+      expect.objectContaining({
+        status: "stopped",
+        errorReason: null,
+        fixHint: null,
+      }),
+    )
+  })
+
+  it("uses a default skip message when configCheck omits one", async () => {
+    const configCheck = vi.fn().mockReturnValue({ ok: false, skip: true })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    await manager.startAgent("slugger")
+
+    expect(spawn).not.toHaveBeenCalled()
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
+  })
+
   it("clears errorReason and fixHint when a later configCheck passes (recovery)", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)

@@ -444,7 +444,7 @@ function localSenseStatusLines(): string[] {
     },
     {
       label: "BlueBubbles",
-      status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "needs_config",
+      status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
     },
   ]
 
@@ -459,12 +459,13 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("- interactive = available when opened by the user instead of kept running by the daemon")
   lines.push("- disabled = turned off in agent.json")
   lines.push("- needs_config = enabled but missing required vault runtime/config values")
+  lines.push("- not_attached = enabled globally but no local-machine attachment is configured here")
   lines.push("- ready = enabled and configured; `ouro up` should bring it online")
   lines.push("- running = enabled and currently active")
   lines.push("- error = enabled but unhealthy")
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: enable `senses.teams.enabled`, then store `teams.clientId`, `teams.clientSecret`, and `teams.tenantId` in the agent vault runtime/config item.")
-  lines.push("bluebubbles setup truth: enable `senses.bluebubbles.enabled`, then store `bluebubbles.serverUrl` and `bluebubbles.password` in the agent vault runtime/config item.")
+  lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
