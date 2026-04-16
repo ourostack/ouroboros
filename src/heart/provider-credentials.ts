@@ -66,6 +66,7 @@ export interface ProviderCredentialPoolSummary {
 
 export interface RefreshProviderCredentialPoolOptions {
   preserveCachedOnFailure?: boolean
+  onProgress?: (message: string) => void
 }
 
 interface ProviderCredentialVaultPayload {
@@ -275,6 +276,7 @@ export async function refreshProviderCredentialPool(
 ): Promise<ProviderCredentialPoolReadResult> {
   try {
     const store = getCredentialStore(agentName)
+    options.onProgress?.(`reading vault items for ${agentName}...`)
     const items = await store.list()
     const providers: Partial<Record<AgentProvider, ProviderCredentialRecord>> = {}
     let updatedAt = new Date(0).toISOString()
@@ -283,6 +285,7 @@ export async function refreshProviderCredentialPool(
       if (!item.domain.startsWith(VAULT_ITEM_PREFIX)) continue
       const provider = item.domain.slice(VAULT_ITEM_PREFIX.length)
       if (!isAgentProvider(provider)) continue
+      options.onProgress?.(`reading ${provider} credentials...`)
       const raw = await store.getRawSecret(item.domain, "password")
       const payload = validateProviderCredentialPayload(JSON.parse(raw) as unknown, provider)
       const record = recordFromPayload(payload)
@@ -290,6 +293,7 @@ export async function refreshProviderCredentialPool(
       if (record.updatedAt > updatedAt) updatedAt = record.updatedAt
     }
 
+    options.onProgress?.("parsing provider credentials...")
     const pool: ProviderCredentialPool = {
       schemaVersion: 1,
       updatedAt,
