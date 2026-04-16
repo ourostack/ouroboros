@@ -310,6 +310,16 @@ function missingCredentialResult(
   }
 }
 
+function isTransientVaultError(error: string): boolean {
+  const normalized = error.toLowerCase()
+  return (
+    normalized.includes("timed out") ||
+    normalized.includes("econnrefused") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("etimedout")
+  )
+}
+
 function invalidPoolResult(
   agentName: string,
   lane: ProviderLane,
@@ -317,6 +327,13 @@ function invalidPoolResult(
   model: string,
   pool: { ok: false; reason: "invalid" | "unavailable"; poolPath: string; error: string },
 ): ConfigCheckResult {
+  if (pool.reason === "unavailable" && isTransientVaultError(pool.error)) {
+    return {
+      ok: false,
+      error: `${lane} provider ${provider} model ${model} cannot read provider credentials from ${agentName}'s vault: ${pool.error}`,
+      fix: `Vault read timed out -- this usually resolves on retry. Run 'ouro up' again.`,
+    }
+  }
   if (pool.reason === "unavailable" && isVaultLockedError(pool.error)) {
     return {
       ok: false,
