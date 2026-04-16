@@ -17,7 +17,26 @@ import { ensureBwCli } from "./bw-installer"
 // bw CLI wrapper
 // ---------------------------------------------------------------------------
 
-function execBw(args: string[], sessionToken?: string, appDataDir?: string): Promise<string> {
+function sanitizeBwErrorDetail(message: string): string {
+  if (/master password/i.test(message)) {
+    return "bw CLI requested a master password; the local Bitwarden session is locked or expired"
+  }
+  const withoutCommandLine = message
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("Command failed:"))
+    .join("\n")
+    .trim()
+  return (withoutCommandLine || "command failed")
+    .replace(/[A-Za-z0-9+/=]{80,}/g, "[redacted]")
+    .slice(0, 500)
+}
+
+function formatBwCliError(err: Error, stderr = ""): Error {
+  const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
+  return new Error(`bw CLI error: ${detail || "command failed"}`)
+}
+
+function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
   const env = {
     ...process.env,
     ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
@@ -25,17 +44,20 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string): Pro
   }
 
   return new Promise((resolve, reject) => {
-    execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout) => {
+    const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
       if (err) {
         if (isBwNotInstalled(err)) {
           reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
           return
         }
-        reject(new Error(`bw CLI error: ${err.message}`))
+        reject(formatBwCliError(err, stderr))
         return
       }
       resolve(stdout)
     })
+    if (stdin !== undefined) {
+      child?.stdin?.end(stdin)
+    }
   })
 }
 
@@ -295,9 +317,9 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
     if (existing) {
-      await execBw(["edit", "item", existing.id, encoded], session, this.appDataDir)
+      await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
     } else {
-      await execBw(["create", "item", encoded], session, this.appDataDir)
+      await execBw(["create", "item"], session, this.appDataDir, encoded)
     }
 
     emitNervesEvent({
