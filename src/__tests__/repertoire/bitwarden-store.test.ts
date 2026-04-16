@@ -2016,51 +2016,46 @@ describe("BitwardenCredentialStore", () => {
     })
 
     it("throws after max transient retry attempts (3) with exponential backoff", async () => {
-      vi.useFakeTimers()
-      try {
-        let listCallCount = 0
-        const callTimes: number[] = []
-        mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
-          if (args[0] === "status") {
-            cb(null, JSON.stringify({ status: "unlocked" }), "")
-            return
-          }
-          if (args[0] === "unlock") {
-            cb(null, "session-token", "")
-            return
-          }
-          if (args[0] === "list") {
-            listCallCount++
-            callTimes.push(Date.now())
-            const err = new Error("bw CLI error: list items timed out while waiting for a vault response")
-            cb(err, "", "")
-            return
-          }
-          cb(null, "", "")
-        })
-
-        const listPromise = store.list()
-
-        // Advance through backoff timers: 500ms, 1000ms, 2000ms
-        await vi.advanceTimersByTimeAsync(500)
-        await vi.advanceTimersByTimeAsync(1000)
-        await vi.advanceTimersByTimeAsync(2000)
-
-        await expect(listPromise).rejects.toThrow("timed out")
-        expect(listCallCount).toBe(3)
-
-        // Verify backoff intervals: ~500ms, ~1000ms
-        if (callTimes.length >= 3) {
-          expect(callTimes[1]! - callTimes[0]!).toBeGreaterThanOrEqual(500)
-          expect(callTimes[2]! - callTimes[1]!).toBeGreaterThanOrEqual(1000)
+      let listCallCount = 0
+      const callTimes: number[] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
         }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          callTimes.push(Date.now())
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
 
-        // Should have emitted 2 retry events (before 2nd and 3rd attempts)
-        const retryEvents = nervesEvents.filter((e) => e.event === "repertoire.bw_transient_retry")
-        expect(retryEvents).toHaveLength(2)
-      } finally {
-        vi.useRealTimers()
-      }
+      await expect(store.list()).rejects.toThrow("timed out")
+      expect(listCallCount).toBe(3)
+
+      // Verify exponential backoff: gaps should be ~500ms and ~1000ms
+      expect(callTimes).toHaveLength(3)
+      const gap1 = callTimes[1]! - callTimes[0]!
+      const gap2 = callTimes[2]! - callTimes[1]!
+      expect(gap1).toBeGreaterThanOrEqual(450)
+      expect(gap2).toBeGreaterThanOrEqual(900)
+      expect(gap2).toBeGreaterThan(gap1)
+
+      // Should have emitted 2 retry events (before 2nd and 3rd attempts)
+      const retryEvents = nervesEvents.filter((e) => e.event === "repertoire.bw_transient_retry")
+      expect(retryEvents).toHaveLength(2)
     })
 
     it("throws immediately on non-transient error without retry", async () => {
@@ -2318,14 +2313,11 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "list") {
           listCallCount++
           if (listCallCount === 1) {
-            // First call fails
-            const err = new Error("bw exploded") as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }
-            err.code = "ETIMEDOUT"
-            err.killed = true
-            err.signal = "SIGTERM"
-            cb(err, "", "")
+            // First call fails with a non-transient error (so withTransientRetry
+            // does not absorb it). Using a parse error here.
+            cb(null, "{not-json", "")
           } else {
-            // Second call succeeds
+            // Subsequent calls succeed
             cb(null, "[]", "")
           }
           return
@@ -2333,8 +2325,8 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      // First call fails
-      await expect(storeInstance.list()).rejects.toThrow()
+      // First call fails (non-transient parse error propagates through withTransientRetry)
+      await expect(storeInstance.list()).rejects.toThrow("invalid JSON")
 
       // Second call should succeed because the lock was released despite the error
       const result = await storeInstance.list()
@@ -2361,7 +2353,8 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "list") {
           listCallCount++
-          if (listCallCount === 1) {
+          if (listCallCount <= 3) {
+            // Fail all 3 transient retry attempts so the error propagates
             const err = new Error("Command timed out") as NodeJS.ErrnoException & {
               killed?: boolean
               signal?: NodeJS.Signals | null
@@ -2377,10 +2370,10 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      // First call times out
+      // First list() call times out (exhausts all 3 transient retry attempts)
       await expect(storeInstance.list()).rejects.toThrow("timed out")
 
-      // Lock should be released — second call succeeds
+      // Lock should be released -- second list() call succeeds
       const result = await storeInstance.list()
       expect(result).toEqual([])
 
