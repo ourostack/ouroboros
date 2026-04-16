@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.398",
+      "changes": [
+        "`ouro auth --agent <agent> --provider <provider>` now prints safe progress breadcrumbs while it checks vault access, runs provider login, stores credentials in the agent vault, refreshes the local provider snapshot, and verifies the provider.",
+        "Provider auth launched from `ouro repair` and hatch bootstrap now uses the same auth progress hook, so browser/login flows no longer leave humans staring at a silent cursor after the provider says login succeeded.",
+        "Auth progress messages are phase labels only; they never include OAuth tokens, API keys, vault unlock secrets, or credential payload values.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the auth progress breadcrumb release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.397",
       "changes": [
         "`ouro up` provider repair output now uses compact readiness cards and `need repair` progress labels instead of dense degraded-agent prose.",
