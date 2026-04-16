@@ -273,7 +273,8 @@ function isTransientError(err: Error): boolean {
     msg.includes("enotfound") ||
     msg.includes("socket hang up") ||
     msg.includes("503") ||
-    msg.includes("server unavailable")
+    msg.includes("server unavailable") ||
+    msg.includes("timed out")
   )
 }
 
