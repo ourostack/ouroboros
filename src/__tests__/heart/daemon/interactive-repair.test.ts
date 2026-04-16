@@ -42,7 +42,7 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro auth slugger")
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger")
     expect(emitNervesEvent).toHaveBeenCalled()
@@ -88,7 +88,7 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger --provider github-copilot")
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger", "github-copilot")
   })
@@ -108,7 +108,7 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger --provider github-copilot")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
@@ -150,7 +150,7 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock slugger's vault now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
     expect(stdoutText(deps)).toContain("note:  use the saved vault unlock secret")
     expect(deps.promptInput).not.toHaveBeenCalledWith(
@@ -198,7 +198,7 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: true })
-    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock slugger's vault now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
     expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
   })
@@ -264,7 +264,7 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger")
     expect(stdoutText(deps)).toContain("next: ouro auth --agent slugger")
   })
@@ -352,7 +352,7 @@ describe("runInteractiveRepair", () => {
     const result = await runInteractiveRepair(degraded, deps)
 
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock slugger's vault now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro vault unlock --agent slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
@@ -441,7 +441,7 @@ describe("runInteractiveRepair", () => {
     ]
     const result = await runInteractiveRepair(degraded, deps)
     expect(result).toEqual({ repairsAttempted: false })
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
     expect(stdoutText(deps)).toContain("run:   ouro auth --agent slugger")
     expect(deps.runAuthFlow).not.toHaveBeenCalled()
   })
@@ -528,8 +528,8 @@ describe("runInteractiveRepair", () => {
         "  ouro auth --agent slugger --provider openai-codex",
       ].join("\n"),
     )
-    expect(deps.promptInput).toHaveBeenCalledWith("Unlock it now? [y/N] ")
-    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Unlock ouroboros's vault now? [y/N] ")
+    expect(deps.promptInput).toHaveBeenCalledWith("Open the auth flow for slugger now? [y/N] ")
   })
 
   it("catches auth flow errors and continues to next agent", async () => {
@@ -584,5 +584,278 @@ describe("runInteractiveRepair", () => {
     expect(result).toEqual({ repairsAttempted: true })
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger")
     expect(emitNervesEvent).toHaveBeenCalled()
+  })
+
+  describe("recheckAgent callback", () => {
+    it("calls recheckAgent after a successful vault unlock repair", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("calls recheckAgent after a successful auth flow repair", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "missing credentials",
+          fixHint: "ouro auth --agent slugger --provider openai-codex",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("prints recovered message and skips remaining actions when recheckAgent returns null", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("ouroboros recovered.")
+    })
+
+    it("presents new error when recheckAgent returns a different DegradedAgent", async () => {
+      const newDegraded: DegradedAgent = {
+        agent: "slugger",
+        errorReason: "provider credentials expired",
+        fixHint: "ouro auth --agent slugger --provider anthropic",
+      }
+      let callCount = 0
+      const recheckAgent = vi.fn(async () => {
+        callCount++
+        // First recheck returns a new degraded state, second returns null
+        return callCount === 1 ? newDegraded : null
+      })
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      // After vault unlock, recheckAgent returns a new error, so the auth flow prompt should appear
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+      expect(stdoutText(deps)).toContain("provider auth")
+      expect(stdoutText(deps)).toContain("ouro auth --agent slugger --provider anthropic")
+    })
+
+    it("does not call recheckAgent when repair action is declined", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).not.toHaveBeenCalled()
+    })
+
+    it("does not call recheckAgent when repair action throws an error", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => {
+          throw new Error("unlock failed")
+        }),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).not.toHaveBeenCalled()
+    })
+
+    it("works without recheckAgent (backward compat)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      const result = await runInteractiveRepair(degraded, deps)
+
+      expect(result).toEqual({ repairsAttempted: true })
+      // No crash, no recovered message
+      expect(stdoutText(deps)).not.toContain("recovered")
+    })
+  })
+
+  describe("terminal done message", () => {
+    it("prints 'Repair flow complete.' when repairsAttempted is true", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair flow complete.")
+    })
+
+    it("does not print terminal message when repairsAttempted is false (all declined)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair flow complete.")
+    })
+
+    it("does not print terminal message for empty degraded list", async () => {
+      const deps = makeDeps()
+
+      await runInteractiveRepair([], deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair flow complete.")
+    })
+  })
+
+  describe("skipQueueSummary", () => {
+    it("skips the repair queue summary when skipQueueSummary is true", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        skipQueueSummary: true,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair queue")
+      expect(stdoutText(deps)).not.toContain("agents need attention")
+    })
+
+    it("shows the repair queue summary when skipQueueSummary is false", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        skipQueueSummary: false,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair queue")
+      expect(stdoutText(deps)).toContain("2 agents need attention")
+    })
+
+    it("shows the repair queue summary by default (skipQueueSummary not set)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair queue")
+    })
   })
 })

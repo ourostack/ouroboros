@@ -49,6 +49,8 @@ export interface AgenticRepairDeps {
   runAuthFlow?: (agent: string, provider?: AgentProvider) => Promise<void>
   /** Vault unlock runner passed through to interactive repair fallback */
   runVaultUnlock?: (agent: string) => Promise<void>
+  /** Skip repair queue summary when it would duplicate the status block */
+  skipQueueSummary?: boolean
 }
 
 export interface AgenticRepairResult {
@@ -98,6 +100,7 @@ function makeInteractiveRepairDeps(deps: AgenticRepairDeps): InteractiveRepairDe
     /* v8 ignore next -- fallback no-op: tests always inject runAuthFlow; default is for production @preserve */
     runAuthFlow: deps.runAuthFlow ?? (async () => undefined),
     runVaultUnlock: deps.runVaultUnlock,
+    skipQueueSummary: deps.skipQueueSummary,
   }
 }
 
