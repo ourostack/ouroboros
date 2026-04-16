@@ -50,6 +50,13 @@ vi.mock("../../../heart/daemon/agent-config-check", () => ({
   checkAgentConfigWithProviderHealth: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+// Mock agentic-repair so ouro up repair flow doesn't need real providers
+const mockAgenticRepair = vi.hoisted(() => ({
+  runAgenticRepair: vi.fn(async () => ({ repairsAttempted: false, usedAgentic: false })),
+  createAgenticDiagnosisProviderRuntime: vi.fn(),
+}))
+vi.mock("../../../heart/daemon/agentic-repair", () => mockAgenticRepair)
+
 import {
   createDefaultOuroCliDeps,
   parseOuroCommand,
@@ -7195,5 +7202,123 @@ describe("ouro up per-agent progress threading", () => {
       (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
     )
     expect(callWithOnProgress).toBeDefined()
+  })
+})
+
+describe("ouro up post-repair progress phase", () => {
+  const mockHealthCheck = checkAgentConfigWithProviderHealth as ReturnType<typeof vi.fn>
+
+  it("threads onProgress to checkAgentProviders during post-repair re-check", async () => {
+    // First call (post-daemon provider checks): return degraded with vault-locked
+    // error so interactive repair is triggered. Second call (post-repair re-check):
+    // return ok.
+    mockHealthCheck
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "credential vault is locked",
+        fix: "Run 'ouro vault unlock --agent slugger'",
+      })
+      .mockResolvedValue({ ok: true })
+
+    // Mock agentic repair to simulate successful repair
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+
+    const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout: vi.fn(),
+      // Daemon already alive: skip preflight, go straight to post-daemon checks
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async () => {}),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    // checkAgentConfigWithProviderHealth should be called at least twice:
+    // once during post-daemon provider checks, once during post-repair re-check
+    expect(mockHealthCheck.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+    // The post-repair re-check call should have onProgress in deps
+    const postRepairCalls = mockHealthCheck.mock.calls.slice(1)
+    const postRepairCallWithOnProgress = postRepairCalls.find(
+      (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
+    )
+    expect(postRepairCallWithOnProgress).toBeDefined()
+  })
+
+  it("wraps post-repair re-check in a progress phase (non-TTY output)", async () => {
+    // First call: return degraded. Post-repair: return ok.
+    mockHealthCheck
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "credential vault is locked",
+        fix: "Run 'ouro vault unlock --agent slugger'",
+      })
+      .mockResolvedValue({ ok: true })
+
+    mockAgenticRepair.runAgenticRepair.mockResolvedValueOnce({
+      repairsAttempted: true,
+      usedAgentic: false,
+    })
+
+    const nowMs = Date.parse("2026-04-10T05:02:36.000Z")
+    const writeStdout = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: () => ["slugger"],
+      healthFilePath: "/tmp/ouro-health.json",
+      readHealthState: vi.fn(() => ({
+        status: "ok",
+        mode: "normal",
+        pid: 5683,
+        startedAt: new Date(nowMs).toISOString(),
+        uptimeSeconds: 0,
+        safeMode: null,
+        degraded: [],
+        agents: {},
+        habits: {},
+      })),
+      readHealthUpdatedAt: vi.fn(() => nowMs),
+      readRecentDaemonLogLines: vi.fn(() => []),
+      sleep: vi.fn(async () => {}),
+      now: () => nowMs,
+    } satisfies OuroCliDeps
+
+    await runOuroCli(["up"], deps)
+
+    // In non-TTY mode, UpProgress.completePhase writes static lines.
+    // The post-repair check should produce a phase completion line.
+    const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
+    const postRepairPhaseLine = lines.find((line) => line.includes("post-repair check"))
+    expect(postRepairPhaseLine).toBeDefined()
   })
 })
