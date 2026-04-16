@@ -23,6 +23,10 @@ const bwHarness = vi.hoisted(() => {
     listAllCalls: 0,
     failListAllAtCall: 0,
     failNextListAllWith: null as string | null,
+    createCalls: 0,
+    failCreateAtCall: 0,
+    failNextCreateWith: null as string | null,
+    failEveryCreateWith: null as string | null,
     reset(): void {
       items.clear()
       this.commands = []
@@ -31,6 +35,10 @@ const bwHarness = vi.hoisted(() => {
       this.listAllCalls = 0
       this.failListAllAtCall = 0
       this.failNextListAllWith = null
+      this.createCalls = 0
+      this.failCreateAtCall = 0
+      this.failNextCreateWith = null
+      this.failEveryCreateWith = null
     },
   }
 })
@@ -114,6 +122,19 @@ function installBwExecHarness(): void {
       if (session !== bwHarness.validSession) {
         cb(new Error(`Command failed: bw ${args.join(" ")}`), "", "Session key is invalid or expired")
         return
+      }
+      if (args[0] === "create") {
+        bwHarness.createCalls += 1
+        if (bwHarness.failEveryCreateWith) {
+          cb(new Error(`Command failed: bw ${args.join(" ")}`), "", bwHarness.failEveryCreateWith)
+          return
+        }
+        if (bwHarness.failNextCreateWith && bwHarness.createCalls === bwHarness.failCreateAtCall) {
+          const failure = bwHarness.failNextCreateWith
+          bwHarness.failNextCreateWith = null
+          cb(new Error(`Command failed: bw ${args.join(" ")}`), "", failure)
+          return
+        }
       }
       const raw = Buffer.from(stdin ?? "", "base64").toString("utf8")
       const parsed = JSON.parse(raw) as {
@@ -214,7 +235,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       promptInput: async () => "minimax-secret",
       onProgress: (message) => progress.push(message),
     })).rejects.toThrow(
-      "credential stored in vault, but the local provider snapshot could not be refreshed: bw CLI error: server unavailable. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
+      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the local provider snapshot refresh failed: bw CLI error: server unavailable. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
     )
 
     expect(progress).toEqual([
@@ -222,5 +243,56 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       "minimax credentials collected; storing in VaultRefreshBot's vault...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
+  })
+
+  it("wraps save-time vault failures with agent-scoped repair guidance", async () => {
+    installBwExecHarness()
+    bwHarness.failEveryCreateWith = "Session key is invalid or expired"
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
+    tempHomes.push(tempHome)
+    process.env.HOME = tempHome
+
+    const progress: string[] = []
+
+    const promise = runRuntimeAuthFlow({
+      agentName: "VaultLockedBot",
+      provider: "minimax",
+      promptInput: async () => "minimax-secret",
+      onProgress: (message) => progress.push(message),
+    })
+
+    await expect(promise).rejects.toThrow(
+      "provider authentication succeeded, but storing minimax credentials in VaultLockedBot's vault failed: bw CLI error: bw CLI could not use the local Bitwarden session because it is locked, missing, or expired",
+    )
+    await expect(promise).rejects.toThrow("Run 'ouro vault unlock --agent VaultLockedBot' if you have the saved vault unlock secret.")
+    expect(progress).toEqual([
+      "checking VaultLockedBot's vault access...",
+      "minimax credentials collected; storing in VaultLockedBot's vault...",
+    ])
+    expect(bwHarness.createCalls).toBe(2)
+  })
+
+  it("wraps non-unlock vault save failures without pretending provider auth failed", async () => {
+    installBwExecHarness()
+    bwHarness.failEveryCreateWith = "server unavailable"
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
+    tempHomes.push(tempHome)
+    process.env.HOME = tempHome
+
+    const progress: string[] = []
+
+    await expect(runRuntimeAuthFlow({
+      agentName: "VaultServerBot",
+      provider: "minimax",
+      promptInput: async () => "minimax-secret",
+      onProgress: (message) => progress.push(message),
+    })).rejects.toThrow(
+      "provider authentication succeeded, but storing minimax credentials in VaultServerBot's vault failed: bw CLI error: server unavailable",
+    )
+
+    expect(progress).toEqual([
+      "checking VaultServerBot's vault access...",
+      "minimax credentials collected; storing in VaultServerBot's vault...",
+    ])
   })
 })

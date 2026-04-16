@@ -114,14 +114,49 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function isBwLoginItem(value: unknown): value is BwLoginItem {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  if (typeof item.id !== "string" || item.id.trim().length === 0) return false
+  if (typeof item.name !== "string" || item.name.trim().length === 0) return false
+
+  if (item.login !== undefined) {
+    if (!item.login || typeof item.login !== "object" || Array.isArray(item.login)) return false
+    const login = item.login as Record<string, unknown>
+    if (login.username !== undefined && typeof login.username !== "string") return false
+    if (login.password !== undefined && typeof login.password !== "string") return false
+    if (login.uris !== undefined) {
+      if (!Array.isArray(login.uris)) return false
+      for (const uri of login.uris) {
+        if (!uri || typeof uri !== "object" || Array.isArray(uri)) return false
+        const uriRecord = uri as Record<string, unknown>
+        if (uriRecord.uri !== undefined && typeof uriRecord.uri !== "string") return false
+      }
+    }
+  }
+
+  if (item.notes !== undefined && item.notes !== null && typeof item.notes !== "string") return false
+  if (item.revisionDate !== undefined && typeof item.revisionDate !== "string") return false
+
+  return true
+}
+
 function parseBwItems(stdout: string, context: string): BwLoginItem[] {
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(stdout) as unknown
+    parsed = JSON.parse(stdout) as unknown
     if (!Array.isArray(parsed)) {
       throw new Error("expected item array")
     }
-    return parsed as BwLoginItem[]
+    const items = parsed as unknown[]
+    if (!items.every(isBwLoginItem)) {
+      throw new Error("expected login items")
+    }
+    return items
   } catch {
+    if (Array.isArray(parsed)) {
+      throw new Error(`bw CLI error: invalid item from ${context}`)
+    }
     throw new Error(`bw CLI error: invalid JSON from ${context}`)
   }
 }
@@ -234,7 +269,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       try {
         await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
       } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error))
+        const err = error as Error
         // "Logout required" means already logged in — that's fine, skip config.
         if (!isBwConfigLogoutRequired(err)) {
           throw err
@@ -277,7 +312,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       try {
         return await operation(session)
       } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error))
+        const err = error as Error
         if (attemptedFreshSession || !isBwSessionAuthError(err)) {
           throw err
         }
@@ -454,6 +489,6 @@ export class BitwardenCredentialStore implements CredentialStore {
     const items = parseBwItems(stdout, "bw list items --search")
 
     // Find exact match by name
-    return items.find((item) => item.name === domain) ?? items[0] ?? null
+    return items.find((item) => item.name === domain) ?? null
   }
 }

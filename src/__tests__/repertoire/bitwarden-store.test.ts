@@ -153,6 +153,24 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.login()).rejects.toThrow(/bw CLI error/)
     })
 
+    it("surfaces a wrong saved vault unlock secret clearly", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow(
+        "bw CLI error: bw CLI rejected the saved vault unlock secret for this machine",
+      )
+    })
+
     it("does not swallow config-server failures that are not logout-required", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -167,6 +185,32 @@ describe("BitwardenCredentialStore", () => {
       })
 
       await expect(store.login()).rejects.toThrow("bw CLI error: server unavailable")
+    })
+
+    it("ignores the logout-required config-server failure and continues login", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(new Error("logout required before server config can change"), "", "logout required before server config can change")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, "session-token", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls[0]).toEqual(["status"])
+      expect(calls[1]).toEqual(["config", "server", "https://vault.ouroboros.bot"])
+      expect(calls[2]).toEqual(["login", "ouroboros@ouro.bot", "masterpass123", "--raw"])
     })
 
     it("uses an isolated Bitwarden app data directory when configured", async () => {
@@ -573,6 +617,50 @@ describe("BitwardenCredentialStore", () => {
       expect(stdinWrites).toHaveLength(2)
     })
 
+    it("retries once when edit fails because the local session expired", async () => {
+      const stdinWrites: string[] = []
+      let unlockCount = 0
+      let searchCount = 0
+      let editCount = 0
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount += 1
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          searchCount += 1
+          cb(null, JSON.stringify([{ id: "existing-id", name: "providers/minimax" }]), "")
+          return
+        }
+        if (args[0] === "edit") {
+          editCount += 1
+          if (editCount === 1) {
+            cb(new Error("Command failed: bw edit item existing-id"), "", "Session key is invalid or expired")
+          } else {
+            cb(null, '{"id":"existing-id"}', "")
+          }
+          return { stdin: { end: vi.fn((value: string) => stdinWrites.push(value)) } }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/minimax", {
+        username: "minimax",
+        password: "minimax-token",
+      })
+
+      expect(unlockCount).toBe(2)
+      expect(searchCount).toBe(2)
+      expect(editCount).toBe(2)
+      expect(stdinWrites).toHaveLength(2)
+    })
+
     it("stops before create when the pre-create lookup fails for a non-session reason", async () => {
       let createAttempted = false
 
@@ -600,6 +688,62 @@ describe("BitwardenCredentialStore", () => {
         password: "anthropic-token",
       })).rejects.toThrow("bw CLI error: server unavailable")
       expect(createAttempted).toBe(false)
+    })
+
+    it("creates a new item when search returns only fuzzy matches", async () => {
+      const calls: string[][] = []
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{ id: "wrong-item", name: "providers/openai-codex-old" }]), "")
+          return
+        }
+        if (args[0] === "create") {
+          cb(null, '{"id":"created-exact"}', "")
+          return { stdin: { end: vi.fn() } }
+        }
+        cb(null, "", "")
+      })
+
+      await store.store("providers/openai-codex", {
+        username: "openai-codex",
+        password: "oauth-token",
+      })
+
+      expect(calls.find((call) => call[0] === "edit")).toBeUndefined()
+      expect(calls.find((call) => call[0] === "create")).toEqual(["create", "item"])
+    })
+
+    it("throws a sanitized error when search returns malformed items", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{ name: "providers/anthropic" }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.store("providers/anthropic", {
+        username: "anthropic",
+        password: "anthropic-token",
+      })).rejects.toThrow("bw CLI error: invalid item from bw list items --search")
     })
 
     it("gives up after one fresh-session retry when create still needs re-auth", async () => {
@@ -725,6 +869,48 @@ describe("BitwardenCredentialStore", () => {
       setupExecMock({ stdout: "{not-json" })
 
       await expect(store.list()).rejects.toThrow("bw CLI error: invalid JSON from bw list items")
+    })
+
+    it("throws a sanitized error when bw returns a non-array JSON payload", async () => {
+      setupExecMock({ stdout: "{}" })
+
+      await expect(store.list()).rejects.toThrow("bw CLI error: invalid JSON from bw list items")
+    })
+
+    it("throws a sanitized error when bw returns malformed items", async () => {
+      setupExecMock({
+        stdout: JSON.stringify([{ name: "site-a.com" }]),
+      })
+
+      await expect(store.list()).rejects.toThrow("bw CLI error: invalid item from bw list items")
+    })
+
+    it.each([
+      ["entry is not an object", [123]],
+      ["entry is missing a name", [{ id: "1" }]],
+    ])("rejects malformed items when %s", async (_label, entries) => {
+      setupExecMock({
+        stdout: JSON.stringify(entries),
+      })
+
+      await expect(store.list()).rejects.toThrow("bw CLI error: invalid item from bw list items")
+    })
+
+    it.each([
+      ["login is not an object", { id: "1", name: "site-a.com", login: "bad-login" }],
+      ["login.username is not a string", { id: "1", name: "site-a.com", login: { username: 123 } }],
+      ["login.password is not a string", { id: "1", name: "site-a.com", login: { password: 123 } }],
+      ["login.uris is not an array", { id: "1", name: "site-a.com", login: { uris: "bad" } }],
+      ["login uri entry is not an object", { id: "1", name: "site-a.com", login: { uris: ["bad"] } }],
+      ["login uri string is not a string", { id: "1", name: "site-a.com", login: { uris: [{ uri: 123 }] } }],
+      ["notes is not a string", { id: "1", name: "site-a.com", notes: 123 }],
+      ["revisionDate is not a string", { id: "1", name: "site-a.com", revisionDate: 123 }],
+    ])("rejects malformed items when %s", async (_label, item) => {
+      setupExecMock({
+        stdout: JSON.stringify([item]),
+      })
+
+      await expect(store.list()).rejects.toThrow("bw CLI error: invalid item from bw list items")
     })
   })
 

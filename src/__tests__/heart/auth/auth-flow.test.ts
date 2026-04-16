@@ -505,6 +505,24 @@ describe("runtime auth flow", () => {
     ).rejects.toThrow("MiniMax API key is required.")
   })
 
+  it("wraps non-Error vault save failures after provider auth succeeds", async () => {
+    emitTestEvent("minimax vault save non-error failure")
+    const homeDir = makeTempDir("auth-flow-home-minimax-save-string")
+    mockUpsertProviderCredential.mockRejectedValueOnce("vault store offline")
+
+    await expect(() =>
+      runRuntimeAuthFlow({
+        agentName: "MiniSaveString",
+        provider: "minimax",
+        promptInput: async () => "minimax-secret",
+      }, {
+        homeDir,
+      }),
+    ).rejects.toThrow(
+      "provider authentication succeeded, but storing minimax credentials in MiniSaveString's vault failed: vault store offline",
+    )
+  })
+
   it("defaults runtime auth writes to os.homedir when no homeDir dep is provided", async () => {
     emitTestEvent("defaults to os.homedir")
     const agentName = `DefaultHomeBot-${Date.now()}`
