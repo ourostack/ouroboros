@@ -387,4 +387,41 @@ describe("provider credentials vault store", () => {
     expect(record.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(mockCredentialStore.items.has(providerCredentialItemName("github-copilot"))).toBe(true)
   })
+
+  it("fails clearly when the vault write succeeds but the local provider snapshot refresh does not", async () => {
+    emitTestEvent("provider credential refresh failure after store")
+    const originalList = mockCredentialStore.store.list.getMockImplementation()
+    let listCalls = 0
+    mockCredentialStore.store.list.mockImplementation(async () => {
+      listCalls += 1
+      if (listCalls === 1) {
+        throw new Error("vault unavailable: session expired during refresh")
+      }
+      return []
+    })
+
+    try {
+      await expect(upsertProviderCredential({
+        agentName: "slugger",
+        provider: "openai-codex",
+        credentials: { oauthAccessToken: "oauth-token" },
+        config: {},
+        provenance: { source: "auth-flow" },
+        now: new Date("2026-04-13T12:00:00.000Z"),
+      })).rejects.toThrow(
+        "credential stored in vault, but the local provider snapshot could not be refreshed: vault unavailable: session expired during refresh. Run 'ouro provider refresh --agent slugger' after fixing vault access, then run 'ouro auth verify --agent slugger'.",
+      )
+
+      expect(mockCredentialStore.items.has(providerCredentialItemName("openai-codex"))).toBe(true)
+    } finally {
+      mockCredentialStore.store.list.mockImplementation(
+        originalList ?? (async () => [...mockCredentialStore.items.entries()].map(([domain, item]) => ({
+          domain,
+          username: item.username,
+          notes: item.notes,
+          createdAt: item.createdAt,
+        }))),
+      )
+    }
+  })
 })
