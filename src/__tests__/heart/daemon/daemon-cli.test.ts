@@ -3314,6 +3314,7 @@ describe("ensureDaemonRunning", () => {
 
   it("passes runtime path and config drift signals into the daemon runtime sync check", async () => {
     vi.resetModules()
+    const tmp = createTmpBundle({ agentName: "slugger" })
     const ensureCurrentDaemonRuntime = vi.fn(async () => ({
       alreadyRunning: false,
       message: "restarted drifted daemon",
@@ -3334,62 +3335,67 @@ describe("ensureDaemonRunning", () => {
     vi.doUnmock("../../../heart/daemon/daemon-runtime-sync")
     vi.doUnmock("../../../heart/daemon/runtime-metadata")
 
-    const deps: OuroCliDeps = {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(async () => ({
-        ok: true,
-        summary: "running",
-        data: {
-          overview: {
-            daemon: "running",
-            health: "ok",
-            socketPath: "/tmp/ouro-test.sock",
-            version: "0.1.0-alpha.20",
-            lastUpdated: "2026-03-09T11:00:00.000Z",
-            repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
-            configFingerprint: "cfg-running",
-            workerCount: 0,
-            senseCount: 0,
+    try {
+      const deps: OuroCliDeps = {
+        socketPath: "/tmp/ouro-test.sock",
+        bundlesRoot: tmp.bundlesRoot,
+        sendCommand: vi.fn(async () => ({
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: "0.1.0-alpha.20",
+              lastUpdated: "2026-03-09T11:00:00.000Z",
+              repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+              configFingerprint: "cfg-running",
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [{ agent: "slugger", worker: "inner-dialog", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
           },
-          senses: [],
-          workers: [{ agent: "slugger", worker: "inner-dialog", status: "running", pid: 123, restartCount: 0, lastExitCode: null, lastSignal: null, startedAt: null, errorReason: null, fixHint: null }],
-        },
-      })),
-      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => true),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        })),
+        startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => true),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      }
+
+      const result = await ensureDaemonRunning(deps)
+      const syncDeps = ensureCurrentDaemonRuntime.mock.calls[0]?.[0] as {
+        localLastUpdated?: string
+        localRepoRoot?: string
+        localConfigFingerprint?: string
+        fetchRunningRuntimeMetadata?: () => Promise<unknown>
+      }
+
+      expect(result).toEqual({
+        alreadyRunning: false,
+        message: "restarted drifted daemon",
+      })
+      expect(ensureCurrentDaemonRuntime).toHaveBeenCalledWith(expect.objectContaining({
+        socketPath: "/tmp/ouro-test.sock",
+        localVersion: "0.1.0-alpha.20",
+        localLastUpdated: "2026-03-09T11:00:00.000Z",
+        localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        localConfigFingerprint: "cfg-local",
+        localManagedAgents: "slugger",
+      }))
+      await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
+        configFingerprint: "cfg-running",
+        managedAgents: "slugger",
+      })
+    } finally {
+      tmp.cleanup()
     }
-
-    const result = await ensureDaemonRunning(deps)
-    const syncDeps = ensureCurrentDaemonRuntime.mock.calls[0]?.[0] as {
-      localLastUpdated?: string
-      localRepoRoot?: string
-      localConfigFingerprint?: string
-      fetchRunningRuntimeMetadata?: () => Promise<unknown>
-    }
-
-    expect(result).toEqual({
-      alreadyRunning: false,
-      message: "restarted drifted daemon",
-    })
-    expect(ensureCurrentDaemonRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      socketPath: "/tmp/ouro-test.sock",
-      localVersion: "0.1.0-alpha.20",
-      localLastUpdated: "2026-03-09T11:00:00.000Z",
-      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
-      localConfigFingerprint: "cfg-local",
-      localManagedAgents: "slugger",
-    }))
-    await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
-      version: "0.1.0-alpha.20",
-      lastUpdated: "2026-03-09T11:00:00.000Z",
-      repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-cross-chat-bridge-orchestration",
-      configFingerprint: "cfg-running",
-      managedAgents: "slugger",
-    })
   })
 
   it("keeps a running daemon when version verification fails", async () => {
