@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.402",
+      "changes": [
+        "Added `credential_generate_password`, a family-trusted credential tool that mints strong signup passwords and tells the agent to persist the exact accepted password with `credential_store` once the site accepts it.",
+        "`credential_store` now rejects blank required fields up front, trims credential metadata, redacts secret-bearing store errors, and confirms that credentials were stored and verified instead of silently accepting junk inputs or leaking password-shaped text.",
+        "User profile vault merges now fail closed when the existing profile cannot be read or is malformed, instead of treating every read failure as \"missing\" and overwriting saved personal data.",
+        "Browser and travel skills now teach the truthful signup secret flow: generate a password, use it for the interactive signup, and only claim success after `credential_store` succeeds.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the agent-saved secret hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.401",
       "changes": [
         "Bitwarden-backed credential writes now prove success by reading the saved item back immediately and verifying its name, username, password, and notes before returning success.",

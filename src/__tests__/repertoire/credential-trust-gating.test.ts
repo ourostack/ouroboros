@@ -15,6 +15,20 @@ describe("credential tool trust gating", () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
   })
 
+  // --- credential_generate_password: family only ---
+
+  it("credential_generate_password + family trust = allowed", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("credential_generate_password", { domain: "test.com" }, { readPaths: new Set(), trustLevel: "family" })
+    expect(result.allowed).toBe(true)
+  })
+
+  it("credential_generate_password + friend trust = denied", async () => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    const result = guardInvocation("credential_generate_password", { domain: "test.com" }, { readPaths: new Set(), trustLevel: "friend" })
+    expect(result.allowed).toBe(false)
+  })
+
   // --- credential_store: family only ---
 
   it("credential_store + family trust = allowed", async () => {
@@ -115,6 +129,7 @@ describe("credential tools in tool registry", () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const toolNames = baseToolDefinitions.map((d) => d.tool.function.name)
     expect(toolNames).toContain("credential_get")
+    expect(toolNames).toContain("credential_generate_password")
     expect(toolNames).toContain("credential_store")
     expect(toolNames).toContain("credential_list")
     expect(toolNames).toContain("credential_delete")

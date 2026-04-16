@@ -78,6 +78,11 @@ function profileKey(friendId: string): string {
   return `user-profile/${friendId}`
 }
 
+function isMissingUserProfileError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /no credential found/i.test(message) || /field "password" not found/i.test(message)
+}
+
 // ---------------------------------------------------------------------------
 // CRUD operations
 // ---------------------------------------------------------------------------
@@ -109,7 +114,8 @@ export async function storeUserProfile(
 
 /**
  * Retrieve the full user profile for a friend.
- * Returns null if no profile exists or if the stored data is invalid.
+ * Returns null if no profile exists. Throws if the stored data is malformed
+ * or the vault cannot be read.
  */
 export async function getUserProfile(
   friendId: string,
@@ -124,11 +130,19 @@ export async function getUserProfile(
 
   try {
     const raw = await store.getRawSecret(profileKey(friendId), "password")
-    const parsed = JSON.parse(raw) as UserProfile
-    return parsed
-  /* v8 ignore next 2 -- platform-dependent v8 branch counting on catch @preserve */
-  } catch {
-    return null
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`stored user profile for ${friendId} is malformed`)
+    }
+    return parsed as UserProfile
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new Error(`stored user profile for ${friendId} is malformed`)
+    }
+    if (isMissingUserProfileError(err)) {
+      return null
+    }
+    throw err
   }
 }
 
