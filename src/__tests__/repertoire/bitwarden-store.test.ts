@@ -2060,5 +2060,198 @@ describe("BitwardenCredentialStore", () => {
 
       fs.rmSync(appDataDir, { recursive: true, force: true })
     })
+
+    it("cleans up a stale lock file left by a dead process", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-stale-"))
+      const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      // Write a lock file with a definitely-dead PID
+      fs.writeFileSync(lockPath, "999999999\n")
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Should succeed by cleaning up the stale lock
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+
+      // Lock file should be cleaned up after the operation
+      expect(fs.existsSync(lockPath)).toBe(false)
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("retries when the lock holder releases during polling", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-poll-"))
+      const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      // Write a lock file with the CURRENT process PID (alive)
+      fs.writeFileSync(lockPath, `${process.pid}\n`)
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Remove the lock file after a short delay -- the async poll will pick it up
+      setTimeout(() => {
+        try { fs.unlinkSync(lockPath) } catch { /* ignore */ }
+      }, 200)
+
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("handles lock file with unparseable PID content", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-garbage-"))
+      const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      // Write a lock file with garbage content -- parseInt returns NaN,
+      // so stale detection is skipped. The lock polls until the file is removed.
+      fs.writeFileSync(lockPath, "not-a-pid\n")
+
+      // Remove it shortly after so the retry succeeds
+      setTimeout(() => {
+        try { fs.unlinkSync(lockPath) } catch { /* ignore */ }
+      }, 200)
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("propagates non-EEXIST errors from openSync", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-eacces-"))
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      // Make the appDataDir read-only so openSync fails with EACCES (not EEXIST)
+      fs.chmodSync(appDataDir, 0o444)
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(storeInstance.list()).rejects.toThrow(/EACCES/)
+
+      fs.chmodSync(appDataDir, 0o755)
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    // This test uses fake timers and MUST be last in the describe block
+    // to avoid timer state leaking into subsequent tests.
+    it("times out when the lock is held by a live process", async () => {
+      vi.useFakeTimers()
+
+      try {
+        const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-timeout-live-"))
+        const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+        const storeInstance = new BitwardenCredentialStore(
+          "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        )
+
+        // Write a lock file with the CURRENT process PID (alive)
+        fs.writeFileSync(lockPath, `${process.pid}\n`)
+
+        mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args[0] === "status") {
+            cb(null, JSON.stringify({ status: "unlocked" }), "")
+            return
+          }
+          if (args[0] === "unlock") {
+            cb(null, "session-token", "")
+            return
+          }
+          if (args[0] === "list") {
+            cb(null, "[]", "")
+            return
+          }
+          cb(null, "", "")
+        })
+
+        // Start the operation -- it will try to acquire the file lock and poll
+        const listPromise = storeInstance.list()
+
+        // Advance time past the lock timeout. Each iteration: advance one poll
+        // interval and yield so the async lock loop re-schedules its next delay.
+        let settled = false
+        listPromise.catch(() => { /* swallow */ }).finally(() => { settled = true })
+        while (!settled) {
+          await vi.advanceTimersByTimeAsync(150)
+        }
+
+        await expect(listPromise).rejects.toThrow("bw CLI lock timeout")
+
+        try { fs.unlinkSync(lockPath) } catch { /* ignore */ }
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 })
