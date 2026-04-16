@@ -333,7 +333,7 @@ describe("bundle_push first-push token gating", () => {
     tmp.cleanup()
   })
 
-  function setupBundleReadyToPush(remoteUrl = "https://unresolvable.test.invalid/repo.git"): void {
+  function setupBundleReadyToPush(remoteUrl = path.join(tmp.bundlesRoot, "missing-remote.git")): void {
     initGitWithMainBranch(tmp.agentRoot)
     execFileSync("git", ["remote", "add", "origin", remoteUrl], { cwd: tmp.agentRoot, stdio: "pipe" })
     fs.writeFileSync(path.join(tmp.agentRoot, "file.txt"), "x", "utf-8")
@@ -370,14 +370,14 @@ describe("bundle_push first-push token gating", () => {
     expect(String(result.error)).toContain("different bundle")
   })
 
-  it("proceeds with first push when a valid token is present (then fails on network)", async () => {
+  it("proceeds with first push when a valid token is present (then fails on missing remote)", async () => {
     setupBundleReadyToPush()
     // Get a real token via bundle_first_push_review
     const review = await invoke("bundle_first_push_review")
     const token = String(review.confirmationToken)
 
     // Attempt the push with the valid token. The push itself will fail
-    // against the unresolvable remote, but the important thing is that
+    // against the missing local remote, but the important thing is that
     // we got PAST the token check (kind !== "confirmation_required").
     const result = await invoke("bundle_push", { confirmation_token: token })
     expect(result.ok).toBe(false)
