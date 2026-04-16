@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.415",
+      "changes": [
+        "Transient vault errors (timeout, ECONNREFUSED, socket hang up) are now classified separately from vault-locked errors in `ouro up` provider checks -- operators see retry guidance instead of misleading unlock/replace/recover instructions.",
+        "Fix text across vault unlock, vault create, missing credential, and failed ping results tightened to concise single-line instructions.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the error classification release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.414",
       "changes": [
         "`openai-codex` live checks now use the same Responses API request shape as real Codex turns, so `ouro up` and `ouro auth verify` stop reporting false `400 status code (no body)` failures for healthy GPT-5.4 credentials.",
