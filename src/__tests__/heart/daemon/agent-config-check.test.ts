@@ -334,6 +334,75 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
   })
 
+  it("classifies timeout errors as transient and suggests retry instead of unlock/replace/recover", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "bw CLI error: list items timed out while waiting for a vault response",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("timed out")
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.fix).not.toContain("ouro vault replace")
+    expect(result.fix).not.toContain("ouro vault recover")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("classifies econnrefused errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "connect ECONNREFUSED 127.0.0.1:8087",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("classifies socket hang up errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "socket hang up",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("still classifies vault locked errors correctly after transient check is added", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "Ouro credential vault is locked on this machine for myagent.",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("credential vault is locked")
+    expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.issue).toBeDefined()
+  })
+
   it("returns a provider-specific failure when ping fails", async () => {
     const pingProvider = vi.fn(async () => ({
       ok: false,
