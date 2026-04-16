@@ -208,12 +208,8 @@ function writeProviderRepairSummary(
   title: string,
   degraded: DegradedAgent[],
 ): void {
-  deps.writeStdout(title)
-  for (const entry of degraded) {
-    for (const line of renderReadinessIssueNextSteps(readinessIssueFromDegraded(entry))) {
-      deps.writeStdout(line)
-    }
-  }
+  const blocks = degraded.map((entry) => renderReadinessIssueNextSteps(readinessIssueFromDegraded(entry)).join("\n"))
+  deps.writeStdout([title, ...blocks].join("\n\n"))
 }
 
 function providerRepairCountSummary(count: number): string {

@@ -113,6 +113,8 @@ describe("--no-repair flag: daemon.up handler", () => {
     expect(allOutput).toContain("helper: stopped")
     expect(allOutput).toContain("next: run ouro auth slugger")
     expect(allOutput).toContain("Provider checks need repair:")
+    expect(allOutput).toContain("Provider checks need repair:\n\n  slugger: missing credentials")
+    expect(allOutput).toContain("\n\n  helper: stopped")
   })
 
   it("ouro up --no-repair reports degraded agents when the daemon is already running", async () => {
