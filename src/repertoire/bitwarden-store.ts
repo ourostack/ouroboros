@@ -33,7 +33,7 @@ function sanitizeBwErrorDetail(message: string): string {
 
 function formatBwCliError(err: Error, stderr = ""): Error {
   const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
-  return new Error(`bw CLI error: ${detail || "command failed"}`)
+  return new Error(`bw CLI error: ${detail}`)
 }
 
 function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
