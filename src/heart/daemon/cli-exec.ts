@@ -3082,6 +3082,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           runVaultUnlock: async (agent: string) => {
             await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
           },
+          skipQueueSummary: true,
         })
         if (repairResult.repairsAttempted) {
           const repairedAgents = daemonResult.stability.degraded
