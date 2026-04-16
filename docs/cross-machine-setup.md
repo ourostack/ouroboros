@@ -1,6 +1,6 @@
 # Setting Up An Agent On A New Machine
 
-This guide covers how to get an existing Ouroboros agent running on a second (or third, or fourth) machine. The agent's bundle — its identity, memory, habits, and state — lives in a git repo that syncs across machines. The agent's raw credentials live in the agent vault. The durable Ouro-owned story is bundle plus vault; local unlock material is recreated per machine.
+This guide covers how to get an existing Ouroboros agent running on a second (or third, or fourth) machine. The agent's bundle — its identity, memory, habits, and state — lives in a git repo that syncs across machines. The agent's raw credentials live in the agent vault, which is the agent's password manager. The durable Ouro-owned story is bundle plus vault; local unlock material is recreated per machine.
 
 ## Prerequisites
 
@@ -76,7 +76,9 @@ ouro vault unlock --agent <agent>
 
 Ouro stores local unlock material in Keychain, DPAPI, Secret Service, or an explicit plaintext fallback if the human chooses it. Local unlock material is a machine-local cache, not a credential source of truth.
 
-If `ouro vault status --agent <agent>` says the vault locator is not configured in `agent.json`, this agent has not set up its vault yet. Run `ouro vault create --agent <agent>`, save the human-chosen unlock secret outside Ouro, then re-enter provider credentials with `ouro auth --agent <agent>`.
+If `ouro vault status --agent <agent>` says the vault locator is not configured in `agent.json`, this agent has not set up its vault yet. Run `ouro vault create --agent <agent>`, enter the new unlock secret twice when prompted, save it outside Ouro, then re-enter provider credentials with `ouro auth --agent <agent>`.
+
+When bundle sync is enabled, vault setup and guided connectors that edit `agent.json` run the existing bundle sync path after the change. Watch for the `bundle sync:` line in the command output; if it reports a push failure, the local vault action still succeeded, but the bundle change needs sync repair before another machine can see it.
 
 Then refresh and verify the credentials this machine can use:
 
@@ -84,7 +86,7 @@ Then refresh and verify the credentials this machine can use:
 ouro repair --agent <agent>
 ouro provider refresh --agent <agent>
 ouro auth verify --agent <agent>
-ouro vault config status --agent <agent>
+ouro vault config status --agent <agent> --scope all
 ```
 
 If provider credentials are missing or stale, run:
@@ -112,6 +114,16 @@ ouro vault recover --agent <agent> --from <json>
 ```
 
 Both commands use the stable agent vault email by default, such as `<agent>@ouro.bot`. They do not invent timestamped `+replaced` or `+recovered` addresses. If that vault account already exists, unlock it if the secret exists; only use `--email <email>` when intentionally moving the agent to a different vault account.
+
+For integrations and local senses, use the guided connector:
+
+```bash
+ouro connect --agent <agent>
+ouro connect perplexity --agent <agent>
+ouro connect bluebubbles --agent <agent>
+```
+
+Perplexity search is portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server.
 
 ## Step 4: Start the daemon
 
@@ -174,7 +186,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Skills | |
 | Agent config (`agent.json`) | |
 
-Provider credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). The vault itself is remote and shared; vault unlock material is local to each machine. The only Ouro-owned durable credential locations are the bundle and the agent vault. See [docs/auth-and-providers.md](auth-and-providers.md).
+Provider credentials and portable runtime credentials live in the agent's Bitwarden/Vaultwarden vault (one vault per agent). Local attachments such as BlueBubbles also live in the agent vault, under a machine-scoped item keyed by this machine's stable id. The vault itself is remote and shared; vault unlock material is local to each machine. The only Ouro-owned durable credential locations are the bundle and the agent vault. See [docs/auth-and-providers.md](auth-and-providers.md).
 
 ## For agents reading this doc
 

@@ -89,18 +89,21 @@ describe("ouro clone execution", () => {
       if (cmd === "git" && args[0] === "--version") return Buffer.from("git version 2.40.0")
       if (cmd === "git" && args[0] === "ls-remote") return Buffer.from("")
       if (cmd === "git" && args[0] === "clone") return Buffer.from("")
+      if (cmd === "git" && args[0] === "status" && args[1] === "--porcelain") return Buffer.from(" M agent.json")
+      if (cmd === "git" && args[0] === "remote") return Buffer.from("origin")
       return Buffer.from("")
     })
 
     // agent.json exists after clone
     mockExistsSync.mockImplementation((p: unknown) => {
       const s = String(p)
+      if (s.includes("agent.ouro/.git")) return true
       if (s.includes("agent.ouro/agent.json")) return true
       return false
     })
     mockReadFileSync.mockImplementation((p: unknown) => {
       const s = String(p)
-      if (s.includes("agent.json")) return JSON.stringify({ name: "agent" })
+      if (s.includes("agent.json")) return JSON.stringify({ name: "agent", sync: { enabled: true, remote: "origin" } })
       if (s.includes("package.json")) return JSON.stringify({ version: "0.1.0" })
       return ""
     })
@@ -129,6 +132,7 @@ describe("ouro clone execution", () => {
       .join("\n")
     expect(output).toContain("cloned agent to")
     expect(output).toContain("sync enabled")
+    expect(output).toContain("bundle sync: ran post-change sync")
     expect(output).toContain("ouro vault unlock --agent agent")
     expect(output).toContain("ouro provider refresh --agent agent")
     expect(output).toContain("ouro auth verify --agent agent")

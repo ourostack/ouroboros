@@ -43,11 +43,17 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import {
+  MACHINE_RUNTIME_CONFIG_ITEM_PREFIX,
   RUNTIME_CONFIG_ITEM_NAME,
+  cacheMachineRuntimeCredentialConfig,
   cacheRuntimeCredentialConfig,
+  machineRuntimeConfigItemName,
+  readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   resetRuntimeCredentialConfigCache,
+  upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
 } from "../../heart/runtime-credentials"
 
@@ -222,5 +228,91 @@ describe("runtime credentials vault config", () => {
       itemPath: "vault:slugger:runtime/config",
       error: "vault string failure",
     })
+  })
+
+  it("stores and refreshes current-machine runtime config in a machine-scoped vault item", async () => {
+    emitTestEvent("runtime credentials machine scoped upsert refresh")
+
+    expect(MACHINE_RUNTIME_CONFIG_ITEM_PREFIX).toBe("runtime/machines")
+    expect(machineRuntimeConfigItemName("machine_local")).toBe("runtime/machines/machine_local/config")
+    expect(() => machineRuntimeConfigItemName("   ")).toThrow("machineId must be non-empty")
+
+    const stored = await upsertMachineRuntimeCredentialConfig("slugger", "machine_local", {
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+      bluebubblesChannel: { port: "18790" },
+    }, new Date("2026-04-14T12:00:00.000Z"))
+
+    expect(stored).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_local/config",
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+        bluebubblesChannel: { port: "18790" },
+      },
+    })
+    expect(mockCredentialStore.items.has("runtime/machines/machine_local/config")).toBe(true)
+
+    resetRuntimeCredentialConfigCache()
+    const missingBeforeRefresh = readMachineRuntimeCredentialConfig("slugger")
+    expect(missingBeforeRefresh).toEqual({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/machines/<this-machine>/config",
+      error: "no machine runtime credentials loaded for slugger",
+    })
+
+    const refreshed = await refreshMachineRuntimeCredentialConfig("slugger", "machine_local")
+    expect(refreshed).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_local/config",
+      config: {
+        bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "bb-secret" },
+        bluebubblesChannel: { port: "18790" },
+      },
+    })
+    expect(readMachineRuntimeCredentialConfig("slugger")).toEqual(refreshed)
+  })
+
+  it("classifies missing and invalid machine-scoped runtime config without leaking values", async () => {
+    emitTestEvent("runtime credentials machine scoped missing invalid")
+
+    const missing = await refreshMachineRuntimeCredentialConfig("slugger", "machine_absent")
+    expect(missing).toEqual({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:slugger:runtime/machines/machine_absent/config",
+      error: "no runtime credentials stored at vault:slugger:runtime/machines/machine_absent/config",
+    })
+
+    mockCredentialStore.items.set("runtime/machines/machine_bad/config", {
+      username: "runtime/machines/machine_bad/config",
+      password: JSON.stringify({ schemaVersion: 1, kind: "wrong", updatedAt: "2026-04-14T12:00:00.000Z", config: { password: "nope" } }),
+      createdAt: "2026-04-14T00:00:00.000Z",
+    })
+
+    const invalid = await refreshMachineRuntimeCredentialConfig("slugger", "machine_bad")
+    expect(invalid).toMatchObject({
+      ok: false,
+      reason: "invalid",
+      itemPath: "vault:slugger:runtime/machines/machine_bad/config",
+    })
+    expect(invalid.error).toContain("kind must be runtime-config")
+    expect(invalid.error).not.toContain("nope")
+  })
+
+  it("caches machine-scoped runtime config for tests without touching the vault", async () => {
+    emitTestEvent("runtime credentials machine scoped cache helper")
+
+    const cached = cacheMachineRuntimeCredentialConfig("slugger", {
+      bluebubbles: { password: "bb-secret" },
+    }, new Date("2026-04-14T12:00:00.000Z"), "machine_test")
+
+    expect(cached).toMatchObject({
+      ok: true,
+      itemPath: "vault:slugger:runtime/machines/machine_test/config",
+      config: { bluebubbles: { password: "bb-secret" } },
+    })
+    expect(readMachineRuntimeCredentialConfig("slugger")).toEqual(cached)
+    expect(mockCredentialStore.store.getRawSecret).not.toHaveBeenCalled()
   })
 })

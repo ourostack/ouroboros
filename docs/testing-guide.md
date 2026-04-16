@@ -70,7 +70,7 @@ Expected:
 - system setup happens first
 - Adoption Specialist runs
 - a canonical bundle is created under `~/AgentBundles/Hatchling.ouro/`
-- the hatchling vault unlock secret is typed by the human into a hidden terminal prompt, not generated or printed
+- the hatchling vault unlock secret is typed and confirmed by the human in hidden terminal prompts, not generated or printed
 - selected provider credentials are stored in the hatchling's vault
 - interactive hatch does not create, mutate, or persist a SerpentGuide vault
 
@@ -100,7 +100,8 @@ Expected:
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
-- use `ouro vault config status --agent <agent>` to inspect runtime/sense/integration credential fields without printing values
+- use `ouro vault config status --agent <agent> --scope all` to inspect portable and machine-local runtime credential fields without printing values
+- use `ouro connect perplexity --agent <agent>` or `ouro connect bluebubbles --agent <agent>` for guided integration setup
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -125,11 +126,17 @@ CLI is `interactive`, so it should appear in `ouro status` without pretending th
 
 ### BlueBubbles
 
-If BlueBubbles is enabled and configured:
+If BlueBubbles is enabled and attached on this machine:
 
 - `ouro status` should show `BlueBubbles` as `ready` or `running`
 - inbound iMessages should create or continue the correct chat trunk
 - typing and read behavior should feel immediate
+
+If BlueBubbles is enabled but not attached here, `ouro status` should show `not_attached`, not degrade daemon startup. Attach it with:
+
+```bash
+ouro connect bluebubbles --agent <agent>
+```
 
 ### Teams
 
@@ -222,7 +229,9 @@ Check:
 
 - `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
 - `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
-- the agent's vault provider credentials, plus `runtime/config` for sense/integration credentials
+- the agent's vault provider credentials
+- portable runtime config in `runtime/config`
+- machine-local attachments in `runtime/machines/<machine-id>/config`
 
 Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; all raw credentials live in the owning agent's vault.
 
@@ -235,4 +244,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`. For BlueBubbles, prefer `ouro connect bluebubbles --agent <agent>` because it stores local server details under this machine's vault item.

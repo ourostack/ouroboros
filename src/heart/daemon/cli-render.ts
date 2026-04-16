@@ -279,6 +279,7 @@ function statusDot(status: string): string {
     case "failed":
       return red("●")
     case "needs_config":
+    case "not_attached":
     case "stale":
       return yellow("●")
     case "disabled":
