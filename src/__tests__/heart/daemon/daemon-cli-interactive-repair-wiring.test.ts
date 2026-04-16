@@ -85,7 +85,7 @@ vi.mock("../../../repertoire/credential-access", () => ({
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { mergeStartupStability } from "../../../heart/daemon/cli-exec"
 import { getRuntimeMetadata } from "../../../heart/daemon/runtime-metadata"
-import { vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
+import { providerCredentialMissingIssue, vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
@@ -217,9 +217,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("test-agent needs its vault unlocked on this machine.")
-    expect(output).toContain("1. I have the saved vault unlock secret")
-    expect(result).toContain("daemon not started because provider checks are degraded")
+    expect(output).toContain("test-agent: vault locked")
+    expect(output).toContain("1. Unlock with saved secret")
+    expect(result).toContain("daemon not started: provider checks need repair")
   })
 
   it("checks selected providers before starting a stopped daemon and stops without prompting when --no-repair is set", async () => {
@@ -250,10 +250,10 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("degraded agents:")
-    expect(output).toContain("test-agent: outward provider anthropic model claude-opus-4-6")
-    expect(output).toContain("fix: Run 'ouro vault unlock --agent test-agent'")
-    expect(result).toContain("daemon not started because provider checks are degraded")
+    expect(output).toContain("Provider checks need repair:")
+    expect(output).toContain("test-agent: vault locked")
+    expect(output).toContain("next: ouro vault unlock --agent test-agent")
+    expect(result).toContain("daemon not started: provider checks need repair")
   })
 
   it("checks selected providers before starting a stopped daemon and keeps --no-repair output tidy without a fix", async () => {
@@ -293,7 +293,13 @@ describe("ouro up: interactive repair wiring", () => {
         ok: false,
         error: "outward provider anthropic model claude-opus-4-6 still cannot read provider credentials.",
         fix: "Run 'ouro auth --agent test-agent --provider anthropic' if the credential is missing or stale.",
-        issue: vaultLockedIssue("test-agent"),
+        issue: providerCredentialMissingIssue({
+          agentName: "test-agent",
+          lane: "outward",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialPath: "vault:test-agent:providers/*",
+        }),
       })
     mocks.runInteractiveRepair.mockClear()
     mocks.pollDaemonStartup.mockClear()
@@ -316,11 +322,11 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("repair attempted for test-agent")
-    expect(output).toContain("provider checks still degraded after repair:")
-    expect(output).toContain("test-agent: outward provider anthropic model claude-opus-4-6 still cannot read provider credentials.")
-    expect(output).toContain("fix: Run 'ouro auth --agent test-agent --provider anthropic' if the credential is missing or stale.")
-    expect(result).toContain("daemon not started because provider checks are still degraded")
+    expect(output).toContain("repair step finished for test-agent.")
+    expect(output).toContain("Still blocked:")
+    expect(output).toContain("test-agent: missing anthropic credentials (outward, claude-opus-4-6)")
+    expect(output).toContain("next: ouro auth --agent test-agent --provider anthropic")
+    expect(result).toContain("daemon not started: provider checks still need repair")
   })
 
   it("renders generic pre-start readiness guidance with and without fix hints", async () => {
@@ -355,9 +361,9 @@ describe("ouro up: interactive repair wiring", () => {
     expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("provider failed with a manual fix")
-    expect(output).toContain("runs: run manual repair")
+    expect(output).toContain("   run manual repair")
     expect(output).toContain("provider failed without a repair hint")
-    expect(result).toContain("daemon not started because provider checks are degraded")
+    expect(result).toContain("daemon not started: provider checks need repair")
   })
 
   it("runs manual typed readiness actions and rechecks before starting a stopped daemon", async () => {
@@ -694,10 +700,10 @@ describe("ouro up: interactive repair wiring", () => {
     await runOuroCli(["up"], deps)
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("provider checks still degraded after repair:")
+    expect(output).toContain("Still blocked:")
     expect(output).toContain("test-agent: selected provider openai-codex for humanFacing failed health check")
-    expect(output).toContain("fix: Run 'ouro auth --agent test-agent --provider openai-codex' to refresh credentials.")
-    expect(output).toContain("run `ouro up` again after applying the remaining fixes.")
+    expect(output).toContain("next: Run 'ouro auth --agent test-agent --provider openai-codex' to refresh credentials.")
+    expect(output).toContain("Run `ouro up` again after these are fixed.")
   })
 
   it("reports remaining provider degradation without inventing an absent fix", async () => {
@@ -725,9 +731,9 @@ describe("ouro up: interactive repair wiring", () => {
     await runOuroCli(["up"], deps)
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
-    expect(output).toContain("provider checks still degraded after repair:")
+    expect(output).toContain("Still blocked:")
     expect(output).toContain("test-agent: selected provider health check failed")
-    expect(output).not.toContain("    fix:")
+    expect(output).not.toContain("    next:")
   })
 
   it("keeps already-running daemons healthy when selected provider checks pass", async () => {
@@ -777,7 +783,7 @@ describe("ouro up: interactive repair wiring", () => {
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("test-agent: config check exploded")
-    expect(output).toContain("fix: Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
+    expect(output).toContain("next: Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 
@@ -830,7 +836,7 @@ describe("ouro up: interactive repair wiring", () => {
 
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("test-agent: string failure")
-    expect(output).toContain("fix: Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
+    expect(output).toContain("next: Run 'ouro doctor' for diagnostics, then retry 'ouro up'.")
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
   })
 })

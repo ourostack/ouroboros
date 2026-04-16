@@ -19,7 +19,7 @@ describe("readiness repair guidance", () => {
       kind: "vault-locked",
       severity: "blocked",
       actor: "human-required",
-      summary: "slugger needs its vault unlocked on this machine.",
+      summary: "slugger: vault locked",
     })
     expect(issue.actions.map((action) => action.kind)).toEqual([
       "vault-unlock",
@@ -27,17 +27,17 @@ describe("readiness repair guidance", () => {
       "vault-recover",
     ])
     expect(issue.actions[0]).toMatchObject({
-      label: "I have the saved vault unlock secret",
+      label: "Unlock with saved secret",
       command: "ouro vault unlock --agent slugger",
       actor: "human-required",
     })
     expect(issue.actions[1]).toMatchObject({
-      label: "Nobody saved it; create an empty vault and re-enter credentials",
+      label: "Create empty replacement vault",
       command: "ouro vault replace --agent slugger",
       actor: "human-required",
     })
     expect(issue.actions[2]).toMatchObject({
-      label: "I have an old JSON credential export",
+      label: "Recover from JSON export",
       command: "ouro vault recover --agent slugger --from <json>",
       actor: "human-required",
     })
@@ -67,11 +67,11 @@ describe("readiness repair guidance", () => {
       issue,
     )
     const output = writeStdout.mock.calls.map((call) => call[0]).join("\n")
-    expect(output).toContain("slugger needs its vault unlocked on this machine.")
-    expect(output).toContain("1. I have the saved vault unlock secret")
-    expect(output).toContain("runs: ouro vault unlock --agent slugger")
-    expect(output).toContain("2. Nobody saved it; create an empty vault and re-enter credentials")
-    expect(output).toContain("runs: ouro vault replace --agent slugger")
+    expect(output).toContain("slugger: vault locked")
+    expect(output).toContain("1. Unlock with saved secret")
+    expect(output).toContain("   ouro vault unlock --agent slugger")
+    expect(output).toContain("2. Create empty replacement vault")
+    expect(output).toContain("   ouro vault replace --agent slugger")
     expect(promptInput).toHaveBeenCalledWith("Choose [1-4]: ")
   })
 
@@ -101,8 +101,8 @@ describe("readiness repair guidance", () => {
     expect(result.repairsAttempted).toBe(false)
     expect(runRepairAction).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call) => call[0]).join("\n")
-    expect(output).toContain("slugger is missing openai-codex credentials for the inner lane.")
-    expect(output).toContain("runs: ouro auth --agent slugger --provider openai-codex")
+    expect(output).toContain("slugger: missing openai-codex credentials (inner, gpt-5.4)")
+    expect(output).toContain("   ouro auth --agent slugger --provider openai-codex")
     expect(output).not.toContain("AI-assisted diagnosis")
   })
 
@@ -227,7 +227,7 @@ describe("readiness repair guidance", () => {
     })
     expect(invalidResult.repairsAttempted).toBe(false)
     expect(invalidOutput.mock.calls.map((call) => call[0]).join("\n")).toContain(
-      "invalid repair choice for slugger; no repair attempted.",
+      "invalid choice for slugger; no repair attempted.",
     )
 
     const manualOutput = vi.fn()

@@ -70,24 +70,24 @@ export function vaultLockedIssue(agentName: string): AgentReadinessIssue {
     kind: "vault-locked",
     severity: "blocked",
     actor: "human-required",
-    summary: `${agentName} needs its vault unlocked on this machine.`,
-    detail: "Choose the path that matches what the human actually has. Ouro will not print or store a portable copy of the unlock secret.",
+    summary: `${agentName}: vault locked`,
+    detail: "Pick the path that matches what the human actually has. Ouro will not print or store the unlock secret as a portable file.",
     actions: [
       {
         kind: "vault-unlock",
-        label: "I have the saved vault unlock secret",
+        label: "Unlock with saved secret",
         command: `ouro vault unlock --agent ${agentName}`,
         actor: "human-required",
       },
       {
         kind: "vault-replace",
-        label: "Nobody saved it; create an empty vault and re-enter credentials",
+        label: "Create empty replacement vault",
         command: `ouro vault replace --agent ${agentName}`,
         actor: "human-required",
       },
       {
         kind: "vault-recover",
-        label: "I have an old JSON credential export",
+        label: "Recover from JSON export",
         command: `ouro vault recover --agent ${agentName} --from <json>`,
         actor: "human-required",
         executable: false,
@@ -107,19 +107,19 @@ export function providerCredentialMissingIssue(input: {
     kind: "provider-credentials-missing",
     severity: "blocked",
     actor: "human-required",
-    summary: `${input.agentName} is missing ${input.provider} credentials for the ${input.lane} lane.`,
-    detail: `Selected model: ${input.model}. Credential source: ${input.credentialPath}.`,
+    summary: `${input.agentName}: missing ${input.provider} credentials (${input.lane}, ${input.model})`,
+    detail: `source: ${input.credentialPath}`,
     actions: [
       {
         kind: "provider-auth",
-        label: `Authenticate ${input.provider} for ${input.agentName}`,
+        label: `Authenticate ${input.provider}`,
         command: `ouro auth --agent ${input.agentName} --provider ${input.provider}`,
         actor: "human-required",
         provider: input.provider,
       },
       {
         kind: "provider-use",
-        label: "Choose a different working provider/model for this lane",
+        label: "Choose another provider/model",
         command: `ouro use --agent ${input.agentName} --lane ${input.lane} --provider <provider> --model <model>`,
         actor: "human-choice",
         executable: false,
@@ -140,7 +140,7 @@ export function providerLiveCheckFailedIssue(input: {
     kind: "provider-live-check-failed",
     severity: "blocked",
     actor: "human-choice",
-    summary: `${input.agentName}'s ${input.lane} lane provider ${input.provider} / ${input.model} failed its live check.`,
+    summary: `${input.agentName}: ${input.lane} provider ${input.provider} / ${input.model} failed live check`,
     detail: input.message,
     actions: [
       {
@@ -196,10 +196,21 @@ export function renderReadinessIssue(issue: AgentReadinessIssue): string {
   }
   issue.actions.forEach((action, index) => {
     lines.push(`${index + 1}. ${action.label}`)
-    lines.push(`   runs: ${action.command}`)
+    lines.push(`   ${action.command}`)
   })
   lines.push(`${issue.actions.length + 1}. Skip for now`)
   return lines.join("\n")
+}
+
+export function renderReadinessIssueNextSteps(issue: AgentReadinessIssue): string[] {
+  const lines = [`  ${issue.summary}`]
+  if (issue.detail && issue.kind !== "vault-locked") {
+    lines.push(`    ${issue.detail}`)
+  }
+  issue.actions.forEach((action, index) => {
+    lines.push(`    ${index === 0 ? "next" : "or"}: ${action.command}`)
+  })
+  return lines
 }
 
 function selectedActionFor(answer: string, issue: AgentReadinessIssue): RepairAction | "skip" | null {
@@ -242,11 +253,11 @@ export async function runGuidedReadinessRepair(
       const answer = await deps.promptInput(`Choose [1-${issue.actions.length + 1}]: `)
       const action = selectedActionFor(answer, issue)
       if (action === "skip") {
-        deps.writeStdout(`repair skipped for ${report.agent}.`)
+        deps.writeStdout(`skipped ${report.agent} for now.`)
         continue
       }
       if (!action) {
-        deps.writeStdout(`invalid repair choice for ${report.agent}; no repair attempted.`)
+        deps.writeStdout(`invalid choice for ${report.agent}; no repair attempted.`)
         continue
       }
       if (!isExecutableAction(action)) {
@@ -262,7 +273,7 @@ export async function runGuidedReadinessRepair(
       try {
         await deps.runRepairAction(report.agent, action, issue)
         repairsAttempted = true
-        deps.writeStdout(`repair attempted for ${report.agent}`)
+        deps.writeStdout(`repair step finished for ${report.agent}.`)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         repairsAttempted = true
