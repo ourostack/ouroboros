@@ -109,7 +109,9 @@ import type { DegradedAgent } from "./interactive-repair"
 import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
 import {
   genericReadinessIssue,
+  renderReadinessIssueNextSteps,
   runGuidedReadinessRepair,
+  type AgentReadinessIssue,
   type AgentReadinessReport,
   type RepairAction,
 } from "./readiness-repair"
@@ -194,6 +196,31 @@ async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Deg
   return checkAgentProviders(deps)
 }
 
+function readinessIssueFromDegraded(entry: DegradedAgent): AgentReadinessIssue {
+  return entry.issue ?? genericReadinessIssue({
+    summary: `${entry.agent}: ${entry.errorReason}`,
+    ...(entry.fixHint ? { fix: entry.fixHint } : {}),
+  })
+}
+
+function writeProviderRepairSummary(
+  deps: Pick<OuroCliDeps, "writeStdout">,
+  title: string,
+  degraded: DegradedAgent[],
+): void {
+  deps.writeStdout(title)
+  for (const entry of degraded) {
+    for (const line of renderReadinessIssueNextSteps(readinessIssueFromDegraded(entry))) {
+      deps.writeStdout(line)
+    }
+  }
+}
+
+function providerRepairCountSummary(count: number): string {
+  if (count === 0) return "ok"
+  return `${count} ${count === 1 ? "needs" : "need"} repair`
+}
+
 async function reportPostRepairProviderHealth(
   deps: OuroCliDeps,
   repairedAgents: string[],
@@ -215,14 +242,8 @@ async function reportPostRepairProviderHealth(
     return remainingDegraded
   }
 
-  deps.writeStdout("provider checks still degraded after repair:")
-  for (const d of remainingDegraded) {
-    deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
-    if (d.fixHint) {
-      deps.writeStdout(`    fix: ${d.fixHint}`)
-    }
-  }
-  deps.writeStdout("run `ouro up` again after applying the remaining fixes.")
+  writeProviderRepairSummary(deps, "Still blocked:", remainingDegraded)
+  deps.writeStdout("Run `ouro up` again after these are fixed.")
   return remainingDegraded
 }
 
@@ -1015,7 +1036,7 @@ async function executeVaultReplace(
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
+  const unlockSecret = (await promptSecret(`Choose new Ouro vault unlock secret for ${email}: `)).trim()
   if (!unlockSecret) {
     throw new Error("vault replace requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
@@ -1037,13 +1058,8 @@ async function executeVaultReplace(
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
     `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
-    "credentials imported: none",
-    "This is the no-export path for agents that predate vault auth or lost an unsaved unlock secret.",
-    "Re-auth/re-enter the credentials this agent should use:",
-    `  ouro auth --agent ${command.agent} --provider <provider>`,
-    `  ouro vault config set --agent ${command.agent} --key <field>`,
-    `  ouro provider refresh --agent ${command.agent}`,
-    `  ouro auth verify --agent ${command.agent}`,
+    "imported: none",
+    `next: ouro repair --agent ${command.agent}`,
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
   ].join("\n")
   deps.writeStdout(message)
@@ -1065,7 +1081,7 @@ async function executeVaultRecover(
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
   const email = command.email ?? defaultRepairVaultEmail(command.agent, config)
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
-  const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
+  const unlockSecret = (await promptSecret(`Choose new Ouro vault unlock secret for ${email}: `)).trim()
   if (!unlockSecret) {
     throw new Error("vault recover requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.")
   }
@@ -1725,12 +1741,7 @@ function readinessReportsFromDegraded(degraded: DegradedAgent[]): AgentReadiness
   return degraded.map((entry) => ({
     agent: entry.agent,
     ok: false,
-    issues: [
-      entry.issue ?? genericReadinessIssue({
-        summary: entry.errorReason,
-        ...(entry.fixHint ? { fix: entry.fixHint } : {}),
-      }),
-    ],
+    issues: [readinessIssueFromDegraded(entry)],
   }))
 }
 
@@ -2581,26 +2592,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.startPhase("provider checks")
       const preflightProviderDegraded = await checkAgentProviders(deps)
       providerChecksAlreadyRun = true
-      progress.completePhase("provider checks", preflightProviderDegraded.length > 0 ? `${preflightProviderDegraded.length} degraded` : "ok")
+      progress.completePhase("provider checks", providerRepairCountSummary(preflightProviderDegraded.length))
 
       if (preflightProviderDegraded.length > 0) {
         progress.end()
         if (command.noRepair) {
-          deps.writeStdout("degraded agents:")
-          for (const d of preflightProviderDegraded) {
-            deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
-            if (d.fixHint) {
-              deps.writeStdout(`    fix: ${d.fixHint}`)
-            }
-          }
-          const message = "daemon not started because provider checks are degraded; run `ouro repair` after applying the fixes."
+          writeProviderRepairSummary(deps, "Provider checks need repair:", preflightProviderDegraded)
+          const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           deps.writeStdout(message)
           return message
         }
 
         const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
         if (!repairResult.repairsAttempted) {
-          const message = "daemon not started because provider checks are degraded; run `ouro repair` after applying the fixes."
+          writeProviderRepairSummary(deps, "Provider checks still need repair:", preflightProviderDegraded)
+          const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           deps.writeStdout(message)
           return message
         }
@@ -2610,7 +2616,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           preflightProviderDegraded.map((entry) => entry.agent),
         )
         if (remainingDegraded.length > 0) {
-          const message = "daemon not started because provider checks are still degraded."
+          const message = "daemon not started: provider checks still need repair."
           deps.writeStdout(message)
           return message
         }
@@ -2628,7 +2634,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.startPhase("provider checks")
       const providerDegraded = await checkAlreadyRunningAgentProviders(deps)
       daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
-      progress.completePhase("provider checks", providerDegraded.length > 0 ? `${providerDegraded.length} degraded` : "ok")
+      progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
     }
     progress.end()
     deps.writeStdout(daemonResult.message)
@@ -2637,13 +2643,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
       if (command.noRepair) {
         // --no-repair: write degraded summary and skip interactive repair
-        deps.writeStdout("degraded agents:")
-        for (const d of daemonResult.stability.degraded) {
-          deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
-          if (d.fixHint) {
-            deps.writeStdout(`    fix: ${d.fixHint}`)
-          }
-        }
+        writeProviderRepairSummary(deps, "Provider checks need repair:", daemonResult.stability.degraded)
         emitNervesEvent({
           level: "warn",
           component: "daemon",

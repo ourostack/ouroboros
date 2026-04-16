@@ -17,6 +17,7 @@ async function cacheRuntimeConfig(agent: string, payload: Record<string, unknown
 describe("daemon sense manager", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.doUnmock("../../../heart/runtime-credentials")
     vi.resetModules()
   })
 
@@ -612,7 +613,7 @@ describe("daemon sense manager", () => {
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
-    await cacheRuntimeConfig("slugger", {
+    let runtimeConfig: Record<string, unknown> = {
       teams: {
         clientId: "cid",
         clientSecret: "secret",
@@ -622,7 +623,7 @@ describe("daemon sense manager", () => {
         serverUrl: "http://localhost:1234",
         password: "pw",
       },
-    })
+    }
 
     const processManagerCtor = vi.fn()
 
@@ -645,6 +646,23 @@ describe("daemon sense manager", () => {
       },
     }))
 
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: runtimeConfig,
+        revision: "runtime_test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      refreshRuntimeCredentialConfig: async (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: runtimeConfig,
+        revision: "runtime_test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+    }))
+
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     new DaemonSenseManager({
       agents: ["slugger"],
@@ -658,12 +676,12 @@ describe("daemon sense manager", () => {
     await expect(options.configCheck("missing:teams")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
 
-    await cacheRuntimeConfig("slugger", {
+    runtimeConfig = {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
       },
-    })
+    }
     const missingTeams = await options.configCheck("slugger:teams")
     expect(missingTeams).toEqual({
       ok: false,
@@ -671,13 +689,13 @@ describe("daemon sense manager", () => {
       fix: "Run 'ouro vault config set --agent slugger --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.",
     })
 
-    await cacheRuntimeConfig("slugger", {
+    runtimeConfig = {
       teams: {
         clientId: "cid",
         clientSecret: "secret",
         tenantId: "tenant",
       },
-    })
+    }
     const missingBlueBubbles = await options.configCheck("slugger:bluebubbles")
     expect(missingBlueBubbles).toEqual({
       ok: false,

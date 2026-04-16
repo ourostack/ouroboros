@@ -1068,10 +1068,10 @@ describe("provider CLI command execution", () => {
       },
     }))
 
-    expect(result).toContain("repair attempted for Slugger")
-    expect(result).toContain("Slugger needs its vault unlocked on this machine.")
-    expect(result).toContain("1. I have the saved vault unlock secret")
-    expect(result).toContain("runs: ouro vault unlock --agent Slugger")
+    expect(result).toContain("repair step finished for Slugger.")
+    expect(result).toContain("Slugger: vault locked")
+    expect(result).toContain("1. Unlock with saved secret")
+    expect(result).toContain("   ouro vault unlock --agent Slugger")
     expect(prompts).toContain("Choose [1-4]: ")
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
@@ -1137,13 +1137,13 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => "2",
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
+        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
         return "chosen-replacement-material"
       },
     }))
 
     expect(result).toContain("vault replaced for Slugger")
-    expect(result).toContain("repair attempted for Slugger")
+    expect(result).toContain("repair step finished for Slugger.")
   })
 
   it("ouro repair can refresh provider credentials from the typed repair menu", async () => {
@@ -1178,7 +1178,7 @@ describe("provider CLI command execution", () => {
     })
     expect(result).toContain("authenticated Slugger with anthropic")
     expect(result).toContain("refreshed provider credential snapshot for Slugger")
-    expect(result).toContain("repair attempted for Slugger")
+    expect(result).toContain("repair step finished for Slugger.")
   })
 
   it("ouro repair uses the default auth flow when no test runner is injected", async () => {
@@ -1216,7 +1216,7 @@ describe("provider CLI command execution", () => {
     expect(prompts).toContain("MiniMax API key: ")
     expect(mockVaultDeps.rawSecrets.get("Slugger:providers/minimax")).toContain("minimax-secret")
     expect(result).toContain("authenticated Slugger with minimax")
-    expect(result).toContain("repair attempted for Slugger")
+    expect(result).toContain("repair step finished for Slugger.")
   })
 
   it("vault create can use an explicit email and prompted unlock material", async () => {
@@ -1267,17 +1267,15 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
+        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
         return "chosen-replacement-secret"
       },
     }))
 
     expect(result).toContain("vault replaced for Slugger")
     expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
-    expect(result).toContain("credentials imported: none")
-    expect(result).toContain("no-export path")
-    expect(result).toContain("ouro auth --agent Slugger --provider <provider>")
-    expect(result).toContain("ouro vault config set --agent Slugger --key <field>")
+    expect(result).toContain("imported: none")
+    expect(result).toContain("next: ouro repair --agent Slugger")
     expect(result).toContain("Keep the vault unlock secret saved outside Ouro")
     expect(result).not.toContain("chosen-replacement-secret")
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
@@ -1316,7 +1314,7 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger@ouro.bot: ")
+        expect(question).toBe("Choose new Ouro vault unlock secret for slugger@ouro.bot: ")
         return "chosen-replacement-secret"
       },
     }))
@@ -1352,7 +1350,7 @@ describe("provider CLI command execution", () => {
       "slugger+manual@example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger+manual@example.com: ")
+        expect(question).toBe("Choose new Ouro vault unlock secret for slugger+manual@example.com: ")
         return "chosen-replacement-secret"
       },
     }))
@@ -1534,7 +1532,7 @@ describe("provider CLI command execution", () => {
       "slugger+manual@example.com",
     ], makeCliDeps(homeDir, bundlesRoot, {
       promptSecret: async (question) => {
-        expect(question).toBe("Choose Ouro vault unlock secret for slugger+manual@example.com: ")
+        expect(question).toBe("Choose new Ouro vault unlock secret for slugger+manual@example.com: ")
         return "chosen-recovery-secret"
       },
     }))
