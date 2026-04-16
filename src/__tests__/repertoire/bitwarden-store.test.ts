@@ -1775,6 +1775,96 @@ describe("BitwardenCredentialStore", () => {
       vi.useRealTimers()
     })
 
+    it("recognizes timeout errors after formatBwCliError transforms them (raw ETIMEDOUT)", async () => {
+      // Baseline: raw ETIMEDOUT code IS recognized as transient, so login retries.
+      let statusCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          statusCallCount++
+          if (statusCallCount <= 1) {
+            const err = new Error("connect ETIMEDOUT") as NodeJS.ErrnoException
+            err.code = "ETIMEDOUT"
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") { cb(null, "", ""); return }
+        if (args[0] === "login") { cb(null, "session-token", ""); return }
+        cb(null, "", "")
+      })
+
+      // Should succeed on retry (the raw ETIMEDOUT is transient)
+      await store.login()
+      expect(statusCallCount).toBe(2)
+    })
+
+    it("recognizes formatted timeout errors as transient (killed process with SIGTERM)", async () => {
+      // After formatBwCliError, the message is "bw CLI error: status timed out while
+      // waiting for a vault response" which should still be treated as transient.
+      let statusCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          statusCallCount++
+          if (statusCallCount <= 1) {
+            // This error triggers formatBwCliError's timeout path: killed + SIGTERM
+            const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            }
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") { cb(null, "", ""); return }
+        if (args[0] === "login") { cb(null, "session-token", ""); return }
+        cb(null, "", "")
+      })
+
+      // This should retry and succeed. If isTransientError does not recognize the
+      // formatted "timed out" message, this will throw instead of retrying.
+      await store.login()
+      expect(statusCallCount).toBe(2)
+    })
+
+    it("recognizes formatted timeout errors from inner operations as transient", async () => {
+      // When an inner bw command (e.g. unlock) times out, the formatted error
+      // message is "bw CLI error: unlock timed out while waiting for a vault response".
+      // The login retry loop should recognize this as transient.
+      let unlockCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCallCount++
+          if (unlockCallCount <= 1) {
+            const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            }
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            cb(null, "unlocked-session-token", "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Should retry and succeed
+      await store.login()
+      expect(unlockCallCount).toBe(2)
+    })
+
     it("emits nerves events for retry attempts", async () => {
       let callCount = 0
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
