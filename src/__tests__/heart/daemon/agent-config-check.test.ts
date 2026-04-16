@@ -360,4 +360,33 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.error).toContain("agent.json not found")
     expect(pingProvider).not.toHaveBeenCalled()
   })
+
+  it("threads onProgress callback to refreshProviderCredentialPool", async () => {
+    const onProgress = vi.fn()
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider, onProgress })
+
+    expect(result).toEqual({ ok: true })
+    // Verify refreshProviderCredentialPool was called with options containing onProgress
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith(
+      "myagent",
+      expect.objectContaining({ onProgress }),
+    )
+  })
+
+  it("does not pass onProgress when not provided in deps (backward compat)", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result).toEqual({ ok: true })
+    // refreshProviderCredentialPool should be called without onProgress in options
+    const callArgs = refreshProviderCredentialPoolMock.mock.calls[0]
+    expect(callArgs[0]).toBe("myagent")
+    // Second arg should either be undefined or not have onProgress
+    if (callArgs[1]) {
+      expect(callArgs[1].onProgress).toBeUndefined()
+    }
+  })
 })

@@ -136,6 +136,7 @@ const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
 async function checkAgentProviders(
   deps: OuroCliDeps,
   agentsOverride?: string[],
+  onProgress?: (message: string) => void,
 ): Promise<DegradedAgent[]> {
   const agents = agentsOverride ?? await listCliAgents(deps)
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
@@ -143,7 +144,8 @@ async function checkAgentProviders(
 
   for (const agent of [...new Set(agents)]) {
     try {
-      const result = await checkAgentProviderHealth(agent, bundlesRoot, deps)
+      onProgress?.(`${agent}: checking providers...`)
+      const result = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
       const fixHint = result.fix ?? ""
@@ -179,9 +181,13 @@ async function checkAgentProviderHealth(
   agentName: string,
   bundlesRoot: string,
   deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
 ): ReturnType<typeof checkAgentConfigWithProviderHealth> {
-  if (deps.homeDir) {
-    return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, { homeDir: deps.homeDir })
+  const liveDeps: import("./agent-config-check").LiveConfigCheckDeps = {}
+  if (deps.homeDir) liveDeps.homeDir = deps.homeDir
+  if (onProgress) liveDeps.onProgress = onProgress
+  if (liveDeps.homeDir || liveDeps.onProgress) {
+    return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, liveDeps)
   }
   return checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
 }
@@ -201,8 +207,8 @@ function managedAgentsSignature(agentNames: string[]): string {
   return unique.length > 0 ? unique.join(",") : "(none)"
 }
 
-async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<DegradedAgent[]> {
-  return checkAgentProviders(deps)
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps, onProgress?: (message: string) => void): Promise<DegradedAgent[]> {
+  return checkAgentProviders(deps, undefined, onProgress)
 }
 
 function readinessIssueFromDegraded(entry: DegradedAgent): AgentReadinessIssue {
@@ -2982,7 +2988,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     let providerChecksAlreadyRun = false
     if (!daemonAliveBeforeStart) {
       progress.startPhase("provider checks")
-      const preflightProviderDegraded = await checkAgentProviders(deps)
+      const preflightProviderDegraded = await checkAgentProviders(deps, undefined, (msg) => progress.updateDetail(msg))
       providerChecksAlreadyRun = true
       progress.completePhase("provider checks", providerRepairCountSummary(preflightProviderDegraded.length))
 
@@ -3023,7 +3029,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }, { initialAlive: daemonAliveBeforeStart })
     if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
       progress.startPhase("provider checks")
-      const providerDegraded = await checkAlreadyRunningAgentProviders(deps)
+      const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
       daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
       progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
     }
