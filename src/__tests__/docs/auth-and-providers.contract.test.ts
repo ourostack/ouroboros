@@ -45,6 +45,7 @@ describe("auth/provider documentation contract", () => {
     expect(authGuide).toContain("ouro vault status --agent <agent>")
     expect(authGuide).toContain("ouro vault create --agent <agent>")
     expect(authGuide).toContain("ouro vault replace --agent <agent>")
+    expect(authGuide).toContain("only when the bundle already has vault coordinates")
     expect(authGuide).toContain("no local credential export")
     expect(authGuide).toContain("stable agent vault email")
     expect(authGuide).toContain("does not invent timestamped `+replaced` addresses")
@@ -62,7 +63,9 @@ describe("auth/provider documentation contract", () => {
 
     expect(machineGuide).toContain("Old Auth-Style Agents")
     expect(machineGuide).toContain("predates the vault-backed auth model")
+    expect(machineGuide).toContain("ouro vault create --agent <agent>")
     expect(machineGuide).toContain("ouro vault replace --agent <agent>")
+    expect(machineGuide).toContain("bundle already has vault coordinates")
     expect(machineGuide).toContain("stable agent vault email")
     expect((machineGuide.match(/```/g) ?? []).length % 2).toBe(0)
     expect(machineGuide).not.toContain("+replaced-")
