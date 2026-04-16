@@ -368,7 +368,7 @@ describe("complete_adoption via createSpecialistExecTool", () => {
       expect.objectContaining({ agentName: "TestAgent" }),
       "human-chosen-hatch-secret",
     )
-    expect(promptSecret).toHaveBeenCalledWith("Choose Ouro vault unlock secret for TestAgent@ouro.bot: ")
+    expect(promptSecret).toHaveBeenCalledWith("Choose Ouro vault unlock secret for testagent@ouro.bot: ")
     expect(mockStoreProviderCredentials).toHaveBeenCalledWith(
       "TestAgent",
       "anthropic",

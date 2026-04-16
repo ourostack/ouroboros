@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { runInteractiveRepair } from "../../../heart/daemon/interactive-repair"
 import type { InteractiveRepairDeps, DegradedAgent } from "../../../heart/daemon/interactive-repair"
+import { vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 // Silence nerves events during tests
 vi.mock("../../../nerves/runtime", () => ({
@@ -177,6 +178,97 @@ describe("runInteractiveRepair", () => {
 
     expect(result).toEqual({ repairsAttempted: true })
     expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
+  })
+
+  it("uses typed vault unlock repair actions before legacy text matching", async () => {
+    const runVaultUnlock = vi.fn(async () => undefined)
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+      runVaultUnlock,
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider failed",
+        fixHint: "",
+        issue: vaultLockedIssue("slugger"),
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: true })
+    expect(deps.promptInput).toHaveBeenCalledWith(
+      "run `ouro vault unlock --agent slugger` now? Only say yes if you have the saved unlock secret. [y/n] ",
+    )
+    expect(runVaultUnlock).toHaveBeenCalledWith("slugger")
+  })
+
+  it("ignores typed actions that are not locally runnable", async () => {
+    const nonRunnableIssue: AgentReadinessIssue = {
+      kind: "vault-locked",
+      severity: "blocked",
+      actor: "human-required",
+      summary: "replace required",
+      actions: [{
+        kind: "vault-replace",
+        label: "replace vault",
+        command: "ouro vault replace --agent slugger",
+        actor: "human-required",
+      }],
+    }
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "y"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider failed",
+        fixHint: "",
+        issue: nonRunnableIssue,
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.promptInput).not.toHaveBeenCalled()
+    expect(deps.writeStdout).toHaveBeenCalledWith("slugger: provider failed")
+  })
+
+  it("falls back to an agent-scoped command for typed provider auth actions with an empty command", async () => {
+    const issue: AgentReadinessIssue = {
+      kind: "provider-credentials-missing",
+      severity: "blocked",
+      actor: "human-required",
+      summary: "auth required",
+      actions: [{
+        kind: "provider-auth",
+        label: "Authenticate provider",
+        command: "",
+        actor: "human-required",
+        provider: "minimax",
+      }],
+    }
+    const deps = makeDeps({
+      promptInput: vi.fn(async () => "n"),
+    })
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider failed",
+        fixHint: "",
+        issue,
+      },
+    ]
+
+    const result = await runInteractiveRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false })
+    expect(deps.promptInput).toHaveBeenCalledWith("run `ouro auth --agent slugger` now? [y/n] ")
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      "repair skipped for slugger; run `ouro auth --agent slugger` later.",
+    )
   })
 
 

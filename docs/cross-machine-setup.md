@@ -81,6 +81,7 @@ If `ouro vault status --agent <agent>` says the vault locator is not configured 
 Then refresh and verify the credentials this machine can use:
 
 ```bash
+ouro repair --agent <agent>
 ouro provider refresh --agent <agent>
 ouro auth verify --agent <agent>
 ouro vault config status --agent <agent>
@@ -117,6 +118,7 @@ Both commands use the stable agent vault email by default, such as `<agent>@ouro
 If you skipped the guided prompt:
 
 ```bash
+ouro repair --agent <agent>
 ouro up
 ```
 
@@ -188,6 +190,6 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
-**Agent can't reach model provider** — If you have the saved vault unlock secret, run `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If nobody ever saved an unlock secret for this existing agent, run `ouro vault replace --agent <name>`, then re-enter credentials with `ouro auth --agent <name>`.
+**Agent can't reach model provider** — Run `ouro repair --agent <name>` first. If you have the saved vault unlock secret, it will point you to `ouro vault unlock --agent <name>`, then `ouro provider refresh --agent <name>` and `ouro auth verify --agent <name>`. If nobody ever saved an unlock secret for this existing agent, use `ouro vault replace --agent <name>`, then re-enter credentials with `ouro auth --agent <name>`.
 
 **WSL setup can't find `claude.exe`** — Make sure Claude Code is installed on Windows and that Windows executables are accessible from WSL (this is the default). Check that `/etc/wsl.conf` doesn't have `appendWindowsPath = false`.

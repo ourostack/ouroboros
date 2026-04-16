@@ -190,6 +190,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro check --agent <name> --lane outward|inner",
     example: "ouro check --agent ouroboros --lane outward",
   },
+  repair: {
+    category: "Auth",
+    description: "Guide vault and provider readiness repair without invoking AI diagnosis for known issues",
+    usage: "ouro repair [--agent <name>]",
+    example: "ouro repair --agent ouroboros",
+  },
   provider: {
     category: "Auth",
     description: "Refresh daemon provider credentials from an agent vault",
