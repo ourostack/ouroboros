@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.407",
+      "changes": [
+        "`credential_store` now uses the same Bitwarden-derived error scrubber as provider auth, so agent-saved secret flows redact raw `bw ...` command lines, encoded payload blobs, and hidden prompt echoes instead of free-styling their own failure cleanup.",
+        "The shared sanitizer now collapses fully scrubbed failures back to `command failed`, so redaction does not leave behind useless `[redacted]` noise when the only surviving text was secret-shaped.",
+        "Added regression coverage for the shared sanitizer itself plus the `credential_store` path that agents hit after signups and manual secret saves.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the shared credential error sanitization release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.406",
       "changes": [
         "`ouro auth --agent <agent> --provider <provider>` now keeps narrating the post-login vault save path with `opening ... vault session`, `storing ... credentials`, and `refreshing local provider snapshot`, so a successful browser login no longer drops into a silent cursor while secrets are being persisted.",
