@@ -585,4 +585,160 @@ describe("runInteractiveRepair", () => {
     expect(deps.runAuthFlow).toHaveBeenCalledWith("slugger")
     expect(emitNervesEvent).toHaveBeenCalled()
   })
+
+  describe("recheckAgent callback", () => {
+    it("calls recheckAgent after a successful vault unlock repair", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("calls recheckAgent after a successful auth flow repair", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "missing credentials",
+          fixHint: "ouro auth --agent slugger --provider openai-codex",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+    })
+
+    it("prints recovered message and skips remaining actions when recheckAgent returns null", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("ouroboros recovered.")
+    })
+
+    it("presents new error when recheckAgent returns a different DegradedAgent", async () => {
+      const newDegraded: DegradedAgent = {
+        agent: "slugger",
+        errorReason: "provider credentials expired",
+        fixHint: "ouro auth --agent slugger --provider anthropic",
+      }
+      let callCount = 0
+      const recheckAgent = vi.fn(async () => {
+        callCount++
+        // First recheck returns a new degraded state, second returns null
+        return callCount === 1 ? newDegraded : null
+      })
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      // After vault unlock, recheckAgent returns a new error, so the auth flow prompt should appear
+      expect(recheckAgent).toHaveBeenCalledWith("slugger")
+      expect(stdoutText(deps)).toContain("provider auth")
+      expect(stdoutText(deps)).toContain("ouro auth --agent slugger --provider anthropic")
+    })
+
+    it("does not call recheckAgent when repair action is declined", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        runVaultUnlock: vi.fn(async () => undefined),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).not.toHaveBeenCalled()
+    })
+
+    it("does not call recheckAgent when repair action throws an error", async () => {
+      const recheckAgent = vi.fn(async () => null)
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => {
+          throw new Error("unlock failed")
+        }),
+        recheckAgent,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(recheckAgent).not.toHaveBeenCalled()
+    })
+
+    it("works without recheckAgent (backward compat)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "y"),
+        runVaultUnlock: vi.fn(async () => undefined),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "slugger",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent slugger'.",
+        },
+      ]
+
+      const result = await runInteractiveRepair(degraded, deps)
+
+      expect(result).toEqual({ repairsAttempted: true })
+      // No crash, no recovered message
+      expect(stdoutText(deps)).not.toContain("recovered")
+    })
+  })
 })
