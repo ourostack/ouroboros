@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.401",
+      "changes": [
+        "Bitwarden-backed credential writes now prove success by reading the saved item back immediately and verifying its name, username, password, and notes before returning success.",
+        "Post-save verification now prefers `bw get item <id>` when create/edit returns a usable id, falls back cleanly when stdout is malformed or id-less, and retries once when the local Bitwarden session expires mid-verification.",
+        "Malformed or invalid `bw get item` responses now fail with short sanitized errors instead of leaving auth and vault save flows in an ambiguous half-success state.",
+        "Runtime auth's Bitwarden harness coverage now exercises the same post-save readback path as the real vault store, and the store test suite covers missing items, malformed responses, field-by-field mismatches, and multi-field mismatch guidance.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault write readback verification release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.400",
       "changes": [
         "Bitwarden-backed provider-vault writes now treat search/list failures as real vault errors instead of silently collapsing them into \"missing credential\" fallthroughs.",
