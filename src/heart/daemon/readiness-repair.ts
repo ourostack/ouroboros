@@ -59,6 +59,7 @@ export interface GuidedReadinessRepairDeps {
   promptInput?: (prompt: string) => Promise<string>
   writeStdout: (text: string) => void
   runRepairAction?: (agentName: string, action: RepairAction, issue: AgentReadinessIssue) => Promise<void>
+  onActionAttempted?: (agentName: string, action: RepairAction, issue: AgentReadinessIssue) => void
 }
 
 export interface GuidedReadinessRepairResult {
@@ -271,6 +272,7 @@ export async function runGuidedReadinessRepair(
       }
 
       try {
+        deps.onActionAttempted?.(report.agent, action, issue)
         await deps.runRepairAction(report.agent, action, issue)
         repairsAttempted = true
         deps.writeStdout(`repair step finished for ${report.agent}.`)
