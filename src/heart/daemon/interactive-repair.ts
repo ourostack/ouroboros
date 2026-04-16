@@ -21,6 +21,8 @@ export interface InteractiveRepairDeps {
   writeStdout: (msg: string) => void
   runAuthFlow: (agent: string, provider?: AgentProvider) => Promise<void>
   runVaultUnlock?: (agent: string) => Promise<void>
+  recheckAgent?: (agent: string) => Promise<DegradedAgent | null>
+  skipQueueSummary?: boolean
 }
 
 export interface InteractiveRepairResult {
@@ -225,6 +227,121 @@ function writeRepairQueueSummary(degraded: DegradedAgent[], deps: InteractiveRep
   if (lines.length > 0) deps.writeStdout(lines.join("\n"))
 }
 
+interface RepairStepOutcome {
+  succeeded: boolean
+  attempted: boolean
+}
+
+async function attemptVaultUnlock(
+  entry: DegradedAgent,
+  action: RunnableRepairAction,
+  deps: InteractiveRepairDeps,
+): Promise<RepairStepOutcome> {
+  deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
+  const answer = await deps.promptInput(
+    `Unlock ${entry.agent}'s vault now? [y/N] `,
+  )
+  if (!isAffirmativeAnswer(answer)) {
+    writeDeclinedRepair(entry, action.command, deps)
+    return { succeeded: false, attempted: false }
+  }
+  try {
+    if (!deps.runVaultUnlock) {
+      deps.writeStdout(renderManualRepairHint(entry.agent, entry.fixHint))
+      return { succeeded: false, attempted: false }
+    }
+    await deps.runVaultUnlock(entry.agent)
+    return { succeeded: true, attempted: true }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    deps.writeStdout(`Vault unlock did not finish for ${entry.agent}.\n  ${msg}`)
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.interactive_repair_vault_unlock_error",
+      message: `vault unlock failed for ${entry.agent}`,
+      meta: { agent: entry.agent, error: msg },
+    })
+    return { succeeded: false, attempted: true }
+  }
+}
+
+async function attemptProviderAuth(
+  entry: DegradedAgent,
+  action: RunnableRepairAction & { kind: "provider-auth"; provider?: AgentProvider },
+  deps: InteractiveRepairDeps,
+): Promise<RepairStepOutcome> {
+  deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
+  const answer = await deps.promptInput(
+    `Open the auth flow for ${entry.agent} now? [y/N] `,
+  )
+  if (!isAffirmativeAnswer(answer)) {
+    writeDeclinedRepair(entry, action.command, deps)
+    return { succeeded: false, attempted: false }
+  }
+  try {
+    if (action.provider) {
+      await deps.runAuthFlow(entry.agent, action.provider)
+    } else {
+      await deps.runAuthFlow(entry.agent)
+    }
+    return { succeeded: true, attempted: true }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    deps.writeStdout(`Auth did not finish for ${entry.agent}.\n  ${msg}`)
+    emitNervesEvent({
+      level: "error",
+      component: "daemon",
+      event: "daemon.interactive_repair_auth_error",
+      message: `auth flow failed for ${entry.agent}`,
+      meta: { agent: entry.agent, error: msg },
+    })
+    return { succeeded: false, attempted: true }
+  }
+}
+
+async function processEntry(
+  entry: DegradedAgent,
+  deps: InteractiveRepairDeps,
+): Promise<{ attempted: boolean }> {
+  let current: DegradedAgent | null = entry
+
+  while (current) {
+    const action = runnableRepairActionFor(current)
+
+    let outcome: RepairStepOutcome | undefined
+
+    if (action?.kind === "vault-unlock") {
+      outcome = await attemptVaultUnlock(current, action, deps)
+    } else if (action?.kind === "provider-auth") {
+      outcome = await attemptProviderAuth(current, action, deps)
+    } else if (isConfigError(current)) {
+      deps.writeStdout(renderManualRepairHint(current.agent, current.fixHint))
+      return { attempted: false }
+    } else {
+      deps.writeStdout(renderUnknownRepair(current.agent, current.errorReason))
+      return { attempted: false }
+    }
+
+    if (!outcome.succeeded || !deps.recheckAgent) {
+      return { attempted: outcome.attempted }
+    }
+
+    // Re-evaluate the agent after successful repair
+    const recheckResult = await deps.recheckAgent(current.agent)
+    if (recheckResult === null) {
+      deps.writeStdout(`${current.agent} recovered.`)
+      return { attempted: true }
+    }
+
+    // Agent still degraded with a new error -- loop to present the new action
+    current = recheckResult
+  }
+
+  /* v8 ignore next -- unreachable: loop always returns from within @preserve */
+  return { attempted: false }
+}
+
 export async function runInteractiveRepair(
   degraded: DegradedAgent[],
   deps: InteractiveRepairDeps,
@@ -242,73 +359,17 @@ export async function runInteractiveRepair(
   }
 
   let repairsAttempted = false
-  writeRepairQueueSummary(degraded, deps)
+  if (!deps.skipQueueSummary) {
+    writeRepairQueueSummary(degraded, deps)
+  }
 
   for (const entry of degraded) {
-    const action = runnableRepairActionFor(entry)
+    const result = await processEntry(entry, deps)
+    if (result.attempted) repairsAttempted = true
+  }
 
-    if (action?.kind === "vault-unlock") {
-      deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
-      const answer = await deps.promptInput(
-        "Unlock it now? [y/N] ",
-      )
-      if (isAffirmativeAnswer(answer)) {
-        try {
-          if (!deps.runVaultUnlock) {
-            deps.writeStdout(renderManualRepairHint(entry.agent, entry.fixHint))
-          } else {
-            await deps.runVaultUnlock(entry.agent)
-            repairsAttempted = true
-          }
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error)
-          deps.writeStdout(`Vault unlock did not finish for ${entry.agent}.\n  ${msg}`)
-          repairsAttempted = true
-          emitNervesEvent({
-            level: "error",
-            component: "daemon",
-            event: "daemon.interactive_repair_vault_unlock_error",
-            message: `vault unlock failed for ${entry.agent}`,
-            meta: { agent: entry.agent, error: msg },
-          })
-        }
-      } else {
-        writeDeclinedRepair(entry, action.command, deps)
-      }
-    } else if (action?.kind === "provider-auth") {
-      deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
-      const answer = await deps.promptInput(
-        "Open the auth flow now? [y/N] ",
-      )
-      if (isAffirmativeAnswer(answer)) {
-        try {
-          if (action.provider) {
-            await deps.runAuthFlow(entry.agent, action.provider)
-          } else {
-            await deps.runAuthFlow(entry.agent)
-          }
-          repairsAttempted = true
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error)
-          deps.writeStdout(`Auth did not finish for ${entry.agent}.\n  ${msg}`)
-          repairsAttempted = true
-          emitNervesEvent({
-            level: "error",
-            component: "daemon",
-            event: "daemon.interactive_repair_auth_error",
-            message: `auth flow failed for ${entry.agent}`,
-            meta: { agent: entry.agent, error: msg },
-          })
-        }
-      } else {
-        writeDeclinedRepair(entry, action.command, deps)
-      }
-    } else if (isConfigError(entry)) {
-      deps.writeStdout(renderManualRepairHint(entry.agent, entry.fixHint))
-    } else {
-      // Unknown error with no actionable fix hint
-      deps.writeStdout(renderUnknownRepair(entry.agent, entry.errorReason))
-    }
+  if (repairsAttempted) {
+    deps.writeStdout("Repair flow complete.")
   }
 
   emitNervesEvent({
