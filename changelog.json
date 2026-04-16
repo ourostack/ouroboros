@@ -2,13 +2,30 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.412",
+      "version": "0.1.0-alpha.413",
       "changes": [
         "`openai-codex` live checks now use the same Responses API request shape as real Codex turns, so `ouro up` and `ouro auth verify` stop reporting false `400 status code (no body)` failures for healthy GPT-5.4 credentials.",
         "`ouro up` now detects daemon roster drift when enabled agent bundles change on disk and restarts the stale daemon, which removes ghost agents like a locally-removed `ouroboros` from the repair queue instead of pretending they still live here.",
         "Bundle skeleton contract coverage now validates whichever local agent bundles actually exist, so one-agent machines can keep `slugger` installed without failing the full test suite just because `ouroboros` was intentionally removed.",
         "Expanded Codex provider runtime coverage to exercise the real turn path, preserved output-item turn state, runtime error classification, and the ping callback bundle, which keeps the global 100% coverage gate green for this repair.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the Codex live-check and daemon-roster drift repair release."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.412",
+      "changes": [
+        "Cross-process bw CLI lock prevents concurrent access to the same Bitwarden app data directory, fixing the root cause of intermittent vault timeout errors during `ouro up` provider checks on multi-agent machines.",
+        "Two-layer locking in `execBw`: in-process async mutex serializes within a Node.js process, cross-process `O_EXCL` file lock with PID stale detection serializes across processes.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault concurrency fix release."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.411",
+      "changes": [
+        "`ouro up` interactive repair now re-evaluates each agent after a successful vault-unlock or provider-auth, so users see immediate confirmation or an updated next step instead of stale context.",
+        "Repair prompts now include agent names (`Unlock slugger's vault now?`) instead of generic phrasing.",
+        "Terminal `Repair flow complete.` message printed when at least one repair was attempted, giving clear closure to the interactive flow.",
+        "Redundant repair queue summary suppressed in the post-daemon-start path where the status block already listed degraded agents."
       ]
     },
     {
