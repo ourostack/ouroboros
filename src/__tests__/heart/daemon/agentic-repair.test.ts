@@ -5,6 +5,7 @@ import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "../../.
 import type { AgenticRepairDeps } from "../../../heart/daemon/agentic-repair"
 import type { DegradedAgent } from "../../../heart/daemon/interactive-repair"
 import type { DiscoverWorkingProviderResult } from "../../../heart/daemon/provider-discovery"
+import { providerCredentialMissingIssue } from "../../../heart/daemon/readiness-repair"
 
 const mockCreateProviderRuntimeForConfig = vi.hoisted(() => vi.fn(() => ({
   streamTurn: vi.fn(async () => ({ content: "", toolCalls: [], outputItems: [] })),
@@ -155,35 +156,33 @@ describe("runAgenticRepair", () => {
     expect(deps.promptInput).not.toHaveBeenCalledWith("would you like AI-assisted diagnosis? [y/n] ")
   })
 
-  it("does not repeat deterministic repair after offering AI diagnosis for a declined local repair", async () => {
-    const mockStreamTurn = vi.fn(async () => ({
-      content: "The vault is locked. Unlock it before retrying.",
-      toolCalls: [],
-      outputItems: [],
-    }))
+  it("does not offer AI diagnosis for a declined known typed repair", async () => {
     const degraded: DegradedAgent[] = [
       {
         agent: "slugger",
         errorReason: "missing credentials for provider",
         fixHint: "Run 'ouro auth --agent slugger'.",
+        issue: providerCredentialMissingIssue({
+          agentName: "slugger",
+          lane: "inner",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialPath: "vault:slugger:providers/*",
+        }),
       },
     ]
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
-      createProviderRuntime: vi.fn(() => ({
-        streamTurn: mockStreamTurn,
-      })),
       runInteractiveRepair: vi.fn(async () => ({ repairsAttempted: false })),
     })
 
     const result = await runAgenticRepair(degraded, deps)
 
-    expect(result).toEqual({ repairsAttempted: false, usedAgentic: true })
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
     expect(deps.runInteractiveRepair).toHaveBeenCalledTimes(1)
-    expect(mockStreamTurn).toHaveBeenCalled()
-    const repairOrder = (deps.runInteractiveRepair as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
-    const promptOrder = (deps.promptInput as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
-    expect(repairOrder).toBeLessThan(promptOrder)
+    expect(deps.discoverWorkingProvider).not.toHaveBeenCalled()
+    expect(deps.createProviderRuntime).not.toHaveBeenCalled()
+    expect(deps.promptInput).not.toHaveBeenCalledWith("would you like AI-assisted diagnosis? [y/n] ")
   })
 
   it("does not repeat deterministic repair when a declined local repair has no diagnosis provider", async () => {

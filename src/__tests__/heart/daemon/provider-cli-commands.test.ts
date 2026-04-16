@@ -342,6 +342,16 @@ describe("provider CLI command parsing", () => {
     })
   })
 
+  it("parses ouro repair with optional agent", () => {
+    emitTestEvent("provider cli parse repair")
+
+    expect(parseOuroCommand(["repair"])).toEqual({ kind: "repair" })
+    expect(parseOuroCommand(["repair", "--agent", "Slugger"])).toEqual({
+      kind: "repair",
+      agent: "Slugger",
+    })
+  })
+
   it("maps legacy facing flags to provider lanes", () => {
     emitTestEvent("provider cli parse legacy facing")
 
@@ -1003,6 +1013,70 @@ describe("provider CLI command execution", () => {
 
     expect(failed).toContain("vault create failed for Slugger: already exists")
     expect(failed).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("vault create defaults to the stable agent email when no locator exists", async () => {
+    emitTestEvent("provider cli vault create stable default")
+    const bundlesRoot = makeTempDir("provider-cli-vault-create-default-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-create-default-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async (question) => {
+        expect(question).toBe("Choose Ouro vault unlock secret for Slugger@ouro.bot: ")
+        return "chosen-vault-secret"
+      },
+    }))
+
+    expect(result).toContain("vault created for Slugger")
+    expect(result).toContain("vault: Slugger@ouro.bot at https://vault.ouroboros.bot")
+    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
+      "Ouro credential vault",
+      "https://vault.ouroboros.bot",
+      "Slugger@ouro.bot",
+      "chosen-vault-secret",
+    )
+  })
+
+  it("ouro repair guides locked-vault repair with typed choices", async () => {
+    emitTestEvent("provider cli repair locked vault")
+    const bundlesRoot = makeTempDir("provider-cli-repair-vault-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-vault-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+      email: "slugger@ouro.bot",
+      serverUrl: "https://vault.ouroboros.bot",
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (prompt) => {
+        prompts.push(prompt)
+        return "1"
+      },
+      promptSecret: async (question) => {
+        expect(question).toBe("Ouro vault unlock secret for slugger@ouro.bot: ")
+        return "saved-unlock-secret"
+      },
+    }))
+
+    expect(result).toContain("repair attempted for Slugger")
+    expect(result).toContain("Slugger needs its vault unlocked on this machine.")
+    expect(result).toContain("1. I have the saved vault unlock secret")
+    expect(result).toContain("runs: ouro vault unlock --agent Slugger")
+    expect(prompts).toContain("Choose [1-4]: ")
+    expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
+      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+      "saved-unlock-secret",
+      { homeDir, store: undefined },
+    )
   })
 
   it("vault create can prompt for email and unlock material", async () => {
