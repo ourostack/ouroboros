@@ -223,21 +223,28 @@ export function renderReadinessIssue(issue: AgentReadinessIssue): string {
   if (issue.detail) {
     lines.push(`  ${issue.detail}`)
   }
+  if (issue.actions.length > 0) {
+    lines.push("")
+  }
   issue.actions.forEach((action, index) => {
+    if (index > 0) lines.push("")
     lines.push(`${index + 1}. ${action.label}`)
     lines.push(`   ${action.command}`)
   })
+  if (issue.actions.length > 0) {
+    lines.push("")
+  }
   lines.push(`${issue.actions.length + 1}. Skip for now`)
   return lines.join("\n")
 }
 
 export function renderReadinessIssueNextSteps(issue: AgentReadinessIssue): string[] {
-  const lines = [`  ${issue.summary}`]
+  const lines = [issue.summary]
   if (issue.detail && issue.kind !== "vault-locked") {
-    lines.push(`    ${issue.detail}`)
+    lines.push(`  ${issue.detail}`)
   }
   issue.actions.forEach((action, index) => {
-    lines.push(`    ${index === 0 ? "next" : "or"}: ${action.command}`)
+    lines.push(`  ${index === 0 ? "next" : "or"}: ${action.command}`)
   })
   return lines
 }

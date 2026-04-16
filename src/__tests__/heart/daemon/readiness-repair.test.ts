@@ -221,7 +221,7 @@ describe("readiness repair guidance", () => {
       credentialPath: "vault:slugger:providers/*",
     })
 
-    expect(renderReadinessIssueNextSteps(issue)).toContain("    source: vault:slugger:providers/*")
+    expect(renderReadinessIssueNextSteps(issue)).toContain("  source: vault:slugger:providers/*")
   })
 
   it("handles ready reports, manual mode, invalid choices, manual actions, and missing runners", async () => {

@@ -214,7 +214,7 @@ function writeProviderRepairSummary(
 
 function providerRepairCountSummary(count: number): string {
   if (count === 0) return "ok"
-  return `${count} ${count === 1 ? "needs" : "need"} repair`
+  return `${count} ${count === 1 ? "needs" : "need"} attention`
 }
 
 async function reportPostRepairProviderHealth(
@@ -234,11 +234,11 @@ async function reportPostRepairProviderHealth(
   })
 
   if (remainingDegraded.length === 0) {
-    deps.writeStdout("provider checks recovered after repair")
+    deps.writeStdout("All set. Provider checks recovered after repair.")
     return remainingDegraded
   }
 
-  writeProviderRepairSummary(deps, "Still blocked:", remainingDegraded)
+  writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
   deps.writeStdout("Run `ouro up` again after these are fixed.")
   return remainingDegraded
 }
@@ -2658,7 +2658,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (preflightProviderDegraded.length > 0) {
         progress.end()
         if (command.noRepair) {
-          writeProviderRepairSummary(deps, "Provider checks need repair:", preflightProviderDegraded)
+          writeProviderRepairSummary(deps, "Provider checks need attention", preflightProviderDegraded)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           deps.writeStdout(message)
           return message
@@ -2666,7 +2666,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
         const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
         if (!repairResult.repairsAttempted) {
-          writeProviderRepairSummary(deps, "Provider checks still need repair:", repairResult.remainingDegraded)
+          writeProviderRepairSummary(deps, "Provider checks still need attention", repairResult.remainingDegraded)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           deps.writeStdout(message)
           return message
@@ -2674,12 +2674,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
         const remainingDegraded = repairResult.remainingDegraded
         if (remainingDegraded.length > 0) {
-          writeProviderRepairSummary(deps, "Still blocked:", remainingDegraded)
+          writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
           const message = "daemon not started: provider checks still need repair."
           deps.writeStdout(message)
           return message
         }
-        deps.writeStdout("provider checks recovered after repair")
+        deps.writeStdout("All set. Provider checks recovered after repair.")
       }
     }
 
@@ -2703,7 +2703,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {
       if (command.noRepair) {
         // --no-repair: write degraded summary and skip interactive repair
-        writeProviderRepairSummary(deps, "Provider checks need repair:", daemonResult.stability.degraded)
+        writeProviderRepairSummary(deps, "Provider checks need attention", daemonResult.stability.degraded)
         emitNervesEvent({
           level: "warn",
           component: "daemon",
