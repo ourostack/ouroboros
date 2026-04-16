@@ -978,9 +978,53 @@ describe("BitwardenCredentialStore", () => {
       }
 
       expect(thrown).not.toBeNull()
-      expect(thrown!.message).toBe("bw CLI error: command failed")
+      expect(thrown!.message).toBe("bw CLI error: create item failed without error detail")
       expect(thrown!.message).not.toContain(leakedEncodedPayload)
       expect(thrown!.message).not.toContain("another-secret")
+      expect(thrown!.message).not.toContain("bw create item")
+    })
+
+    it("classifies create timeouts without leaking command text or payloads", async () => {
+      const leakedEncodedPayload = Buffer
+        .from(JSON.stringify({ login: { password: "slow-secret" } }))
+        .toString("base64")
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else if (args[0] === "create") {
+          const err = new Error(`Command failed: bw create item ${leakedEncodedPayload}`) as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.code = "ETIMEDOUT"
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+        } else {
+          cb(null, "", "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("providers/openai-codex", {
+          username: "openai-codex",
+          password: "slow-secret",
+        })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toBe("bw CLI error: create item timed out while waiting for a vault response")
+      expect(thrown!.message).not.toContain(leakedEncodedPayload)
+      expect(thrown!.message).not.toContain("slow-secret")
       expect(thrown!.message).not.toContain("bw create item")
     })
 
