@@ -22,6 +22,7 @@ export interface InteractiveRepairDeps {
   runAuthFlow: (agent: string, provider?: AgentProvider) => Promise<void>
   runVaultUnlock?: (agent: string) => Promise<void>
   recheckAgent?: (agent: string) => Promise<DegradedAgent | null>
+  skipQueueSummary?: boolean
 }
 
 export interface InteractiveRepairResult {
@@ -358,7 +359,9 @@ export async function runInteractiveRepair(
   }
 
   let repairsAttempted = false
-  writeRepairQueueSummary(degraded, deps)
+  if (!deps.skipQueueSummary) {
+    writeRepairQueueSummary(degraded, deps)
+  }
 
   for (const entry of degraded) {
     const result = await processEntry(entry, deps)
