@@ -1175,6 +1175,7 @@ describe("provider CLI command execution", () => {
       agentName: "Slugger",
       provider: "anthropic",
       promptInput: expect.any(Function),
+      onProgress: expect.any(Function),
     })
     expect(result).toContain("authenticated Slugger with anthropic")
     expect(result).toContain("refreshed provider credential snapshot for Slugger")
@@ -1215,6 +1216,9 @@ describe("provider CLI command execution", () => {
     expect(prompts).toContain("Choose [1-3]: ")
     expect(prompts).toContain("MiniMax API key: ")
     expect(mockVaultDeps.rawSecrets.get("Slugger:providers/minimax")).toContain("minimax-secret")
+    expect(result).toContain("checking Slugger's vault access...")
+    expect(result).toContain("minimax credentials collected; storing in Slugger's vault...")
+    expect(result).toContain("credentials stored at providers/minimax; local provider snapshot refreshed.")
     expect(result).toContain("authenticated Slugger with minimax")
     expect(result).toContain("repair step finished for Slugger.")
   })

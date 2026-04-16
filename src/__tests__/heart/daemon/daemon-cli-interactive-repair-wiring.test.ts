@@ -521,11 +521,13 @@ describe("ouro up: interactive repair wiring", () => {
       agentName: "test-agent",
       provider: "github-copilot",
       promptInput: deps.promptInput,
+      onProgress: deps.writeStdout,
     })
     expect(injectedRunAuthFlow).toHaveBeenCalledWith({
       agentName: "test-agent",
       provider: "anthropic",
       promptInput: deps.promptInput,
+      onProgress: deps.writeStdout,
     })
   })
 
