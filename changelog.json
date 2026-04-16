@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.409",
+      "changes": [
+        "`ouro up` interactive repair now presents each agent's next step as a compact panel with `needs`, `run`, and `note` lines, followed by a short human prompt like `Unlock it now?` or `Open the auth flow now?` instead of embedding commands and warnings into one long question.",
+        "Declined repair output now collapses into short `next` / `or` follow-up commands, so vault unlock, replace, recover, and provider-auth paths stay visible without reprinting a wall of explanatory prose.",
+        "Guided readiness repair and no-repair summaries now use blank-line grouping plus calmer `Provider checks need attention` and `Still needs attention` headings, and stale-daemon restart output now splits its repair handoff onto a second line instead of bolting it onto one overlong sentence.",
+        "Added regression coverage for the new interactive repair copy, grouped repair queue, readiness summary spacing, no-repair output, and the revised stale-daemon restart message.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the repair UX polish release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.408",
       "changes": [
         "Existing agents without a `vault` block in `agent.json` now fail fast with explicit `ouro vault create --agent <agent>` guidance instead of silently deriving a stable vault account and misreporting missing provider credentials.",

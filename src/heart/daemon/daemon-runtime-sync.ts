@@ -196,11 +196,11 @@ export async function ensureCurrentDaemonRuntime(
       const pid = started.pid ?? "unknown"
       const verified = await verifyDaemonStarted(deps)
       /* v8 ignore next -- daemon liveness failure: requires real daemon crash timing @preserve */
-      const suffix = verified ? "" : " — but daemon failed to respond, check logs"
+      const suffix = verified ? "" : "\ndaemon did not answer yet, so Ouro is checking repair paths next."
       result = {
         alreadyRunning: false,
         message: includesVersionDrift
-          ? `restarted stale daemon from ${runningVersion} to ${deps.localVersion} (pid ${pid})${suffix}`
+          ? `restarted stale daemon ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
           : `restarted drifted daemon (${driftSummary}) (pid ${pid})${suffix}`,
         verifyStartupStatus: verified,
         startedPid: started.pid ?? null,

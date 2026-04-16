@@ -95,11 +95,91 @@ export function isAffirmativeAnswer(answer: string): boolean {
   return /^(y|yes)$/i.test(answer.trim())
 }
 
-function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: InteractiveRepairDeps): void {
-  deps.writeStdout(`repair skipped for ${degraded.agent}; run \`${command}\` later.`)
-  if (degraded.fixHint.includes("ouro vault replace") || degraded.fixHint.includes("ouro vault recover")) {
-    deps.writeStdout(`repair options for ${degraded.agent}: ${degraded.fixHint}`)
+function uniqueCommands(commands: Array<string | undefined>): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  commands.forEach((command) => {
+    if (!command) return
+    if (seen.has(command)) return
+    seen.add(command)
+    unique.push(command)
+  })
+  return unique
+}
+
+function fallbackCommandsFor(degraded: DegradedAgent, primaryCommand: string): string[] {
+  const issueCommands = degraded.issue?.actions.map((action) => action.command) ?? []
+  return uniqueCommands([
+    primaryCommand,
+    ...issueCommands,
+    extractRepairCommand(degraded.fixHint, "ouro vault replace"),
+    extractRepairCommand(degraded.fixHint, "ouro vault recover"),
+    extractRepairCommand(degraded.fixHint, "ouro use"),
+  ])
+}
+
+function renderRepairChoices(prefix: "next" | "run", commands: string[]): string[] {
+  return commands.map((command, index) => `  ${index === 0 ? prefix : "or"}: ${command}`)
+}
+
+function renderRepairQueueSummaryLines(degraded: DegradedAgent[]): string[] {
+  const repairable = degraded
+    .map((entry) => ({ entry, action: runnableRepairActionFor(entry) }))
+    .filter((item): item is { entry: DegradedAgent; action: RunnableRepairAction } => item.action !== undefined)
+
+  if (repairable.length < 2) return []
+
+  const lines = [
+    "Repair queue",
+    `${repairable.length} agents need attention before startup can finish.`,
+    "",
+  ]
+
+  repairable.forEach(({ entry, action }, index) => {
+    lines.push(`${entry.agent} - ${action.label}`)
+    lines.push(`  ${action.command}`)
+    if (index < repairable.length - 1) lines.push("")
+  })
+
+  return lines
+}
+
+function renderActionPromptLines(agent: string, action: RunnableRepairAction): string[] {
+  const lines = [
+    `${agent}`,
+    `  needs: ${action.label}`,
+    `  run:   ${action.command}`,
+  ]
+  if (action.kind === "vault-unlock") {
+    lines.push("  note:  use the saved vault unlock secret")
   }
+  return lines
+}
+
+function renderDeferredRepair(agent: string, commands: string[]): string {
+  return [
+    `Leaving ${agent} for later.`,
+    ...renderRepairChoices("next", commands),
+  ].join("\n")
+}
+
+function renderManualRepairHint(agent: string, fixHint: string): string {
+  return [
+    `${agent}`,
+    "  needs manual attention",
+    `  next: ${fixHint}`,
+  ].join("\n")
+}
+
+function renderUnknownRepair(agent: string, errorReason: string): string {
+  return [
+    `${agent}`,
+    `  ${errorReason}`,
+  ].join("\n")
+}
+
+function writeDeclinedRepair(degraded: DegradedAgent, command: string, deps: InteractiveRepairDeps): void {
+  deps.writeStdout(renderDeferredRepair(degraded.agent, fallbackCommandsFor(degraded, command)))
 }
 
 function runnableRepairActionFor(degraded: DegradedAgent): RunnableRepairAction | undefined {
@@ -141,17 +221,8 @@ function typedActionToRunnable(degraded: DegradedAgent, action: RepairAction): R
 }
 
 function writeRepairQueueSummary(degraded: DegradedAgent[], deps: InteractiveRepairDeps): void {
-  const repairable = degraded
-    .map((entry) => ({ entry, action: runnableRepairActionFor(entry) }))
-    .filter((item): item is { entry: DegradedAgent; action: RunnableRepairAction } => item.action !== undefined)
-
-  if (repairable.length < 2) return
-
-  const lines = [
-    "repair queue:",
-    ...repairable.map(({ entry, action }) => `  - ${entry.agent}: ${action.label}: \`${action.command}\``),
-  ]
-  deps.writeStdout(lines.join("\n"))
+  const lines = renderRepairQueueSummaryLines(degraded)
+  if (lines.length > 0) deps.writeStdout(lines.join("\n"))
 }
 
 export async function runInteractiveRepair(
@@ -177,20 +248,21 @@ export async function runInteractiveRepair(
     const action = runnableRepairActionFor(entry)
 
     if (action?.kind === "vault-unlock") {
+      deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
       const answer = await deps.promptInput(
-        `run \`${action.command}\` now? Only say yes if you have the saved unlock secret. [y/n] `,
+        "Unlock it now? [y/N] ",
       )
       if (isAffirmativeAnswer(answer)) {
         try {
           if (!deps.runVaultUnlock) {
-            deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)
+            deps.writeStdout(renderManualRepairHint(entry.agent, entry.fixHint))
           } else {
             await deps.runVaultUnlock(entry.agent)
             repairsAttempted = true
           }
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)
-          deps.writeStdout(`vault unlock error for ${entry.agent}: ${msg}`)
+          deps.writeStdout(`Vault unlock did not finish for ${entry.agent}.\n  ${msg}`)
           repairsAttempted = true
           emitNervesEvent({
             level: "error",
@@ -204,8 +276,9 @@ export async function runInteractiveRepair(
         writeDeclinedRepair(entry, action.command, deps)
       }
     } else if (action?.kind === "provider-auth") {
+      deps.writeStdout(renderActionPromptLines(entry.agent, action).join("\n"))
       const answer = await deps.promptInput(
-        `run \`${action.command}\` now? [y/n] `,
+        "Open the auth flow now? [y/N] ",
       )
       if (isAffirmativeAnswer(answer)) {
         try {
@@ -217,7 +290,7 @@ export async function runInteractiveRepair(
           repairsAttempted = true
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)
-          deps.writeStdout(`auth flow error for ${entry.agent}: ${msg}`)
+          deps.writeStdout(`Auth did not finish for ${entry.agent}.\n  ${msg}`)
           repairsAttempted = true
           emitNervesEvent({
             level: "error",
@@ -231,10 +304,10 @@ export async function runInteractiveRepair(
         writeDeclinedRepair(entry, action.command, deps)
       }
     } else if (isConfigError(entry)) {
-      deps.writeStdout(`fix hint for ${entry.agent}: ${entry.fixHint}`)
+      deps.writeStdout(renderManualRepairHint(entry.agent, entry.fixHint))
     } else {
       // Unknown error with no actionable fix hint
-      deps.writeStdout(`${entry.agent}: ${entry.errorReason}`)
+      deps.writeStdout(renderUnknownRepair(entry.agent, entry.errorReason))
     }
   }
 
