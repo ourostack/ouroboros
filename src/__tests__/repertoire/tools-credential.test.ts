@@ -111,7 +111,7 @@ describe("credential_store", () => {
       notes: "test",
     })
 
-    expect(result).toContain("Credentials stored")
+    expect(result).toContain("Credentials stored and verified")
     expect(result).toContain("airbnb.com")
     expect(mockStore).toHaveBeenCalledWith("airbnb.com", {
       username: "agent@test.com",
@@ -125,12 +125,13 @@ describe("credential_store", () => {
 
     const tool = findTool("credential_store")
     const result = await tool.handler({
-      domain: "api.example.com",
-      username: "user",
+      domain: "  api.example.com  ",
+      username: "  user  ",
       password: "pw",
+      notes: "   ",
     })
 
-    expect(result).toContain("Credentials stored")
+    expect(result).toContain("Credentials stored and verified")
     expect(mockStore).toHaveBeenCalledWith("api.example.com", {
       username: "user",
       password: "pw",
@@ -147,6 +148,68 @@ describe("credential_store", () => {
     expect(result).toContain("disk full")
   })
 
+  it("sanitizes non-Error store failures without leaking raw command prefixes", async () => {
+    mockStore.mockRejectedValue("Command failed: bw create item\n")
+
+    const tool = findTool("credential_store")
+    const result = await tool.handler({
+      domain: "x.com",
+      username: "agent@example.com",
+      password: "secret123",
+    })
+
+    expect(result).toContain("command failed")
+    expect(result).not.toContain("Command failed:")
+  })
+
+  it("redacts the password from store errors", async () => {
+    mockStore.mockRejectedValue(new Error("save failed for secret123"))
+
+    const tool = findTool("credential_store")
+    const result = await tool.handler({ domain: "x.com", username: "u", password: "secret123" })
+
+    expect(result).toContain("[redacted]")
+    expect(result).not.toContain("secret123")
+  })
+
+  it("redacts multiple secret fields from store errors", async () => {
+    mockStore.mockRejectedValue(new Error("save failed for agent@example.com / secret123 / private note"))
+
+    const tool = findTool("credential_store")
+    const result = await tool.handler({
+      domain: "x.com",
+      username: "agent@example.com",
+      password: "secret123",
+      notes: "private note",
+    })
+
+    expect(result).not.toContain("agent@example.com")
+    expect(result).not.toContain("secret123")
+    expect(result).not.toContain("private note")
+    expect(result.match(/\[redacted\]/g)?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("rejects blank required fields before storing", async () => {
+    const tool = findTool("credential_store")
+
+    const blankDomain = await tool.handler({ domain: "   ", username: "u", password: "p" })
+    const blankUsername = await tool.handler({ domain: "x.com", username: "   ", password: "p" })
+    const blankPassword = await tool.handler({ domain: "x.com", username: "u", password: "   " })
+
+    expect(blankDomain).toContain("domain must be a non-empty string")
+    expect(blankUsername).toContain("username must be a non-empty string")
+    expect(blankPassword).toContain("password must be a non-empty string")
+    expect(mockStore).not.toHaveBeenCalled()
+  })
+
+  it("rejects non-string notes before storing", async () => {
+    const tool = findTool("credential_store")
+    const result = await tool.handler({ domain: "x.com", username: "u", password: "secret123", notes: true } as any)
+
+    expect(result).toContain("notes must be a string if provided")
+    expect(mockStore).not.toHaveBeenCalled()
+  })
+
   it("does not require confirmation (trust gating is sufficient)", () => {
     const tool = findTool("credential_store")
     expect(tool.confirmationRequired).toBeUndefined()
@@ -161,6 +224,90 @@ describe("credential_store", () => {
     const events = nervesEvents.filter((e) => e.event === "repertoire.credential_tool_call")
     expect(events.length).toBeGreaterThanOrEqual(1)
     expect((events[0].meta as any).tool).toBe("credential_store")
+  })
+})
+
+describe("credential_generate_password", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    nervesEvents.length = 0
+  })
+
+  it("returns a strong default password for the requested domain", async () => {
+    const tool = findTool("credential_generate_password")
+    const result = await tool.handler({ domain: "airbnb.com" } as any)
+    const parsed = JSON.parse(result)
+
+    expect(parsed.domain).toBe("airbnb.com")
+    expect(parsed.length).toBe(24)
+    expect(parsed.symbols).toBe(true)
+    expect(parsed.password).toHaveLength(24)
+    expect(/[a-z]/.test(parsed.password)).toBe(true)
+    expect(/[A-Z]/.test(parsed.password)).toBe(true)
+    expect(/[2-9]/.test(parsed.password)).toBe(true)
+    expect(/[!@#$%^&*()\-_=\+\[\]{}:,.?]/.test(parsed.password)).toBe(true)
+  })
+
+  it("can generate a password without symbols", async () => {
+    const tool = findTool("credential_generate_password")
+    const result = await tool.handler({ domain: "airbnb.com", length: 18, symbols: false } as any)
+    const parsed = JSON.parse(result)
+
+    expect(parsed.password).toHaveLength(18)
+    expect(parsed.symbols).toBe(false)
+    expect(/[!@#$%^&*()\-_=\+\[\]{}:,.?]/.test(parsed.password)).toBe(false)
+    expect(/[a-z]/.test(parsed.password)).toBe(true)
+    expect(/[A-Z]/.test(parsed.password)).toBe(true)
+    expect(/[2-9]/.test(parsed.password)).toBe(true)
+  })
+
+  it("accepts string-form generation options", async () => {
+    const tool = findTool("credential_generate_password")
+
+    const noSymbolsResult = await tool.handler({
+      domain: "airbnb.com",
+      length: "18",
+      symbols: "false",
+    } as any)
+    const noSymbols = JSON.parse(noSymbolsResult)
+
+    const symbolsResult = await tool.handler({
+      domain: "airbnb.com",
+      length: "18",
+      symbols: "true",
+    } as any)
+    const withSymbols = JSON.parse(symbolsResult)
+
+    expect(noSymbols.password).toHaveLength(18)
+    expect(noSymbols.symbols).toBe(false)
+    expect(/[!@#$%^&*()\-_=\+\[\]{}:,.?]/.test(noSymbols.password)).toBe(false)
+
+    expect(withSymbols.password).toHaveLength(18)
+    expect(withSymbols.symbols).toBe(true)
+    expect(/[!@#$%^&*()\-_=\+\[\]{}:,.?]/.test(withSymbols.password)).toBe(true)
+  })
+
+  it("rejects invalid generation inputs", async () => {
+    const tool = findTool("credential_generate_password")
+
+    const blankDomain = await tool.handler({ domain: "   " } as any)
+    const badLength = await tool.handler({ domain: "airbnb.com", length: 6 } as any)
+    const badSymbols = await tool.handler({ domain: "airbnb.com", symbols: "sometimes" } as any)
+
+    expect(blankDomain).toContain("domain must be a non-empty string")
+    expect(badLength).toContain("length must be an integer between 12 and 128")
+    expect(badSymbols).toContain("symbols must be true or false")
+  })
+
+  it("emits nerves events without logging the generated password", async () => {
+    const tool = findTool("credential_generate_password")
+    const result = await tool.handler({ domain: "airbnb.com" } as any)
+    const parsed = JSON.parse(result)
+
+    const events = nervesEvents.filter((e) => e.event === "repertoire.credential_tool_call")
+    expect(events.length).toBeGreaterThanOrEqual(1)
+    expect((events[0].meta as any).tool).toBe("credential_generate_password")
+    expect(JSON.stringify(events)).not.toContain(parsed.password)
   })
 })
 
@@ -284,8 +431,8 @@ describe("credential_delete", () => {
 })
 
 describe("tool definitions structure", () => {
-  it("exports exactly 4 tools", () => {
-    expect(credentialToolDefinitions).toHaveLength(4)
+  it("exports exactly 5 tools", () => {
+    expect(credentialToolDefinitions).toHaveLength(5)
   })
 
   it("all tools have handlers", () => {
@@ -301,10 +448,11 @@ describe("tool definitions structure", () => {
     }
   })
 
-  it("tool names are credential_get, credential_store, credential_list, credential_delete", () => {
+  it("tool names include the credential generation flow", () => {
     const names = credentialToolDefinitions.map((d) => d.tool.function.name).sort()
     expect(names).toEqual([
       "credential_delete",
+      "credential_generate_password",
       "credential_get",
       "credential_list",
       "credential_store",

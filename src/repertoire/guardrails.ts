@@ -291,7 +291,7 @@ function checkWriteTrustGuardrails(toolName: string, args: Record<string, string
 
 // Credential write tools: family only
 const CREDENTIAL_FAMILY_TOOLS = new Set([
-  "credential_store", "credential_delete", "vault_setup",
+  "credential_generate_password", "credential_store", "credential_delete", "vault_setup",
   // User profile tools: family only
   "user_profile_store", "user_profile_get", "user_profile_delete",
   // Payment tools: family only
