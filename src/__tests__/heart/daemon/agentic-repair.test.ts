@@ -5,7 +5,7 @@ import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "../../.
 import type { AgenticRepairDeps } from "../../../heart/daemon/agentic-repair"
 import type { DegradedAgent } from "../../../heart/daemon/interactive-repair"
 import type { DiscoverWorkingProviderResult } from "../../../heart/daemon/provider-discovery"
-import { providerCredentialMissingIssue } from "../../../heart/daemon/readiness-repair"
+import { providerCredentialMissingIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 const mockCreateProviderRuntimeForConfig = vi.hoisted(() => vi.fn(() => ({
   streamTurn: vi.fn(async () => ({ content: "", toolCalls: [], outputItems: [] })),
@@ -183,6 +183,38 @@ describe("runAgenticRepair", () => {
     expect(deps.discoverWorkingProvider).not.toHaveBeenCalled()
     expect(deps.createProviderRuntime).not.toHaveBeenCalled()
     expect(deps.promptInput).not.toHaveBeenCalledWith("would you like AI-assisted diagnosis? [y/n] ")
+  })
+
+  it("does not offer AI diagnosis for known typed issues that have no local runnable action", async () => {
+    const issue: AgentReadinessIssue = {
+      kind: "provider-live-check-failed",
+      severity: "blocked",
+      actor: "human-choice",
+      summary: "provider failed",
+      actions: [{
+        kind: "provider-use",
+        label: "Choose another provider",
+        command: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+        actor: "human-choice",
+        executable: false,
+      }],
+    }
+    const degraded: DegradedAgent[] = [
+      {
+        agent: "slugger",
+        errorReason: "provider failed",
+        fixHint: "choose another provider",
+        issue,
+      },
+    ]
+    const deps = makeDeps()
+
+    const result = await runAgenticRepair(degraded, deps)
+
+    expect(result).toEqual({ repairsAttempted: false, usedAgentic: false })
+    expect(deps.runInteractiveRepair).not.toHaveBeenCalled()
+    expect(deps.discoverWorkingProvider).not.toHaveBeenCalled()
+    expect(deps.promptInput).not.toHaveBeenCalled()
   })
 
   it("does not repeat deterministic repair when a declined local repair has no diagnosis provider", async () => {

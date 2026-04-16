@@ -35,6 +35,7 @@ import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./lau
 import {
   resolveHatchCredentials,
   readAgentConfigForAgent,
+  runRuntimeAuthFlow,
 } from "../auth/auth-flow"
 import {
   providerCredentialMachineHomeDir,
@@ -136,9 +137,7 @@ async function checkAgentProviders(
 
   for (const agent of [...new Set(agents)]) {
     try {
-      const result = deps.homeDir
-        ? await checkAgentConfigWithProviderHealth(agent, bundlesRoot, { homeDir: deps.homeDir })
-        : await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+      const result = await checkAgentProviderHealth(agent, bundlesRoot, deps)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
       const fixHint = result.fix ?? ""
@@ -148,7 +147,7 @@ async function checkAgentProviders(
         component: "daemon",
         event: "daemon.agent_config_invalid",
         message: errorReason,
-        meta: { agent, fix: fixHint, source: "already-running-provider-check" },
+        meta: { agent, fixProvided: fixHint.length > 0, source: "already-running-provider-check" },
       })
     } catch (error) {
       const errorReason = error instanceof Error ? error.message : String(error)
@@ -162,12 +161,23 @@ async function checkAgentProviders(
         component: "daemon",
         event: "daemon.agent_config_invalid",
         message: errorReason,
-        meta: { agent, fix: "ouro doctor", source: "already-running-provider-check" },
+        meta: { agent, fixProvided: true, source: "already-running-provider-check" },
       })
     }
   }
 
   return degraded
+}
+
+async function checkAgentProviderHealth(
+  agentName: string,
+  bundlesRoot: string,
+  deps: OuroCliDeps,
+): ReturnType<typeof checkAgentConfigWithProviderHealth> {
+  if (deps.homeDir) {
+    return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, { homeDir: deps.homeDir })
+  }
+  return checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
 }
 
 async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
@@ -221,9 +231,7 @@ async function checkProviderHealthBeforeChat(
   deps: OuroCliDeps,
 ): Promise<{ ok: true } | { ok: false; output: string }> {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const result = deps.homeDir
-    ? await checkAgentConfigWithProviderHealth(agentName, bundlesRoot, { homeDir: deps.homeDir })
-    : await checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
+  const result = await checkAgentProviderHealth(agentName, bundlesRoot, deps)
   if (!result.ok) {
     const output = `${result.error}\n${result.fix ? `      fix:   ${result.fix}` : ""}`
     deps.writeStdout(output)
@@ -1622,17 +1630,17 @@ async function executeProviderRefresh(
 async function readinessReportForAgent(agent: string, deps: OuroCliDeps): Promise<AgentReadinessReport> {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   try {
-    const result = deps.homeDir
-      ? await checkAgentConfigWithProviderHealth(agent, bundlesRoot, { homeDir: deps.homeDir })
-      : await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+    const result = await checkAgentProviderHealth(agent, bundlesRoot, deps)
     if (result.ok) {
       return { agent, ok: true, issues: [] }
     }
-    const issue = result.issue ?? genericReadinessIssue({
-      summary: result.error ?? `${agent} is not ready.`,
-      ...(result.fix ? { fix: result.fix } : {}),
-    })
-    return { agent, ok: false, issues: [issue] }
+    else {
+      const issue = result.issue ?? genericReadinessIssue({
+        summary: result.error ?? `${agent} is not ready.`,
+        ...(result.fix ? { fix: result.fix } : {}),
+      })
+      return { agent, ok: false, issues: [issue] }
+    }
   } catch (error) {
     return {
       agent,
@@ -1660,8 +1668,8 @@ async function executeReadinessRepairAction(
     return
   }
   if (action.kind === "provider-auth") {
-    const provider = action.provider ?? readAgentConfigForAgent(agent, deps.bundlesRoot).config.humanFacing.provider
-    const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
+    const provider = action.provider
+    const authRunner = deps.runAuthFlow ?? runRuntimeAuthFlow
     const result = await authRunner({
       agentName: agent,
       provider,
@@ -1697,18 +1705,20 @@ async function executeRepair(
     return message
   }
 
-  const reports = await Promise.all(uniqueAgents.map((agent) => readinessReportForAgent(agent, repairDeps)))
-  for (const report of reports) {
-    if (report.ok) {
-      repairDeps.writeStdout(`${report.agent}: ready`)
+  else {
+    const reports = await Promise.all(uniqueAgents.map((agent) => readinessReportForAgent(agent, repairDeps)))
+    for (const report of reports) {
+      if (report.ok) {
+        repairDeps.writeStdout(`${report.agent}: ready`)
+      }
     }
+    await runGuidedReadinessRepair(reports, {
+      promptInput: deps.promptInput,
+      writeStdout: repairDeps.writeStdout,
+      runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, repairDeps),
+    })
+    return lines.join("\n")
   }
-  await runGuidedReadinessRepair(reports, {
-    promptInput: deps.promptInput,
-    writeStdout: repairDeps.writeStdout,
-    runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, repairDeps),
-  })
-  return lines.join("\n")
 }
 
 function readinessReportsFromDegraded(degraded: DegradedAgent[]): AgentReadinessReport[] {

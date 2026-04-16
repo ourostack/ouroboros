@@ -18,15 +18,27 @@ export type AgentReadinessIssueKind =
   | "provider-live-check-failed"
   | "generic"
 
-export interface RepairAction {
-  kind: RepairActionKind
+interface RepairActionBase {
   label: string
   command: string
   actor: RepairActor
   executable?: boolean
-  provider?: AgentProvider
-  lane?: ProviderLane
 }
+
+export interface ProviderAuthRepairAction extends RepairActionBase {
+  kind: "provider-auth"
+  provider: AgentProvider
+}
+
+export type RepairAction =
+  | (RepairActionBase & { kind: "vault-unlock" })
+  | (RepairActionBase & { kind: "vault-replace" })
+  | (RepairActionBase & { kind: "vault-recover" })
+  | ProviderAuthRepairAction
+  | (RepairActionBase & {
+      kind: "provider-use"
+      lane?: ProviderLane
+    })
 
 export interface AgentReadinessIssue {
   kind: AgentReadinessIssueKind
@@ -195,6 +207,7 @@ function selectedActionFor(answer: string, issue: AgentReadinessIssue): RepairAc
   if (!Number.isFinite(selected)) return null
   if (selected === issue.actions.length + 1) return "skip"
   if (selected < 1 || selected > issue.actions.length) return null
+  /* v8 ignore next -- defensive: bounds were checked above, but keep sparse arrays harmless @preserve */
   return issue.actions[selected - 1] ?? null
 }
 

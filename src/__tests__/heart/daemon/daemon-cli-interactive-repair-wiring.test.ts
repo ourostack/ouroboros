@@ -85,7 +85,7 @@ vi.mock("../../../repertoire/credential-access", () => ({
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 import { mergeStartupStability } from "../../../heart/daemon/cli-exec"
 import { getRuntimeMetadata } from "../../../heart/daemon/runtime-metadata"
-import { vaultLockedIssue } from "../../../heart/daemon/readiness-repair"
+import { vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
@@ -220,6 +220,257 @@ describe("ouro up: interactive repair wiring", () => {
     expect(output).toContain("test-agent needs its vault unlocked on this machine.")
     expect(output).toContain("1. I have the saved vault unlock secret")
     expect(result).toContain("daemon not started because provider checks are degraded")
+  })
+
+  it("checks selected providers before starting a stopped daemon and stops without prompting when --no-repair is set", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+      ok: false,
+      error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
+      fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
+      issue: vaultLockedIssue("test-agent"),
+    })
+    mocks.runInteractiveRepair.mockClear()
+    mocks.pollDaemonStartup.mockClear()
+
+    const startDaemonProcess = vi.fn(async () => ({ pid: 123 }))
+    const promptInput = vi.fn(async () => "1")
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      startDaemonProcess,
+      writeStdout,
+      promptInput,
+      listDiscoveredAgents: vi.fn(() => ["test-agent"]),
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["up", "--no-repair"], deps)
+
+    expect(promptInput).not.toHaveBeenCalled()
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+    expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("degraded agents:")
+    expect(output).toContain("test-agent: outward provider anthropic model claude-opus-4-6")
+    expect(output).toContain("fix: Run 'ouro vault unlock --agent test-agent'")
+    expect(result).toContain("daemon not started because provider checks are degraded")
+  })
+
+  it("checks selected providers before starting a stopped daemon and keeps --no-repair output tidy without a fix", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
+      ok: false,
+      error: "provider failed without a repair hint",
+    })
+    mocks.pollDaemonStartup.mockClear()
+
+    const startDaemonProcess = vi.fn(async () => ({ pid: 123 }))
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      startDaemonProcess,
+      writeStdout,
+      listDiscoveredAgents: vi.fn(() => ["test-agent"]),
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    await runOuroCli(["up", "--no-repair"], deps)
+
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+    expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("test-agent: provider failed without a repair hint")
+    expect(output).not.toContain("fix:")
+  })
+
+  it("checks selected providers before starting a stopped daemon and stops when repair leaves degradation", async () => {
+    mocks.checkAgentConfigWithProviderHealth
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "outward provider anthropic model claude-opus-4-6 cannot read provider credentials because test-agent's credential vault is locked on this machine.",
+        fix: "Run 'ouro vault unlock --agent test-agent' if you have the saved vault unlock secret.",
+        issue: vaultLockedIssue("test-agent"),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "outward provider anthropic model claude-opus-4-6 still cannot read provider credentials.",
+        fix: "Run 'ouro auth --agent test-agent --provider anthropic' if the credential is missing or stale.",
+        issue: vaultLockedIssue("test-agent"),
+      })
+    mocks.runInteractiveRepair.mockClear()
+    mocks.pollDaemonStartup.mockClear()
+
+    const startDaemonProcess = vi.fn(async () => ({ pid: 123 }))
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      startDaemonProcess,
+      writeStdout,
+      promptInput: vi.fn(async () => "1"),
+      promptSecret: vi.fn(async () => "unlock-secret"),
+      listDiscoveredAgents: vi.fn(() => ["test-agent"]),
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalled()
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+    expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("repair attempted for test-agent")
+    expect(output).toContain("provider checks still degraded after repair:")
+    expect(output).toContain("test-agent: outward provider anthropic model claude-opus-4-6 still cannot read provider credentials.")
+    expect(output).toContain("fix: Run 'ouro auth --agent test-agent --provider anthropic' if the credential is missing or stale.")
+    expect(result).toContain("daemon not started because provider checks are still degraded")
+  })
+
+  it("renders generic pre-start readiness guidance with and without fix hints", async () => {
+    mocks.checkAgentConfigWithProviderHealth
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "provider failed with a manual fix",
+        fix: "run manual repair",
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "provider failed without a repair hint",
+      })
+    mocks.pollDaemonStartup.mockClear()
+
+    const startDaemonProcess = vi.fn(async () => ({ pid: 123 }))
+    const writeStdout = vi.fn()
+    const promptInput = vi.fn()
+      .mockResolvedValueOnce("2")
+      .mockResolvedValueOnce("1")
+    const deps = makeDeps({
+      startDaemonProcess,
+      writeStdout,
+      promptInput,
+      listDiscoveredAgents: vi.fn(() => ["with-fix", "without-fix"]),
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+    expect(mocks.pollDaemonStartup).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("provider failed with a manual fix")
+    expect(output).toContain("runs: run manual repair")
+    expect(output).toContain("provider failed without a repair hint")
+    expect(result).toContain("daemon not started because provider checks are degraded")
+  })
+
+  it("runs manual typed readiness actions and rechecks before starting a stopped daemon", async () => {
+    const manualIssue: AgentReadinessIssue = {
+      kind: "provider-live-check-failed",
+      severity: "blocked",
+      actor: "human-choice",
+      summary: "test-agent needs a different provider.",
+      actions: [{
+        kind: "provider-use",
+        label: "Use minimax",
+        command: "ouro use --agent test-agent --lane inner --provider minimax --model MiniMax-M2.5",
+        actor: "human-choice",
+      }],
+    }
+    mocks.checkAgentConfigWithProviderHealth
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "provider failed",
+        fix: "choose another provider",
+        issue: manualIssue,
+      })
+      .mockResolvedValueOnce({ ok: true })
+    mocks.runInteractiveRepair.mockClear()
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["test-agent"], degraded: [] })
+
+    const startDaemonProcess = vi.fn(async () => ({ pid: 123 }))
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      startDaemonProcess,
+      writeStdout,
+      promptInput: vi.fn(async () => "1"),
+      listDiscoveredAgents: vi.fn(() => ["test-agent"]),
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(startDaemonProcess).toHaveBeenCalled()
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("manual step for test-agent: ouro use --agent test-agent --lane inner --provider minimax --model MiniMax-M2.5")
+    expect(output).toContain("provider checks recovered after repair")
+  })
+
+  it("ouro repair renders generic guidance when the readiness check throws", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockRejectedValueOnce(new Error("boom"))
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["repair", "--agent", "test-agent"], deps)
+
+    expect(result).toContain("test-agent readiness check failed.")
+    expect(result).toContain("boom")
+    expect(result).toContain("Run 'ouro doctor' for diagnostics, then retry 'ouro repair'.")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("manual repair required for test-agent"))
+  })
+
+  it("ouro repair renders default guidance when readiness returns no error details", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: false })
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["repair", "--agent", "test-agent"], deps)
+
+    expect(result).toContain("test-agent is not ready.")
+    expect(result).toContain("manual repair required for test-agent")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("manual repair required for test-agent"))
+  })
+
+  it("ouro repair stringifies non-Error readiness-check exceptions", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockRejectedValueOnce("boom string")
+    const writeStdout = vi.fn()
+    const deps = makeDeps({
+      writeStdout,
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["repair", "--agent", "test-agent"], deps)
+
+    expect(result).toContain("test-agent readiness check failed.")
+    expect(result).toContain("boom string")
+    expect(result).toContain("Run 'ouro doctor' for diagnostics, then retry 'ouro repair'.")
+  })
+
+  it("ouro repair reports ready agents when no homeDir override is present", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
+    const deps = makeDeps({
+      bundlesRoot: "/tmp/bundles",
+    })
+
+    const result = await runOuroCli(["repair", "--agent", "test-agent"], deps)
+
+    expect(result).toBe("test-agent: ready")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
+  })
+
+  it("ouro repair uses the default bundle root when none is injected", async () => {
+    mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({ ok: true })
+    const deps = makeDeps({
+      bundlesRoot: undefined,
+    })
+
+    const result = await runOuroCli(["repair", "--agent", "test-agent"], deps)
+
+    expect(result).toBe("test-agent: ready")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", expect.any(String))
   })
 
   it("wires runAuthFlow closure that can repair the provider named by a degraded facing", async () => {
