@@ -786,4 +786,76 @@ describe("runInteractiveRepair", () => {
       expect(stdoutText(deps)).not.toContain("Repair flow complete.")
     })
   })
+
+  describe("skipQueueSummary", () => {
+    it("skips the repair queue summary when skipQueueSummary is true", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        skipQueueSummary: true,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).not.toContain("Repair queue")
+      expect(stdoutText(deps)).not.toContain("agents need attention")
+    })
+
+    it("shows the repair queue summary when skipQueueSummary is false", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+        skipQueueSummary: false,
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair queue")
+      expect(stdoutText(deps)).toContain("2 agents need attention")
+    })
+
+    it("shows the repair queue summary by default (skipQueueSummary not set)", async () => {
+      const deps = makeDeps({
+        promptInput: vi.fn(async () => "n"),
+      })
+      const degraded: DegradedAgent[] = [
+        {
+          agent: "ouroboros",
+          errorReason: "credential vault is locked",
+          fixHint: "Run 'ouro vault unlock --agent ouroboros', then run 'ouro up' again.",
+        },
+        {
+          agent: "slugger",
+          errorReason: "provider credentials failed",
+          fixHint: "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.",
+        },
+      ]
+
+      await runInteractiveRepair(degraded, deps)
+
+      expect(stdoutText(deps)).toContain("Repair queue")
+    })
+  })
 })
