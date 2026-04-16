@@ -495,6 +495,9 @@ export class BitwardenCredentialStore implements CredentialStore {
       const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
       this.sessionToken = unlockOutput.trim()
     }
+
+    // Sync vault data after obtaining a fresh session token
+    await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
   }
 
   private async ensureSession(): Promise<string | undefined> {
