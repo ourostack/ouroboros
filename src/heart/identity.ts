@@ -92,13 +92,21 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
 
 export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouroboros.bot"
 
+export function defaultStableVaultEmail(agentName: string): string {
+  const local = agentName
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "agent"
+  return `${local}@ouro.bot`
+}
+
 /**
  * Resolve the vault config for an agent, applying defaults.
  * If vault is not configured in agent.json, returns default values.
  */
 export function resolveVaultConfig(agentName: string, config?: AgentConfig["vault"]): { email: string; serverUrl: string } {
   return {
-    email: config?.email ?? `${agentName}@ouro.bot`,
+    email: config?.email ?? defaultStableVaultEmail(agentName),
     serverUrl: config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL,
   }
 }

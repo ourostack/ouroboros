@@ -11,7 +11,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
+import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -35,6 +35,7 @@ import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./lau
 import {
   resolveHatchCredentials,
   readAgentConfigForAgent,
+  runRuntimeAuthFlow,
 } from "../auth/auth-flow"
 import {
   providerCredentialMachineHomeDir,
@@ -68,6 +69,7 @@ import type {
   AuthVerifyCliCommand,
   AuthSwitchCliCommand,
   ProviderCliCommand,
+  RepairCliCommand,
   VaultCliCommand,
   ChangelogCliCommand,
   ConfigModelCliCommand,
@@ -103,11 +105,19 @@ import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
+import type { DegradedAgent } from "./interactive-repair"
 import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
+import {
+  genericReadinessIssue,
+  runGuidedReadinessRepair,
+  type AgentReadinessReport,
+  type RepairAction,
+} from "./readiness-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { UpProgress } from "./up-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
+import { listEnabledBundleAgents } from "./agent-discovery"
 
 // ── ensureDaemonRunning ──
 
@@ -120,26 +130,24 @@ const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
 async function checkAgentProviders(
   deps: OuroCliDeps,
   agentsOverride?: string[],
-): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
-  const agents = agentsOverride ?? await Promise.resolve(
-    deps.listDiscoveredAgents ? deps.listDiscoveredAgents() : defaultListDiscoveredAgents(),
-  )
+): Promise<DegradedAgent[]> {
+  const agents = agentsOverride ?? await listCliAgents(deps)
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const degraded: Array<{ agent: string; errorReason: string; fixHint: string }> = []
+  const degraded: DegradedAgent[] = []
 
   for (const agent of [...new Set(agents)]) {
     try {
-      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+      const result = await checkAgentProviderHealth(agent, bundlesRoot, deps)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
       const fixHint = result.fix ?? ""
-      degraded.push({ agent, errorReason, fixHint })
+      degraded.push({ agent, errorReason, fixHint, ...(result.issue ? { issue: result.issue } : {}) })
       emitNervesEvent({
         level: "error",
         component: "daemon",
         event: "daemon.agent_config_invalid",
         message: errorReason,
-        meta: { agent, fix: fixHint, source: "already-running-provider-check" },
+        meta: { agent, fixProvided: fixHint.length > 0, source: "already-running-provider-check" },
       })
     } catch (error) {
       const errorReason = error instanceof Error ? error.message : String(error)
@@ -153,7 +161,7 @@ async function checkAgentProviders(
         component: "daemon",
         event: "daemon.agent_config_invalid",
         message: errorReason,
-        meta: { agent, fix: "ouro doctor", source: "already-running-provider-check" },
+        meta: { agent, fixProvided: true, source: "already-running-provider-check" },
       })
     }
   }
@@ -161,14 +169,35 @@ async function checkAgentProviders(
   return degraded
 }
 
-async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<Array<{ agent: string; errorReason: string; fixHint: string }>> {
+async function checkAgentProviderHealth(
+  agentName: string,
+  bundlesRoot: string,
+  deps: OuroCliDeps,
+): ReturnType<typeof checkAgentConfigWithProviderHealth> {
+  if (deps.homeDir) {
+    return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, { homeDir: deps.homeDir })
+  }
+  return checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
+}
+
+async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
+  if (deps.listDiscoveredAgents) {
+    return Promise.resolve(deps.listDiscoveredAgents())
+  }
+  if (deps.bundlesRoot) {
+    return listEnabledBundleAgents({ bundlesRoot: deps.bundlesRoot })
+  }
+  return []
+}
+
+async function checkAlreadyRunningAgentProviders(deps: OuroCliDeps): Promise<DegradedAgent[]> {
   return checkAgentProviders(deps)
 }
 
 async function reportPostRepairProviderHealth(
   deps: OuroCliDeps,
   repairedAgents: string[],
-): Promise<void> {
+): Promise<DegradedAgent[]> {
   const remainingDegraded = await checkAgentProviders(deps, repairedAgents)
 
   emitNervesEvent({
@@ -183,7 +212,7 @@ async function reportPostRepairProviderHealth(
 
   if (remainingDegraded.length === 0) {
     deps.writeStdout("provider checks recovered after repair")
-    return
+    return remainingDegraded
   }
 
   deps.writeStdout("provider checks still degraded after repair:")
@@ -194,6 +223,7 @@ async function reportPostRepairProviderHealth(
     }
   }
   deps.writeStdout("run `ouro up` again after applying the remaining fixes.")
+  return remainingDegraded
 }
 
 async function checkProviderHealthBeforeChat(
@@ -201,7 +231,7 @@ async function checkProviderHealthBeforeChat(
   deps: OuroCliDeps,
 ): Promise<{ ok: true } | { ok: false; output: string }> {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const result = await checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
+  const result = await checkAgentProviderHealth(agentName, bundlesRoot, deps)
   if (!result.ok) {
     const output = `${result.error}\n${result.fix ? `      fix:   ${result.fix}` : ""}`
     deps.writeStdout(output)
@@ -231,7 +261,10 @@ interface DaemonStartupFailure {
   retryable: boolean
 }
 
-export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaemonResult> {
+export async function ensureDaemonRunning(
+  deps: OuroCliDeps,
+  options: { initialAlive?: boolean } = {},
+): Promise<EnsureDaemonResult> {
   const readLatestDaemonStartupEvent = () => {
     try {
       // The daemon writes structured events to daemon.ndjson in the first
@@ -269,7 +302,7 @@ export async function ensureDaemonRunning(deps: OuroCliDeps): Promise<EnsureDaem
     return null
   }
 
-  const alive = await deps.checkSocketAlive(deps.socketPath)
+  const alive = options.initialAlive ?? await deps.checkSocketAlive(deps.socketPath)
   if (alive) {
     const localRuntime = getRuntimeMetadata()
     let runningRuntimePromise: Promise<{
@@ -667,7 +700,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" }>): DaemonCommand {
   return command
 }
 
@@ -838,14 +871,6 @@ function readVaultRecoverSource(sourcePath: string): VaultRecoverSourceImport {
   }
 }
 
-function defaultStableVaultEmail(agentName: string): string {
-  const local = agentName
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "agent"
-  return `${local}@ouro.bot`
-}
-
 function isGeneratedRepairVaultEmail(email: string): boolean {
   const [local, domain] = email.trim().split("@")
   return domain?.toLowerCase() === "ouro.bot" && /\+(?:replaced|recovered)-\d{14}(?:$|\+)/i.test(local)
@@ -938,13 +963,9 @@ async function executeVaultCreate(
     throw new Error("SerpentGuide does not have a persistent credential vault. Create a vault for the hatchling agent, not SerpentGuide.")
   }
   if (command.generateUnlockSecret) rejectGeneratedVaultUnlockSecret("create")
-  const prompt = deps.promptInput
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const configuredVault = resolveVaultConfig(command.agent, config.vault)
-  const email = command.email ?? config.vault?.email ?? (prompt ? (await prompt("Ouro credential vault email: ")).trim() : "")
-  if (!email) {
-    throw new Error("vault create requires --email <email> when the agent bundle has no vault.email")
-  }
+  const email = command.email ?? config.vault?.email ?? configuredVault.email
   const promptSecret = ensureVaultSecretPrompt(deps.promptSecret, "create")
   const serverUrl = command.serverUrl ?? config.vault?.serverUrl ?? configuredVault.serverUrl
   const unlockSecret = (await promptSecret(`Choose Ouro vault unlock secret for ${email}: `)).trim()
@@ -1604,6 +1625,124 @@ async function executeProviderRefresh(
   const message = lines.join("\n")
   deps.writeStdout(message)
   return message
+}
+
+async function readinessReportForAgent(agent: string, deps: OuroCliDeps): Promise<AgentReadinessReport> {
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  try {
+    const result = await checkAgentProviderHealth(agent, bundlesRoot, deps)
+    if (result.ok) {
+      return { agent, ok: true, issues: [] }
+    }
+    else {
+      const issue = result.issue ?? genericReadinessIssue({
+        summary: result.error ?? `${agent} is not ready.`,
+        ...(result.fix ? { fix: result.fix } : {}),
+      })
+      return { agent, ok: false, issues: [issue] }
+    }
+  } catch (error) {
+    return {
+      agent,
+      ok: false,
+      issues: [genericReadinessIssue({
+        summary: `${agent} readiness check failed.`,
+        detail: error instanceof Error ? error.message : String(error),
+        fix: "Run 'ouro doctor' for diagnostics, then retry 'ouro repair'.",
+      })],
+    }
+  }
+}
+
+async function executeReadinessRepairAction(
+  agent: string,
+  action: RepairAction,
+  deps: OuroCliDeps,
+): Promise<void> {
+  if (action.kind === "vault-unlock") {
+    await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
+    return
+  }
+  if (action.kind === "vault-replace") {
+    await executeVaultReplace({ kind: "vault.replace", agent }, deps)
+    return
+  }
+  if (action.kind === "provider-auth") {
+    const provider = action.provider
+    const authRunner = deps.runAuthFlow ?? runRuntimeAuthFlow
+    const result = await authRunner({
+      agentName: agent,
+      provider,
+      promptInput: deps.promptInput,
+    })
+    deps.writeStdout(result.message)
+    await executeProviderRefresh({ kind: "provider.refresh", agent }, deps)
+    return
+  }
+  deps.writeStdout(`manual step for ${agent}: ${action.command}`)
+}
+
+async function executeRepair(
+  command: Extract<OuroCliCommand, { kind: "repair" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const agents = command.agent
+    ? [command.agent]
+    : await listCliAgents(deps)
+  const uniqueAgents = [...new Set(agents)]
+  const lines: string[] = []
+  const repairDeps: OuroCliDeps = {
+    ...deps,
+    writeStdout: (text: string) => {
+      lines.push(text)
+      deps.writeStdout(text)
+    },
+  }
+
+  if (uniqueAgents.length === 0) {
+    const message = "no agents found to repair."
+    repairDeps.writeStdout(message)
+    return message
+  }
+
+  else {
+    const reports = await Promise.all(uniqueAgents.map((agent) => readinessReportForAgent(agent, repairDeps)))
+    for (const report of reports) {
+      if (report.ok) {
+        repairDeps.writeStdout(`${report.agent}: ready`)
+      }
+    }
+    await runGuidedReadinessRepair(reports, {
+      promptInput: deps.promptInput,
+      writeStdout: repairDeps.writeStdout,
+      runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, repairDeps),
+    })
+    return lines.join("\n")
+  }
+}
+
+function readinessReportsFromDegraded(degraded: DegradedAgent[]): AgentReadinessReport[] {
+  return degraded.map((entry) => ({
+    agent: entry.agent,
+    ok: false,
+    issues: [
+      entry.issue ?? genericReadinessIssue({
+        summary: entry.errorReason,
+        ...(entry.fixHint ? { fix: entry.fixHint } : {}),
+      }),
+    ],
+  }))
+}
+
+async function runReadinessRepairForDegraded(
+  degraded: DegradedAgent[],
+  deps: OuroCliDeps,
+): Promise<{ repairsAttempted: boolean }> {
+  return runGuidedReadinessRepair(readinessReportsFromDegraded(degraded), {
+    promptInput: deps.promptInput,
+    writeStdout: deps.writeStdout,
+    runRepairAction: async (agentName, action) => executeReadinessRepairAction(agentName, action, deps),
+  })
 }
 
 async function executeLegacyAuthSwitch(
@@ -2436,14 +2575,56 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       promptInput: deps.promptInput,
     })
 
+    const daemonAliveBeforeStart = await deps.checkSocketAlive(deps.socketPath)
+    let providerChecksAlreadyRun = false
+    if (!daemonAliveBeforeStart) {
+      progress.startPhase("provider checks")
+      const preflightProviderDegraded = await checkAgentProviders(deps)
+      providerChecksAlreadyRun = true
+      progress.completePhase("provider checks", preflightProviderDegraded.length > 0 ? `${preflightProviderDegraded.length} degraded` : "ok")
+
+      if (preflightProviderDegraded.length > 0) {
+        progress.end()
+        if (command.noRepair) {
+          deps.writeStdout("degraded agents:")
+          for (const d of preflightProviderDegraded) {
+            deps.writeStdout(`  ${d.agent}: ${d.errorReason}`)
+            if (d.fixHint) {
+              deps.writeStdout(`    fix: ${d.fixHint}`)
+            }
+          }
+          const message = "daemon not started because provider checks are degraded; run `ouro repair` after applying the fixes."
+          deps.writeStdout(message)
+          return message
+        }
+
+        const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
+        if (!repairResult.repairsAttempted) {
+          const message = "daemon not started because provider checks are degraded; run `ouro repair` after applying the fixes."
+          deps.writeStdout(message)
+          return message
+        }
+
+        const remainingDegraded = await reportPostRepairProviderHealth(
+          deps,
+          preflightProviderDegraded.map((entry) => entry.agent),
+        )
+        if (remainingDegraded.length > 0) {
+          const message = "daemon not started because provider checks are still degraded."
+          deps.writeStdout(message)
+          return message
+        }
+      }
+    }
+
     progress.startPhase("starting daemon")
     const daemonResult = await ensureDaemonRunning({
       ...deps,
       reportDaemonStartupPhase: (label) => {
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
-    })
-    if (daemonResult.alreadyRunning) {
+    }, { initialAlive: daemonAliveBeforeStart })
+    if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
       progress.startPhase("provider checks")
       const providerDegraded = await checkAlreadyRunningAgentProviders(deps)
       daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
@@ -3127,6 +3308,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "provider.refresh") {
     return executeProviderRefresh(command, deps)
+  }
+
+  if (command.kind === "repair") {
+    return executeRepair(command, deps)
   }
 
   if (command.kind === "vault.unlock") {

@@ -78,6 +78,7 @@ export function usage(): string {
     "  ouro status --agent <name>",
     "  ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]",
     "  ouro check --agent <name> --lane outward|inner",
+    "  ouro repair [--agent <name>]",
     "  ouro provider refresh --agent <name>",
     "  ouro outlook [--json]",
     "  ouro -v|--version",
@@ -1031,6 +1032,11 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "use") return parseProviderUseCommand(args.slice(1))
   if (head === "check") return parseProviderCheckCommand(args.slice(1))
+  if (head === "repair") {
+    const { agent, rest } = extractAgentFlag(args.slice(1))
+    if (rest.length > 0) throw new Error("Usage: ouro repair [--agent <name>]")
+    return agent ? { kind: "repair", agent } : { kind: "repair" }
+  }
   if (head === "provider") return parseProviderCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }

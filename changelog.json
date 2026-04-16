@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.396",
+      "changes": [
+        "Added `ouro repair [--agent <agent>]`, a deterministic vault/provider readiness guide that uses typed repair issues and clear human choices instead of asking for AI diagnosis on known failures.",
+        "Provider health checks now attach shared typed repair metadata for locked vaults, missing provider credentials, and failed live provider/model pings, keeping CLI repair, `ouro up`, and agent-facing guidance aligned.",
+        "`ouro up` now always runs the live provider-check phase after startup, not only when the daemon was already running, so broken selected providers are surfaced during startup instead of later through confusing agent crashes.",
+        "`ouro vault create --agent <agent>` now defaults to the stable agent vault email when no vault locator exists, while still requiring a non-echoing human-provided unlock secret.",
+        "Cross-machine and auth/provider docs now include `ouro repair --agent <agent>` in the continuation path for existing bundles and old auth-style agents.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the typed readiness repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.395",
       "changes": [
         "`ouro vault replace` and `ouro vault recover` now default to the stable agent vault email, `<agent>@ouro.bot`, instead of timestamped `+replaced` or `+recovered` addresses.",

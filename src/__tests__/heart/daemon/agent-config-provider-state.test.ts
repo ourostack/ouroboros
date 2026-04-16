@@ -399,6 +399,15 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.error).toContain("slugger's vault at vault:slugger:providers/*")
     expect(result.error).toContain("outward provider minimax model MiniMax-M2.5 has no credentials")
     expect(result.fix).toContain("ouro use --agent slugger --lane outward")
+    expect(result.issue).toMatchObject({
+      kind: "provider-credentials-missing",
+      severity: "blocked",
+      actor: "human-required",
+      actions: [
+        { kind: "provider-auth", command: "ouro auth --agent slugger --provider minimax" },
+        { kind: "provider-use", command: "ouro use --agent slugger --lane outward --provider <provider> --model <model>" },
+      ],
+    })
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
@@ -424,6 +433,16 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.fix).toContain("ouro vault recover --agent slugger --from <json>")
     expect(result.fix).toContain("ouro up")
     expect(result.fix).not.toContain("ouro auth")
+    expect(result.issue).toMatchObject({
+      kind: "vault-locked",
+      severity: "blocked",
+      actor: "human-required",
+      actions: [
+        { kind: "vault-unlock", command: "ouro vault unlock --agent slugger" },
+        { kind: "vault-replace", command: "ouro vault replace --agent slugger" },
+        { kind: "vault-recover", command: "ouro vault recover --agent slugger --from <json>" },
+      ],
+    })
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
@@ -485,6 +504,15 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.error).toContain("400 status code (no body)")
     expect(result.fix).toContain("ouro auth --agent slugger --provider openai-codex")
     expect(result.fix).toContain("ouro use --agent slugger --lane inner")
+    expect(result.issue).toMatchObject({
+      kind: "provider-live-check-failed",
+      severity: "blocked",
+      actor: "human-choice",
+      actions: [
+        { kind: "provider-auth", command: "ouro auth --agent slugger --provider openai-codex" },
+        { kind: "provider-use", command: "ouro use --agent slugger --lane inner --provider <provider> --model <model>" },
+      ],
+    })
 
     const stateResult = readProviderState(agentRoot)
     expect(stateResult.ok).toBe(true)

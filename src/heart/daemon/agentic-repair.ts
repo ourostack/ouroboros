@@ -18,6 +18,7 @@ import type { DiscoverWorkingProviderResult } from "./provider-discovery"
 import type { AgentProvider } from "../identity"
 import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
 import type OpenAI from "openai"
+import { isKnownReadinessIssue } from "./readiness-repair"
 
 /** Minimal subset of ProviderRuntime needed for a single diagnostic call. */
 export interface AgenticProviderRuntime {
@@ -186,11 +187,17 @@ export async function runAgenticRepair(
   }
 
   const hasLocalRepair = degraded.some(hasRunnableInteractiveRepair)
+  const hasKnownTypedRepair = degraded.some((entry) => isKnownReadinessIssue(entry.issue))
   if (hasLocalRepair) {
     const interactiveResult = await runDeterministicRepair(degraded, deps)
     if (interactiveResult.repairsAttempted) {
       return { repairsAttempted: true, usedAgentic: false }
     }
+    if (hasKnownTypedRepair) {
+      return { repairsAttempted: false, usedAgentic: false }
+    }
+  } else if (hasKnownTypedRepair) {
+    return { repairsAttempted: false, usedAgentic: false }
   }
 
   // Try to discover a working provider for agentic diagnosis
