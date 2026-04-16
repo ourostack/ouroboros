@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.405",
+      "changes": [
+        "`ouro up` now keeps walking the guided repair path when one successful fix reveals the next runnable issue for the same agent, instead of stopping after the first pass and making you rerun the command.",
+        "The happy repair path still prints `provider checks recovered after repair`, and the chained-flow coverage now exercises vault-unlock-then-auth continuation directly.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the chained preflight repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.404",
       "changes": [
         "`ouro up` and `ouro up --no-repair` now render degraded provider summaries as grouped blocks with blank lines between agents, so rescue guidance reads like deliberate instructions instead of a pile of fragments.",
