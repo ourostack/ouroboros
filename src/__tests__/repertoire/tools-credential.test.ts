@@ -162,6 +162,28 @@ describe("credential_store", () => {
     expect(result).not.toContain("Command failed:")
   })
 
+  it("redacts raw bw payloads and hidden prompt echoes from store errors", async () => {
+    const leakedEncodedPayload = Buffer
+      .from(JSON.stringify({ login: { password: "secret123" } }))
+      .toString("base64")
+    mockStore.mockRejectedValue(
+      new Error(`Command failed: bw create item ${leakedEncodedPayload}\n? Master password: [input is hidden]\nsecret123`),
+    )
+
+    const tool = findTool("credential_store")
+    const result = await tool.handler({
+      domain: "x.com",
+      username: "agent@example.com",
+      password: "secret123",
+    })
+
+    expect(result).toContain("command failed")
+    expect(result).not.toContain("bw create item")
+    expect(result).not.toContain(leakedEncodedPayload)
+    expect(result).not.toContain("secret123")
+    expect(result).not.toContain("[input is hidden]")
+  })
+
   it("redacts the password from store errors", async () => {
     mockStore.mockRejectedValue(new Error("save failed for secret123"))
 

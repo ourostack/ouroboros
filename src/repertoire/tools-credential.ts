@@ -1,13 +1,12 @@
 import * as crypto from "node:crypto"
 import type { ToolDefinition } from "./tools-base"
 import { getCredentialStore } from "./credential-access"
+import { sanitizeCredentialErrorDetail } from "./bitwarden-store"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const DEFAULT_PASSWORD_LENGTH = 24
 const MIN_PASSWORD_LENGTH = 12
 const MAX_PASSWORD_LENGTH = 128
-const MAX_ERROR_DETAIL_LENGTH = 500
-
 const PASSWORD_CHARSETS = {
   lower: "abcdefghijkmnopqrstuvwxyz",
   upper: "ABCDEFGHJKLMNPQRSTUVWXYZ",
@@ -17,25 +16,7 @@ const PASSWORD_CHARSETS = {
 
 function sanitizeCredentialToolError(err: unknown, secrets: Array<string | undefined> = []): string {
   const raw = err instanceof Error ? err.message : String(err)
-  const scrubbed = raw
-    .split(/\r?\n/)
-    .filter((line) => !line.trim().startsWith("Command failed:"))
-    .join("\n")
-    .trim()
-
-  let sanitized = scrubbed || "command failed"
-  const uniqueSecrets = [...new Set(
-    secrets.filter((value): value is string => typeof value === "string" && value.length >= 4),
-  )]
-    .sort((left, right) => right.length - left.length)
-
-  for (const secret of uniqueSecrets) {
-    sanitized = sanitized.split(secret).join("[redacted]")
-  }
-
-  return sanitized
-    .replace(/[A-Za-z0-9+/=]{80,}/g, "[redacted]")
-    .slice(0, MAX_ERROR_DETAIL_LENGTH)
+  return sanitizeCredentialErrorDetail(raw, { secrets })
 }
 
 function requireTrimmedText(value: unknown, fieldName: string): string {
