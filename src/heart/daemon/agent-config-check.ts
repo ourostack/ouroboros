@@ -43,6 +43,7 @@ export type ProviderPing = (
 export interface LiveConfigCheckDeps {
   pingProvider?: ProviderPing
   homeDir?: string
+  onProgress?: (message: string) => void
 }
 
 type FacingName = "humanFacing" | "agentFacing"
@@ -424,7 +425,7 @@ export async function checkAgentConfigWithProviderHealth(
   if (stateResult.disabled) return { ok: true }
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
-  const poolResult = await refreshProviderCredentialPool(agentName)
+  const poolResult = await refreshProviderCredentialPool(agentName, deps.onProgress ? { onProgress: deps.onProgress } : undefined)
 
   const pingGroups = new Map<string, {
     provider: AgentProvider
