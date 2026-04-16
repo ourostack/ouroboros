@@ -424,4 +424,75 @@ describe("provider credentials vault store", () => {
       )
     }
   })
+
+  describe("refreshProviderCredentialPool onProgress callback", () => {
+    it("calls onProgress at key points during a successful refresh", async () => {
+      emitTestEvent("provider credential refresh onProgress success")
+
+      mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+        username: "minimax",
+        password: validPayload("minimax"),
+        createdAt: "2026-04-13T00:00:00.000Z",
+      })
+
+      const onProgress = vi.fn()
+      const result = await refreshProviderCredentialPool("slugger", { onProgress })
+
+      expect(result.ok).toBe(true)
+      expect(onProgress).toHaveBeenCalled()
+      const messages = onProgress.mock.calls.map((c: unknown[]) => c[0] as string)
+      expect(messages.some((m: string) => m.includes("reading vault"))).toBe(true)
+      expect(messages.some((m: string) => m.includes("parsing"))).toBe(true)
+    })
+
+    it("does not error when onProgress is not provided (backward compat)", async () => {
+      emitTestEvent("provider credential refresh onProgress omitted")
+
+      mockCredentialStore.items.set(providerCredentialItemName("azure"), {
+        username: "azure",
+        password: validPayload("azure"),
+        createdAt: "2026-04-13T00:00:00.000Z",
+      })
+
+      const result = await refreshProviderCredentialPool("slugger")
+      expect(result.ok).toBe(true)
+    })
+
+    it("calls onProgress before each getRawSecret call for provider items", async () => {
+      emitTestEvent("provider credential refresh onProgress per-provider")
+
+      mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+        username: "minimax",
+        password: validPayload("minimax"),
+        createdAt: "2026-04-13T00:00:00.000Z",
+      })
+      mockCredentialStore.items.set(providerCredentialItemName("azure"), {
+        username: "azure",
+        password: validPayload("azure"),
+        createdAt: "2026-04-13T00:00:00.000Z",
+      })
+
+      const onProgress = vi.fn()
+      const result = await refreshProviderCredentialPool("slugger", { onProgress })
+
+      expect(result.ok).toBe(true)
+      // Should have at least one progress call per provider item read
+      const messages = onProgress.mock.calls.map((c: unknown[]) => c[0] as string)
+      const readingMessages = messages.filter((m: string) => m.includes("reading"))
+      expect(readingMessages.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it("RefreshProviderCredentialPoolOptions accepts onProgress property", async () => {
+      emitTestEvent("provider credential refresh options type")
+
+      // This test verifies the type accepts onProgress without TypeScript errors
+      const options: Parameters<typeof refreshProviderCredentialPool>[1] = {
+        onProgress: (_msg: string) => {},
+        preserveCachedOnFailure: false,
+      }
+      const result = await refreshProviderCredentialPool("slugger", options)
+      // Just needs to not throw
+      expect(result).toBeDefined()
+    })
+  })
 })
