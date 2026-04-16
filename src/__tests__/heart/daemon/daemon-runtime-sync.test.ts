@@ -106,6 +106,38 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
   })
 
+  it("restarts the daemon when the managed agent roster drifts even if runtime metadata matches", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      localLastUpdated: "2026-03-09T11:00:00.000Z",
+      localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+      localConfigFingerprint: "cfg-local",
+      localManagedAgents: "slugger",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.20"),
+      fetchRunningRuntimeMetadata: vi.fn(async () => ({
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+        repoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
+        configFingerprint: "cfg-local",
+        managedAgents: "ouroboros,slugger",
+      })),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    } as any
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.alreadyRunning).toBe(false)
+    expect(result.verifyStartupStatus).toBe(true)
+    expect(result.startedPid).toBe(777)
+    expect(result.message).toContain("managed agents")
+    expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+  })
+
   it("restarts the daemon when lastUpdated drifts and versions match", async () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
