@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.410",
+      "changes": [
+        "Added guided `ouro connect` onboarding for Perplexity search and local BlueBubbles attachment setup, with hidden secret prompts and compact success output.",
+        "Runtime credentials now distinguish portable `runtime/config` from machine-scoped `runtime/machines/<machine-id>/config`, so BlueBubbles local Mac bridge settings do not travel as universal agent config.",
+        "BlueBubbles can now be enabled but `not_attached` on a machine without degrading the agent, while incomplete or broken local attachment config still reports repairable guidance.",
+        "Sync-enabled bundle config mutations now run the existing post-change bundle sync path after vault setup/recovery/replacement, BlueBubbles attachment, and clone success, surfacing a compact `bundle sync:` result.",
+        "New vault unlock secret flows now require hidden confirmation and minimum strength checks before creating, replacing, recovering, or hatching an agent vault.",
+        "Updated auth/provider, cross-machine, README, AGENTS, and testing docs to lock the agent-vault-as-password-manager model and the portable-vs-local credential split.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the runtime credential onboarding release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.409",
       "changes": [
         "`ouro up` interactive repair now presents each agent's next step as a compact panel with `needs`, `run`, and `note` lines, followed by a short human prompt like `Unlock it now?` or `Open the auth flow now?` instead of embedding commands and warnings into one long question.",
