@@ -156,7 +156,7 @@ export async function storeProviderCredentials(
   agentName: string,
   provider: AgentProvider,
   credentials: HatchCredentialsInput,
-  deps: { now?: Date } = {},
+  deps: { now?: Date; onProgress?: (message: string) => void } = {},
 ): Promise<{ credentialPath: string }> {
   assertPersistentProviderCredentialsAllowed(agentName)
   const split = splitProviderCredentialFields(provider, credentials as Record<string, unknown>)
@@ -167,6 +167,7 @@ export async function storeProviderCredentials(
     config: split.config,
     provenance: { source: "auth-flow" },
     now: deps.now,
+    onProgress: deps.onProgress,
   })
   return { credentialPath: providerCredentialItemName(provider) }
 }
@@ -447,10 +448,13 @@ export async function runRuntimeAuthFlow(
   }
 
   const credentials = await collectRuntimeAuthCredentials(input, deps)
-  writeAuthProgress(input, `${input.provider} credentials collected; storing in ${input.agentName}'s vault...`)
   let credentialPath: string
   try {
-    ;({ credentialPath } = await storeProviderCredentials(input.agentName, input.provider, credentials))
+    ;({
+      credentialPath,
+    } = await storeProviderCredentials(input.agentName, input.provider, credentials, {
+      onProgress: (message) => writeAuthProgress(input, message),
+    }))
   } catch (error) {
     throw formatVaultStoreError(input.agentName, input.provider, error)
   }

@@ -27,6 +27,8 @@ const bwHarness = vi.hoisted(() => {
     failCreateAtCall: 0,
     failNextCreateWith: null as string | null,
     failEveryCreateWith: null as string | null,
+    failEveryCreateErrorMessage: null as string | null,
+    failEveryCreateStderr: null as string | null,
     reset(): void {
       items.clear()
       this.commands = []
@@ -39,6 +41,8 @@ const bwHarness = vi.hoisted(() => {
       this.failCreateAtCall = 0
       this.failNextCreateWith = null
       this.failEveryCreateWith = null
+      this.failEveryCreateErrorMessage = null
+      this.failEveryCreateStderr = null
     },
   }
 })
@@ -140,6 +144,10 @@ function installBwExecHarness(): void {
       }
       if (args[0] === "create") {
         bwHarness.createCalls += 1
+        if (bwHarness.failEveryCreateErrorMessage) {
+          cb(new Error(bwHarness.failEveryCreateErrorMessage), "", bwHarness.failEveryCreateStderr ?? "")
+          return
+        }
         if (bwHarness.failEveryCreateWith) {
           cb(new Error(`Command failed: bw ${args.join(" ")}`), "", bwHarness.failEveryCreateWith)
           return
@@ -213,7 +221,9 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(result.message).toBe("authenticated VaultSaveBot with minimax")
     expect(progress).toEqual([
       "checking VaultSaveBot's vault access...",
-      "minimax credentials collected; storing in VaultSaveBot's vault...",
+      "opening VaultSaveBot's vault session...",
+      "storing minimax credentials in VaultSaveBot's vault...",
+      "refreshing local provider snapshot from VaultSaveBot's vault...",
       "credentials stored at providers/minimax; local provider snapshot refreshed.",
     ])
 
@@ -255,7 +265,9 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
     expect(progress).toEqual([
       "checking VaultRefreshBot's vault access...",
-      "minimax credentials collected; storing in VaultRefreshBot's vault...",
+      "opening VaultRefreshBot's vault session...",
+      "storing minimax credentials in VaultRefreshBot's vault...",
+      "refreshing local provider snapshot from VaultRefreshBot's vault...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
   })
@@ -282,7 +294,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     await expect(promise).rejects.toThrow("Run 'ouro vault unlock --agent VaultLockedBot' if you have the saved vault unlock secret.")
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
-      "minimax credentials collected; storing in VaultLockedBot's vault...",
+      "opening VaultLockedBot's vault session...",
+      "storing minimax credentials in VaultLockedBot's vault...",
     ])
     expect(bwHarness.createCalls).toBe(2)
   })
@@ -307,7 +320,43 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
     expect(progress).toEqual([
       "checking VaultServerBot's vault access...",
-      "minimax credentials collected; storing in VaultServerBot's vault...",
+      "opening VaultServerBot's vault session...",
+      "storing minimax credentials in VaultServerBot's vault...",
+    ])
+  })
+
+  it("redacts raw create-command failures from auth save errors and keeps progress visible", async () => {
+    installBwExecHarness()
+    bwHarness.failEveryCreateErrorMessage = "Command failed: bw create item eyJsb2dpbiI6eyJwYXNzd29yZCI6InNlY3JldC12YWx1ZSJ9fQ==\n? Master password: [input is hidden]"
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
+    tempHomes.push(tempHome)
+    process.env.HOME = tempHome
+
+    const progress: string[] = []
+
+    let thrown: Error | null = null
+    try {
+      await runRuntimeAuthFlow({
+        agentName: "VaultPromptBot",
+        provider: "minimax",
+        promptInput: async () => "secret-value",
+        onProgress: (message) => progress.push(message),
+      })
+    } catch (error) {
+      thrown = error as Error
+    }
+
+    expect(thrown).not.toBeNull()
+    expect(thrown!.message).toContain(
+      "provider authentication succeeded, but storing minimax credentials in VaultPromptBot's vault failed: bw CLI error: bw CLI could not use the local Bitwarden session because it is locked, missing, or expired",
+    )
+    expect(thrown!.message).not.toContain("bw create item")
+    expect(thrown!.message).not.toContain("eyJsb2dpbiI6eyJwYXNzd29yZCI6InNlY3JldC12YWx1ZSJ9fQ==")
+    expect(thrown!.message).not.toContain("secret-value")
+    expect(progress).toEqual([
+      "checking VaultPromptBot's vault access...",
+      "opening VaultPromptBot's vault session...",
+      "storing minimax credentials in VaultPromptBot's vault...",
     ])
   })
 })
