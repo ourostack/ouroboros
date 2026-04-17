@@ -688,6 +688,7 @@ describe("provider CLI command execution", () => {
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
 
+    const deps = makeCliDeps(homeDir, bundlesRoot)
     const result = await runOuroCli([
       "use",
       "--agent",
@@ -698,12 +699,18 @@ describe("provider CLI command execution", () => {
       "minimax",
       "--model",
       "MiniMax-M2.5",
-    ], makeCliDeps(homeDir, bundlesRoot))
+    ], deps)
 
     expect(result).toContain("Slugger inner")
     expect(result).toContain("minimax")
     expect(result).toContain("MiniMax-M2.5")
     expect(result).toContain("ready")
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("\n")
+    expect(output).toContain("... reading minimax credentials")
+    expect(output).toContain("reading vault items for Slugger...")
+    expect(output).toContain("✓ reading minimax credentials")
+    expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     expect(mockPingProvider).toHaveBeenCalledWith("minimax", { apiKey: "minimax-secret" }, expect.anything())
 
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
@@ -855,6 +862,31 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("no credentials")
     expect(result).toContain("ouro auth --agent Slugger --provider minimax")
+  })
+
+  it("ouro use keeps progress visible when the credential read throws", async () => {
+    emitTestEvent("provider cli use credential read throws")
+    const bundlesRoot = makeTempDir("provider-cli-use-read-throws-bundles")
+    const homeDir = makeTempDir("provider-cli-use-read-throws-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    mockProviderCredentials.refreshProviderCredentialPool.mockRejectedValueOnce(new Error("vault exploded"))
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+
+    await expect(runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ], deps)).rejects.toThrow("vault exploded")
+
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("\n")
+    expect(output).toContain("... reading minimax credentials")
   })
 
   it("ouro use --force records a failed binding when credentials are unavailable", async () => {
@@ -1328,7 +1360,10 @@ describe("provider CLI command execution", () => {
       "Slugger",
       okCredentialPool("Slugger", credentialPool()),
     )
-    const runAuthFlow = vi.fn(async () => ({ ok: true, message: "authenticated Slugger with anthropic" }))
+    const runAuthFlow = vi.fn(async (input: { onProgress?: (message: string) => void }) => {
+      input.onProgress?.("starting anthropic credential entry...")
+      return { ok: true, message: "authenticated Slugger with anthropic" }
+    })
 
     const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => "1",
@@ -1341,6 +1376,11 @@ describe("provider CLI command execution", () => {
       promptInput: expect.any(Function),
       onProgress: expect.any(Function),
     })
+    expect(result).toContain("... authenticating anthropic")
+    expect(result).toContain("starting anthropic credential entry...")
+    expect(result).toContain("✓ authenticating anthropic")
+    expect(result).toContain("... verifying anthropic")
+    expect(result).toContain("✓ verifying anthropic")
     expect(result).toContain("authenticated Slugger with anthropic")
     expect(result).toContain("refreshed provider credential snapshot for Slugger")
     expect(result).toContain("repair step finished for Slugger.")
@@ -2906,12 +2946,19 @@ describe("provider CLI command execution", () => {
       ],
     })
 
-    const result = await runOuroCli(["check", "--agent", "Slugger", "--lane", "inner"], makeCliDeps(homeDir, bundlesRoot))
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+    const result = await runOuroCli(["check", "--agent", "Slugger", "--lane", "inner"], deps)
 
     expect(result).toContain("Slugger inner")
     expect(result).toContain("minimax")
     expect(result).toContain("MiniMax-M2.5")
     expect(result).toContain("ready")
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("\n")
+    expect(output).toContain("... reading minimax credentials")
+    expect(output).toContain("reading vault items for Slugger...")
+    expect(output).toContain("✓ reading minimax credentials")
+    expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)

@@ -10,7 +10,9 @@ vi.mock("../../../heart/provider-ping", () => ({
 
 const mockProviderCredentials = vi.hoisted(() => ({
   pools: new Map<string, any>(),
-  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+  refreshProviderCredentialPool: vi.fn(async (agentName: string, options?: { onProgress?: (message: string) => void }) => {
+    options?.onProgress?.(`reading vault items for ${agentName}...`)
+    options?.onProgress?.("parsing provider credentials...")
     return mockProviderCredentials.pools.get(agentName) ?? {
       ok: true,
       poolPath: `vault:${agentName}:providers/*`,
@@ -1035,6 +1037,12 @@ describe("ouro CLI execution", () => {
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
       expect(typeof result).toBe("string")
       expect(result).toContain("anthropic")
+      const output = vi.mocked(deps.writeStdout).mock.calls.map(([text]) => text).join("\n")
+      expect(output).toContain("... reading provider credentials")
+      expect(output).toContain(`reading vault items for ${tmp.agentName}...`)
+      expect(output).toContain("✓ reading provider credentials")
+      expect(output).toContain("... verifying providers")
+      expect(output).toContain("✓ verifying providers")
     } finally {
       tmp.cleanup()
     }
@@ -1144,6 +1152,11 @@ describe("ouro CLI execution", () => {
       // pingProvider is mocked to return { ok: true } at the top of this file
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName, "--provider", "github-copilot"], deps)
       expect(result).toBe("github-copilot: ok")
+      const output = vi.mocked(deps.writeStdout).mock.calls.map(([text]) => text).join("\n")
+      expect(output).toContain("... reading provider credentials")
+      expect(output).toContain("✓ reading provider credentials")
+      expect(output).toContain("... verifying github-copilot")
+      expect(output).toContain("✓ verifying github-copilot")
     } finally {
       tmp.cleanup()
     }
