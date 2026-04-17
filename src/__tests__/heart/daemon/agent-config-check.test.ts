@@ -256,7 +256,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain("has no credentials in myagent's vault")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to authenticate.")
     expect(pingProvider).not.toHaveBeenCalled()
   })
 
@@ -291,10 +291,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.error).toContain("cannot read provider credentials")
     expect(result.error).toContain("credential vault is locked on this machine")
     expect(result.error).not.toContain("Run `ouro vault unlock")
-    expect(result.fix).toContain("ouro vault unlock --agent myagent")
-    expect(result.fix).toContain("ouro vault replace --agent myagent")
-    expect(result.fix).toContain("ouro vault recover --agent myagent --from <json>")
-    expect(result.fix).toContain("ouro up")
+    expect(result.fix).toBe("Run 'ouro vault unlock --agent myagent' or 'ouro vault replace --agent myagent' if the secret is lost.")
     expect(result.fix).not.toContain("ouro auth")
   })
 
@@ -330,8 +327,93 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("temporary vault service outage")
     expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.fix).toContain("ouro vault replace --agent myagent")
+    expect(result.fix).not.toContain("ouro vault recover")
+  })
+
+  it("classifies timeout errors as transient and suggests retry instead of unlock/replace/recover", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "bw CLI error: list items timed out while waiting for a vault response",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("timed out")
+    expect(result.fix).toContain("usually resolves on retry")
     expect(result.fix).toContain("ouro up")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.fix).not.toContain("ouro vault replace")
+    expect(result.fix).not.toContain("ouro vault recover")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("classifies econnrefused errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "connect ECONNREFUSED 127.0.0.1:8087",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).toContain("ouro up")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("classifies socket hang up errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "socket hang up",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("classifies ETIMEDOUT errors as transient and suggests retry", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "connect ETIMEDOUT 10.0.0.1:443",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.fix).toContain("usually resolves on retry")
+    expect(result.fix).not.toContain("ouro vault unlock")
+    expect(result.issue).toBeUndefined()
+  })
+
+  it("still classifies vault locked errors correctly after transient check is added", async () => {
+    refreshProviderCredentialPoolMock.mockResolvedValue({
+      ok: false,
+      reason: "unavailable",
+      poolPath: "vault:myagent:providers/*",
+      error: "Ouro credential vault is locked on this machine for myagent.",
+    })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("credential vault is locked")
+    expect(result.fix).toContain("ouro vault unlock --agent myagent")
+    expect(result.issue).toBeDefined()
   })
 
   it("returns a provider-specific failure when ping fails", async () => {
@@ -346,8 +428,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider anthropic")
     expect(result.error).toContain("quota exceeded")
-    expect(result.fix).toContain("ouro auth --agent myagent --provider anthropic")
-    expect(result.fix).toContain("ouro use --agent myagent --lane outward")
+    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials.")
   })
 
   it("returns structural config errors before live health checks", async () => {
