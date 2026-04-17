@@ -84,7 +84,11 @@ describe("ouro bluebubbles replay CLI parsing", () => {
 
   it("rejects malformed replay arguments", () => {
     expect(() => parseOuroCommand(["bluebubbles", "replay", "--agent", "slugger"])).toThrow("message-guid")
-    expect(() => parseOuroCommand(["bluebubbles", "replay", "--message-guid", "guid"])).toThrow("--agent")
+    expect(parseOuroCommand(["bluebubbles", "replay", "--message-guid", "guid"])).toEqual({
+      kind: "bluebubbles.replay",
+      messageGuid: "guid",
+      eventType: "new-message",
+    })
     expect(() => parseOuroCommand([
       "bluebubbles",
       "replay",
@@ -164,6 +168,62 @@ describe("ouro bluebubbles replay CLI execution", () => {
     expect(formatBlueBubblesReplayText).toHaveBeenCalledTimes(1)
     expect(result).toBe("formatted replay")
     expect(deps.writeStdout).toHaveBeenCalledWith("formatted replay")
+  })
+
+  it("resolves the only discovered agent for replay when --agent is omitted", async () => {
+    vi.mocked(replayBlueBubblesMessage).mockResolvedValue({
+      probe: {
+        agentName: "slugger",
+        messageGuid: "message-guid",
+        eventType: "new-message",
+      },
+      event: {
+        kind: "message",
+        eventType: "new-message",
+        messageGuid: "message-guid",
+        timestamp: Date.parse("2026-04-08T19:05:00.000Z"),
+        fromMe: false,
+        sender: {
+          provider: "imessage-handle",
+          externalId: "ari@mendelow.me",
+          rawId: "ari@mendelow.me",
+          displayName: "ari@mendelow.me",
+        },
+        chat: {
+          chatGuid: "any;-;ari@mendelow.me",
+          chatIdentifier: "ari@mendelow.me",
+          isGroup: false,
+          sessionKey: "chat:any;-;ari@mendelow.me",
+          sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+          participantHandles: [],
+        },
+        text: "hello",
+        textForAgent: "hello",
+        attachments: [],
+        hasPayloadData: false,
+        requiresRepair: false,
+      },
+      attachmentIds: [],
+      attachmentBlock: "",
+    } as any)
+    vi.mocked(formatBlueBubblesReplayText).mockReturnValue("formatted replay")
+    const deps = createMockDeps({
+      listDiscoveredAgents: vi.fn(() => ["slugger"]),
+    })
+
+    const result = await runOuroCli([
+      "bluebubbles",
+      "replay",
+      "--message-guid",
+      "message-guid",
+    ], deps)
+
+    expect(replayBlueBubblesMessage).toHaveBeenCalledWith({
+      agentName: "slugger",
+      messageGuid: "message-guid",
+      eventType: "new-message",
+    })
+    expect(result).toBe("formatted replay")
   })
 
   it("prints structured json when requested", async () => {

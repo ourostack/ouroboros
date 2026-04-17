@@ -66,9 +66,11 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import * as daemonThoughts from "../../../heart/daemon/thoughts"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readProviderState } from "../../../heart/provider-state"
+import { createTaskModule } from "../../../repertoire/tasks"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 
@@ -220,11 +222,16 @@ describe("ouro CLI parsing", () => {
       provider: "openai-codex",
     })
 
-    expect(() => parseOuroCommand(["auth"])).toThrow("ouro auth --agent <name> [--provider <provider>]")
+    expect(parseOuroCommand(["auth"])).toEqual({
+      kind: "auth.run",
+    })
     expect(() => parseOuroCommand(["auth", "--agent", "slugger", "--provider", "not-real"])).toThrow("Usage")
   })
 
   it("parses auth verify and auth switch subcommands", () => {
+    expect(parseOuroCommand(["auth", "verify"])).toEqual({
+      kind: "auth.verify",
+    })
     expect(parseOuroCommand(["auth", "verify", "--agent", "foo"])).toEqual({
       kind: "auth.verify",
       agent: "foo",
@@ -237,6 +244,10 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["auth", "switch", "--agent", "foo", "--provider", "github-copilot"])).toEqual({
       kind: "auth.switch",
       agent: "foo",
+      provider: "github-copilot",
+    })
+    expect(parseOuroCommand(["auth", "switch", "--provider", "github-copilot"])).toEqual({
+      kind: "auth.switch",
       provider: "github-copilot",
     })
     expect(() => parseOuroCommand(["auth", "switch", "--agent", "foo"])).toThrow()
@@ -823,6 +834,78 @@ describe("ouro CLI execution", () => {
     } finally {
       tmp.cleanup()
     }
+  })
+
+  it("runs `auth` locally for the only discovered agent when --agent is omitted", async () => {
+    const tmp = createTmpBundle({
+      agentName: "auth-single",
+      agentJson: {
+        version: 2,
+        enabled: true,
+        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
+
+    const runAuthFlow = vi.fn(async () => ({ message: `authenticated ${tmp.agentName} with minimax` }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      listDiscoveredAgents: vi.fn(async () => [tmp.agentName]),
+      runAuthFlow,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      runAuthFlow: typeof runAuthFlow
+    }
+
+    try {
+      const result = await runOuroCli(["auth", "--provider", "minimax"], deps)
+
+      expect(result).toBe(`authenticated ${tmp.agentName} with minimax`)
+      expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
+        agentName: tmp.agentName,
+        provider: "minimax",
+      }))
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("asks for an agent when auth omits --agent and multiple agents are available", async () => {
+    const runAuthFlow = vi.fn(async () => ({ message: "authenticated ouroboros with minimax" }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "2"),
+      runAuthFlow,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      promptInput: (question: string) => Promise<string>
+      runAuthFlow: typeof runAuthFlow
+    }
+
+    const result = await runOuroCli(["auth", "--provider", "minimax"], deps)
+
+    expect(result).toBe("authenticated ouroboros with minimax")
+    expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+    expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
+      agentName: "ouroboros",
+      provider: "minimax",
+    }))
   })
 
   it("keeps auth progress visible when the provider auth flow fails", async () => {
@@ -4778,6 +4861,7 @@ describe("ouro task CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       taskModule: mockTaskModule as any,
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5176,6 +5260,7 @@ describe("ouro reminder CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       taskModule: mockTaskModule as any,
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5268,6 +5353,7 @@ describe("ouro friend CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5712,6 +5798,7 @@ describe("ouro whoami and session list CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5764,7 +5851,6 @@ describe("ouro whoami and session list CLI execution", () => {
   })
 
   it("default deps session scanner uses the shared session-activity helper", async () => {
-    const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
     const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
     const listSpy = vi.spyOn(sessionActivity, "listSessionActivity").mockReturnValue([
       {
@@ -5780,7 +5866,7 @@ describe("ouro whoami and session list CLI execution", () => {
     ])
 
     const deps = createDefaultOuroCliDeps("/tmp/ouro-test.sock")
-    const result = await deps.scanSessions?.()
+    const result = await deps.scanSessions?.("slugger")
 
     expect(listSpy).toHaveBeenCalledWith({
       sessionsDir: "/tmp/AgentBundles/slugger.ouro/state/sessions",
@@ -5798,7 +5884,6 @@ describe("ouro whoami and session list CLI execution", () => {
 
     listSpy.mockRestore()
     getAgentRootSpy.mockRestore()
-    getAgentNameSpy.mockRestore()
   })
 })
 
@@ -5945,6 +6030,13 @@ describe("--agent flag parsing for identity-dependent commands", () => {
 })
 
 describe("--agent flag CLI execution", () => {
+  function addBundleToRoot(bundlesRoot: string, agentName: string, agentJsonRaw: string): string {
+    const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), agentJsonRaw, "utf-8")
+    return agentRoot
+  }
+
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -5955,6 +6047,7 @@ describe("--agent flag CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5969,15 +6062,103 @@ describe("--agent flag CLI execution", () => {
   })
 
   it("whoami without --agent and without runtime context returns error", async () => {
-    // No whoamiInfo dep and no --agent flag; getAgentName() would throw in production
-    // but we test that the command gracefully handles no agent context
+    // No whoamiInfo dep, runtime context, or discovered agents.
     const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => []),
       whoamiInfo: vi.fn(() => { throw new Error("no agent context") }),
     })
     const result = await runOuroCli(["whoami"], deps)
 
-    expect(result).toContain("error")
-    expect(result.toLowerCase()).toMatch(/no agent|--agent/)
+    expect(result).toContain("no agents found")
+    expect(result).toContain("ouro")
+  })
+
+  it("whoami without --agent prompts for an agent when multiple are available", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "ouroboros"),
+      whoamiInfo: vi.fn(() => { throw new Error("no agent context") }),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+    expect(result).toContain("agent: ouroboros")
+    expect(result).toContain("ouroboros.ouro")
+  })
+
+  it("whoami falls back to the no-agents message when agent resolution throws unexpectedly", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(() => {
+        throw new Error("exploded discovery")
+      }),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("no agents found")
+    expect(result).toContain("ouro clone")
+  })
+
+  it("task board without --agent prompts and reads the selected agent bundle", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      createTaskModule(path.join(tmp.agentRoot, "tasks")).createTask({
+        title: "Slugger task",
+        type: "one-shot",
+        category: "general",
+        body: "",
+      })
+      createTaskModule(path.join(otherAgentRoot, "tasks")).createTask({
+        title: "Ouroboros task",
+        type: "one-shot",
+        category: "general",
+        body: "",
+      })
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["task", "board"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros-task")
+      expect(result).not.toContain("Slugger task")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("reminder create without --agent prompts and writes into the selected agent bundle", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+
+      const result = await runOuroCli(
+        ["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"],
+        deps,
+      )
+
+      const sluggerOneShots = path.join(tmp.agentRoot, "tasks", "one-shots")
+      const ouroborosOneShots = path.join(otherAgentRoot, "tasks", "one-shots")
+      const sluggerFiles = fs.existsSync(sluggerOneShots) ? fs.readdirSync(sluggerOneShots) : []
+      const ouroborosFiles = fs.existsSync(ouroborosOneShots) ? fs.readdirSync(ouroborosOneShots) : []
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros.ouro/tasks")
+      expect(sluggerFiles).toHaveLength(0)
+      expect(ouroborosFiles.length).toBeGreaterThan(0)
+    } finally {
+      tmp.cleanup()
+    }
   })
 
   it("friend list with --agent creates store for correct agent dir", async () => {
@@ -6009,6 +6190,57 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("friend-1")
   })
 
+  it("friend list without --agent prompts and reads the selected agent store", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const sluggerFriendsDir = path.join(tmp.agentRoot, "friends")
+      const ouroborosFriendsDir = path.join(otherAgentRoot, "friends")
+      fs.mkdirSync(sluggerFriendsDir, { recursive: true })
+      fs.mkdirSync(ouroborosFriendsDir, { recursive: true })
+      fs.writeFileSync(path.join(sluggerFriendsDir, "slugger-friend.json"), JSON.stringify({
+        id: "slugger-friend",
+        name: "Slugger Friend",
+        trustLevel: "friend",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+        schemaVersion: 1,
+      }, null, 2))
+      fs.writeFileSync(path.join(ouroborosFriendsDir, "ouroboros-friend.json"), JSON.stringify({
+        id: "ouroboros-friend",
+        name: "Ouroboros Friend",
+        trustLevel: "family",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+        schemaVersion: 1,
+      }, null, 2))
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["friend", "list"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("Ouroboros Friend")
+      expect(result).not.toContain("Slugger Friend")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("task board with --agent uses agent-scoped task module", async () => {
     const taskMod = {
       getBoard: vi.fn(() => ({ full: "task board output", compact: "compact" })),
@@ -6026,6 +6258,23 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("task board output")
   })
 
+  it("session list without --agent prompts and passes the selected agent to the scanner", async () => {
+    const scanSessions = vi.fn(async (agentName: string) => [
+      { friendId: `${agentName}-friend`, friendName: `${agentName} friend`, channel: "cli", lastActivity: "2026-03-09T12:00:00.000Z" },
+    ])
+    const deps = makeDeps({
+      scanSessions,
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "ouroboros"),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+    expect(scanSessions).toHaveBeenCalledWith("ouroboros")
+    expect(result).toContain("ouroboros-friend")
+    expect(result).toContain("ouroboros friend")
+  })
+
   it("session list with --agent uses agent-scoped session scanner", async () => {
     const deps = makeDeps({
       scanSessions: vi.fn(async () => [
@@ -6036,6 +6285,53 @@ describe("--agent flag CLI execution", () => {
 
     expect(result).toContain("friend-1")
     expect(result).toContain("Ari")
+  })
+
+  it("habit list without --agent prompts and reads the selected agent habits", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const sluggerHabitsDir = path.join(tmp.agentRoot, "habits")
+      const ouroborosHabitsDir = path.join(otherAgentRoot, "habits")
+      fs.mkdirSync(sluggerHabitsDir, { recursive: true })
+      fs.mkdirSync(ouroborosHabitsDir, { recursive: true })
+      fs.writeFileSync(path.join(sluggerHabitsDir, "slugger-check-in.md"), [
+        "---",
+        "title: Slugger Check-In",
+        "cadence: 24h",
+        "status: active",
+        "lastRun: null",
+        "created: 2026-03-01T00:00:00.000Z",
+        "---",
+        "",
+        "Check in.",
+      ].join("\n"), "utf-8")
+      fs.writeFileSync(path.join(ouroborosHabitsDir, "ouroboros-heartbeat.md"), [
+        "---",
+        "title: Ouroboros Heartbeat",
+        "cadence: 30m",
+        "status: active",
+        "lastRun: 2026-03-27T10:00:00.000Z",
+        "created: 2026-03-01T00:00:00.000Z",
+        "---",
+        "",
+        "Pulse.",
+      ].join("\n"), "utf-8")
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["habit", "list"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros-heartbeat")
+      expect(result).not.toContain("slugger-check-in")
+    } finally {
+      tmp.cleanup()
+    }
   })
 
   it("friend create creates a new friend record", async () => {
@@ -6224,12 +6520,79 @@ describe("ouro thoughts CLI execution", () => {
     expect(result).toContain("no inner dialog session found")
   })
 
-  it("returns error message when no --agent and no agent context", async () => {
-    const deps = makeDeps()
+  it("returns a clear no-agents message when thoughts has no target to use", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => []),
+    })
     const result = await runOuroCli(["thoughts"], deps)
 
-    expect(result).toContain("error")
-    expect(result).toContain("--agent")
+    expect(result).toContain("no agents found")
+    expect(result).toContain("ouro")
+  })
+
+  it("uses runtime agent context when thoughts omits --agent", async () => {
+    writeSessionFile([
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+      { role: "assistant", content: "runtime context found me." },
+    ])
+    const listDiscoveredAgents = vi.fn(async () => ["other-agent"])
+    const deps = makeDeps({
+      listDiscoveredAgents,
+      whoamiInfo: vi.fn(() => ({
+        agentName: testAgentName,
+      })),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("runtime context found me.")
+    expect(listDiscoveredAgents).not.toHaveBeenCalled()
+  })
+
+  it("returns multi-agent guidance when thoughts omits --agent without prompt support", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("multiple agents found: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns invalid-selection guidance when thoughts prompt answer is blank", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "   "),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("invalid agent selection. Available agents: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns invalid-selection guidance when thoughts prompt answer is not a name or number", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "definitely-not-an-agent"),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("invalid agent selection. Available agents: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns the defensive no-agent-context message when thought parsing throws unexpectedly", async () => {
+    const parseSpy = vi.spyOn(daemonThoughts, "parseInnerDialogSession").mockImplementation(() => {
+      throw new Error("unexpected parse failure")
+    })
+    try {
+      const deps = makeDeps()
+      const result = await runOuroCli(["thoughts", "--agent", testAgentName], deps)
+
+      expect(result).toContain("error: no agent context")
+    } finally {
+      parseSpy.mockRestore()
+    }
   })
 
   it("enters follow mode and resolves on SIGINT", async () => {
@@ -6663,8 +7026,11 @@ describe("ouro config model", () => {
     })
   })
 
-  it("rejects config model without --agent", () => {
-    expect(() => parseOuroCommand(["config", "model", "gpt-5"])).toThrow("--agent")
+  it("parses config model without --agent so execution can resolve it", () => {
+    expect(parseOuroCommand(["config", "model", "gpt-5"])).toEqual({
+      kind: "config.model",
+      modelName: "gpt-5",
+    })
   })
 
   it("rejects config model without model name", () => {
@@ -6694,8 +7060,10 @@ describe("ouro config model", () => {
     })
   })
 
-  it("rejects config models without --agent", () => {
-    expect(() => parseOuroCommand(["config", "models"])).toThrow("--agent")
+  it("parses config models without --agent so execution can resolve it", () => {
+    expect(parseOuroCommand(["config", "models"])).toEqual({
+      kind: "config.models",
+    })
   })
 
   it("parses config model with --facing human", () => {
@@ -6761,6 +7129,41 @@ describe("ouro config model", () => {
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.model).toBe("claude-sonnet-4.6")
       expect(stateResult.state.lanes.inner.model).toBe("claude-opus-4-6")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("resolves config model to the only discovered agent when --agent is omitted", async () => {
+    const tmp = createTmpBundle({
+      agentName: "config-single",
+      agentJson: {
+        version: 2,
+        enabled: true,
+        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      listDiscoveredAgents: vi.fn(async () => [tmp.agentName]),
+    }
+    try {
+      const result = await runOuroCli(["config", "model", "gpt-5.4"], deps)
+      expect(result).toContain("gpt-5.4")
+      const stateResult = readProviderState(tmp.agentRoot)
+      expect(stateResult.ok).toBe(true)
+      if (!stateResult.ok) throw new Error(stateResult.error)
+      expect(stateResult.state.lanes.outward.model).toBe("gpt-5.4")
     } finally {
       tmp.cleanup()
     }
@@ -6931,6 +7334,7 @@ describe("ouro habit CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
