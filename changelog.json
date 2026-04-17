@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.427",
+      "changes": [
+        "Root `ouro connect` now runs the same shared live provider verification path as `ouro up` and `ouro auth verify` before it renders the connect bay, so freshly authed providers and failed live checks show their real current state.",
+        "The root connect bay now groups capabilities into a clearer `Next best move`, `Provider core`, `Portable`, and `This machine` layout, with truthful lane-specific status for outward and inner providers.",
+        "Shared provider health checks now refresh readiness for every selected provider/model pair instead of stopping after the first failure, and `ouro connect` keeps working when provider selection is missing so repair guidance can still render.",
+        "Auth/provider/testing docs now describe the live-verifying connect bay behavior, and `@ouro.bot/cli` plus the `ouro.bot` wrapper are version-synced for the truthful connect release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.426",
       "changes": [
         "`ouro up` no longer marks `starting daemon` complete when a replacement daemon still is not answering; it now narrates replacement progress in plain language and reports replacement timeout as an incomplete replacement instead of a fake success.",
