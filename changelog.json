@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.420",
+      "changes": [
+        "`ouro auth verify`, `ouro use`, and `ouro provider check` now share the human CLI progress checklist, so vault reads and live provider pings show visible phases instead of leaving a blinking cursor.",
+        "`ouro repair` provider-auth actions now reuse the same `ouro auth` runner/progress path, keeping browser/token repair flows consistent with direct auth commands.",
+        "Provider credential reads now accept the shared progress callback, letting command surfaces show vault-read detail without duplicating vault logic or exposing secrets.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the provider verification progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.419",
       "changes": [
         "`ouro auth`, `ouro provider refresh`, `ouro connect perplexity`, and `ouro connect bluebubbles` now use the shared human CLI progress checklist so browser login, vault reads/writes, daemon reloads, and verification steps stay visible instead of leaving a blinking cursor.",

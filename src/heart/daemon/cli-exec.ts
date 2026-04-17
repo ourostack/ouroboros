@@ -35,7 +35,6 @@ import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./lau
 import {
   resolveHatchCredentials,
   readAgentConfigForAgent,
-  runRuntimeAuthFlow,
 } from "../auth/auth-flow"
 import {
   providerCredentialMachineHomeDir,
@@ -1769,8 +1768,9 @@ async function readProviderCredentialRecord(
   agent: string,
   provider: AgentProvider,
   _deps: OuroCliDeps,
+  options: { onProgress?: (message: string) => void } = {},
 ): Promise<{ ok: true; record: ProviderCredentialRecord } | { ok: false; reason: "missing" | "invalid" | "unavailable"; poolPath: string; error: string }> {
-  const poolResult = await refreshProviderCredentialPool(agent)
+  const poolResult = await refreshProviderCredentialPool(agent, options)
   if (poolResult.ok) {
     const existing = poolResult.pool.providers[provider]
     if (existing) return { ok: true, record: existing }
@@ -1849,20 +1849,59 @@ async function executeProviderUse(
   deps: OuroCliDeps,
   options: { writeStdout?: boolean } = {},
 ): Promise<string> {
+  const progress = options.writeStdout === false ? null : createHumanCommandProgress(deps, "provider use")
   const writeMessage = (message: string): string => {
+    progress?.end()
     if (options.writeStdout !== false) deps.writeStdout(message)
     return message
   }
-  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-  const credential = await readProviderCredentialRecord(command.agent, command.provider, deps)
-  if (!credential.ok) {
-    if (!command.force) {
+  try {
+    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
+    progress?.startPhase(`reading ${command.provider} credentials`)
+    const credential = await readProviderCredentialRecord(command.agent, command.provider, deps, {
+      onProgress: (message) => progress?.updateDetail(message),
+    })
+    if (!credential.ok) {
+      progress?.completePhase(`reading ${command.provider} credentials`, credential.reason)
+      if (!command.force) {
+        const message = [
+          `no credentials stored for ${command.provider}.`,
+          `Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`,
+        ].join("\n")
+        return writeMessage(message)
+      }
+      writeProviderBinding({
+        agentRoot,
+        state,
+        lane: command.lane,
+        provider: command.provider,
+        model: command.model,
+        deps,
+        status: "failed",
+        error: credential.error,
+      })
+      const message = `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`
+      return writeMessage(message)
+    }
+
+    progress?.completePhase(`reading ${command.provider} credentials`, "found")
+    progress?.startPhase(`checking ${command.provider} / ${command.model}`)
+    const pingResult = await pingProvider(command.provider, credentialPingConfig(credential.record), {
+      model: command.model,
+      attemptPolicy: { baseDelayMs: 0 },
+      sleep: deps.sleep,
+    })
+    const attempts = pingAttemptCount(pingResult)
+    const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
+    progress?.completePhase(`checking ${command.provider} / ${command.model}`, status)
+    if (!pingResult.ok && !command.force) {
       const message = [
-        `no credentials stored for ${command.provider}.`,
-        `Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\` first.`,
+        `${command.agent} ${command.lane} ${command.provider} / ${command.model}: failed (${pingResult.message})`,
+        `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force the local binding with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
       ].join("\n")
       return writeMessage(message)
     }
+
     writeProviderBinding({
       agentRoot,
       state,
@@ -1870,94 +1909,85 @@ async function executeProviderUse(
       provider: command.provider,
       model: command.model,
       deps,
-      status: "failed",
-      error: credential.error,
+      status: pingResult.ok ? "ready" : "failed",
+      credentialRevision: credential.record.revision,
+      ...(!pingResult.ok ? { error: pingResult.message } : {}),
+      ...(attempts !== undefined ? { attempts } : {}),
     })
-    const message = `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`
+    const message = `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.provider_use_completed",
+      message: "provider use command completed",
+      meta: { agent: command.agent, lane: command.lane, provider: command.provider, model: command.model, status: pingResult.ok ? "ready" : "failed" },
+    })
     return writeMessage(message)
+  } catch (error) {
+    progress?.end()
+    throw error
   }
-
-  const pingResult = await pingProvider(command.provider, credentialPingConfig(credential.record), {
-    model: command.model,
-    attemptPolicy: { baseDelayMs: 0 },
-    sleep: deps.sleep,
-  })
-  const attempts = pingAttemptCount(pingResult)
-  if (!pingResult.ok && !command.force) {
-    const message = [
-      `${command.agent} ${command.lane} ${command.provider} / ${command.model}: failed (${pingResult.message})`,
-      `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force the local binding with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
-    ].join("\n")
-    return writeMessage(message)
-  }
-
-  writeProviderBinding({
-    agentRoot,
-    state,
-    lane: command.lane,
-    provider: command.provider,
-    model: command.model,
-    deps,
-    status: pingResult.ok ? "ready" : "failed",
-    credentialRevision: credential.record.revision,
-    ...(!pingResult.ok ? { error: pingResult.message } : {}),
-    ...(attempts !== undefined ? { attempts } : {}),
-  })
-  const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
-  const message = `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.provider_use_completed",
-    message: "provider use command completed",
-    meta: { agent: command.agent, lane: command.lane, provider: command.provider, model: command.model, status: pingResult.ok ? "ready" : "failed" },
-  })
-  return writeMessage(message)
 }
 
 async function executeProviderCheck(
   command: Extract<OuroCliCommand, { kind: "provider.check" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
-  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-  const binding = state.lanes[command.lane]
-  const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps)
-  if (!credential.ok) {
-    const message = [
-      `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: unknown (${credential.error})`,
-      `Run \`ouro auth --agent ${command.agent} --provider ${binding.provider}\` first.`,
-    ].join("\n")
+  const progress = createHumanCommandProgress(deps, "provider check")
+  const writeMessage = (message: string): string => {
+    progress.end()
     deps.writeStdout(message)
     return message
   }
+  try {
+    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
+    const binding = state.lanes[command.lane]
+    progress.startPhase(`reading ${binding.provider} credentials`)
+    const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps, {
+      onProgress: (message) => progress.updateDetail(message),
+    })
+    if (!credential.ok) {
+      progress.completePhase(`reading ${binding.provider} credentials`, credential.reason)
+      const message = [
+        `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: unknown (${credential.error})`,
+        `Run \`ouro auth --agent ${command.agent} --provider ${binding.provider}\` first.`,
+      ].join("\n")
+      return writeMessage(message)
+    }
 
-  const pingResult = await pingProvider(binding.provider, credentialPingConfig(credential.record), {
-    model: binding.model,
-    attemptPolicy: { baseDelayMs: 0 },
-    sleep: deps.sleep,
-  })
-  const attempts = pingAttemptCount(pingResult)
-  writeProviderReadiness({
-    agentRoot,
-    state,
-    lane: command.lane,
-    provider: binding.provider,
-    model: binding.model,
-    deps,
-    status: pingResult.ok ? "ready" : "failed",
-    credentialRevision: credential.record.revision,
-    ...(!pingResult.ok ? { error: pingResult.message } : {}),
-    ...(attempts !== undefined ? { attempts } : {}),
-  })
-  const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
-  const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
-  deps.writeStdout(message)
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.provider_check_completed",
-    message: "provider check command completed",
-    meta: { agent: command.agent, lane: command.lane, provider: binding.provider, model: binding.model, status: pingResult.ok ? "ready" : "failed" },
-  })
-  return message
+    progress.completePhase(`reading ${binding.provider} credentials`, "found")
+    progress.startPhase(`checking ${binding.provider} / ${binding.model}`)
+    const pingResult = await pingProvider(binding.provider, credentialPingConfig(credential.record), {
+      model: binding.model,
+      attemptPolicy: { baseDelayMs: 0 },
+      sleep: deps.sleep,
+    })
+    const attempts = pingAttemptCount(pingResult)
+    const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
+    progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
+    writeProviderReadiness({
+      agentRoot,
+      state,
+      lane: command.lane,
+      provider: binding.provider,
+      model: binding.model,
+      deps,
+      status: pingResult.ok ? "ready" : "failed",
+      credentialRevision: credential.record.revision,
+      ...(!pingResult.ok ? { error: pingResult.message } : {}),
+      ...(attempts !== undefined ? { attempts } : {}),
+    })
+    const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.provider_check_completed",
+      message: "provider check command completed",
+      meta: { agent: command.agent, lane: command.lane, provider: binding.provider, model: binding.model, status: pingResult.ok ? "ready" : "failed" },
+    })
+    return writeMessage(message)
+  } catch (error) {
+    progress.end()
+    throw error
+  }
 }
 
 function renderProviderCredentialLine(credential: EffectiveProviderCredentialStatus): string {
@@ -2054,6 +2084,54 @@ async function executeProviderRefresh(
   return message
 }
 
+async function executeAuthRun(
+  command: Extract<OuroCliCommand, { kind: "auth.run" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
+  /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
+  const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
+  const progress = createHumanCommandProgress(deps, "auth")
+  progress.startPhase(`authenticating ${provider}`)
+  let result: Awaited<ReturnType<typeof authRunner>>
+  try {
+    result = await authRunner({
+      agentName: command.agent,
+      provider,
+      promptInput: deps.promptInput,
+      onProgress: (message) => progress.updateDetail(message),
+    })
+  } catch (error) {
+    progress.end()
+    throw error
+  }
+  progress.completePhase(`authenticating ${provider}`, "credentials stored")
+  // Behavior: ouro auth stores credentials only — does NOT switch provider.
+  // Use `ouro auth switch` to change the active provider.
+
+  // Verify the credentials actually work by pinging the provider.
+  /* v8 ignore start -- integration: real API ping after auth @preserve */
+  try {
+    progress.startPhase(`verifying ${provider}`)
+    const credential = await readProviderCredentialRecord(command.agent, provider, deps, {
+      onProgress: (message) => progress.updateDetail(message),
+    })
+    const status = credential.ok
+      ? await verifyProviderCredentials(provider, {
+        [provider]: { ...credential.record.config, ...credential.record.credentials },
+      })
+      : `stored but could not be re-read from vault (${credential.error})`
+    progress.completePhase(`verifying ${provider}`, status)
+  } catch (error) {
+    // Verification failure is non-blocking — credentials were saved regardless.
+    progress.completePhase(`verifying ${provider}`, `skipped (${error instanceof Error ? error.message : String(error)})`)
+  }
+  /* v8 ignore stop */
+  progress.end()
+  deps.writeStdout(result.message)
+  return result.message
+}
+
 async function readinessReportForAgent(agent: string, deps: OuroCliDeps): Promise<AgentReadinessReport> {
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   try {
@@ -2099,15 +2177,7 @@ async function executeReadinessRepairAction(
     return
   }
   if (action.kind === "provider-auth") {
-    const provider = action.provider
-    const authRunner = deps.runAuthFlow ?? runRuntimeAuthFlow
-    const result = await authRunner({
-      agentName: agent,
-      provider,
-      promptInput: deps.promptInput,
-      onProgress: deps.writeStdout,
-    })
-    deps.writeStdout(result.message)
+    await executeAuthRun({ kind: "auth.run", agent, provider: action.provider }, deps)
     await executeProviderRefresh({ kind: "provider.refresh", agent }, deps)
     return
   }
@@ -3836,82 +3906,67 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
-    const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
-    /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
-    const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
-    const progress = createHumanCommandProgress(deps, "auth")
-    progress.startPhase(`authenticating ${provider}`)
-    let result: Awaited<ReturnType<typeof authRunner>>
-    try {
-      result = await authRunner({
-        agentName: command.agent,
-        provider,
-        promptInput: deps.promptInput,
-        onProgress: (message) => progress.updateDetail(message),
-      })
-    } catch (error) {
-      progress.end()
-      throw error
-    }
-    progress.completePhase(`authenticating ${provider}`, "credentials stored")
-    // Behavior: ouro auth stores credentials only — does NOT switch provider.
-    // Use `ouro auth switch` to change the active provider.
-
-    // Verify the credentials actually work by pinging the provider
-    /* v8 ignore start -- integration: real API ping after auth @preserve */
-    try {
-      progress.startPhase(`verifying ${provider}`)
-      const credential = await readProviderCredentialRecord(command.agent, provider, deps)
-      const status = credential.ok
-        ? await verifyProviderCredentials(provider, {
-          [provider]: { ...credential.record.config, ...credential.record.credentials },
-        })
-        : `stored but could not be re-read from vault (${credential.error})`
-      progress.completePhase(`verifying ${provider}`, status)
-    } catch (error) {
-      // Verification failure is non-blocking — credentials were saved regardless.
-      progress.completePhase(`verifying ${provider}`, `skipped (${error instanceof Error ? error.message : String(error)})`)
-    }
-    /* v8 ignore stop */
-    progress.end()
-    deps.writeStdout(result.message)
-    return result.message
+    return executeAuthRun(command, deps)
   }
 
   // ── auth verify (local, no daemon socket needed) ──
   /* v8 ignore start -- auth verify/switch: tested in daemon-cli.test.ts but v8 traces differ in CI @preserve */
   if (command.kind === "auth.verify") {
-    const poolResult = await refreshProviderCredentialPool(command.agent)
-    if (!poolResult.ok) {
-      const message = `vault unavailable: ${poolResult.error}\n${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro auth verify'.")}`
+    const progress = createHumanCommandProgress(deps, "auth verify")
+    const writeMessage = (message: string): string => {
+      progress.end()
       deps.writeStdout(message)
       return message
     }
-    if (command.provider) {
-      const record = poolResult.pool.providers[command.provider]
-      if (!record) {
-        const message = `${command.provider}: missing. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\`.`
-        deps.writeStdout(message)
-        return message
+    try {
+      progress.startPhase("reading provider credentials")
+      const poolResult = await refreshProviderCredentialPool(command.agent, {
+        onProgress: (message) => progress.updateDetail(message),
+      })
+      if (!poolResult.ok) {
+        progress.completePhase("reading provider credentials", poolResult.reason)
+        const message = `vault unavailable: ${poolResult.error}\n${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro auth verify'.")}`
+        return writeMessage(message)
       }
-      const status = await verifyProviderCredentials(command.provider, {
-        [command.provider]: { ...record.config, ...record.credentials },
-      })
-      const message = `${command.provider}: ${status}`
-      deps.writeStdout(message)
-      return message
+      const providerCount = Object.keys(poolResult.pool.providers).length
+      progress.completePhase("reading provider credentials", `${providerCount} provider${providerCount === 1 ? "" : "s"}`)
+      if (command.provider) {
+        const record = poolResult.pool.providers[command.provider]
+        if (!record) {
+          const message = `${command.provider}: missing. Run \`ouro auth --agent ${command.agent} --provider ${command.provider}\`.`
+          return writeMessage(message)
+        }
+        progress.startPhase(`verifying ${command.provider}`)
+        const status = await verifyProviderCredentials(command.provider, {
+          [command.provider]: { ...record.config, ...record.credentials },
+        })
+        progress.completePhase(`verifying ${command.provider}`, status)
+        const message = `${command.provider}: ${status}`
+        return writeMessage(message)
+      }
+      const lines: string[] = []
+      const entries = Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>
+      if (entries.length > 0) {
+        progress.startPhase("verifying providers")
+      }
+      for (const [p, record] of entries) {
+        const status = await verifyProviderCredentials(p, {
+          [p]: { ...record.config, ...record.credentials },
+        })
+        const line = `${p}: ${status}`
+        lines.push(line)
+        progress.updateDetail(line)
+      }
+      if (entries.length > 0) {
+        progress.completePhase("verifying providers", `${entries.length} checked`)
+      }
+      if (lines.length === 0) lines.push(`no provider credentials in ${command.agent}'s vault`)
+      const message = lines.join("\n")
+      return writeMessage(message)
+    } catch (error) {
+      progress.end()
+      throw error
     }
-    const lines: string[] = []
-    for (const [p, record] of Object.entries(poolResult.pool.providers) as Array<[AgentProvider, ProviderCredentialRecord]>) {
-      const status = await verifyProviderCredentials(p, {
-        [p]: { ...record.config, ...record.credentials },
-      })
-      lines.push(`${p}: ${status}`)
-    }
-    if (lines.length === 0) lines.push(`no provider credentials in ${command.agent}'s vault`)
-    const message = lines.join("\n")
-    deps.writeStdout(message)
-    return message
   }
 
   // ── auth switch (local, no daemon socket needed) ──

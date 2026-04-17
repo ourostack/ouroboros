@@ -370,11 +370,13 @@ describe("ouro up: interactive repair wiring", () => {
       agentName: "test-agent",
       provider: "anthropic",
       promptInput,
-      onProgress: writeStdout,
+      onProgress: expect.any(Function),
     })
     expect(startDaemonProcess).toHaveBeenCalled()
     expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("... authenticating anthropic")
+    expect(output).toContain("✓ authenticating anthropic")
     expect(output).toContain("authenticated test-agent with anthropic")
     expect(output).toContain("Provider checks recovered after repair")
     expect(result).not.toContain("daemon not started: provider checks still need repair")
