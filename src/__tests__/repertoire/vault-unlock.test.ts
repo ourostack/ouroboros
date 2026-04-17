@@ -17,6 +17,7 @@ import {
   resolveVaultUnlockStore,
   storeVaultUnlockSecret,
   vaultCreateRecoverFix,
+  vaultUnlockReplaceRecoverFix,
   type VaultUnlockConfig,
   type VaultUnlockDeps,
 } from "../../repertoire/vault-unlock"
@@ -209,10 +210,17 @@ describe("vault unlock local stores", () => {
     expect(isCredentialVaultNotConfiguredError(error)).toBe(true)
     expect(isCredentialVaultNotConfiguredError("vault locked")).toBe(false)
 
-    const fix = vaultCreateRecoverFix("slugger", "Then retry 'ouro auth --agent slugger --provider minimax'.")
-    expect(fix).toContain("ouro vault create --agent slugger")
-    expect(fix).toContain("ouro vault recover --agent slugger --from <json>")
-    expect(fix).toContain("Then retry 'ouro auth --agent slugger --provider minimax'.")
+    const fix = vaultCreateRecoverFix("slugger")
+    expect(fix).toBe("Run 'ouro vault create --agent slugger' to set up this agent's vault.")
+    // nextStep parameter is accepted for backward compat but ignored in concise mode
+    const fixWithNext = vaultCreateRecoverFix("slugger", "ignored step")
+    expect(fixWithNext).toBe("Run 'ouro vault create --agent slugger' to set up this agent's vault.")
+
+    const unlockFix = vaultUnlockReplaceRecoverFix("slugger")
+    expect(unlockFix).toBe("Run 'ouro vault unlock --agent slugger' or 'ouro vault replace --agent slugger' if the secret is lost.")
+    // nextStep parameter is accepted for backward compat but ignored in concise mode
+    const unlockFixWithNext = vaultUnlockReplaceRecoverFix("slugger", "ignored step")
+    expect(unlockFixWithNext).toBe("Run 'ouro vault unlock --agent slugger' or 'ouro vault replace --agent slugger' if the secret is lost.")
   })
 
   it("falls back to the module spawnSync when linux store probing has no injected runner", async () => {

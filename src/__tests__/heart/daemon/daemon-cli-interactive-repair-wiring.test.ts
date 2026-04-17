@@ -81,11 +81,8 @@ vi.mock("../../../repertoire/vault-unlock", () => ({
   isCredentialVaultNotConfiguredError: (message: string) =>
     message.includes("credential vault is not configured in "),
   storeVaultUnlockSecret: (...args: unknown[]) => vaultMocks.storeVaultUnlockSecret(...args),
-  vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
-    `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
-    `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
-    nextStep,
-  ].join(" "),
+  vaultCreateRecoverFix: (agentName: string) =>
+    `Run 'ouro vault create --agent ${agentName}' to set up this agent's vault.`,
   getVaultUnlockStatus: vi.fn(),
 }))
 
@@ -858,7 +855,11 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+      "test-agent",
+      "/tmp/bundles",
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("Provider checks recovered after repair")
   })

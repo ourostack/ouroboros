@@ -70,17 +70,10 @@ vi.mock("../../../repertoire/vault-unlock", async () => {
     getVaultUnlockStatus: (...args: unknown[]) => mockVaultDeps.getVaultUnlockStatus(...args),
     isCredentialVaultNotConfiguredError: (message: string) =>
       message.includes("credential vault is not configured in "),
-    vaultCreateRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
-      `Run 'ouro vault create --agent ${agentName}' to create this agent's vault.`,
-      `If you still have a local JSON credential export from an earlier alpha, run 'ouro vault recover --agent ${agentName} --from <json>' instead.`,
-      nextStep,
-    ].join(" "),
-    vaultUnlockReplaceRecoverFix: (agentName: string, nextStep = "Then run 'ouro up' again.") => [
-      `Run 'ouro vault unlock --agent ${agentName}' if you have the saved vault unlock secret.`,
-      `If this agent predates vault auth or nobody saved the unlock secret, run 'ouro vault replace --agent ${agentName}' to create a new empty vault, then re-auth/re-enter credentials.`,
-      `If you do have a local JSON credential export, run 'ouro vault recover --agent ${agentName} --from <json>' to create a replacement vault and import it.`,
-      nextStep,
-    ].join(" "),
+    vaultCreateRecoverFix: (agentName: string) =>
+      `Run 'ouro vault create --agent ${agentName}' to set up this agent's vault.`,
+    vaultUnlockReplaceRecoverFix: (agentName: string) =>
+      `Run 'ouro vault unlock --agent ${agentName}' or 'ouro vault replace --agent ${agentName}' if the secret is lost.`,
   }
 })
 
@@ -2533,7 +2526,6 @@ describe("provider CLI command execution", () => {
     expect(failed).toContain("provider credential refresh failed for Slugger: vault locked")
     expect(failed).toContain("ouro vault unlock --agent Slugger")
     expect(failed).toContain("ouro vault replace --agent Slugger")
-    expect(failed).toContain("Then retry 'ouro provider refresh'.")
     expect(failed).not.toContain("daemon is not running")
     expect(failed).not.toContain("restarted Slugger")
 
