@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.421",
+      "changes": [
+        "`ouro vault create`, `ouro vault unlock`, `ouro vault replace`, `ouro vault recover`, `ouro vault status`, and `ouro vault config` now use the shared human CLI progress checklist for vault account creation, local unlock storage, vault probes, credential reads, runtime config writes, and recovery imports.",
+        "`ouro status --agent`, `ouro provider status`, `ouro config models`, and `ouro config model` now show progress while reading provider credentials, listing GitHub Copilot models, and checking selected models.",
+        "Hatch provider credential resolution and post-start `ouro up` repair auth now route progress through the shared command renderer instead of raw ad hoc output.",
+        "Credential command progress tests now cover successful phases, failure cleanup, provider model exceptions, and secret redaction so these flows stay visibly alive without leaking values.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the remaining credential command progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.420",
       "changes": [
         "`ouro auth verify`, `ouro use`, and `ouro provider check` now share the human CLI progress checklist, so vault reads and live provider pings show visible phases instead of leaving a blinking cursor.",

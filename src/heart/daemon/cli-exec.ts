@@ -242,6 +242,23 @@ function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): Com
   })
 }
 
+async function runCommandProgressPhase<T>(
+  progress: CommandProgress,
+  label: string,
+  run: () => T | Promise<T>,
+  detail: (result: T) => string,
+): Promise<T> {
+  progress.startPhase(label)
+  try {
+    const result = await Promise.resolve(run())
+    progress.completePhase(label, detail(result))
+    return result
+  } catch (error) {
+    progress.completePhase(label, "failed")
+    throw error
+  }
+}
+
 function daemonProgressSummary(result: EnsureDaemonResult): string {
   if (result.verifyStartupStatus === false) return "not answering yet"
   if (result.alreadyRunning) return "already running"
@@ -778,14 +795,24 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
     throw new Error(`Usage\n${usage()}`)
   }
 
-  const credentials = await resolveHatchCredentials({
-    agentName,
-    provider: providerRaw,
-    credentials: command.credentials,
-    promptInput: prompt,
-    runAuthFlow: deps.runAuthFlow,
-    onProgress: deps.writeStdout,
-  })
+  const progress = createHumanCommandProgress(deps, "hatch auth")
+  let credentials: Awaited<ReturnType<typeof resolveHatchCredentials>>
+  try {
+    progress.startPhase(`resolving ${providerRaw} credentials`)
+    credentials = await resolveHatchCredentials({
+      agentName,
+      provider: providerRaw,
+      credentials: command.credentials,
+      promptInput: prompt,
+      runAuthFlow: deps.runAuthFlow,
+      onProgress: (message) => progress.updateDetail(message),
+    })
+    progress.completePhase(`resolving ${providerRaw} credentials`, "ready")
+  } catch (error) {
+    progress.end()
+    throw error
+  }
+  progress.end()
 
   return {
     agentName,
@@ -1007,10 +1034,16 @@ async function createRepairVaultForAgent(input: {
   unlockSecret: string
   store?: VaultUnlockStoreKind
   deps: OuroCliDeps
+  progress: CommandProgress
   configPath: string
   config: AgentConfig
 }): Promise<{ ok: true; store: ReturnType<typeof storeVaultUnlockSecret> } | { ok: false; message: string }> {
-  const result = await createVaultAccount("Ouro credential vault", input.serverUrl, input.email, input.unlockSecret)
+  const result = await runCommandProgressPhase(
+    input.progress,
+    "creating vault account",
+    () => createVaultAccount("Ouro credential vault", input.serverUrl, input.email, input.unlockSecret),
+    (created) => created.success ? "created" : "failed",
+  )
   if (!result.success) {
     const message = [
       `vault ${input.action} failed for ${input.agentName}: ${result.error}`,
@@ -1025,14 +1058,28 @@ async function createRepairVaultForAgent(input: {
     return { ok: false, message }
   }
 
-  writeAgentVaultConfig(input.agentName, input.configPath, input.config, { email: input.email, serverUrl: input.serverUrl })
-  const store = storeVaultUnlockSecret({
-    agentName: input.agentName,
-    email: input.email,
-    serverUrl: input.serverUrl,
-  }, input.unlockSecret, { homeDir: input.deps.homeDir, store: input.store })
-  resetCredentialStore()
-  await getCredentialStore(input.agentName).get("__ouro_vault_probe__")
+  const store = await runCommandProgressPhase(
+    input.progress,
+    "saving local unlock",
+    () => {
+      writeAgentVaultConfig(input.agentName, input.configPath, input.config, { email: input.email, serverUrl: input.serverUrl })
+      return storeVaultUnlockSecret({
+        agentName: input.agentName,
+        email: input.email,
+        serverUrl: input.serverUrl,
+      }, input.unlockSecret, { homeDir: input.deps.homeDir, store: input.store })
+    },
+    (saved) => saved.kind,
+  )
+  await runCommandProgressPhase(
+    input.progress,
+    "checking vault access",
+    async () => {
+      resetCredentialStore()
+      await getCredentialStore(input.agentName).get("__ouro_vault_probe__")
+    },
+    () => "ok",
+  )
   return { ok: true, store }
 }
 
@@ -1047,13 +1094,31 @@ async function executeVaultUnlock(
   const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const vault = resolveVaultConfig(command.agent, config.vault)
   const unlockSecret = await promptSecret(`Ouro vault unlock secret for ${vault.email}: `)
-  const store = storeVaultUnlockSecret({
-    agentName: command.agent,
-    email: vault.email,
-    serverUrl: vault.serverUrl,
-  }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
-  resetCredentialStore()
-  await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+  const progress = createHumanCommandProgress(deps, "vault unlock")
+  let store: ReturnType<typeof storeVaultUnlockSecret> | undefined
+  try {
+    store = await runCommandProgressPhase(
+      progress,
+      "saving local unlock",
+      () => storeVaultUnlockSecret({
+        agentName: command.agent,
+        email: vault.email,
+        serverUrl: vault.serverUrl,
+      }, unlockSecret, { homeDir: deps.homeDir, store: command.store }),
+      (saved) => saved.kind,
+    )
+    await runCommandProgressPhase(
+      progress,
+      "checking vault access",
+      async () => {
+        resetCredentialStore()
+        await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+      },
+      () => "ok",
+    )
+  } finally {
+    progress.end()
+  }
   const message = [
     `vault unlocked for ${command.agent} on this machine`,
     `vault: ${vault.email} at ${vault.serverUrl}`,
@@ -1082,25 +1147,53 @@ async function executeVaultCreate(
     confirmQuestion: `Confirm Ouro vault unlock secret for ${email}: `,
     emptyError: "vault create requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
   })
-  const result = await createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret)
-  if (!result.success) {
-    const message = [
-      `vault create failed for ${command.agent}: ${result.error}`,
-      "",
-      "If this vault account already exists, run:",
-      `  ouro vault unlock --agent ${command.agent}`,
-    ].join("\n")
-    deps.writeStdout(message)
-    return message
+  const progress = createHumanCommandProgress(deps, "vault create")
+  let store: ReturnType<typeof storeVaultUnlockSecret> | undefined
+  try {
+    const result = await runCommandProgressPhase(
+      progress,
+      "creating vault account",
+      () => createVaultAccount("Ouro credential vault", serverUrl, email, unlockSecret),
+      (created) => created.success ? "created" : "failed",
+    )
+    if (!result.success) {
+      const message = [
+        `vault create failed for ${command.agent}: ${result.error}`,
+        "",
+        "If this vault account already exists, run:",
+        `  ouro vault unlock --agent ${command.agent}`,
+      ].join("\n")
+      progress.end()
+      deps.writeStdout(message)
+      return message
+    }
+    store = await runCommandProgressPhase(
+      progress,
+      "saving local unlock",
+      () => {
+        writeAgentVaultConfig(command.agent, configPath, config, { email, serverUrl })
+        return storeVaultUnlockSecret({
+          agentName: command.agent,
+          email,
+          serverUrl,
+        }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
+      },
+      (saved) => saved.kind,
+    )
+    await runCommandProgressPhase(
+      progress,
+      "checking vault access",
+      async () => {
+        resetCredentialStore()
+        await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+      },
+      () => "ok",
+    )
+  } finally {
+    progress.end()
   }
-  writeAgentVaultConfig(command.agent, configPath, config, { email, serverUrl })
-  const store = storeVaultUnlockSecret({
-    agentName: command.agent,
-    email,
-    serverUrl,
-  }, unlockSecret, { homeDir: deps.homeDir, store: command.store })
-  resetCredentialStore()
-  await getCredentialStore(command.agent).get("__ouro_vault_probe__")
+  /* v8 ignore next -- defensive: success path assigns store before continuing @preserve */
+  if (!store) throw new Error(`vault create failed for ${command.agent}: local unlock material was not saved`)
   const message = appendBundleSyncSummary([
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
@@ -1132,17 +1225,26 @@ async function executeVaultReplace(
     emptyError: "vault replace requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
   })
 
-  const repair = await createRepairVaultForAgent({
-    action: "replace",
-    agentName: command.agent,
-    email,
-    serverUrl,
-    unlockSecret,
-    store: command.store,
-    deps,
-    configPath,
-    config,
-  })
+  const progress = createHumanCommandProgress(deps, "vault replace")
+  let repair: Awaited<ReturnType<typeof createRepairVaultForAgent>> | undefined
+  try {
+    repair = await createRepairVaultForAgent({
+      action: "replace",
+      agentName: command.agent,
+      email,
+      serverUrl,
+      unlockSecret,
+      store: command.store,
+      deps,
+      progress,
+      configPath,
+      config,
+    })
+  } finally {
+    progress.end()
+  }
+  /* v8 ignore next -- defensive: createRepairVaultForAgent either returns or throws @preserve */
+  if (!repair) throw new Error(`vault replace failed for ${command.agent}: no vault repair result`)
   if (!repair.ok) return repair.message
 
   const message = appendBundleSyncSummary([
@@ -1179,45 +1281,65 @@ async function executeVaultRecover(
     emptyError: "vault recover requires an unlock secret. Re-run in an interactive terminal and enter a human-chosen unlock secret.",
   })
 
-  const repair = await createRepairVaultForAgent({
-    action: "recover",
-    agentName: command.agent,
-    email,
-    serverUrl,
-    unlockSecret,
-    store: command.store,
-    deps,
-    configPath,
-    config,
-  })
-  if (!repair.ok) return repair.message
-
+  const progress = createHumanCommandProgress(deps, "vault recover")
+  let repair: Awaited<ReturnType<typeof createRepairVaultForAgent>> | undefined
   const importedProviders = new Set<AgentProvider>()
-  let mergedRecoveredRuntimeConfig: RuntimeCredentialConfig = {}
-  for (const source of sourceImports) {
-    for (const provider of source.providers) {
-      await upsertProviderCredential({
-        agentName: command.agent,
-        provider: provider.provider,
-        credentials: provider.credentials,
-        config: provider.config,
-        provenance: { source: "manual" },
-        now,
-      })
-      importedProviders.add(provider.provider)
-    }
-    mergedRecoveredRuntimeConfig = mergeRuntimeConfig(mergedRecoveredRuntimeConfig, source.runtimeConfig)
-  }
+  let runtimeFields: string[] = []
+  let machineRuntimeFields: string[] = []
+  try {
+    repair = await createRepairVaultForAgent({
+      action: "recover",
+      agentName: command.agent,
+      email,
+      serverUrl,
+      unlockSecret,
+      store: command.store,
+      deps,
+      progress,
+      configPath,
+      config,
+    })
+    if (!repair.ok) return repair.message
 
-  const { agentConfig: mergedRuntimeConfig, machineConfig: mergedMachineRuntimeConfig } =
-    splitRuntimeConfigByScope(mergedRecoveredRuntimeConfig)
-  const runtimeFields = summarizeRuntimeConfigFields(mergedRuntimeConfig)
-  const machineRuntimeFields = summarizeRuntimeConfigFields(mergedMachineRuntimeConfig)
-  if (runtimeFields.length > 0) {
-    await upsertRuntimeCredentialConfig(command.agent, mergedRuntimeConfig, now)
-  }
-  if (machineRuntimeFields.length > 0) {
-    await upsertMachineRuntimeCredentialConfig(command.agent, currentMachineId(deps), mergedMachineRuntimeConfig, now)
+    await runCommandProgressPhase(
+      progress,
+      "importing recovered credentials",
+      async () => {
+        let mergedRecoveredRuntimeConfig: RuntimeCredentialConfig = {}
+        for (const source of sourceImports) {
+          for (const provider of source.providers) {
+            await upsertProviderCredential({
+              agentName: command.agent,
+              provider: provider.provider,
+              credentials: provider.credentials,
+              config: provider.config,
+              provenance: { source: "manual" },
+              now,
+            })
+            importedProviders.add(provider.provider)
+          }
+          mergedRecoveredRuntimeConfig = mergeRuntimeConfig(mergedRecoveredRuntimeConfig, source.runtimeConfig)
+        }
+
+        const splitRuntimeConfig = splitRuntimeConfigByScope(mergedRecoveredRuntimeConfig)
+        runtimeFields = summarizeRuntimeConfigFields(splitRuntimeConfig.agentConfig)
+        machineRuntimeFields = summarizeRuntimeConfigFields(splitRuntimeConfig.machineConfig)
+        if (runtimeFields.length > 0) {
+          await upsertRuntimeCredentialConfig(command.agent, splitRuntimeConfig.agentConfig, now)
+        }
+        if (machineRuntimeFields.length > 0) {
+          await upsertMachineRuntimeCredentialConfig(command.agent, currentMachineId(deps), splitRuntimeConfig.machineConfig, now)
+        }
+        return {
+          providerCount: importedProviders.size,
+          runtimeCount: runtimeFields.length,
+          machineRuntimeCount: machineRuntimeFields.length,
+        }
+      },
+      (imported) => `${imported.providerCount} providers, ${imported.runtimeCount + imported.machineRuntimeCount} runtime fields`,
+    )
+  } finally {
+    progress.end()
   }
   const providerList = [...importedProviders].sort()
   const message = appendBundleSyncSummary([
@@ -1274,24 +1396,45 @@ async function executeVaultStatus(
   ]
 
   if (status.stored) {
-    const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-    if (runtime.ok) {
-      lines.push(`runtime credentials: ${summarizeRuntimeConfigFields(runtime.config).join(", ") || "none stored"} (${runtime.revision})`)
-    } else {
-      lines.push(`runtime credentials: ${runtime.reason} (${runtime.error})`)
-      if (runtime.reason === "missing") {
-        lines.push(`  fix: Run 'ouro vault config set --agent ${command.agent} --key <field>' to store sense/integration credentials.`)
+    const progress = createHumanCommandProgress(deps, "vault status")
+    try {
+      const runtime = await runCommandProgressPhase(
+        progress,
+        "reading runtime credentials",
+        () => refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true }),
+        (runtimeResult) => runtimeResult.ok ? runtimeResult.revision : runtimeResult.reason,
+      )
+      if (runtime.ok) {
+        lines.push(`runtime credentials: ${summarizeRuntimeConfigFields(runtime.config).join(", ") || "none stored"} (${runtime.revision})`)
+      } else {
+        lines.push(`runtime credentials: ${runtime.reason} (${runtime.error})`)
+        if (runtime.reason === "missing") {
+          lines.push(`  fix: Run 'ouro vault config set --agent ${command.agent} --key <field>' to store sense/integration credentials.`)
+        }
       }
-    }
-    const pool = await refreshProviderCredentialPool(command.agent)
-    if (pool.ok) {
-      const summary = summarizeProviderCredentialPool(pool.pool)
-      lines.push(`provider credentials: ${summary.providers.length === 0 ? "none stored" : ""}`)
-      for (const provider of summary.providers) {
-        lines.push(`  ${provider.provider}: credential fields ${provider.credentialFields.join(", ") || "none"}, config fields ${provider.configFields.join(", ") || "none"}`)
+      const pool = await runCommandProgressPhase(
+        progress,
+        "reading provider credentials",
+        () => refreshProviderCredentialPool(command.agent, {
+          onProgress: (message) => progress.updateDetail(message),
+        }),
+        (poolResult) => {
+          if (!poolResult.ok) return poolResult.reason
+          const summary = summarizeProviderCredentialPool(poolResult.pool)
+          return summary.providers.map((provider) => provider.provider).join(", ") || "none stored"
+        },
+      )
+      if (pool.ok) {
+        const summary = summarizeProviderCredentialPool(pool.pool)
+        lines.push(`provider credentials: ${summary.providers.length === 0 ? "none stored" : ""}`)
+        for (const provider of summary.providers) {
+          lines.push(`  ${provider.provider}: credential fields ${provider.credentialFields.join(", ") || "none"}, config fields ${provider.configFields.join(", ") || "none"}`)
+        }
+      } else {
+        lines.push(`provider credentials: unavailable (${pool.error})`)
       }
-    } else {
-      lines.push(`provider credentials: unavailable (${pool.error})`)
+    } finally {
+      progress.end()
     }
   } else {
     lines.push("")
@@ -1433,13 +1576,27 @@ async function executeVaultConfigSet(
   if (!value) {
     throw new Error("vault config set requires --value <value> or an interactive prompt")
   }
-  const stored = await storeRuntimeConfigKey({
-    agent: command.agent,
-    key: command.key,
-    value,
-    scope,
-    deps,
-  })
+  const progress = createHumanCommandProgress(deps, "vault config set")
+  let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>> | undefined
+  try {
+    stored = await runCommandProgressPhase(
+      progress,
+      "storing runtime credential",
+      () => storeRuntimeConfigKey({
+        agent: command.agent,
+        key: command.key,
+        value,
+        scope,
+        deps,
+        onProgress: (message) => progress.updateDetail(message),
+      }),
+      (result) => result.revision,
+    )
+  } finally {
+    progress.end()
+  }
+  /* v8 ignore next -- defensive: storeRuntimeConfigKey either returns or throws @preserve */
+  if (!stored) throw new Error(`vault config set failed for ${command.agent}: no stored runtime credential result`)
   const message = [
     `stored ${command.key} for ${command.agent} in ${runtimeScopeLabel(scope)}`,
     `runtime credentials: ${stored.revision}`,
@@ -1461,24 +1618,34 @@ async function executeVaultConfigStatus(
   }
   const scopes = command.scope === "all" ? ["agent", "machine"] as const : [command.scope ?? "agent"] as const
   const lines = [`agent: ${command.agent}`]
-  for (const scope of scopes) {
-    const machineId = scope === "machine" ? currentMachineId(deps) : undefined
-    const runtime = scope === "machine"
-      ? await refreshMachineRuntimeCredentialConfig(command.agent, machineId!, { preserveCachedOnFailure: true })
-      : await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
-    if (scopes.length > 1) lines.push("")
-    lines.push(`${scope} runtime config item: ${runtime.itemPath}`)
-    if (runtime.ok) {
-      lines.push(`status: available (${runtime.revision})`)
-      const fields = summarizeRuntimeConfigFields(runtime.config)
-      lines.push(`fields: ${fields.length === 0 ? "none stored" : fields.join(", ")}`)
-    } else {
-      lines.push(`status: ${runtime.reason}`)
-      lines.push(`error: ${runtime.error}`)
-      lines.push(runtime.reason === "missing"
-        ? `fix: Run 'ouro vault config set --agent ${command.agent} --key <field>${scope === "machine" ? " --scope machine" : ""}' to store runtime credentials.`
-        : `fix: ${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro vault config status'.")}`)
+  const progress = createHumanCommandProgress(deps, "vault config status")
+  try {
+    for (const scope of scopes) {
+      const machineId = scope === "machine" ? currentMachineId(deps) : undefined
+      const runtime = await runCommandProgressPhase(
+        progress,
+        `reading ${scope} runtime config`,
+        () => scope === "machine"
+          ? refreshMachineRuntimeCredentialConfig(command.agent, machineId!, { preserveCachedOnFailure: true })
+          : refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true }),
+        (runtimeResult) => runtimeResult.ok ? runtimeResult.revision : runtimeResult.reason,
+      )
+      if (scopes.length > 1) lines.push("")
+      lines.push(`${scope} runtime config item: ${runtime.itemPath}`)
+      if (runtime.ok) {
+        lines.push(`status: available (${runtime.revision})`)
+        const fields = summarizeRuntimeConfigFields(runtime.config)
+        lines.push(`fields: ${fields.length === 0 ? "none stored" : fields.join(", ")}`)
+      } else {
+        lines.push(`status: ${runtime.reason}`)
+        lines.push(`error: ${runtime.error}`)
+        lines.push(runtime.reason === "missing"
+          ? `fix: Run 'ouro vault config set --agent ${command.agent} --key <field>${scope === "machine" ? " --scope machine" : ""}' to store runtime credentials.`
+          : `fix: ${vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro vault config status'.")}`)
+      }
     }
+  } finally {
+    progress.end()
   }
   const message = lines.join("\n")
   deps.writeStdout(message)
@@ -2007,7 +2174,23 @@ async function executeProviderStatus(
   deps: OuroCliDeps,
 ): Promise<string> {
   const agentRoot = providerCliAgentRoot(command, deps)
-  await refreshProviderCredentialPool(command.agent)
+  const progress = createHumanCommandProgress(deps, "provider status")
+  try {
+    await runCommandProgressPhase(
+      progress,
+      "reading provider credentials",
+      () => refreshProviderCredentialPool(command.agent, {
+        onProgress: (message) => progress.updateDetail(message),
+      }),
+      (poolResult) => {
+        if (!poolResult.ok) return poolResult.reason
+        const summary = summarizeProviderCredentialPool(poolResult.pool)
+        return summary.providers.map((provider) => provider.provider).join(", ") || "none stored"
+      },
+    )
+  } finally {
+    progress.end()
+  }
   const homeDir = providerCliHomeDir(deps)
   const lines = [`provider status: ${command.agent}`]
   for (const lane of ["outward", "inner"] as ProviderLane[]) {
@@ -2338,36 +2521,58 @@ async function executeLegacyConfigModel(
   const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
   const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
   const binding = state.lanes[lane]
+  const progress = binding.provider === "github-copilot" ? createHumanCommandProgress(deps, "config model") : null
+  const writeMessage = (message: string): string => {
+    progress?.end()
+    deps.writeStdout(message)
+    return message
+  }
   if (binding.provider === "github-copilot") {
-    const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps)
-    if (credential.ok) {
-      const ghConfig: Record<string, string | number> = {
-        ...credential.record.config,
-        ...credential.record.credentials,
-      }
-      const githubToken = ghConfig.githubToken
-      const baseUrl = ghConfig.baseUrl
-      if (typeof githubToken === "string" && typeof baseUrl === "string") {
-        const fetchFn = deps.fetchImpl ?? fetch
-        try {
-          const models = await listGithubCopilotModels(baseUrl, githubToken, fetchFn)
-          const available = models.map((m) => m.id)
-          if (available.length > 0 && !available.includes(command.modelName)) {
-            const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
-            deps.writeStdout(message)
-            return message
+    try {
+      progress?.startPhase("reading github-copilot credentials")
+      const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps, {
+        onProgress: (message) => progress?.updateDetail(message),
+      })
+      if (credential.ok) {
+        const ghConfig: Record<string, string | number> = {
+          ...credential.record.config,
+          ...credential.record.credentials,
+        }
+        const githubToken = ghConfig.githubToken
+        const baseUrl = ghConfig.baseUrl
+        if (typeof githubToken === "string" && typeof baseUrl === "string") {
+          progress?.completePhase("reading github-copilot credentials", "found")
+          const fetchFn = deps.fetchImpl ?? fetch
+          try {
+            progress?.startPhase("listing github-copilot models")
+            const models = await listGithubCopilotModels(baseUrl, githubToken, fetchFn)
+            const available = models.map((m) => m.id)
+            progress?.completePhase("listing github-copilot models", `${available.length} model${available.length === 1 ? "" : "s"}`)
+            if (available.length > 0 && !available.includes(command.modelName)) {
+              const message = `model '${command.modelName}' not found. available models:\n${available.map((id) => `  ${id}`).join("\n")}`
+              return writeMessage(message)
+            }
+          } catch {
+            progress?.completePhase("listing github-copilot models", "skipped")
+            // Catalog validation failed; the live ping below gives the actionable result.
           }
-        } catch {
-          // Catalog validation failed; the live ping below gives the actionable result.
-        }
 
-        const pingResult = await pingGithubCopilotModel(baseUrl, githubToken, command.modelName, fetchFn)
-        if (!pingResult.ok) {
-          const message = `model '${command.modelName}' ping failed: ${pingResult.error}\nrun \`ouro config models --agent ${command.agent}\` to see available models.`
-          deps.writeStdout(message)
-          return message
+          progress?.startPhase(`checking ${command.modelName}`)
+          const pingResult = await pingGithubCopilotModel(baseUrl, githubToken, command.modelName, fetchFn)
+          progress?.completePhase(`checking ${command.modelName}`, pingResult.ok ? "ok" : "failed")
+          if (!pingResult.ok) {
+            const message = `model '${command.modelName}' ping failed: ${pingResult.error}\nrun \`ouro config models --agent ${command.agent}\` to see available models.`
+            return writeMessage(message)
+          }
+        } else {
+          progress?.completePhase("reading github-copilot credentials", "missing fields")
         }
+      } else {
+        progress?.completePhase("reading github-copilot credentials", credential.reason)
       }
+    } catch (error) {
+      progress?.end()
+      throw error
     }
   }
 
@@ -2382,8 +2587,7 @@ async function executeLegacyConfigModel(
   delete state.readiness[lane]
   writeProviderState(agentRoot, state)
   const message = `deprecated: updated ${command.agent} model on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`
-  deps.writeStdout(message)
-  return message
+  return writeMessage(message)
 }
 
 // ── System setup ──
@@ -3241,11 +3445,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           promptInput: deps.promptInput ?? (async () => "n"),
           writeStdout: deps.writeStdout,
           runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
-            const { config } = readAgentConfigForAgent(agent, deps.bundlesRoot)
-            const provider = providerOverride ?? config.humanFacing.provider
-            /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
-            const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
-            await authRunner({ agentName: agent, provider, promptInput: deps.promptInput, onProgress: deps.writeStdout })
+            await executeAuthRun({
+              kind: "auth.run",
+              agent,
+              ...(providerOverride ? { provider: providerOverride } : {}),
+            }, deps)
           },
           runVaultUnlock: async (agent: string) => {
             await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
@@ -3985,28 +4189,43 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps)
-    const ghConfig: Record<string, string | number> = credential.ok
-      ? { ...credential.record.config, ...credential.record.credentials }
-      : {}
-    if (typeof ghConfig.githubToken !== "string" || typeof ghConfig.baseUrl !== "string") {
-      throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
-    }
-    const fetchFn = deps.fetchImpl ?? fetch
-    const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
-    if (models.length === 0) {
-      const message = "no models found"
+    const progress = createHumanCommandProgress(deps, "config models")
+    const writeMessage = (message: string): string => {
+      progress.end()
       deps.writeStdout(message)
       return message
     }
-    const lines = ["available models:"]
-    for (const m of models) {
-      const caps = m.capabilities?.length ? ` (${m.capabilities.join(", ")})` : ""
-      lines.push(`  ${m.id}${caps}`)
+    try {
+      progress.startPhase("reading github-copilot credentials")
+      const credential = await readProviderCredentialRecord(command.agent, "github-copilot", deps, {
+        onProgress: (message) => progress.updateDetail(message),
+      })
+      const ghConfig: Record<string, string | number> = credential.ok
+        ? { ...credential.record.config, ...credential.record.credentials }
+        : {}
+      if (!credential.ok || typeof ghConfig.githubToken !== "string" || typeof ghConfig.baseUrl !== "string") {
+        progress.completePhase("reading github-copilot credentials", credential.ok ? "missing fields" : credential.reason)
+        throw new Error(`github-copilot credentials not configured. Run \`ouro auth --agent ${command.agent} --provider github-copilot\` first.`)
+      }
+      progress.completePhase("reading github-copilot credentials", "found")
+      const fetchFn = deps.fetchImpl ?? fetch
+      progress.startPhase("listing github-copilot models")
+      const models = await listGithubCopilotModels(ghConfig.baseUrl, ghConfig.githubToken, fetchFn)
+      progress.completePhase("listing github-copilot models", `${models.length} model${models.length === 1 ? "" : "s"}`)
+      if (models.length === 0) {
+        return writeMessage("no models found")
+      }
+      const lines = ["available models:"]
+      for (const m of models) {
+        const caps = m.capabilities?.length ? ` (${m.capabilities.join(", ")})` : ""
+        lines.push(`  ${m.id}${caps}`)
+      }
+      const message = lines.join("\n")
+      return writeMessage(message)
+    } catch (error) {
+      progress.end()
+      throw error
     }
-    const message = lines.join("\n")
-    deps.writeStdout(message)
-    return message
   }
   /* v8 ignore stop */
 

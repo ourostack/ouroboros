@@ -684,7 +684,13 @@ describe("ouro up: interactive repair wiring", () => {
       return { repairsAttempted: false }
     })
 
-    const injectedRunAuthFlow = vi.fn(async () => {})
+    const injectedRunAuthFlow = vi.fn(async (input: { agentName: string; provider: string }) => ({
+      agentName: input.agentName,
+      provider: input.provider,
+      message: `authenticated ${input.agentName} with ${input.provider}`,
+      credentialPath: `vault:${input.agentName}:providers/${input.provider}`,
+      credentials: {},
+    }))
     const deps = makeDeps({
       promptInput: vi.fn(async () => "y"),
       bundlesRoot: "/tmp/bundles",
@@ -703,14 +709,16 @@ describe("ouro up: interactive repair wiring", () => {
       agentName: "test-agent",
       provider: "github-copilot",
       promptInput: deps.promptInput,
-      onProgress: deps.writeStdout,
+      onProgress: expect.any(Function),
     })
     expect(injectedRunAuthFlow).toHaveBeenCalledWith({
       agentName: "test-agent",
       provider: "anthropic",
       promptInput: deps.promptInput,
-      onProgress: deps.writeStdout,
+      onProgress: expect.any(Function),
     })
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("authenticating github-copilot"))
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("authenticating anthropic"))
   })
 
   it("wires runVaultUnlock closure to the vault unlock executor", async () => {
