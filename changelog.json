@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.424",
+      "changes": [
+        "Human-facing single-agent CLI commands now resolve an omitted `--agent` through one shared path: use the explicit flag when present, otherwise use the only installed agent, otherwise ask which agent to use, and otherwise explain how to hatch or clone one.",
+        "`ouro auth`, `ouro auth verify`, `ouro auth switch`, `ouro use`, `ouro provider refresh`, `ouro provider check`, `ouro provider status`, `ouro vault` commands, `ouro connect`, `ouro config model`, `ouro config models`, `ouro setup`, and `ouro bluebubbles replay` now accept `[--agent <name>]` instead of failing during parse before Ouro has a chance to help.",
+        "`ouro whoami` keeps its richer runtime identity output but now shares the same no-agent fallback behavior when runtime identity is unavailable, and the runtime seam no longer grabs unrelated ambient repo identity behind the human's back.",
+        "CLI help text now tells the truth about optional-agent behavior, and focused parser/execution/help coverage protects single-agent auto-selection, multi-agent prompting, no-agent guidance, and noninteractive ambiguity handling.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the missing-agent resolution release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.423",
       "changes": [
         "`ouro connect` now opens a real connect bay with one guided surface for provider auth, Perplexity, OpenAI embeddings, Teams, and BlueBubbles instead of a tiny menu that still required humans to memorize follow-up commands.",
