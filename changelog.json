@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.416",
+      "changes": [
+        "Post-repair provider health re-check in `ouro up` now shows a dedicated progress phase (`post-repair check`) with per-agent detail instead of running silently after interactive repair completes.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the post-repair progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.415",
       "changes": [
         "Transient vault errors (timeout, ECONNREFUSED, socket hang up) are now classified separately from vault-locked errors in `ouro up` provider checks -- operators see retry guidance instead of misleading unlock/replace/recover instructions.",
