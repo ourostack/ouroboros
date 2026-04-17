@@ -103,7 +103,7 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("task")
     // connect should appear in the Auth section
     expect(result).toContain("connect")
-    expect(result).toContain("Connect integrations and local senses")
+    expect(result).toContain("Connect providers, portable integrations, and local senses from one guided bay")
   })
 
   it("includes a Usage header line", () => {
@@ -197,9 +197,12 @@ describe("getCommandHelp()", () => {
     const result = getCommandHelp("connect")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro connect [perplexity|bluebubbles] --agent <name>")
-    expect(result).toContain("Perplexity")
-    expect(result).toContain("BlueBubbles")
+    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
+    expect(result).toContain("providers")
+    expect(result).toContain("perplexity")
+    expect(result).toContain("embeddings")
+    expect(result).toContain("teams")
+    expect(result).toContain("bluebubbles")
   })
 })
 
