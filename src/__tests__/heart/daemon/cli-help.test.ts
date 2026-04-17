@@ -197,7 +197,7 @@ describe("getCommandHelp()", () => {
     const result = getCommandHelp("connect")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
+    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
     expect(result).toContain("providers")
     expect(result).toContain("perplexity")
     expect(result).toContain("embeddings")
@@ -397,10 +397,10 @@ describe("runOuroCli help execution", () => {
   it("ouro help covers documented auth bootstrap commands", async () => {
     const deps = makeDeps()
 
-    await expect(runOuroCli(["help", "auth", "verify"], deps)).resolves.toContain("ouro auth verify --agent <name>")
-    await expect(runOuroCli(["help", "auth", "switch"], deps)).resolves.toContain("ouro auth switch --agent <name>")
-    await expect(runOuroCli(["help", "provider", "refresh"], deps)).resolves.toContain("ouro provider refresh --agent <name>")
-    await expect(runOuroCli(["help", "use"], deps)).resolves.toContain("ouro use --agent <name>")
+    await expect(runOuroCli(["help", "auth", "verify"], deps)).resolves.toContain("ouro auth verify [--agent <name>]")
+    await expect(runOuroCli(["help", "auth", "switch"], deps)).resolves.toContain("ouro auth switch [--agent <name>]")
+    await expect(runOuroCli(["help", "provider", "refresh"], deps)).resolves.toContain("ouro provider refresh [--agent <name>]")
+    await expect(runOuroCli(["help", "use"], deps)).resolves.toContain("ouro use [--agent <name>]")
   })
 
   it("ouro help <unknown> outputs fallback grouped help", async () => {

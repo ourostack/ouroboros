@@ -76,25 +76,25 @@ export function usage(): string {
     "  ouro dev [--repo-path <path>] [--clone [--clone-path <path>]]",
     "  ouro stop|down|status|logs|hatch",
     "  ouro status --agent <name>",
-    "  ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]",
-    "  ouro check --agent <name> --lane outward|inner",
+    "  ouro use [--agent <name>] --lane outward|inner --provider <provider> --model <model> [--force]",
+    "  ouro check [--agent <name>] --lane outward|inner",
     "  ouro repair [--agent <name>]",
-    "  ouro provider refresh --agent <name>",
+    "  ouro provider refresh [--agent <name>]",
     "  ouro outlook [--json]",
     "  ouro -v|--version",
-    "  ouro config model --agent <name> <model-name>",
-    "  ouro config models --agent <name>",
-    "  ouro auth --agent <name> [--provider <provider>]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>",
-    "  ouro auth verify --agent <name> [--provider <provider>]",
-    "  ouro auth switch --agent <name> --provider <provider>",
-    "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",
-    "  ouro vault replace --agent <name> [--email <email>] [--server <url>] [--store <store>]",
-    "  ouro vault recover --agent <name> --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
-    "  ouro vault unlock --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
-    "  ouro vault status --agent <name> [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
-    "  ouro vault config set --agent <name> --key <path> [--value <value>] [--scope agent|machine]",
-    "  ouro vault config status --agent <name> [--scope agent|machine|all]",
+    "  ouro config model [--agent <name>] <model-name>",
+    "  ouro config models [--agent <name>]",
+    "  ouro auth [--agent <name>] [--provider <provider>]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
+    "  ouro auth verify [--agent <name>] [--provider <provider>]",
+    "  ouro auth switch [--agent <name>] --provider <provider>",
+    "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
+    "  ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
+    "  ouro vault recover [--agent <name>] --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
+    "  ouro vault unlock [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
+    "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
+    "  ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
+    "  ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -102,7 +102,7 @@ export function usage(): string {
     "  ouro habit list [--agent <name>]",
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
-    "  ouro bluebubbles replay --agent <name> --message-guid <guid> [--event-type new-message|updated-message] [--json]",
+    "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
     "  ouro task board [<status>] [--agent <name>]",
     "  ouro task create <title> [--type <type>] [--agent <name>]",
     "  ouro task update <id> <status> [--agent <name>]",
@@ -432,13 +432,20 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
       }
     }
     /* v8 ignore stop */
-    /* v8 ignore next -- defensive: agent always provided in tests @preserve */
-    if (!agent) throw new Error(`Usage\n${usage()}`)
     if (subcommand === "switch") {
       if (!provider) throw new Error(`auth switch requires --provider.\n${usage()}`)
-      return facing ? { kind: "auth.switch", agent, provider, facing } : { kind: "auth.switch", agent, provider }
+      return {
+        kind: "auth.switch",
+        ...(agent ? { agent } : {}),
+        provider,
+        ...(facing ? { facing } : {}),
+      }
     }
-    return provider ? { kind: "auth.verify", agent, provider } : { kind: "auth.verify", agent }
+    return {
+      kind: "auth.verify",
+      ...(agent ? { agent } : {}),
+      ...(provider ? { provider } : {}),
+    }
   }
   const { agent, rest } = extractAgentFlag(args)
   let provider: AgentProvider | undefined
@@ -451,15 +458,11 @@ function parseAuthCommand(args: string[]): OuroCliCommand {
       continue
     }
   }
-  if (!agent) {
-    throw new Error([
-      "Usage:",
-      "  ouro auth --agent <name> [--provider <provider>]     Set up credentials",
-      "  ouro auth verify --agent <name> [--provider <p>]     Verify credentials work",
-      "  ouro auth switch --agent <name> --provider <p>       Switch active provider",
-    ].join("\n"))
+  return {
+    kind: "auth.run",
+    ...(agent ? { agent } : {}),
+    ...(provider ? { provider } : {}),
   }
-  return provider ? { kind: "auth.run", agent, provider } : { kind: "auth.run", agent }
 }
 
 function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
@@ -502,7 +505,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
         throw new Error("--from is only valid with `ouro vault recover`; use `ouro vault replace` when there is no JSON export to import.")
       }
       const value = rest[i + 1]
-      if (!value) throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json> ...]")
+      if (!value) throw new Error("Usage: ouro vault recover [--agent <name>] --from <json> [--from <json> ...]")
       sources.push(value)
       i += 1
       continue
@@ -511,16 +514,16 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
       generateUnlockSecret = true
       continue
     }
-    throw new Error("Usage: ouro vault create|replace|recover|unlock|status --agent <name>")
+    throw new Error("Usage: ouro vault create|replace|recover|unlock|status [--agent <name>]")
   }
 
-  if (!agent || (sub !== "create" && sub !== "replace" && sub !== "recover" && sub !== "unlock" && sub !== "status")) {
-    throw new Error("Usage: ouro vault create|replace|recover|unlock|status --agent <name>")
+  if (sub !== "create" && sub !== "replace" && sub !== "recover" && sub !== "unlock" && sub !== "status") {
+    throw new Error("Usage: ouro vault create|replace|recover|unlock|status [--agent <name>]")
   }
   if (sub === "create") {
     return {
       kind: "vault.create",
-      agent,
+      ...(agent ? { agent } : {}),
       ...(email ? { email } : {}),
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
@@ -530,7 +533,7 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   if (sub === "replace") {
     return {
       kind: "vault.replace",
-      agent,
+      ...(agent ? { agent } : {}),
       ...(email ? { email } : {}),
       ...(serverUrl ? { serverUrl } : {}),
       ...(store ? { store } : {}),
@@ -539,11 +542,11 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   }
   if (sub === "recover") {
     if (sources.length === 0) {
-      throw new Error("Usage: ouro vault recover --agent <name> --from <json> [--from <json> ...]")
+      throw new Error("Usage: ouro vault recover [--agent <name>] --from <json> [--from <json> ...]")
     }
     return {
       kind: "vault.recover",
-      agent,
+      ...(agent ? { agent } : {}),
       sources,
       ...(email ? { email } : {}),
       ...(serverUrl ? { serverUrl } : {}),
@@ -552,9 +555,9 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
     }
   }
   if (sub === "unlock") {
-    return { kind: "vault.unlock", agent, ...(store ? { store } : {}) }
+    return { kind: "vault.unlock", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
   }
-  return { kind: "vault.status", agent, ...(store ? { store } : {}) }
+  return { kind: "vault.status", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
 }
 
 function parseVaultConfigCommand(args: string[]): OuroCliCommand {
@@ -585,23 +588,23 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
-    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>] OR ouro vault config status --agent <name>")
+    throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value>] OR ouro vault config status [--agent <name>]")
   }
 
-  if (!agent || (sub !== "set" && sub !== "status")) {
-    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>] OR ouro vault config status --agent <name>")
+  if (sub !== "set" && sub !== "status") {
+    throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value>] OR ouro vault config status [--agent <name>]")
   }
   if (sub === "status") {
     if (key || value) {
-      throw new Error("Usage: ouro vault config status --agent <name>")
+      throw new Error("Usage: ouro vault config status [--agent <name>]")
     }
-    return { kind: "vault.config.status", agent, ...(scope ? { scope } : {}) }
+    return { kind: "vault.config.status", ...(agent ? { agent } : {}), ...(scope ? { scope } : {}) }
   }
   if (scope === "all") throw new Error("vault config --scope all is only valid for status")
   if (!key) {
-    throw new Error("Usage: ouro vault config set --agent <name> --key <path> [--value <value>]")
+    throw new Error("Usage: ouro vault config set [--agent <name>] --key <path> [--value <value>]")
   }
-  return { kind: "vault.config.set", agent, key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
+  return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
 function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | undefined {
@@ -611,15 +614,14 @@ function normalizeConnectTarget(value: string | undefined): "providers" | "perpl
   if (value === "embeddings" || value === "embedding" || value === "memory" || value === "note-search" || value === "notes") return "embeddings"
   if (value === "teams" || value === "msteams" || value === "microsoft-teams") return "teams"
   if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
-  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
-  if (!agent) throw new Error("Usage: ouro connect --agent <name> [providers|perplexity|embeddings|teams|bluebubbles]")
-  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
+  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
   const target = normalizeConnectTarget(rest[0])
-  return { kind: "connect", agent, ...(target ? { target } : {}) }
+  return { kind: "connect", ...(agent ? { agent } : {}), ...(target ? { target } : {}) }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
@@ -634,7 +636,7 @@ function parseProviderUseCommand(args: string[]): OuroCliCommand {
     const token = rest[i]
     if (token === "--provider") {
       const value = rest[i + 1]
-      if (!isAgentProvider(value)) throw new Error(`Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model>`)
+      if (!isAgentProvider(value)) throw new Error("Usage: ouro use [--agent <name>] --lane outward|inner --provider <provider> --model <model>")
       provider = value
       i += 1
       continue
@@ -648,16 +650,16 @@ function parseProviderUseCommand(args: string[]): OuroCliCommand {
       force = true
       continue
     }
-    throw new Error("Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]")
+    throw new Error("Usage: ouro use [--agent <name>] --lane outward|inner --provider <provider> --model <model> [--force]")
   }
 
   const resolvedLane = lane ?? (facing ? facingToProviderLane(facing) : undefined)
-  if (!agent || !resolvedLane || !provider || !model) {
-    throw new Error("Usage: ouro use --agent <name> --lane outward|inner --provider <provider> --model <model> [--force]")
+  if (!resolvedLane || !provider || !model) {
+    throw new Error("Usage: ouro use [--agent <name>] --lane outward|inner --provider <provider> --model <model> [--force]")
   }
   return {
     kind: "provider.use",
-    agent,
+    ...(agent ? { agent } : {}),
     lane: resolvedLane,
     provider,
     model,
@@ -671,12 +673,12 @@ function parseProviderCheckCommand(args: string[]): OuroCliCommand {
   const { facing, rest: afterFacing } = extractFacingFlag(afterAgent)
   const { lane, rest } = extractLaneFlag(afterFacing)
   const resolvedLane = lane ?? (facing ? facingToProviderLane(facing) : undefined)
-  if (!agent || !resolvedLane || rest.length > 0) {
-    throw new Error("Usage: ouro check --agent <name> --lane outward|inner")
+  if (!resolvedLane || rest.length > 0) {
+    throw new Error("Usage: ouro check [--agent <name>] --lane outward|inner")
   }
   return {
     kind: "provider.check",
-    agent,
+    ...(agent ? { agent } : {}),
     lane: resolvedLane,
     ...(facing ? { legacyFacing: facing } : {}),
   }
@@ -685,10 +687,10 @@ function parseProviderCheckCommand(args: string[]): OuroCliCommand {
 function parseProviderCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
   const { agent, rest } = extractAgentFlag(args.slice(1))
-  if (sub === "refresh" && agent && rest.length === 0) {
-    return { kind: "provider.refresh", agent }
+  if (sub === "refresh" && rest.length === 0) {
+    return { kind: "provider.refresh", ...(agent ? { agent } : {}) }
   }
-  throw new Error("Usage: ouro provider refresh --agent <name>")
+  throw new Error("Usage: ouro provider refresh [--agent <name>]")
 }
 
 function parseReminderCommand(args: string[]): OuroCliCommand {
@@ -852,15 +854,18 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
   if (sub === "model") {
-    if (!agent) throw new Error("--agent is required for config model")
     const modelName = rest[0]
-    if (!modelName) throw new Error(`Usage: ouro config model --agent <name> <model-name>`)
-    return facing ? { kind: "config.model", agent, modelName, facing } : { kind: "config.model", agent, modelName }
+    if (!modelName) throw new Error("Usage: ouro config model [--agent <name>] <model-name>")
+    return {
+      kind: "config.model",
+      ...(agent ? { agent } : {}),
+      modelName,
+      ...(facing ? { facing } : {}),
+    }
   }
 
   if (sub === "models") {
-    if (!agent) throw new Error("--agent is required for config models")
-    return { kind: "config.models", agent }
+    return { kind: "config.models", ...(agent ? { agent } : {}) }
   }
 
   throw new Error(`Usage\n${usage()}`)
@@ -946,10 +951,10 @@ function parseSetupCommand(args: string[]): OuroCliCommand {
     if (args[i] === "--tool" && args[i + 1]) { tool = args[++i]; continue }
     if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
   }
+  if (args.includes("--agent") && !agent) throw new Error("setup requires --agent <name>")
   if (!tool) throw new Error("setup requires --tool (claude-code | codex)")
   if (tool !== "claude-code" && tool !== "codex") throw new Error(`Unknown tool: ${tool}. Supported: claude-code, codex`)
-  if (!agent) throw new Error("setup requires --agent <name>")
-  return { kind: "setup", tool, agent }
+  return { kind: "setup", tool, ...(agent ? { agent } : {}) }
 }
 
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
@@ -986,11 +991,10 @@ function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
     }
   }
 
-  if (!agent) throw new Error("bluebubbles replay requires --agent <name>")
   if (!messageGuid) throw new Error("bluebubbles replay requires --message-guid <guid>")
   return {
     kind: "bluebubbles.replay",
-    agent,
+    ...(agent ? { agent } : {}),
     messageGuid,
     eventType,
     ...(json ? { json: true } : {}),

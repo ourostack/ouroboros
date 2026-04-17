@@ -30,22 +30,22 @@ export type OuroCliCommand =
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune" }
   | { kind: "outlook"; json?: boolean }
-  | { kind: "provider.use"; agent: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
-  | { kind: "provider.check"; agent: string; lane: ProviderLane; legacyFacing?: Facing }
-  | { kind: "provider.status"; agent: string }
-  | { kind: "provider.refresh"; agent: string }
+  | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
+  | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
+  | { kind: "provider.status"; agent?: string }
+  | { kind: "provider.refresh"; agent?: string }
   | { kind: "repair"; agent?: string }
-  | { kind: "vault.create"; agent: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.replace"; agent: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.recover"; agent: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
-  | { kind: "vault.unlock"; agent: string; store?: VaultUnlockStoreKind }
-  | { kind: "vault.status"; agent: string; store?: VaultUnlockStoreKind }
-  | { kind: "vault.config.set"; agent: string; key: string; value?: string; scope?: RuntimeConfigScope }
-  | { kind: "vault.config.status"; agent: string; scope?: RuntimeConfigStatusScope }
-  | { kind: "connect"; agent: string; target?: ConnectTarget }
-  | { kind: "auth.run"; agent: string; provider?: AgentProvider }
-  | { kind: "auth.verify"; agent: string; provider?: AgentProvider }
-  | { kind: "auth.switch"; agent: string; provider: AgentProvider; facing?: Facing }
+  | { kind: "vault.create"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
+  | { kind: "vault.replace"; agent?: string; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
+  | { kind: "vault.recover"; agent?: string; sources: string[]; email?: string; serverUrl?: string; store?: VaultUnlockStoreKind; generateUnlockSecret?: boolean }
+  | { kind: "vault.unlock"; agent?: string; store?: VaultUnlockStoreKind }
+  | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
+  | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
+  | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
+  | { kind: "connect"; agent?: string; target?: ConnectTarget }
+  | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
+  | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
+  | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
@@ -70,8 +70,8 @@ export type OuroCliCommand =
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list" }
   | { kind: "mcp.call"; server: string; tool: string; args?: string }
-  | { kind: "config.model"; agent: string; modelName: string; facing?: Facing }
-  | { kind: "config.models"; agent: string }
+  | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
+  | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
   | { kind: "rollback"; version?: string }
   | { kind: "versions" }
@@ -81,13 +81,13 @@ export type OuroCliCommand =
   | { kind: "attention.history"; agent?: string }
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
-  | { kind: "setup"; tool: "claude-code" | "codex"; agent: string }
+  | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
   | { kind: "hook"; event: string; agent: string }
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "doctor" }
-  | { kind: "bluebubbles.replay"; agent: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
+  | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "clone"; remote: string; agent?: string }
   | { kind: "help"; command?: string }
 
