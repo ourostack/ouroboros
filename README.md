@@ -179,7 +179,10 @@ ouro vault status --agent <name>
 ouro vault config set --agent <name> --key teams.clientSecret
 ouro vault config status --agent <name> --scope all
 ouro connect --agent <name>
+ouro connect providers --agent <name>
 ouro connect perplexity --agent <name>
+ouro connect embeddings --agent <name>
+ouro connect teams --agent <name>
 ouro connect bluebubbles --agent <name>
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>

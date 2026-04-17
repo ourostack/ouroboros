@@ -21,7 +21,7 @@ import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
-export type ConnectTarget = "perplexity" | "bluebubbles"
+export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }

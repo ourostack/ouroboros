@@ -119,11 +119,14 @@ For integrations and local senses, use the guided connector:
 
 ```bash
 ouro connect --agent <agent>
+ouro connect providers --agent <agent>
 ouro connect perplexity --agent <agent>
+ouro connect embeddings --agent <agent>
+ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-Perplexity search is portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors keep progress visible while they read/write the vault and reload the running agent, and they do not print the entered secret.
+The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors keep progress visible while they read/write the vault and reload the running agent, and they do not print the entered secret.
 
 ## Step 4: Start the daemon
 

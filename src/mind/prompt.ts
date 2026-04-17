@@ -464,8 +464,8 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("- running = enabled and currently active")
   lines.push("- error = enabled but unhealthy")
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
-  lines.push("teams setup truth: enable `senses.teams.enabled`, then store `teams.clientId`, `teams.clientSecret`, and `teams.tenantId` in the agent vault runtime/config item.")
-  lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
+  lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
+  lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
