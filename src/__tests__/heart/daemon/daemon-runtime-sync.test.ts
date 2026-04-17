@@ -321,7 +321,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: "daemon already running (/tmp/ouro-test.sock; could not replace stale daemon 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
+      message: "daemon already running (/tmp/ouro-test.sock; could not replace the running background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
@@ -347,7 +347,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: expect.stringContaining("could not replace runtime drift"),
+      message: expect.stringContaining("could not replace the running background service after runtime drift"),
     })
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
@@ -369,7 +369,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: "daemon already running (/tmp/ouro-test.sock; could not replace stale daemon 0.1.0-alpha.6 -> 0.1.0-alpha.20: string-stop-failure)",
+      message: "daemon already running (/tmp/ouro-test.sock; could not replace the running background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: string-stop-failure)",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })

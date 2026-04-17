@@ -3759,7 +3759,7 @@ describe("ensureDaemonRunning", () => {
     const result = await ensureDaemonRunning(deps)
 
     expect(result.alreadyRunning).toBe(true)
-    expect(result.message).toContain("could not replace stale daemon")
+    expect(result.message).toContain("could not replace the running background service")
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
