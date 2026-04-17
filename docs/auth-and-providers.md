@@ -49,7 +49,7 @@ Provider credentials are stored with:
 ouro auth --agent <agent> --provider <provider>
 ```
 
-`ouro auth` stores credentials in that agent's vault. It does not switch a provider lane.
+`ouro auth` stores credentials in that agent's vault. It does not switch a provider lane. In a human terminal it keeps a visible checklist for the auth attempt, vault write, refresh, and verification steps so browser login or vault IO never looks like a dead cursor.
 
 Credential verification is explicit:
 
@@ -89,6 +89,20 @@ ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
 ```
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
+
+## Human CLI Progress
+
+Human-facing commands must not turn into a wall of text or a silent blinking cursor. Any command that may wait on browser login, vault IO, daemon startup, daemon restart, provider live checks, or guided connector setup should use the shared checklist progress surface.
+
+The checklist contract is:
+
+- start with the fewest words that orient a non-terminal user
+- print or animate the active step when work may take more than a few seconds
+- show changed substeps such as `reading vault items`, `storing openai-codex credentials`, or `opening credential vault`
+- complete with a compact success/failure summary and one next action
+- never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
+
+Agent-runnable shortcuts may stay compact when they are intended for automation and already return structured results. Human-choice and human-required flows should choose friendliness over terseness.
 
 ## Runtime Caching
 

@@ -12,7 +12,9 @@ vi.mock("../../../heart/provider-ping", () => ({
 
 const mockProviderCredentials = vi.hoisted(() => ({
   pools: new Map<string, any>(),
-  refreshProviderCredentialPool: vi.fn(async (agentName: string) => {
+  refreshProviderCredentialPool: vi.fn(async (agentName: string, options?: { onProgress?: (message: string) => void }) => {
+    options?.onProgress?.(`reading vault items for ${agentName}...`)
+    options?.onProgress?.("parsing provider credentials...")
     return mockProviderCredentials.pools.get(agentName) ?? {
       ok: true,
       poolPath: `vault:${agentName}:providers/*`,
@@ -967,23 +969,36 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
 
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      runAuthFlow: async (input) => {
+        input.onProgress?.("starting minimax credential entry...")
+        input.onProgress?.("storing minimax credentials in Slugger's vault...")
+        return {
+          agentName: "Slugger",
+          provider: "minimax",
+          message: "authenticated Slugger with minimax",
+          credentialPath: "providers/minimax",
+          credentials: { apiKey: "new-minimax-secret" },
+        }
+      },
+    })
     const result = await runOuroCli([
       "auth",
       "--agent",
       "Slugger",
       "--provider",
       "minimax",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      runAuthFlow: async () => ({
-        agentName: "Slugger",
-        provider: "minimax",
-        message: "authenticated Slugger with minimax",
-        credentialPath: "providers/minimax",
-        credentials: { apiKey: "new-minimax-secret" },
-      }),
-    }))
+    ], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("authenticated Slugger with minimax")
+    expect(output).toContain("... authenticating minimax")
+    expect(output).toContain("starting minimax credential entry")
+    expect(output).toContain("storing minimax credentials")
+    expect(output).toContain("✓ authenticating minimax")
+    expect(output).toContain("... verifying minimax")
+    expect(output).toContain("✓ verifying minimax")
+    expect(output).not.toContain("new-minimax-secret")
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
@@ -2153,19 +2168,30 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-perplexity-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
-    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptSecret: async (question) => {
         expect(question).toBe("Perplexity API key: ")
         return "pplx-secret"
       },
-    }))
+    })
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("Perplexity connected for Slugger")
     expect(result).toContain("Perplexity search")
     expect(result).toContain("runtime/config")
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("pplx-secret")
+    expect(output).toContain("Connect Perplexity for Slugger")
+    expect(output).toContain("The API key stays hidden while you type.")
+    expect(output).toContain("... saving Perplexity search")
+    expect(output).toContain("checking existing runtime config")
+    expect(output).toContain("storing integrations.perplexityApiKey")
+    expect(output).toContain("✓ saving Perplexity search")
+    expect(output).toContain("... reloading Slugger")
+    expect(output).toContain("daemon is not running; next `ouro up` will load it")
+    expect(output).not.toContain("pplx-secret")
 
     const stored = readRuntimeSecret("Slugger")
     expect(stored.config).toMatchObject({
@@ -2173,6 +2199,32 @@ describe("provider CLI command execution", () => {
         perplexityApiKey: "pplx-secret",
       },
     })
+  })
+
+  it("connect Perplexity keeps progress visible when the vault write path fails", async () => {
+    emitTestEvent("provider cli connect perplexity failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", "{not-json")
+    resetRuntimeCredentialConfigCache()
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async (question) => {
+        expect(question).toBe("Perplexity API key: ")
+        return "pplx-secret"
+      },
+    })
+
+    await expect(runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps))
+      .rejects.toThrow("cannot read existing runtime credentials")
+
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    expect(output).toContain("Connect Perplexity for Slugger")
+    expect(output).toContain("... saving Perplexity search")
+    expect(output).toContain("checking existing runtime config")
+    expect(output).not.toContain("✓ saving Perplexity search")
+    expect(output).not.toContain("pplx-secret")
   })
 
   it("connects BlueBubbles as a current-machine attachment", async () => {
@@ -2195,7 +2247,7 @@ describe("provider CLI command execution", () => {
       "/bb-webhook",
       "12000",
     ]
-    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async (question) => {
         expect(question).not.toContain("password")
@@ -2205,12 +2257,20 @@ describe("provider CLI command execution", () => {
         expect(question).toBe("BlueBubbles app password: ")
         return "bb-password"
       },
-    }))
+    })
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("BlueBubbles attached for Slugger on this machine")
     expect(result).toContain("runtime/machines/machine_bb/config")
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("bb-password")
+    expect(output).toContain("Connect BlueBubbles for Slugger")
+    expect(output).toContain("This is a local attachment for this machine.")
+    expect(output).toContain("... saving BlueBubbles attachment")
+    expect(output).toContain("storing local machine config")
+    expect(output).toContain("✓ saving BlueBubbles attachment")
+    expect(output).not.toContain("bb-password")
 
     const stored = readRuntimeSecret("Slugger", "runtime/machines/machine_bb/config")
     expect(stored.config).toMatchObject({
@@ -2504,14 +2564,21 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderCredentialPool(homeDir, credentialPool())
 
-    const restarted = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+    const restartDeps = makeCliDeps(homeDir, bundlesRoot, {
       checkSocketAlive: async () => true,
       sendCommand: async () => ({ ok: true, summary: "restarted" }),
-    }))
+    })
+    const restarted = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], restartDeps)
+    const restartOutput = ((restartDeps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(restarted).toContain("refreshed provider credential snapshot for Slugger")
     expect(restarted).toContain("providers: minimax, anthropic")
     expect(restarted).toContain("restarted Slugger")
+    expect(restartOutput).toContain("... refreshing provider credentials")
+    expect(restartOutput).toContain("reading vault items for Slugger")
+    expect(restartOutput).toContain("✓ refreshing provider credentials")
+    expect(restartOutput).toContain("... reloading Slugger")
+    expect(restartOutput).toContain("✓ reloading Slugger")
 
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
     const none = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
@@ -2564,6 +2631,25 @@ describe("provider CLI command execution", () => {
 
     const serpent = await runOuroCli(["provider", "refresh", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
     expect(serpent).toContain("SerpentGuide has no persistent provider credentials")
+  })
+
+  it("provider refresh leaves visible progress when vault refresh throws", async () => {
+    emitTestEvent("provider cli refresh throws")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-throws-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-throws-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockProviderCredentials.refreshProviderCredentialPool.mockImplementationOnce(async (_agentName, options) => {
+      options?.onProgress?.("opening credential vault")
+      throw new Error("vault subprocess crashed")
+    })
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+
+    await expect(runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)).rejects.toThrow("vault subprocess crashed")
+
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    expect(output).toContain("... refreshing provider credentials")
+    expect(output).toContain("opening credential vault")
+    expect(output).not.toContain("✓ refreshing provider credentials")
   })
 
   it("legacy auth switch with --facing agent updates only the inner local lane", async () => {

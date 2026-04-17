@@ -1,5 +1,5 @@
 /**
- * UpProgress — accumulated-checklist progress renderer for `ouro up`.
+ * UpProgress — accumulated-checklist progress renderer.
  *
  * Displays completed phases with checkmarks, the current phase with a
  * spinner and elapsed time, and pending phases as plain text. Uses ANSI
@@ -42,6 +42,8 @@ export interface UpProgressOptions {
   renderIntervalMs?: number
   setInterval?: (callback: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
+  eventScope?: "up" | "command"
+  commandName?: string
 }
 
 // ── UpProgress class ──
@@ -54,6 +56,8 @@ export class UpProgress {
   private readonly renderIntervalMs: number
   private readonly setTimer: (callback: () => void, ms: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
+  private readonly eventScope: "up" | "command"
+  private readonly commandName: string | null
   private completed: CompletedPhase[] = []
   private currentPhase: CurrentPhase | null = null
   private currentDetail: string | null = null
@@ -74,6 +78,8 @@ export class UpProgress {
     this.setTimer = options?.setInterval ?? ((callback, ms) => setInterval(callback, ms))
     this.clearTimer = options?.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>))
     /* v8 ignore stop */
+    this.eventScope = options?.eventScope ?? "up"
+    this.commandName = options?.commandName ?? null
   }
 
   /**
@@ -138,12 +144,21 @@ export class UpProgress {
     this.currentDetail = null
     this.stopAutoRender()
 
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.up_phase_complete",
-      message: `phase complete: ${label}`,
-      meta: { phase: label, detail: detail ?? null, elapsedMs },
-    })
+    if (this.eventScope === "command") {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.cli_progress_phase_complete",
+        message: `phase complete: ${label}`,
+        meta: { command: this.commandName, phase: label, detail: detail ?? null, elapsedMs },
+      })
+    } else {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.up_phase_complete",
+        message: `phase complete: ${label}`,
+        meta: { phase: label, detail: detail ?? null, elapsedMs },
+      })
+    }
 
     if (this.isTTY) {
       this.flushRender()
@@ -241,3 +256,6 @@ export class UpProgress {
     }
   }
 }
+
+export { UpProgress as CommandProgress }
+export type CommandProgressOptions = UpProgressOptions

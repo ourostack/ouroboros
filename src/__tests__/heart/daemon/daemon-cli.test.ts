@@ -811,9 +811,56 @@ describe("ouro CLI execution", () => {
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
         agentName: tmp.agentName,
         provider: "anthropic",
-        onProgress: deps.writeStdout,
+        onProgress: expect.any(Function),
       }))
-      expect(deps.writeStdout).toHaveBeenCalledWith("verifying anthropic credentials...")
+      const output = deps.writeStdout.mock.calls.map((call) => String(call[0])).join("")
+      expect(output).toContain("... authenticating anthropic")
+      expect(output).toContain("✓ authenticating anthropic")
+      expect(output).toContain("... verifying anthropic")
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("keeps auth progress visible when the provider auth flow fails", async () => {
+    const tmp = createTmpBundle({
+      agentName: "auth-error",
+      agentJson: {
+        version: 2,
+        enabled: true,
+        provider: "anthropic",
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
+
+    const runAuthFlow = vi.fn(async (input: { onProgress?: (message: string) => void }) => {
+      input.onProgress?.("opening browser login")
+      throw new Error("auth service down")
+    })
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected daemon call" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      runAuthFlow,
+    } as OuroCliDeps & {
+      runAuthFlow: typeof runAuthFlow
+    }
+
+    try {
+      await expect(runOuroCli(["auth", "--agent", tmp.agentName], deps)).rejects.toThrow("auth service down")
+
+      const output = deps.writeStdout.mock.calls.map((call) => String(call[0])).join("")
+      expect(output).toContain("... authenticating anthropic")
+      expect(output).toContain("opening browser login")
+      expect(output).not.toContain("✓ authenticating anthropic")
       expect(deps.sendCommand).not.toHaveBeenCalled()
     } finally {
       tmp.cleanup()
@@ -855,9 +902,12 @@ describe("ouro CLI execution", () => {
       expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
         agentName: tmp.agentName,
         provider: "openai-codex",
-        onProgress: deps.writeStdout,
+        onProgress: expect.any(Function),
       }))
-      expect(deps.writeStdout).toHaveBeenCalledWith("verifying openai-codex credentials...")
+      const output = deps.writeStdout.mock.calls.map((call) => String(call[0])).join("")
+      expect(output).toContain("... authenticating openai-codex")
+      expect(output).toContain("✓ authenticating openai-codex")
+      expect(output).toContain("... verifying openai-codex")
       // Behavior change: auth stores credentials but does NOT switch
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as { provider: string }
       expect(updated.provider).toBe("anthropic")
@@ -914,8 +964,12 @@ describe("ouro CLI execution", () => {
         agentName: "slugger",
         provider: "minimax",
         promptInput: deps.promptInput,
-        onProgress: deps.writeStdout,
+        onProgress: expect.any(Function),
       })
+      const output = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])).join("")
+      expect(output).toContain("... authenticating minimax")
+      expect(output).toContain("✓ authenticating minimax")
+      expect(output).toContain("... verifying minimax")
       expect(writeAgentProviderSelection).not.toHaveBeenCalled()
     } finally {
       vi.doUnmock("../../../heart/auth/auth-flow")
