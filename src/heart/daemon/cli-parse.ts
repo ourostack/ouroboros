@@ -85,7 +85,7 @@ export function usage(): string {
     "  ouro config model --agent <name> <model-name>",
     "  ouro config models --agent <name>",
     "  ouro auth --agent <name> [--provider <provider>]",
-    "  ouro connect [perplexity|bluebubbles] --agent <name>",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>",
     "  ouro auth verify --agent <name> [--provider <provider>]",
     "  ouro auth switch --agent <name> --provider <provider>",
     "  ouro vault create --agent <name> --email <email> [--server <url>] [--store <store>]",
@@ -604,17 +604,20 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.config.set", agent, key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
-function normalizeConnectTarget(value: string | undefined): "perplexity" | "bluebubbles" | undefined {
+function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | undefined {
   if (!value) return undefined
+  if (value === "providers" || value === "provider" || value === "auth") return "providers"
   if (value === "perplexity" || value === "perplexity-search") return "perplexity"
+  if (value === "embeddings" || value === "embedding" || value === "memory" || value === "note-search" || value === "notes") return "embeddings"
+  if (value === "teams" || value === "msteams" || value === "microsoft-teams") return "teams"
   if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
-  throw new Error("Usage: ouro connect [perplexity|bluebubbles] --agent <name>")
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
-  if (!agent) throw new Error("Usage: ouro connect --agent <name> [perplexity|bluebubbles]")
-  if (rest.length > 1) throw new Error("Usage: ouro connect [perplexity|bluebubbles] --agent <name>")
+  if (!agent) throw new Error("Usage: ouro connect --agent <name> [providers|perplexity|embeddings|teams|bluebubbles]")
+  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>")
   const target = normalizeConnectTarget(rest[0])
   return { kind: "connect", agent, ...(target ? { target } : {}) }
 }

@@ -284,6 +284,51 @@ function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
   return { ...base, ...overrides }
 }
 
+function daemonStatusData(
+  agentName: string,
+  status: "running" | "starting" | "stopped" | "crashed" = "running",
+  overrides: Partial<{
+    worker: string
+    pid: number | null
+    startedAt: string | null
+    errorReason: string | null
+    fixHint: string | null
+  }> = {},
+): Record<string, unknown> {
+  return {
+    overview: {
+      daemon: "running",
+      health: status === "running" ? "ok" : "warn",
+      socketPath: "/tmp/test-socket",
+      outlookUrl: "http://127.0.0.1:6876",
+      version: "0.1.0-alpha.test",
+      lastUpdated: NOW,
+      repoRoot: "/tmp/test-repo",
+      configFingerprint: "cfg_test",
+      workerCount: 1,
+      senseCount: 0,
+      entryPath: "/tmp/daemon-entry.js",
+      mode: "production",
+    },
+    workers: [{
+      agent: agentName,
+      worker: overrides.worker ?? "inner-dialog",
+      status,
+      pid: overrides.pid ?? 4242,
+      restartCount: 0,
+      startedAt: overrides.startedAt ?? NOW,
+      lastExitCode: null,
+      lastSignal: null,
+      errorReason: overrides.errorReason ?? null,
+      fixHint: overrides.fixHint ?? null,
+    }],
+    senses: [],
+    sync: [],
+    agents: [{ name: agentName, enabled: true }],
+    providers: [],
+  }
+}
+
 function credentialPool(overrides: Partial<ProviderCredentialPool> = {}): ProviderCredentialPool {
   const base: ProviderCredentialPool = {
     schemaVersion: 1,
@@ -649,14 +694,29 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "perplexity",
     })
+    expect(parseOuroCommand(["connect", "providers", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "providers",
+    })
+    expect(parseOuroCommand(["connect", "embeddings", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "embeddings",
+    })
+    expect(parseOuroCommand(["connect", "teams", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "teams",
+    })
     expect(parseOuroCommand(["connect", "bluebubbles", "--agent", "Slugger"])).toEqual({
       kind: "connect",
       agent: "Slugger",
       target: "bluebubbles",
     })
     expect(() => parseOuroCommand(["connect"])).toThrow("ouro connect --agent <name>")
-    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("perplexity|bluebubbles")
-    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("perplexity|bluebubbles")
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -1175,7 +1235,7 @@ describe("provider CLI command execution", () => {
     ], rejectedDeps)).rejects.toThrow("network down")
     const rejectedOutput = (rejectedDeps as OuroCliDeps & { _output: string[] })._output.join("")
     expect(rejectedOutput).toContain("... creating vault account")
-    expect(rejectedOutput).toContain("✓ creating vault account")
+    expect(rejectedOutput).toContain("✗ creating vault account")
     expect(rejectedOutput).toContain("failed")
   })
 
@@ -2289,6 +2349,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("Perplexity connected for Slugger")
     expect(result).toContain("Perplexity search")
     expect(result).toContain("runtime/config")
+    expect(result).toContain("running agent: daemon is not running; next `ouro up` will load the change")
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("pplx-secret")
     expect(output).toContain("Connect Perplexity for Slugger")
@@ -2297,8 +2358,9 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("checking existing runtime config")
     expect(output).toContain("storing integrations.perplexityApiKey")
     expect(output).toContain("✓ saving Perplexity search")
-    expect(output).toContain("... reloading Slugger")
-    expect(output).toContain("daemon is not running; next `ouro up` will load it")
+    expect(output).toContain("... applying change to running Slugger")
+    expect(output).toContain("checking daemon socket")
+    expect(output).toContain("daemon is not running; next `ouro up` will load the change")
     expect(output).not.toContain("pplx-secret")
 
     const stored = readRuntimeSecret("Slugger")
@@ -2570,19 +2632,23 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
 
     const prompts: string[] = []
     const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async (question) => {
         prompts.push(question)
-        return "1"
+        return "2"
       },
       promptSecret: async () => "pplx-secret",
     }))
 
-    expect(prompts.join("\n")).toContain("Connect Slugger")
+    expect(prompts.join("\n")).toContain("Slugger // connect bay")
+    expect(prompts.join("\n")).toContain("Providers")
     expect(prompts.join("\n")).toContain("Perplexity search")
+    expect(prompts.join("\n")).toContain("Memory embeddings")
+    expect(prompts.join("\n")).toContain("Teams")
     expect(prompts.join("\n")).toContain("BlueBubbles iMessage")
     expect(result).toContain("Perplexity connected for Slugger")
   })
@@ -2595,11 +2661,14 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_menu")
 
     const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
-    expect(noninteractive).toContain("Connect Slugger")
+    expect(noninteractive).toContain("Slugger // connect bay")
+    expect(noninteractive).toContain("ouro connect providers --agent Slugger")
     expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
+    expect(noninteractive).toContain("ouro connect embeddings --agent Slugger")
+    expect(noninteractive).toContain("ouro connect teams --agent Slugger")
     expect(noninteractive).toContain("ouro connect bluebubbles --agent Slugger")
 
-    const blueBubblesAnswers = ["2", "http://127.0.0.1:1234", "", "", ""]
+    const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", ""]
     const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async () => blueBubblesAnswers.shift() ?? "",
@@ -2610,15 +2679,139 @@ describe("provider CLI command execution", () => {
     expect(blueBubbles).not.toContain("bb-password")
 
     const providerAuth = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "3",
+      promptInput: async () => "6",
     }))
-    expect(providerAuth).toContain("Provider auth is its own flow")
-    expect(providerAuth).toContain("ouro auth --agent Slugger --provider <provider>")
+    expect(providerAuth).toBe("connect cancelled.")
 
     const cancelled = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "4",
+      promptInput: async () => "cancel",
     }))
     expect(cancelled).toBe("connect cancelled.")
+  })
+
+  it("connects OpenAI embeddings through a hidden guided flow", async () => {
+    emitTestEvent("provider cli connect embeddings")
+    const bundlesRoot = makeTempDir("provider-cli-connect-embeddings-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-embeddings-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        expect(question).toBe("OpenAI embeddings API key: ")
+        return "emb-secret"
+      },
+    })
+    const result = await runOuroCli(["connect", "embeddings", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Embeddings connected for Slugger")
+    expect(result).toContain("memory embeddings")
+    expect(result).toContain("running agent: daemon is not running; next `ouro up` will load the change")
+    expect(result).not.toContain("emb-secret")
+    expect(output).toContain("Connect embeddings for Slugger")
+    expect(output).toContain("... saving memory embeddings")
+    expect(output).toContain("storing integrations.openaiEmbeddingsApiKey")
+    expect(output).toContain("... applying change to running Slugger")
+    expect(output).not.toContain("emb-secret")
+
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config).toMatchObject({
+      integrations: {
+        openaiEmbeddingsApiKey: "emb-secret",
+      },
+    })
+  })
+
+  it("connects Teams through a guided flow and enables the sense", async () => {
+    emitTestEvent("provider cli connect teams")
+    const bundlesRoot = makeTempDir("provider-cli-connect-teams-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-teams-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const answers = [
+      "teams-client-id",
+      "teams-tenant-id",
+      "teams-managed-identity",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async (question) => {
+        expect(question).not.toContain("secret")
+        return answers.shift() ?? ""
+      },
+      promptSecret: async (question) => {
+        expect(question).toBe("Teams client secret: ")
+        return "teams-secret"
+      },
+    })
+    const result = await runOuroCli(["connect", "teams", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Teams connected for Slugger")
+    expect(result).toContain("senses.teams.enabled = true")
+    expect(result).toContain("run `ouro up` so the daemon picks up the Teams sense change")
+    expect(result).not.toContain("teams-secret")
+    expect(output).toContain("Connect Teams for Slugger")
+    expect(output).toContain("... saving Teams setup")
+    expect(output).toContain("storing teams.clientId")
+    expect(output).toContain("storing teams.clientSecret")
+    expect(output).toContain("storing teams.tenantId")
+    expect(output).not.toContain("teams-secret")
+
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config).toMatchObject({
+      teams: {
+        clientId: "teams-client-id",
+        clientSecret: "teams-secret",
+        tenantId: "teams-tenant-id",
+        managedIdentityClientId: "teams-managed-identity",
+      },
+    })
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      teams: { enabled: true },
+    })
+  })
+
+  it("routes provider auth through the connect hub without making the human remember the auth command", async () => {
+    emitTestEvent("provider cli connect providers")
+    const bundlesRoot = makeTempDir("provider-cli-connect-providers-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-providers-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+
+    const runAuthFlow = vi.fn(async ({ agentName, provider }: { agentName: string; provider: string }) => {
+      writeProviderCredentialPool(homeDir, credentialPool({
+        providers: {
+          minimax: {
+            provider: "minimax",
+            revision: "cred_minimax_connect",
+            updatedAt: NOW,
+            credentials: { apiKey: "minimax-key" },
+            config: {},
+            provenance: { source: "manual", updatedAt: NOW },
+          },
+        },
+      }), agentName)
+      return { message: `authenticated ${agentName} with ${provider}` }
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "providers", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      runAuthFlow,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "minimax"
+      },
+    }))
+
+    expect(prompts.join("\n")).toContain("Which provider should Slugger use credentials for?")
+    expect(result).toContain("authenticated Slugger with minimax")
+    expect(runAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
+      agentName: "Slugger",
+      provider: "minimax",
+    }))
   })
 
   it("vault config guards unsupported agents, invalid keys, and unreadable runtime config", async () => {
@@ -2673,20 +2866,29 @@ describe("provider CLI command execution", () => {
     writeProviderCredentialPool(homeDir, credentialPool())
 
     const restartDeps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
       checkSocketAlive: async () => true,
-      sendCommand: async () => ({ ok: true, summary: "restarted" }),
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "agent.restart") return { ok: true, summary: "restarted" }
+        if (command.kind === "daemon.status") return { ok: true, data: daemonStatusData("Slugger", "running") }
+        return { ok: true }
+      },
     })
     const restarted = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], restartDeps)
     const restartOutput = ((restartDeps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(restarted).toContain("refreshed provider credential snapshot for Slugger")
     expect(restarted).toContain("providers: minimax, anthropic")
-    expect(restarted).toContain("restarted Slugger")
+    expect(restarted).toContain("running agent: restarted Slugger and the daemon reports it running")
     expect(restartOutput).toContain("... refreshing provider credentials")
     expect(restartOutput).toContain("reading vault items for Slugger")
     expect(restartOutput).toContain("✓ refreshing provider credentials")
-    expect(restartOutput).toContain("... reloading Slugger")
-    expect(restartOutput).toContain("✓ reloading Slugger")
+    expect(restartOutput).toContain("... applying change to running Slugger")
+    expect(restartOutput).toContain("checking daemon socket")
+    expect(restartOutput).toContain("requesting restart from daemon")
+    expect(restartOutput).toContain("waiting for Slugger to report running state")
+    expect(restartOutput).toContain("daemon reports Slugger/inner-dialog running")
+    expect(restartOutput).toContain("✓ applying change to running Slugger")
 
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
     const none = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
@@ -2739,6 +2941,35 @@ describe("provider CLI command execution", () => {
 
     const serpent = await runOuroCli(["provider", "refresh", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot))
     expect(serpent).toContain("SerpentGuide has no persistent provider credentials")
+  })
+
+  it("provider refresh times out cleanly when the daemon never reports the agent running again", async () => {
+    emitTestEvent("provider cli refresh runtime-apply-timeout")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-timeout-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-timeout-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    let nowMs = 0
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms },
+      checkSocketAlive: async () => true,
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "agent.restart") return { ok: true, summary: "restarted" }
+        if (command.kind === "daemon.status") return { ok: true, data: daemonStatusData("Slugger", "starting") }
+        return { ok: true }
+      },
+    })
+
+    const result = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
+    expect(output).toContain("... applying change to running Slugger")
+    expect(output).toContain("waiting for Slugger to report running state")
+    expect(output).toContain("still waiting: Slugger/inner-dialog is starting")
+    expect(output).toContain("✓ applying change to running Slugger")
   })
 
   it("provider refresh leaves visible progress when vault refresh throws", async () => {
