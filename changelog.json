@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.417",
+      "changes": [
+        "`isTransientError` now recognizes timeout errors after `formatBwCliError` transforms them, so retries fire correctly even when the raw `ETIMEDOUT` code is lost during formatting.",
+        "New `withTransientRetry` wrapper on read operations (`get`, `getRawSecret`, `list`) retries up to 3 times with exponential backoff (500ms, 1s, 2s) and emits `repertoire.bw_transient_retry` nerves events, so transient vault hiccups resolve silently.",
+        "`bw sync` now runs after every login/unlock in `loginAttempt()`, ensuring vault data is synchronized with the server before any read operations.",
+        "Timeout error messages changed from a generic 'timed out while waiting for a vault response' to actionable guidance: 'timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.'",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the Bitwarden store resilience release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.416",
       "changes": [
         "Post-repair provider health re-check in `ouro up` now shows a dedicated progress phase (`post-repair check`) with per-agent detail instead of running silently after interactive repair completes.",

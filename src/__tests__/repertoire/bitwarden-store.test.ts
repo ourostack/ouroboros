@@ -238,6 +238,103 @@ describe("BitwardenCredentialStore", () => {
     })
   })
 
+  describe("bw sync after login/unlock", () => {
+    it("calls bw sync after unlock (locked status)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "unlocked-session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // After unlock, bw sync should have been called with the new session token
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      // sync should come AFTER unlock
+      const unlockIdx = calls.findIndex((c) => c[0] === "unlock")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(unlockIdx)
+    })
+
+    it("calls bw sync after login (unauthenticated status)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"session-token"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      // After login, bw sync should have been called
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      // sync should come AFTER login
+      const loginIdx = calls.findIndex((c) => c[0] === "login")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(loginIdx)
+    })
+
+    it("calls bw sync after unlock (unlocked status, re-unlock for session)", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      const syncCall = calls.find((c) => c[0] === "sync")
+      expect(syncCall).toBeDefined()
+
+      const unlockIdx = calls.findIndex((c) => c[0] === "unlock")
+      const syncIdx = calls.findIndex((c) => c[0] === "sync")
+      expect(syncIdx).toBeGreaterThan(unlockIdx)
+    })
+  })
+
   describe("get", () => {
     it("returns credential metadata for a domain", async () => {
       setupExecMock({
@@ -1022,7 +1119,7 @@ describe("BitwardenCredentialStore", () => {
       }
 
       expect(thrown).not.toBeNull()
-      expect(thrown!.message).toBe("bw CLI error: create item timed out while waiting for a vault response")
+      expect(thrown!.message).toBe("bw CLI error: create item timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
       expect(thrown!.message).not.toContain(leakedEncodedPayload)
       expect(thrown!.message).not.toContain("slow-secret")
       expect(thrown!.message).not.toContain("bw create item")
@@ -1511,6 +1608,123 @@ describe("BitwardenCredentialStore", () => {
     })
   })
 
+  describe("timeout error message", () => {
+    it("produces an actionable timeout message with retry guidance", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.list()
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      // New actionable message format
+      expect(thrown!.message).toBe(
+        "bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.",
+      )
+      // Must NOT contain the old "waiting for a vault response" phrasing
+      expect(thrown!.message).not.toContain("waiting for a vault response")
+      // Must NOT suggest unlock/replace/recover actions
+      expect(thrown!.message).not.toContain("unlock")
+      expect(thrown!.message).not.toContain("replace")
+      expect(thrown!.message).not.toContain("recover")
+    })
+
+    it("includes the operation name in the timeout message", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get") {
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{
+            id: "1", name: "test.com",
+            login: { username: "u", password: "p" },
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Get triggers findItemById which calls execBw(["get", "item", id])
+      // but we need to trigger a get via the store API. Store.store does that after create.
+      // Easier: just verify via store.list() that uses "list items"
+      // Let's use a direct approach through the store's internal methods.
+      // Actually, let's just check the message format through store's API.
+      // The test above already covers list -- let's test store (create path with timeout).
+
+      // For store create, the mock needs to handle create with timeout
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+        } else if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+        } else if (args[0] === "list") {
+          cb(null, "[]", "")
+        } else if (args[0] === "create") {
+          const err = new Error("timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+        } else {
+          cb(null, "", "")
+        }
+        return { stdin: { end: vi.fn() } }
+      })
+
+      let thrown: Error | null = null
+      try {
+        await store.store("test.com", { password: "pass" })
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      expect(thrown).not.toBeNull()
+      expect(thrown!.message).toContain("create item timed out")
+      expect(thrown!.message).toContain("usually resolves on retry")
+      expect(thrown!.message).not.toContain("waiting for a vault response")
+    })
+  })
+
   describe("list", () => {
     it("returns all vault items as CredentialMeta", async () => {
       setupExecMock({
@@ -1775,6 +1989,96 @@ describe("BitwardenCredentialStore", () => {
       vi.useRealTimers()
     })
 
+    it("recognizes timeout errors after formatBwCliError transforms them (raw ETIMEDOUT)", async () => {
+      // Baseline: raw ETIMEDOUT code IS recognized as transient, so login retries.
+      let statusCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          statusCallCount++
+          if (statusCallCount <= 1) {
+            const err = new Error("connect ETIMEDOUT") as NodeJS.ErrnoException
+            err.code = "ETIMEDOUT"
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") { cb(null, "", ""); return }
+        if (args[0] === "login") { cb(null, "session-token", ""); return }
+        cb(null, "", "")
+      })
+
+      // Should succeed on retry (the raw ETIMEDOUT is transient)
+      await store.login()
+      expect(statusCallCount).toBe(2)
+    })
+
+    it("recognizes formatted timeout errors as transient (killed process with SIGTERM)", async () => {
+      // After formatBwCliError, the message is "bw CLI error: status timed out while
+      // usually resolves on retry..." which should still be treated as transient.
+      let statusCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          statusCallCount++
+          if (statusCallCount <= 1) {
+            // This error triggers formatBwCliError's timeout path: killed + SIGTERM
+            const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            }
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          }
+          return
+        }
+        if (args[0] === "config") { cb(null, "", ""); return }
+        if (args[0] === "login") { cb(null, "session-token", ""); return }
+        cb(null, "", "")
+      })
+
+      // This should retry and succeed. If isTransientError does not recognize the
+      // formatted "timed out" message, this will throw instead of retrying.
+      await store.login()
+      expect(statusCallCount).toBe(2)
+    })
+
+    it("recognizes formatted timeout errors from inner operations as transient", async () => {
+      // When an inner bw command (e.g. unlock) times out, the formatted error
+      // message is "bw CLI error: unlock timed out -- usually resolves on retry...".
+      // The login retry loop should recognize this as transient.
+      let unlockCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCallCount++
+          if (unlockCallCount <= 1) {
+            const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+              killed?: boolean
+              signal?: NodeJS.Signals | null
+            }
+            err.killed = true
+            err.signal = "SIGTERM"
+            cb(err, "", "")
+          } else {
+            cb(null, "unlocked-session-token", "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      // Should retry and succeed
+      await store.login()
+      expect(unlockCallCount).toBe(2)
+    })
+
     it("emits nerves events for retry attempts", async () => {
       let callCount = 0
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -1804,6 +2108,237 @@ describe("BitwardenCredentialStore", () => {
       expect(nervesEvents.some((e) =>
         e.event === "repertoire.bw_login_retry",
       )).toBe(true)
+    })
+  })
+
+  describe("withTransientRetry (read operation resilience)", () => {
+    it("succeeds on first attempt without retry", async () => {
+      setupExecMock({
+        stdout: JSON.stringify([{
+          id: "1", name: "test.com",
+          login: { username: "u", password: "p" },
+          revisionDate: "2026-01-01T00:00:00.000Z",
+        }]),
+      })
+
+      const result = await store.list()
+      expect(result).toHaveLength(1)
+
+      // No transient retry nerves events should have been emitted
+      expect(nervesEvents.filter((e) => e.event === "repertoire.bw_transient_retry")).toHaveLength(0)
+    })
+
+    it("retries on transient error and succeeds on second attempt (list)", async () => {
+      let listCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify([{
+              id: "1", name: "test.com",
+              login: { username: "u" },
+              revisionDate: "2026-01-01T00:00:00.000Z",
+            }]), "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.list()
+      expect(result).toHaveLength(1)
+      expect(listCallCount).toBe(2)
+
+      // Should have emitted a transient retry nerves event
+      expect(nervesEvents.some((e) => e.event === "repertoire.bw_transient_retry")).toBe(true)
+    })
+
+    it("retries on transient error and succeeds on second attempt (get)", async () => {
+      let listCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify([{
+              id: "1", name: "test.com",
+              login: { username: "u", password: "p" },
+              revisionDate: "2026-01-01T00:00:00.000Z",
+            }]), "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.get("test.com")
+      expect(result).not.toBeNull()
+      expect(listCallCount).toBe(2)
+    })
+
+    it("retries on transient error and succeeds on second attempt (getRawSecret)", async () => {
+      let listCallCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
+            cb(err, "", "")
+          } else {
+            cb(null, JSON.stringify([{
+              id: "1", name: "test.com",
+              login: { username: "u", password: "secret" },
+            }]), "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.getRawSecret("test.com", "password")
+      expect(result).toBe("secret")
+      expect(listCallCount).toBe(2)
+    })
+
+    it("throws after max transient retry attempts (3) with exponential backoff", async () => {
+      let listCallCount = 0
+      const callTimes: number[] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          callTimes.push(Date.now())
+          const err = new Error("Command timed out") as NodeJS.ErrnoException & {
+            killed?: boolean
+            signal?: NodeJS.Signals | null
+          }
+          err.killed = true
+          err.signal = "SIGTERM"
+          cb(err, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.list()).rejects.toThrow("timed out")
+      expect(listCallCount).toBe(3)
+
+      // Verify exponential backoff: gaps should be ~500ms and ~1000ms
+      expect(callTimes).toHaveLength(3)
+      const gap1 = callTimes[1]! - callTimes[0]!
+      const gap2 = callTimes[2]! - callTimes[1]!
+      expect(gap1).toBeGreaterThanOrEqual(450)
+      expect(gap2).toBeGreaterThanOrEqual(900)
+      expect(gap2).toBeGreaterThan(gap1)
+
+      // Should have emitted 2 retry events (before 2nd and 3rd attempts)
+      const retryEvents = nervesEvents.filter((e) => e.event === "repertoire.bw_transient_retry")
+      expect(retryEvents).toHaveLength(2)
+    })
+
+    it("throws immediately on non-transient error without retry", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(new Error("bw CLI error: invalid JSON from bw list items"), "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.list()).rejects.toThrow("invalid JSON")
+
+      // No transient retry events
+      expect(nervesEvents.filter((e) => e.event === "repertoire.bw_transient_retry")).toHaveLength(0)
+    })
+
+    it("composes transient retry around session retry (transient wraps session)", async () => {
+      // First call: session auth error (triggers session retry which re-authenticates)
+      // Second call (after session refresh): transient timeout error (triggers transient retry)
+      // Third call: succeeds
+      let listCallCount = 0
+      let unlockCount = 0
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          unlockCount++
+          cb(null, `session-${unlockCount}`, "")
+          return
+        }
+        if (args[0] === "list") {
+          listCallCount++
+          if (listCallCount === 1) {
+            // First transient-retry attempt: session auth error
+            // withSessionRetry handles this by refreshing session and retrying
+            cb(new Error("Not logged in"), "", "Not logged in")
+          } else if (listCallCount === 2) {
+            // After session refresh, the SECOND list call still gets a session error
+            // (This tests that transient retry wraps the entire session-retry flow)
+            const err = new Error("bw CLI error: list items timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.")
+            cb(err, "", "")
+          } else {
+            // Third call succeeds
+            cb(null, JSON.stringify([{
+              id: "1", name: "test.com",
+              login: { username: "u" },
+              revisionDate: "2026-01-01T00:00:00.000Z",
+            }]), "")
+          }
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.list()
+      expect(result).toHaveLength(1)
+      // At least 3 list calls (session retry + transient retry)
+      expect(listCallCount).toBeGreaterThanOrEqual(3)
     })
   })
 
@@ -1992,14 +2527,11 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "list") {
           listCallCount++
           if (listCallCount === 1) {
-            // First call fails
-            const err = new Error("bw exploded") as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }
-            err.code = "ETIMEDOUT"
-            err.killed = true
-            err.signal = "SIGTERM"
-            cb(err, "", "")
+            // First call fails with a non-transient error (so withTransientRetry
+            // does not absorb it). Using a parse error here.
+            cb(null, "{not-json", "")
           } else {
-            // Second call succeeds
+            // Subsequent calls succeed
             cb(null, "[]", "")
           }
           return
@@ -2007,8 +2539,8 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      // First call fails
-      await expect(storeInstance.list()).rejects.toThrow()
+      // First call fails (non-transient parse error propagates through withTransientRetry)
+      await expect(storeInstance.list()).rejects.toThrow("invalid JSON")
 
       // Second call should succeed because the lock was released despite the error
       const result = await storeInstance.list()
@@ -2035,7 +2567,8 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "list") {
           listCallCount++
-          if (listCallCount === 1) {
+          if (listCallCount <= 3) {
+            // Fail all 3 transient retry attempts so the error propagates
             const err = new Error("Command timed out") as NodeJS.ErrnoException & {
               killed?: boolean
               signal?: NodeJS.Signals | null
@@ -2051,10 +2584,10 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      // First call times out
+      // First list() call times out (exhausts all 3 transient retry attempts)
       await expect(storeInstance.list()).rejects.toThrow("timed out")
 
-      // Lock should be released — second call succeeds
+      // Lock should be released -- second list() call succeeds
       const result = await storeInstance.list()
       expect(result).toEqual([])
 
