@@ -2716,16 +2716,21 @@ describe("provider CLI command execution", () => {
     writeProviderCredentialPool(homeDir, credentialPool())
 
     const prompts: string[] = []
-    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       promptInput: async (question) => {
         prompts.push(question)
         return "2"
       },
       promptSecret: async () => "pplx-secret",
-    }))
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(prompts.join("\n")).toContain("Slugger // connect bay")
+    expect(output).toContain("... checking current connections")
+    expect(output).toContain("loading portable settings")
+    expect(output).toContain("loading this machine's settings")
     expect(prompts.join("\n")).toContain("Providers")
     expect(prompts.join("\n")).toContain("Perplexity search")
     expect(prompts.join("\n")).toContain("Memory embeddings")
@@ -3599,13 +3604,17 @@ describe("provider CLI command execution", () => {
     }) as typeof mockVaultDeps.rawSecrets.get
     try {
       const prompts: string[] = []
-      const locked = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      const deps = makeCliDeps(homeDir, bundlesRoot, {
         promptInput: async (question) => {
           prompts.push(question)
           return "cancel"
         },
-      }))
+      })
+      const locked = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+      const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
       expect(locked).toBe("connect cancelled.")
+      expect(output).toContain("... checking current connections")
+      expect(output).toContain("loading this machine's settings")
       expect(prompts.join("\n")).toContain("[locked] BlueBubbles iMessage")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get

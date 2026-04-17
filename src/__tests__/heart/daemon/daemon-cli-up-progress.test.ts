@@ -208,10 +208,11 @@ describe("ouro up: UpProgress integration", () => {
     )
   })
 
-  it("ends progress and returns the daemon message when a drift restart does not answer", async () => {
+  it("keeps daemon startup unresolved and surfaces replacement breadcrumbs when a drift restart does not answer", async () => {
     vi.useFakeTimers()
     mocks.upProgressCompletePhase.mockClear()
     mocks.upProgressEnd.mockClear()
+    mocks.upProgressAnnounceStep.mockClear()
     const sendCommand = vi.fn(async (_socketPath, command) => {
       if (command.kind === "daemon.status") {
         return {
@@ -247,8 +248,11 @@ describe("ouro up: UpProgress integration", () => {
       await vi.advanceTimersByTimeAsync(10_500)
       const result = await resultPromise
 
-      expect(result).toContain("daemon restart has not answered yet")
-      expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("starting daemon", "not answering yet")
+      expect(result).toContain("replacement daemon did not answer in time")
+      expect(mocks.upProgressCompletePhase).not.toHaveBeenCalledWith("starting daemon", expect.anything())
+      expect(mocks.upProgressAnnounceStep.mock.calls.some(
+        (call: unknown[]) => String(call[0]).includes("replacement"),
+      )).toBe(true)
       expect(mocks.upProgressEnd).toHaveBeenCalled()
       expect(deps.writeStdout).toHaveBeenCalledWith(result)
     } finally {

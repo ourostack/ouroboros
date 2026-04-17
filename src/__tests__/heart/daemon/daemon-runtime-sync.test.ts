@@ -40,7 +40,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.alreadyRunning).toBe(false)
     expect(result.verifyStartupStatus).toBe(true)
     expect(result.startedPid).toBe(777)
-    expect(result.message).toContain("restarted stale daemon")
+    expect(result.message).toContain("replaced the running background service")
     expect(result.message).toContain("0.1.0-alpha.6")
     expect(result.message).toContain("0.1.0-alpha.20")
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
