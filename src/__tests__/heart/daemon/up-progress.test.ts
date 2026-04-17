@@ -127,6 +127,78 @@ describe("UpProgress", () => {
     })
   })
 
+  describe("failPhase", () => {
+    it("does nothing when no phase is active", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+
+      progress.failPhase("provider checks", "failed")
+
+      expect(write).not.toHaveBeenCalled()
+      expect(progress.render(1000)).toBe("")
+    })
+
+    it("writes a failed phase line in non-TTY command mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({
+        write,
+        isTTY: false,
+        eventScope: "command",
+        commandName: "connect perplexity",
+      })
+
+      progress.startPhase("saving Perplexity key")
+      progress.failPhase("saving Perplexity key", "failed")
+
+      const written = write.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+      expect(written).toContain("... saving Perplexity key")
+      expect(written).toContain("✗ saving Perplexity key — failed")
+    })
+
+    it("writes a failed phase line without detail in non-TTY command mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({
+        write,
+        isTTY: false,
+        eventScope: "command",
+        commandName: "connect providers",
+      })
+
+      progress.startPhase("opening provider auth")
+      progress.failPhase("opening provider auth")
+
+      const written = write.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+      expect(written).toContain("... opening provider auth")
+      expect(written).toContain("✗ opening provider auth")
+      expect(written).not.toContain("—")
+    })
+
+    it("renders failed phases with a red x in TTY mode", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+
+      progress.startPhase("starting daemon")
+      progress.failPhase("starting daemon", "failed")
+
+      const output = progress.render(1000)
+      expect(output).toContain("\u2717")
+      expect(output).toContain("starting daemon")
+      expect(output).toContain("failed")
+    })
+
+    it("renders failed phases without detail in default event scope", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+
+      progress.startPhase("provider checks")
+      progress.failPhase("provider checks")
+
+      const written = write.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+      expect(written).toContain("... provider checks")
+      expect(written).toContain("✗ provider checks")
+      expect(written).not.toContain("—")
+    })
+  })
+
   // ── render (TTY mode) ──
 
   describe("render (TTY mode)", () => {

@@ -50,6 +50,7 @@ import {
   upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
   type RuntimeCredentialConfig,
+  type RuntimeCredentialConfigReadResult,
 } from "../runtime-credentials"
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
 import { buildAgentProviderVisibility } from "../provider-visibility"
@@ -1522,15 +1523,12 @@ function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): bo
     if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return false
     cursor = (cursor as Record<string, unknown>)[segment]
   }
-  return typeof cursor === "string" ? cursor.trim().length > 0 : cursor !== undefined && cursor !== null
+  return typeof cursor === "string" && cursor.trim().length > 0
 }
 
 function runtimeConfigReadStatus(
-  runtime:
-    | Awaited<ReturnType<typeof refreshRuntimeCredentialConfig>>
-    | Awaited<ReturnType<typeof refreshMachineRuntimeCredentialConfig>>,
-): "ready" | "missing" | "locked" | "needs attention" {
-  if (runtime.ok) return "ready"
+  runtime: Extract<RuntimeCredentialConfigReadResult, { ok: false }>,
+): "missing" | "locked" | "needs attention" {
   if (runtime.reason === "missing") return "missing"
   if (/locked/i.test(runtime.error)) return "locked"
   return "needs attention"
@@ -1546,7 +1544,7 @@ function cliSleep(deps: OuroCliDeps, ms: number): Promise<void> {
 }
 
 async function withCliTimeout<T>(timeoutMs: number, label: string, run: () => Promise<T>): Promise<T> {
-  let timer: NodeJS.Timeout | null = null
+  let timer!: NodeJS.Timeout
   try {
     return await Promise.race([
       run(),
@@ -1555,7 +1553,7 @@ async function withCliTimeout<T>(timeoutMs: number, label: string, run: () => Pr
       }),
     ])
   } finally {
-    if (timer) clearTimeout(timer)
+    clearTimeout(timer)
   }
 }
 
@@ -1623,10 +1621,9 @@ async function storeRuntimeConfigKey(input: {
 }
 
 function readRuntimeApplyWorker(
-  payload: ReturnType<typeof parseStatusPayload>,
+  payload: NonNullable<ReturnType<typeof parseStatusPayload>>,
   agent: string,
 ): { agent: string; worker: string; status: string; errorReason: string | null; fixHint: string | null } | null {
-  if (!payload) return null
   return payload.workers.find((worker) => worker.agent === agent) ?? null
 }
 
@@ -2151,9 +2148,8 @@ async function executeConnectProviders(agent: string, deps: OuroCliDeps): Promis
 }
 
 function machineRuntimeReadStatus(
-  runtime: Awaited<ReturnType<typeof refreshMachineRuntimeCredentialConfig>>,
-): "attached" | "not attached" | "locked" | "needs attention" {
-  if (runtime.ok) return "attached"
+  runtime: Extract<RuntimeCredentialConfigReadResult, { ok: false }>,
+): "not attached" | "locked" | "needs attention" {
   if (runtime.reason === "missing") return "not attached"
   if (/locked/i.test(runtime.error)) return "locked"
   return "needs attention"
