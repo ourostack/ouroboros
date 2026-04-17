@@ -102,6 +102,7 @@ import {
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
+import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
 import type {
   ProviderCredentialPool,
@@ -118,6 +119,8 @@ const NOW = "2026-04-12T20:10:00.000Z"
 const mockPingProvider = vi.mocked(pingProvider)
 const mockPingGithubCopilotModel = vi.mocked(pingGithubCopilotModel)
 const cleanup: string[] = []
+
+mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1] })
 
 function emitTestEvent(testName: string): void {
   emitNervesEvent({
@@ -377,6 +380,7 @@ function writeAgentVaultLocator(
 
 afterEach(() => {
   mockPingProvider.mockReset()
+  mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1] })
   mockPingGithubCopilotModel.mockReset()
   mockPingGithubCopilotModel.mockResolvedValue({ ok: true })
   mockProviderCredentials.pools.clear()
@@ -2727,8 +2731,13 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
-    expect(prompts.join("\n")).toContain("Slugger // connect bay")
+    expect(prompts.join("\n")).toContain("Slugger connect bay")
+    expect(prompts.join("\n")).toContain("Next best move")
+    expect(prompts.join("\n")).toContain("Provider core")
+    expect(prompts.join("\n")).toContain("Portable")
+    expect(prompts.join("\n")).toContain("This machine")
     expect(output).toContain("... checking current connections")
+    expect(output).toContain("checking selected providers")
     expect(output).toContain("loading portable settings")
     expect(output).toContain("loading this machine's settings")
     expect(prompts.join("\n")).toContain("Providers")
@@ -2737,6 +2746,503 @@ describe("provider CLI command execution", () => {
     expect(prompts.join("\n")).toContain("Teams")
     expect(prompts.join("\n")).toContain("BlueBubbles iMessage")
     expect(result).toContain("Perplexity connected for Slugger")
+  })
+
+  it("runs the shared live provider verification path before rendering the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_live",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking selected providers")
+    expect(output).toContain("reading vault items for Slugger...")
+    expect(output).toContain("checking openai-codex / gpt-5.4...")
+    expect(output).toContain("checking minimax / MiniMax-M2.5...")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
+    expect(mockPingProvider).toHaveBeenCalledTimes(2)
+    expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, { model: "gpt-5.4" })
+    expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, { model: "MiniMax-M2.5" })
+  })
+
+  it("renders failed live provider checks as attention instead of auth gaps in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification failed")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-failed-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-failed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_failed",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: false, message: "400 status code (no body)", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking openai-codex / gpt-5.4...")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
+    expect(prompts.join("\n")).toContain("openai-codex / gpt-5.4")
+    expect(prompts.join("\n")).toContain("failed live check: 400 status code (no body)")
+    expect(prompts.join("\n")).not.toContain("Providers - needs credentials")
+  })
+
+  it("shows an everything-ready next move when every connect capability is already available", async () => {
+    emitTestEvent("provider cli connect menu everything ready")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-everything-ready-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-everything-ready-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        teams: { enabled: true },
+        bluebubbles: { enabled: true },
+      }
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_everything_ready",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "embed-secret",
+      },
+      teams: {
+        clientId: "teams-client-id",
+        clientSecret: "teams-secret",
+        tenantId: "tenant-id",
+      },
+    })
+    writeMachineIdentity(homeDir, "machine_everything_ready")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/machines/machine_everything_ready/config", runtimeConfigSecret({
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:1234",
+        password: "bb-password",
+        accountId: "default",
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("Everything here is ready. Pick what you want to review or refresh.")
+  })
+
+  it("renders transient provider-read trouble as attention in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu transient provider trouble")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-transient-provider-trouble-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-transient-provider-trouble-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeUnavailableProviderCredentialPool("Slugger", "ETIMEDOUT while reading vault")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
+  })
+
+  it("renders locked provider access with an unlock next move in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu provider locked")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-locked-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-locked-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked on this machine")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+locked/)
+    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+  })
+
+  it("treats generic provider vault read failures as unlockable in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu provider unlock repair")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeUnavailableProviderCredentialPool("Slugger", "vault backend refused the request")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+locked/)
+    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+  })
+
+  it("keeps the connect bay usable when provider verification throws unexpectedly", async () => {
+    emitTestEvent("provider cli connect menu provider health throws")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-health-throws-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-health-throws-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockProviderCredentials.refreshProviderCredentialPool.mockImplementationOnce(async (_agentName, options) => {
+      options?.onProgress?.("opening credential vault")
+      throw new Error("vault subprocess crashed")
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("opening credential vault")
+    expect(prompts.join("\n")).toContain("Run 'ouro auth verify --agent Slugger' to inspect provider health.")
+  })
+
+  it("includes a runnable next-step command when the recommended capability needs setup", async () => {
+    emitTestEvent("provider cli connect menu next step command")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-next-step-command-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-next-step-command-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("run: ouro connect perplexity --agent Slugger")
+  })
+
+  it("keeps the connect bay usable when provider verification throws a string", async () => {
+    emitTestEvent("provider cli connect menu provider health throws string")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-health-throws-string-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-health-throws-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockProviderCredentials.refreshProviderCredentialPool.mockImplementationOnce(async (_agentName, options) => {
+      options?.onProgress?.("opening credential vault")
+      throw "vault subprocess string broke"
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("Run 'ouro auth verify --agent Slugger' to inspect provider health.")
+  })
+
+  it("renders the connect bay with ANSI section styling on TTY terminals", async () => {
+    emitTestEvent("provider cli connect menu tty styling")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-tty-styling-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-tty-styling-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("\x1b[38;2;78;201;176m──\x1b[0m")
+    expect(prompts.join("\n")).toContain("\x1b[1mSlugger connect bay\x1b[0m")
+  })
+
+  it("shows setup guidance when a provider lane is not configured on this machine", async () => {
+    emitTestEvent("provider cli connect menu unconfigured lane")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-unconfigured-lane-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-unconfigured-lane-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    fs.mkdirSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "providers.json"), "{not-json", "utf-8")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("choose provider and model")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs setup/)
+  })
+
+  it("treats missing agent.json provider selection as setup work in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu missing agent json provider")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-missing-agent-json-provider-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-missing-agent-json-provider-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      delete config.humanFacing
+    })
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs setup/)
+    expect(prompts.join("\n")).toContain("run: ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
+  })
+
+  it("surfaces stale provider readiness when another lane blocks the live check", async () => {
+    emitTestEvent("provider cli connect menu stale readiness")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "github-copilot",
+          model: "gpt-4o",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        inner: {
+          status: "stale",
+          provider: "github-copilot",
+          model: "gpt-4o",
+          checkedAt: NOW,
+          credentialRevision: "cred_ghc_stale",
+          reason: "previous ping expired",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "github-copilot": {
+          provider: "github-copilot",
+          revision: "cred_ghc_stale",
+          updatedAt: NOW,
+          credentials: {},
+          config: { baseUrl: "https://api.copilot.example.com" },
+          provenance: {
+            source: "manual",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("live check is stale")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs credentials/)
   })
 
   it("renders provider repair status in the connect bay when bindings need auth or attention", async () => {
@@ -2771,7 +3277,8 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs auth] Providers")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs credentials/)
+    expect(prompts.join("\n")).toContain("credentials missing")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -2816,6 +3323,10 @@ describe("provider CLI command execution", () => {
       },
     }))
     prompts = []
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "github-copilot") return { ok: false, message: "bad token", attempts: [1] }
+      return { ok: true, message: "ok", attempts: [1] }
+    })
     result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
         prompts.push(question)
@@ -2823,7 +3334,8 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Providers")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
+    expect(prompts.join("\n")).toContain("failed live check: bad token")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -2851,6 +3363,7 @@ describe("provider CLI command execution", () => {
       },
     }))
     prompts = []
+    mockPingProvider.mockImplementation(async () => ({ ok: true, message: "ok", attempts: [1] }))
     result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async (question) => {
         prompts.push(question)
@@ -2858,7 +3371,130 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Providers")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
+  })
+
+  it("falls back to unknown failed-live-check detail and auth guidance when cached readiness lacks an error", async () => {
+    emitTestEvent("provider cli connect menu failed readiness fallback")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "failed",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          checkedAt: NOW,
+          credentialRevision: "cred_openai_fallback",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_fallback",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    const healthSpy = vi.spyOn(agentConfigCheck, "checkAgentConfigWithProviderHealth").mockResolvedValueOnce({ ok: true })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+    healthSpy.mockRestore()
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("failed live check: unknown error")
+    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+  })
+
+  it("uses the short stale wording when cached readiness has no stale reason", async () => {
+    emitTestEvent("provider cli connect menu stale readiness fallback")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "github-copilot",
+          model: "gpt-4o",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "stale",
+          provider: "github-copilot",
+          model: "gpt-4o",
+          checkedAt: NOW,
+          credentialRevision: "cred_ghc_stale_fallback",
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "github-copilot": {
+          provider: "github-copilot",
+          revision: "cred_ghc_stale_fallback",
+          updatedAt: NOW,
+          credentials: {},
+          config: { baseUrl: "https://api.copilot.example.com" },
+          provenance: {
+            source: "manual",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    const healthSpy = vi.spyOn(agentConfigCheck, "checkAgentConfigWithProviderHealth").mockResolvedValueOnce({ ok: true })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+    healthSpy.mockRestore()
+
+    expect(result).toBe("connect cancelled.")
+    expect(prompts.join("\n")).toContain("live check is stale")
   })
 
   it("shows providers as ready in the connect bay when both lanes are configured and healthy", async () => {
@@ -2909,7 +3545,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Providers")
+    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
   })
 
   it("keeps connect menu fallbacks compact for noninteractive shells and alternate choices", async () => {
@@ -2920,7 +3556,8 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_menu")
 
     const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
-    expect(noninteractive).toContain("Slugger // connect bay")
+    expect(noninteractive).toContain("Slugger connect bay")
+    expect(noninteractive).toContain("Next best move")
     expect(noninteractive).toContain("ouro connect providers --agent Slugger")
     expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
     expect(noninteractive).toContain("ouro connect embeddings --agent Slugger")
@@ -3615,7 +4252,7 @@ describe("provider CLI command execution", () => {
       expect(locked).toBe("connect cancelled.")
       expect(output).toContain("... checking current connections")
       expect(output).toContain("loading this machine's settings")
-      expect(prompts.join("\n")).toContain("[locked] BlueBubbles iMessage")
+      expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+locked/)
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -3632,7 +4269,7 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(malformed).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] BlueBubbles iMessage")
+    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+needs attention/)
   })
 
   it("shows BlueBubbles as attached in the connect bay when this machine is already configured", async () => {
@@ -3665,7 +4302,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[attached] BlueBubbles iMessage")
+    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+attached/)
   })
 
   it("shows BlueBubbles as not attached when this machine config is incomplete", async () => {
@@ -3697,7 +4334,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[not attached] BlueBubbles iMessage")
+    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+not attached/)
   })
 
   it("renders portable runtime config trouble clearly in the connect bay", async () => {
@@ -3717,9 +4354,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[needs attention] Perplexity search")
-    expect(prompts.join("\n")).toContain("[needs attention] Memory embeddings")
-    expect(prompts.join("\n")).toContain("[needs attention] Teams")
+    expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+needs attention/)
+    expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+needs attention/)
+    expect(prompts.join("\n")).toMatch(/4\. Teams\s+needs attention/)
   })
 
   it("renders portable runtime config as locked when this machine cannot read the runtime vault item", async () => {
@@ -3746,9 +4383,9 @@ describe("provider CLI command execution", () => {
       }))
 
       expect(result).toBe("connect cancelled.")
-      expect(prompts.join("\n")).toContain("[locked] Perplexity search")
-      expect(prompts.join("\n")).toContain("[locked] Memory embeddings")
-      expect(prompts.join("\n")).toContain("[locked] Teams")
+      expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+locked/)
+      expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+locked/)
+      expect(prompts.join("\n")).toMatch(/4\. Teams\s+locked/)
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -3774,9 +4411,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Perplexity search")
-    expect(prompts.join("\n")).toContain("[missing] Memory embeddings")
-    expect(prompts.join("\n")).toContain("[missing] Teams")
+    expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+ready/)
+    expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+missing/)
+    expect(prompts.join("\n")).toMatch(/4\. Teams\s+missing/)
   })
 
   it("keeps Teams marked missing until the sense is enabled, even when credentials already exist", async () => {
@@ -3802,7 +4439,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[missing] Teams")
+    expect(prompts.join("\n")).toMatch(/4\. Teams\s+missing/)
   })
 
   it("shows Teams as ready in the connect bay when credentials exist and the sense is enabled", async () => {
@@ -3834,7 +4471,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("[ready] Teams")
+    expect(prompts.join("\n")).toMatch(/4\. Teams\s+ready/)
   })
 
   it("provider refresh leaves visible progress when vault refresh throws", async () => {
