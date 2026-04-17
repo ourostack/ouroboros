@@ -203,6 +203,173 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
   return []
 }
 
+type AgentResolutionFailureMode = "throw" | "return-message"
+type MissingAgentResolvableKind =
+  | "provider.use"
+  | "provider.check"
+  | "provider.status"
+  | "provider.refresh"
+  | "vault.create"
+  | "vault.replace"
+  | "vault.recover"
+  | "vault.unlock"
+  | "vault.status"
+  | "vault.config.set"
+  | "vault.config.status"
+  | "connect"
+  | "auth.run"
+  | "auth.verify"
+  | "auth.switch"
+  | "config.model"
+  | "config.models"
+  | "setup"
+  | "bluebubbles.replay"
+  | "thoughts"
+  | "attention.list"
+  | "attention.show"
+  | "attention.history"
+  | "inner.status"
+
+type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
+type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
+type ResolvedOuroCliCommand =
+  | Exclude<OuroCliCommand, MissingAgentResolvableCommand>
+  | {
+    [K in MissingAgentResolvableKind]: ResolvedAgentCommand<Extract<OuroCliCommand, { kind: K }>>
+  }[MissingAgentResolvableKind]
+
+type AgentResolutionOutcome =
+  | { ok: true; command: ResolvedOuroCliCommand }
+  | { ok: false; message: string; failureMode: AgentResolutionFailureMode }
+
+type AgentNameResolutionOutcome =
+  | { ok: true; agent: string }
+  | { ok: false; message: string; failureMode: AgentResolutionFailureMode }
+
+function runtimeContextAgentName(deps: OuroCliDeps): string | undefined {
+  try {
+    return deps.whoamiInfo?.().agentName.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeCliAgentNames(agentNames: string[]): string[] {
+  return [...new Set(agentNames.map((agent) => agent.trim()).filter((agent) => agent.length > 0))]
+}
+
+function resolveSelectedCliAgent(answer: string, agentNames: string[]): string | undefined {
+  const trimmed = answer.trim()
+  if (!trimmed) return undefined
+  const byName = agentNames.find((agent) => agent.toLowerCase() === trimmed.toLowerCase())
+  if (byName) return byName
+  const parsedIndex = Number.parseInt(trimmed, 10)
+  if (Number.isNaN(parsedIndex)) return undefined
+  return agentNames[parsedIndex - 1]
+}
+
+function noAgentsFoundMessage(): string {
+  return "no agents found. Run `ouro` to hatch one or `ouro clone <remote>` to add an existing agent."
+}
+
+function multipleAgentsFoundMessage(agentNames: string[]): string {
+  return [
+    `multiple agents found: ${agentNames.join(", ")}`,
+    "Re-run with --agent <name>.",
+  ].join("\n")
+}
+
+function invalidAgentSelectionMessage(agentNames: string[]): string {
+  return [
+    `invalid agent selection. Available agents: ${agentNames.join(", ")}`,
+    "Re-run with --agent <name>.",
+  ].join("\n")
+}
+
+function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
+  switch (command.kind) {
+    case "thoughts":
+    case "attention.list":
+    case "attention.show":
+    case "attention.history":
+    case "inner.status":
+      return "return-message"
+    case "provider.use":
+    case "provider.check":
+    case "provider.status":
+    case "provider.refresh":
+    case "vault.create":
+    case "vault.replace":
+    case "vault.recover":
+    case "vault.unlock":
+    case "vault.status":
+    case "vault.config.set":
+    case "vault.config.status":
+    case "connect":
+    case "auth.run":
+    case "auth.verify":
+    case "auth.switch":
+    case "config.model":
+    case "config.models":
+    case "setup":
+    case "bluebubbles.replay":
+      return "throw"
+    default:
+      return undefined
+  }
+}
+
+async function resolveMissingAgentName(
+  deps: OuroCliDeps,
+  failureMode: AgentResolutionFailureMode,
+): Promise<AgentNameResolutionOutcome> {
+  const runtimeAgent = runtimeContextAgentName(deps)
+  if (runtimeAgent) {
+    return { ok: true, agent: runtimeAgent }
+  }
+
+  const discoveredAgents = normalizeCliAgentNames(await listCliAgents(deps))
+  if (discoveredAgents.length === 0) {
+    return { ok: false, message: noAgentsFoundMessage(), failureMode }
+  }
+  if (discoveredAgents.length === 1) {
+    return { ok: true, agent: discoveredAgents[0] }
+  }
+  if (!deps.promptInput) {
+    return { ok: false, message: multipleAgentsFoundMessage(discoveredAgents), failureMode }
+  }
+
+  const answer = await deps.promptInput([
+    "Which agent should this use?",
+    ...discoveredAgents.map((agent, index) => `${index + 1}. ${agent}`),
+    `Choose [1-${discoveredAgents.length}] or type a name: `,
+  ].join("\n"))
+  const selectedAgent = resolveSelectedCliAgent(answer, discoveredAgents)
+  if (!selectedAgent) {
+    return { ok: false, message: invalidAgentSelectionMessage(discoveredAgents), failureMode }
+  }
+  return { ok: true, agent: selectedAgent }
+}
+
+async function resolveCommandAgent(
+  command: OuroCliCommand,
+  deps: OuroCliDeps,
+): Promise<AgentResolutionOutcome> {
+  const failureMode = agentResolutionFailureMode(command)
+  if (!failureMode) {
+    return { ok: true, command: command as ResolvedOuroCliCommand }
+  }
+
+  const explicitAgent = "agent" in command && typeof command.agent === "string" ? command.agent.trim() : ""
+  if (explicitAgent) {
+    return { ok: true, command: { ...command, agent: explicitAgent } as ResolvedOuroCliCommand }
+  }
+
+  const resolvedAgent = await resolveMissingAgentName(deps, failureMode)
+  if (!resolvedAgent.ok) return resolvedAgent
+  return { ok: true, command: { ...command, agent: resolvedAgent.agent } as ResolvedOuroCliCommand }
+}
+
 function managedAgentsSignature(agentNames: string[]): string {
   const unique = [...new Set(agentNames.map((agent) => agent.trim()).filter((agent) => agent.length > 0))].sort()
   return unique.length > 0 ? unique.join(",") : "(none)"
@@ -1086,7 +1253,7 @@ async function createRepairVaultForAgent(input: {
 }
 
 async function executeVaultUnlock(
-  command: Extract<OuroCliCommand, { kind: "vault.unlock" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.unlock" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1131,7 +1298,7 @@ async function executeVaultUnlock(
 }
 
 async function executeVaultCreate(
-  command: Extract<OuroCliCommand, { kind: "vault.create" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.create" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1208,7 +1375,7 @@ async function executeVaultCreate(
 }
 
 async function executeVaultReplace(
-  command: Extract<OuroCliCommand, { kind: "vault.replace" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.replace" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1262,7 +1429,7 @@ async function executeVaultReplace(
 }
 
 async function executeVaultRecover(
-  command: Extract<OuroCliCommand, { kind: "vault.recover" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.recover" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1360,7 +1527,7 @@ async function executeVaultRecover(
 }
 
 async function executeVaultStatus(
-  command: Extract<OuroCliCommand, { kind: "vault.status" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.status" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1558,7 +1725,7 @@ async function withCliTimeout<T>(timeoutMs: number, label: string, run: () => Pr
 }
 
 async function promptRuntimeConfigValue(
-  command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.config.set" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.value !== undefined) return command.value
@@ -1687,7 +1854,7 @@ async function applyRuntimeChangeToRunningAgent(
 }
 
 async function executeVaultConfigSet(
-  command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.config.set" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -1730,7 +1897,7 @@ async function executeVaultConfigSet(
 }
 
 async function executeVaultConfigStatus(
-  command: Extract<OuroCliCommand, { kind: "vault.config.status" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.config.status" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -2166,7 +2333,7 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
 }
 
 async function executeConnect(
-  command: Extract<OuroCliCommand, { kind: "connect" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "connect" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.target === "providers") return executeConnectProviders(command.agent, deps)
@@ -2333,7 +2500,7 @@ function writeProviderReadiness(input: {
 }
 
 async function executeProviderUse(
-  command: Extract<OuroCliCommand, { kind: "provider.use" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "provider.use" }>,
   deps: OuroCliDeps,
   options: { writeStdout?: boolean } = {},
 ): Promise<string> {
@@ -2417,7 +2584,7 @@ async function executeProviderUse(
 }
 
 async function executeProviderCheck(
-  command: Extract<OuroCliCommand, { kind: "provider.check" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "provider.check" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const progress = createHumanCommandProgress(deps, "provider check")
@@ -2491,7 +2658,7 @@ function renderProviderCredentialLine(credential: EffectiveProviderCredentialSta
 }
 
 async function executeProviderStatus(
-  command: Extract<OuroCliCommand, { kind: "provider.status" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "provider.status" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const agentRoot = providerCliAgentRoot(command, deps)
@@ -2540,7 +2707,7 @@ async function executeProviderStatus(
 }
 
 async function executeProviderRefresh(
-  command: Extract<OuroCliCommand, { kind: "provider.refresh" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "provider.refresh" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
@@ -2590,7 +2757,7 @@ async function executeProviderRefresh(
 }
 
 async function executeAuthRun(
-  command: Extract<OuroCliCommand, { kind: "auth.run" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "auth.run" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
@@ -2807,7 +2974,7 @@ async function runReadinessRepairForDegraded(
 }
 
 async function executeLegacyAuthSwitch(
-  command: Extract<OuroCliCommand, { kind: "auth.switch" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "auth.switch" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const { state } = readOrBootstrapProviderState(command.agent, deps)
@@ -2837,7 +3004,7 @@ async function executeLegacyAuthSwitch(
 }
 
 async function executeLegacyConfigModel(
-  command: Extract<OuroCliCommand, { kind: "config.model" }>,
+  command: Extract<ResolvedOuroCliCommand, { kind: "config.model" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
@@ -3364,9 +3531,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return text
   }
 
-  let command: OuroCliCommand
+  let parsedCommand: OuroCliCommand
   try {
-    command = parseOuroCommand(args)
+    parsedCommand = parseOuroCommand(args)
   } catch (parseError) {
     if (deps.startChat && deps.listDiscoveredAgents && args.length === 1) {
       const discovered = await Promise.resolve(deps.listDiscoveredAgents())
@@ -3378,6 +3545,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
     throw parseError
   }
+
+  const resolvedCommand = await resolveCommandAgent(parsedCommand, deps)
+  if (!resolvedCommand.ok) {
+    if (resolvedCommand.failureMode === "return-message") {
+      deps.writeStdout(resolvedCommand.message)
+      return resolvedCommand.message
+    }
+    throw new Error(resolvedCommand.message)
+  }
+  let command: ResolvedOuroCliCommand = resolvedCommand.command
 
   if (args.length === 0) {
     const discovered = await Promise.resolve(
@@ -4570,28 +4747,39 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
     try {
-      const info = deps.whoamiInfo
-        ? deps.whoamiInfo()
-        : {
-            agentName: getAgentName(),
-            homePath: path.join(getAgentBundlesRoot(), `${getAgentName()}.ouro`),
-            bonesVersion: getRuntimeMetadata().version,
-          }
+      if (deps.whoamiInfo) {
+        try {
+          const info = deps.whoamiInfo()
+          const message = [
+            `agent: ${info.agentName}`,
+            `home: ${info.homePath}`,
+            `bones: ${info.bonesVersion}`,
+          ].join("\n")
+          deps.writeStdout(message)
+          return message
+        } catch {
+          // Fall through to shared agent selection when no runtime identity is available.
+        }
+      }
+      const resolvedAgent = await resolveMissingAgentName(deps, "return-message")
+      if (!resolvedAgent.ok) {
+        deps.writeStdout(resolvedAgent.message)
+        return resolvedAgent.message
+      }
+      const agentRoot = path.join(getAgentBundlesRoot(), `${resolvedAgent.agent}.ouro`)
       const message = [
-        `agent: ${info.agentName}`,
-        `home: ${info.homePath}`,
-        `bones: ${info.bonesVersion}`,
+        `agent: ${resolvedAgent.agent}`,
+        `home: ${agentRoot}`,
+        `bones: ${getRuntimeMetadata().version}`,
       ].join("\n")
       deps.writeStdout(message)
       return message
     } catch {
-      const message = "error: no agent context — use --agent <name> to specify"
+      const message = noAgentsFoundMessage()
       deps.writeStdout(message)
       return message
     }
-    /* v8 ignore stop */
   }
 
   // ── changelog (local, no daemon socket needed) ──

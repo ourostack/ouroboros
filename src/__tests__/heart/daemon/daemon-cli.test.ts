@@ -6318,12 +6318,14 @@ describe("ouro thoughts CLI execution", () => {
     expect(result).toContain("no inner dialog session found")
   })
 
-  it("returns error message when no --agent and no agent context", async () => {
-    const deps = makeDeps()
+  it("returns a clear no-agents message when thoughts has no target to use", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => []),
+    })
     const result = await runOuroCli(["thoughts"], deps)
 
-    expect(result).toContain("error")
-    expect(result).toContain("--agent")
+    expect(result).toContain("no agents found")
+    expect(result).toContain("ouro")
   })
 
   it("enters follow mode and resolves on SIGINT", async () => {
