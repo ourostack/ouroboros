@@ -77,7 +77,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local.
+`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local. Before the menu appears, Ouro now prints a short `checking current connections` progress step while it reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
@@ -108,8 +108,9 @@ Human-facing commands must not turn into a wall of text or a silent blinking cur
 The checklist contract is:
 
 - start with the fewest words that orient a non-terminal user
-- print or animate the active step when work may take more than a few seconds
+- print or animate the active step when work may take more than about three seconds
 - show changed substeps such as `reading vault items`, `storing openai-codex credentials`, or `opening credential vault`
+- for daemon replacement, say that Ouro is replacing the running background service and keep the step unresolved until the replacement is actually answering
 - complete with a compact success/failure summary and one next action
 - never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
 

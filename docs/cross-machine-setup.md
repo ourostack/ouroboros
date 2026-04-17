@@ -126,7 +126,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors keep progress visible while they read/write the vault and reload the running agent, and they do not print the entered secret.
+The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors now show a short `checking current connections` preflight while they read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret.
 
 ## Step 4: Start the daemon
 
@@ -138,6 +138,8 @@ ouro up
 ```
 
 The daemon discovers your agent bundle, starts the inner dialog worker, and begins sync. You can now talk to your agent:
+
+If `ouro up` has to replace an older or drifted daemon, it now says that plainly and keeps showing replacement progress until the new background service is actually answering.
 
 ```bash
 ouro chat <name>
