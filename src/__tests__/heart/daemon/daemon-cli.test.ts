@@ -2392,15 +2392,18 @@ describe("ouro CLI execution", () => {
       bundleRoot: "/tmp/AgentBundles/ClaudeSprout.ouro",
       selectedIdentity: "medusa.md",
     }))
-    const runAuthFlow = vi.fn(async () => ({
-      agentName: "ClaudeSprout",
-      provider: "anthropic",
-      message: "authenticated ClaudeSprout with anthropic",
-      credentialPath: "vault:test:providers:test",
-      credentials: {
-        setupToken: `sk-ant-oat01-${"a".repeat(90)}`,
-      },
-    } as any))
+    const runAuthFlow = vi.fn(async (input: { onProgress?: (message: string) => void }) => {
+      input.onProgress?.("opening anthropic browser login")
+      return {
+        agentName: "ClaudeSprout",
+        provider: "anthropic",
+        message: "authenticated ClaudeSprout with anthropic",
+        credentialPath: "vault:test:providers:test",
+        credentials: {
+          setupToken: `sk-ant-oat01-${"a".repeat(90)}`,
+        },
+      } as any
+    })
     const promptInput = vi.fn(async () => "unexpected")
 
     const deps = {
@@ -2436,8 +2439,10 @@ describe("ouro CLI execution", () => {
       agentName: "ClaudeSprout",
       provider: "anthropic",
       promptInput,
-      onProgress: deps.writeStdout,
+      onProgress: expect.any(Function),
     })
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("resolving anthropic credentials"))
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("opening anthropic browser login"))
     expect(promptInput).not.toHaveBeenCalledWith("Anthropic setup-token: ")
     expect(runHatchFlow).toHaveBeenCalledWith({
       agentName: "ClaudeSprout",
@@ -2498,8 +2503,9 @@ describe("ouro CLI execution", () => {
       agentName: "CodexSprout",
       provider: "openai-codex",
       promptInput,
-      onProgress: deps.writeStdout,
+      onProgress: expect.any(Function),
     })
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("resolving openai-codex credentials"))
     expect(promptInput).not.toHaveBeenCalledWith("OpenAI Codex OAuth token: ")
     expect(runHatchFlow).toHaveBeenCalledWith({
       agentName: "CodexSprout",
@@ -2509,6 +2515,45 @@ describe("ouro CLI execution", () => {
         oauthAccessToken: "oauth-token-abc",
       },
     })
+  })
+
+  it("ends hatch auth progress cleanly when the shared runtime auth flow fails", async () => {
+    const runHatchFlow = vi.fn()
+    const runAuthFlow = vi.fn(async () => {
+      throw new Error("browser auth failed")
+    })
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "unexpected sendCommand call" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 222 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      runAuthFlow,
+      promptInput: vi.fn(async () => "unexpected"),
+    } as OuroCliDeps
+
+    await expect(runOuroCli([
+      "hatch",
+      "--agent",
+      "SadSprout",
+      "--human",
+      "Ari",
+      "--provider",
+      "openai-codex",
+    ], deps)).rejects.toThrow("browser auth failed")
+
+    expect(runAuthFlow).toHaveBeenCalledWith({
+      agentName: "SadSprout",
+      provider: "openai-codex",
+      promptInput: deps.promptInput,
+      onProgress: expect.any(Function),
+    })
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("resolving openai-codex credentials"))
+    expect(runHatchFlow).not.toHaveBeenCalled()
   })
 
   it("throws usage when hatch input cannot resolve required values", async () => {

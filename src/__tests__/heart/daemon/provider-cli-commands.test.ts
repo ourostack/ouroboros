@@ -102,7 +102,7 @@ import {
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
-import { pingProvider } from "../../../heart/provider-ping"
+import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
 import type {
   ProviderCredentialPool,
   ProviderCredentialPoolReadResult,
@@ -116,6 +116,7 @@ import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-creden
 
 const NOW = "2026-04-12T20:10:00.000Z"
 const mockPingProvider = vi.mocked(pingProvider)
+const mockPingGithubCopilotModel = vi.mocked(pingGithubCopilotModel)
 const cleanup: string[] = []
 
 function emitTestEvent(testName: string): void {
@@ -331,6 +332,8 @@ function writeAgentVaultLocator(
 
 afterEach(() => {
   mockPingProvider.mockReset()
+  mockPingGithubCopilotModel.mockReset()
+  mockPingGithubCopilotModel.mockResolvedValue({ ok: true })
   mockProviderCredentials.pools.clear()
   mockProviderCredentials.refreshProviderCredentialPool.mockClear()
   mockProviderCredentials.readProviderCredentialPool.mockClear()
@@ -1044,6 +1047,9 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-vault-unlock-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "unlock-material",
+    })
     const result = await runOuroCli([
       "vault",
       "unlock",
@@ -1051,12 +1057,15 @@ describe("provider CLI command execution", () => {
       "Slugger",
       "--store",
       "plaintext-file",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "unlock-material",
-    }))
+    ], deps)
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("vault unlocked for Slugger")
     expect(result).toContain("explicit plaintext fallback")
+    expect(output).toContain("... saving local unlock")
+    expect(output).toContain("✓ saving local unlock")
+    expect(output).toContain("... checking vault access")
+    expect(output).toContain("✓ checking vault access")
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
@@ -1097,6 +1106,9 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-vault-create-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
+    const createDeps = makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "Chosen-create-secret1!",
+    })
     const created = await runOuroCli([
       "vault",
       "create",
@@ -1108,12 +1120,17 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      promptSecret: async () => "Chosen-create-secret1!",
-    }))
+    ], createDeps)
+    const createOutput = (createDeps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(created).toContain("vault created for Slugger")
     expect(created).not.toContain("vault unlock secret:")
+    expect(createOutput).toContain("... creating vault account")
+    expect(createOutput).toContain("✓ creating vault account")
+    expect(createOutput).toContain("... saving local unlock")
+    expect(createOutput).toContain("✓ saving local unlock")
+    expect(createOutput).toContain("... checking vault access")
+    expect(createOutput).toContain("✓ checking vault access")
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
       "https://vault.example.com",
@@ -1141,6 +1158,25 @@ describe("provider CLI command execution", () => {
 
     expect(failed).toContain("vault create failed for Slugger: already exists")
     expect(failed).toContain("ouro vault unlock --agent Slugger")
+
+    mockVaultDeps.createVaultAccount.mockRejectedValueOnce(new Error("network down"))
+    const rejectedDeps = makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "Chosen-create-secret1!",
+    })
+    await expect(runOuroCli([
+      "vault",
+      "create",
+      "--agent",
+      "Slugger",
+      "--email",
+      "operator@example.com",
+      "--server",
+      "https://vault.example.com",
+    ], rejectedDeps)).rejects.toThrow("network down")
+    const rejectedOutput = (rejectedDeps as OuroCliDeps & { _output: string[] })._output.join("")
+    expect(rejectedOutput).toContain("... creating vault account")
+    expect(rejectedOutput).toContain("✓ creating vault account")
+    expect(rejectedOutput).toContain("failed")
   })
 
   it("vault create defaults to the stable agent email when no locator exists", async () => {
@@ -1467,6 +1503,13 @@ describe("provider CLI command execution", () => {
 	    writeAgentConfig(bundlesRoot, "Slugger")
 	    const promptQuestions: string[] = []
 
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        promptQuestions.push(question)
+        return "Chosen-replacement-secret1!"
+      },
+    })
     const result = await runOuroCli([
       "vault",
       "replace",
@@ -1476,15 +1519,16 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-	    ], makeCliDeps(homeDir, bundlesRoot, {
-	      now: () => Date.parse(NOW),
-	      promptSecret: async (question) => {
-	        promptQuestions.push(question)
-	        return "Chosen-replacement-secret1!"
-	      },
-	    }))
+	    ], deps)
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("vault replaced for Slugger")
+    expect(output).toContain("... creating vault account")
+    expect(output).toContain("✓ creating vault account")
+    expect(output).toContain("... saving local unlock")
+    expect(output).toContain("✓ saving local unlock")
+    expect(output).toContain("... checking vault access")
+    expect(output).toContain("✓ checking vault access")
     expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
     expect(result).toContain("imported: none")
     expect(result).toContain("next: ouro repair --agent Slugger")
@@ -1660,6 +1704,10 @@ describe("provider CLI command execution", () => {
       bluebubbles: { accountId: "default" },
     }), "utf-8")
 
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "Chosen-recovery-secret1!",
+    })
     const result = await runOuroCli([
       "vault",
       "recover",
@@ -1673,12 +1721,18 @@ describe("provider CLI command execution", () => {
       "https://vault.example.com",
       "--store",
       "plaintext-file",
-    ], makeCliDeps(homeDir, bundlesRoot, {
-      now: () => Date.parse(NOW),
-      promptSecret: async () => "Chosen-recovery-secret1!",
-    }))
+    ], deps)
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("vault recovered for Slugger")
+    expect(output).toContain("... creating vault account")
+    expect(output).toContain("✓ creating vault account")
+    expect(output).toContain("... saving local unlock")
+    expect(output).toContain("✓ saving local unlock")
+    expect(output).toContain("... checking vault access")
+    expect(output).toContain("✓ checking vault access")
+    expect(output).toContain("... importing recovered credentials")
+    expect(output).toContain("✓ importing recovered credentials")
     expect(result).toContain("vault: slugger@ouro.bot at https://vault.example.com")
     expect(result).toContain("provider credentials imported: anthropic, github-copilot, minimax")
     expect(result).toContain("runtime credentials imported: operatorNote")
@@ -1973,9 +2027,15 @@ describe("provider CLI command execution", () => {
       integrations: { perplexityApiKey: "pplx-secret" },
     })
 
-    const result = await runOuroCli(["vault", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+    const result = await runOuroCli(["vault", "status", "--agent", "Slugger"], deps)
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("agent: Slugger")
+    expect(output).toContain("... reading runtime credentials")
+    expect(output).toContain("✓ reading runtime credentials")
+    expect(output).toContain("... reading provider credentials")
+    expect(output).toContain("✓ reading provider credentials")
     expect(result).toContain("local unlock: available")
     expect(result).toContain("runtime credentials: bluebubbles.password, integrations.perplexityApiKey")
     expect(result).not.toContain("bb-secret")
@@ -2131,10 +2191,18 @@ describe("provider CLI command execution", () => {
     expect(stored.config.bluebubbles?.serverUrl).toBe("http://localhost:1234")
     expect(stored.config.bluebubbles?.password).toBe("super-secret")
 
-    const status = await runOuroCli(["vault", "config", "status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const outputAfterSet = (deps as OuroCliDeps & { _output: string[] })._output.join("")
+    expect(outputAfterSet).toContain("... storing runtime credential")
+    expect(outputAfterSet).toContain("✓ storing runtime credential")
+
+    const statusDeps = makeCliDeps(homeDir, bundlesRoot)
+    const status = await runOuroCli(["vault", "config", "status", "--agent", "Slugger"], statusDeps)
+    const statusOutput = (statusDeps as OuroCliDeps & { _output: string[] })._output.join("")
     expect(status).toContain("runtime config item: vault:Slugger:runtime/config")
     expect(status).toContain("fields: bluebubbles.password, bluebubbles.serverUrl")
     expect(status).not.toContain("super-secret")
+    expect(statusOutput).toContain("... reading agent runtime config")
+    expect(statusOutput).toContain("✓ reading agent runtime config")
 
     writeRuntimeConfig("Slugger", {})
     resetRuntimeCredentialConfigCache()
@@ -2758,9 +2826,13 @@ describe("provider CLI command execution", () => {
     }))
     writeProviderCredentialPool(homeDir, credentialPool())
 
-    const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+    const result = await runOuroCli(["status", "--agent", "Slugger"], deps)
+    const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("provider status: Slugger")
+    expect(output).toContain("... reading provider credentials")
+    expect(output).toContain("✓ reading provider credentials")
     expect(result).toContain("inner")
     expect(result).toContain("minimax")
     expect(result).toContain("MiniMax-M2.5")
@@ -2783,6 +2855,64 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("outward: unavailable")
     expect(result).toContain("provider-state-missing")
     expect(result).toContain("ouro use --agent Slugger --lane outward")
+  })
+
+  it("config models and config model show progress while reading GitHub Copilot credentials and checking models", async () => {
+    emitTestEvent("provider cli config model progress")
+    const bundlesRoot = makeTempDir("provider-cli-config-model-progress-bundles")
+    const homeDir = makeTempDir("provider-cli-config-model-progress-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config["humanFacing"] = { provider: "github-copilot", model: "gpt-5.4" }
+      config["agentFacing"] = { provider: "github-copilot", model: "gpt-5.4" }
+    })
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        "github-copilot": {
+          provider: "github-copilot",
+          revision: "cred_github_1",
+          updatedAt: NOW,
+          credentials: { githubToken: "gh-secret" },
+          config: { baseUrl: "https://api.githubcopilot.com" },
+          provenance: { source: "auth-flow", updatedAt: NOW },
+        },
+      },
+    }))
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: "gpt-5.4", capabilities: ["chat"] }] }),
+    })) as unknown as typeof fetch
+
+    const modelListDeps = makeCliDeps(homeDir, bundlesRoot, { fetchImpl })
+    const models = await runOuroCli(["config", "models", "--agent", "Slugger"], modelListDeps)
+    const modelListOutput = (modelListDeps as OuroCliDeps & { _output: string[] })._output.join("")
+    expect(models).toContain("available models:")
+    expect(models).toContain("gpt-5.4")
+    expect(models).not.toContain("gh-secret")
+    expect(modelListOutput).toContain("... reading github-copilot credentials")
+    expect(modelListOutput).toContain("✓ reading github-copilot credentials")
+    expect(modelListOutput).toContain("... listing github-copilot models")
+    expect(modelListOutput).toContain("✓ listing github-copilot models")
+
+    const modelSetDeps = makeCliDeps(homeDir, bundlesRoot, { fetchImpl })
+    const updated = await runOuroCli(["config", "model", "--agent", "Slugger", "gpt-5.4"], modelSetDeps)
+    const modelSetOutput = (modelSetDeps as OuroCliDeps & { _output: string[] })._output.join("")
+    expect(updated).toContain("updated Slugger model")
+    expect(updated).not.toContain("gh-secret")
+    expect(modelSetOutput).toContain("... reading github-copilot credentials")
+    expect(modelSetOutput).toContain("✓ reading github-copilot credentials")
+    expect(modelSetOutput).toContain("... listing github-copilot models")
+    expect(modelSetOutput).toContain("✓ listing github-copilot models")
+    expect(modelSetOutput).toContain("... checking gpt-5.4")
+    expect(modelSetOutput).toContain("✓ checking gpt-5.4")
+
+    mockPingGithubCopilotModel.mockRejectedValueOnce(new Error("github ping exploded"))
+    const thrownDeps = makeCliDeps(homeDir, bundlesRoot, { fetchImpl })
+    await expect(runOuroCli(["config", "model", "--agent", "Slugger", "gpt-5.4"], thrownDeps))
+      .rejects.toThrow("github ping exploded")
+    const thrownOutput = (thrownDeps as OuroCliDeps & { _output: string[] })._output.join("")
+    expect(thrownOutput).toContain("... checking gpt-5.4")
   })
 
   it("ouro status --agent renders credential warnings without exposing secret values", async () => {
