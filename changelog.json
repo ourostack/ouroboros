@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.423",
+      "changes": [
+        "`ouro connect` now opens a real connect bay with one guided surface for provider auth, Perplexity, OpenAI embeddings, Teams, and BlueBubbles instead of a tiny menu that still required humans to memorize follow-up commands.",
+        "Added guided `ouro connect providers`, `ouro connect embeddings`, and `ouro connect teams` flows, plus richer connect-bay routing that distinguishes portable runtime config from machine-local attachments without printing secrets.",
+        "Credential/runtime changes now reuse one shared runtime-apply helper that checks daemon socket access, requests restart, polls daemon status, times out cleanly, and falls back clearly when daemon status is unavailable.",
+        "Command progress rendering now marks failed phases honestly with a failure state instead of a success checkmark plus `failed`, and the auth/provider docs, README, testing guide, OAUTH setup guide, and prompt truth text all point at the new connect-bay workflow.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the connect-bay and runtime-apply progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.422",
       "changes": [
         "`ouro auth` now streams provider-vault read progress before browser/token work begins, so a locked, slow, or remote vault never looks like a dead terminal after the initial access check.",
