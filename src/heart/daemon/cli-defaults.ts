@@ -9,7 +9,7 @@ import { spawn } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentName, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
@@ -607,8 +607,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       const { main } = await import("../../senses/cli")
       await main(agentName)
     },
-    scanSessions: async () => {
-      const agentName = getAgentName()
+    scanSessions: async (agentName: string) => {
       const agentRoot = getAgentRoot(agentName)
       return listSessionActivity({
         sessionsDir: path.join(agentRoot, "state", "sessions"),

@@ -121,7 +121,7 @@ export interface OuroCliDeps {
   taskModule?: TaskModule
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
-  scanSessions?: () => Promise<SessionEntry[]>
+  scanSessions?: (agentName: string) => Promise<SessionEntry[]>
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>

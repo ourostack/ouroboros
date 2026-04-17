@@ -11,7 +11,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as semver from "semver"
-import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentName, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
+import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendStore } from "../../mind/friends/store"
@@ -25,7 +25,7 @@ import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-ho
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
-import { getTaskModule } from "../../repertoire/tasks"
+import { createTaskModule } from "../../repertoire/tasks"
 import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
@@ -205,6 +205,21 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
+  | "task.board"
+  | "task.create"
+  | "task.update"
+  | "task.show"
+  | "task.actionable"
+  | "task.deps"
+  | "task.sessions"
+  | "task.fix"
+  | "reminder.create"
+  | "friend.list"
+  | "friend.show"
+  | "friend.create"
+  | "friend.update"
+  | "habit.list"
+  | "habit.create"
   | "provider.use"
   | "provider.check"
   | "provider.status"
@@ -229,6 +244,7 @@ type MissingAgentResolvableKind =
   | "attention.show"
   | "attention.history"
   | "inner.status"
+  | "session.list"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -288,11 +304,27 @@ function invalidAgentSelectionMessage(agentNames: string[]): string {
 
 function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
   switch (command.kind) {
+    case "task.board":
+    case "task.create":
+    case "task.update":
+    case "task.show":
+    case "task.actionable":
+    case "task.deps":
+    case "task.sessions":
+    case "task.fix":
+    case "reminder.create":
+    case "friend.list":
+    case "friend.show":
+    case "friend.create":
+    case "friend.update":
+    case "habit.list":
+    case "habit.create":
     case "thoughts":
     case "attention.list":
     case "attention.show":
     case "attention.history":
     case "inner.status":
+    case "session.list":
       return "return-message"
     case "provider.use":
     case "provider.check":
@@ -4462,7 +4494,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
       command.kind === "task.sessions" || command.kind === "task.fix") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? getTaskModule()
+    const taskMod = deps.taskModule ?? createTaskModule(path.join(
+      deps.bundlesRoot ?? getAgentBundlesRoot(),
+      `${command.agent}.ouro`,
+      "tasks",
+    ))
     /* v8 ignore stop */
     const message = executeTaskCommand(command, taskMod)
     deps.writeStdout(message)
@@ -4472,7 +4508,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── reminder subcommands (local, no daemon socket needed) ──
   if (command.kind === "reminder.create") {
     /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? getTaskModule()
+    const taskMod = deps.taskModule ?? createTaskModule(path.join(
+      deps.bundlesRoot ?? getAgentBundlesRoot(),
+      `${command.agent}.ouro`,
+      "tasks",
+    ))
     /* v8 ignore stop */
     const message = executeReminderCommand(command, taskMod)
     deps.writeStdout(message)
@@ -4483,8 +4523,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   if (command.kind === "habit.list" || command.kind === "habit.create") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
-    const agentName = command.agent ?? getAgentName()
-    const bundleRoot = deps.agentBundleRoot ?? path.join(getAgentBundlesRoot(), `${agentName}.ouro`)
+    const bundleRoot = deps.agentBundleRoot ?? path.join(
+      deps.bundlesRoot ?? getAgentBundlesRoot(),
+      `${command.agent}.ouro`,
+    )
     /* v8 ignore stop */
     const habitsDir = path.join(bundleRoot, "habits")
 
@@ -4548,8 +4590,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Derive agent-scoped friends dir from --agent flag or link/unlink's agent field
       const agentName = ("agent" in command && command.agent) ? command.agent : undefined
       const friendsDir = agentName
-        ? path.join(getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
-        : path.join(getAgentBundlesRoot(), "friends")
+        ? path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), `${agentName}.ouro`, "friends")
+        : path.join(deps.bundlesRoot ?? getAgentBundlesRoot(), "friends")
       store = new FileFriendStore(friendsDir)
     }
     /* v8 ignore stop */
@@ -4826,10 +4868,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── thoughts (local, no daemon socket needed) ──
   if (command.kind === "thoughts") {
     try {
-      const agentName = command.agent ?? getAgentName()
       /* v8 ignore next -- production fallback: tests always inject bundlesRoot via createTmpBundle @preserve */
       const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-      const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
+      const agentRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
       const sessionFilePath = getInnerDialogSessionPath(agentRoot)
       if (command.json) {
         try {
@@ -4871,11 +4912,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- CLI attention handler: requires real obligation store on disk @preserve */
   if (command.kind === "attention.list" || command.kind === "attention.show" || command.kind === "attention.history") {
     try {
-      const agentName = command.agent ?? getAgentName()
       const { listActiveReturnObligations, readReturnObligation } = await import("../../arc/obligations")
 
       if (command.kind === "attention.list") {
-        const obligations = listActiveReturnObligations(agentName)
+        const obligations = listActiveReturnObligations(command.agent)
         if (obligations.length === 0) {
           const message = "nothing held — attention queue is empty"
           deps.writeStdout(message)
@@ -4889,7 +4929,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       }
 
       if (command.kind === "attention.show") {
-        const obligation = readReturnObligation(agentName, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
+        const obligation = readReturnObligation(command.agent, (command as Extract<OuroCliCommand, { kind: "attention.show" }>).id)
         if (!obligation) {
           const message = `no obligation found with id ${(command as Extract<OuroCliCommand, { kind: "attention.show" }>).id}`
           deps.writeStdout(message)
@@ -4902,7 +4942,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
       // attention.history: show returned obligations
       const { getReturnObligationsDir } = await import("../../arc/obligations")
-      const obligationsDir = getReturnObligationsDir(agentName)
+      const obligationsDir = getReturnObligationsDir(command.agent)
       let attEntries: string[] = []
       try { attEntries = fs.readdirSync(obligationsDir) } catch { /* empty */ }
       const returned = attEntries
@@ -4936,8 +4976,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
   if (command.kind === "inner.status") {
     try {
-      const agentName = command.agent ?? getAgentName()
-      const agentRoot = getAgentRoot(agentName)
+      const agentRoot = getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
       const { sessionPath: getSessionPath } = await import("../config")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
@@ -4994,10 +5033,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       } catch { /* no habits — heartbeat unknown */ }
 
       // Attention count
-      const activeObligations = listActiveReturnObligations(agentName)
+      const activeObligations = listActiveReturnObligations(command.agent)
 
       const message = buildInnerStatusOutput({
-        agentName,
+        agentName: command.agent,
         runtimeState,
         journalFiles,
         heartbeat,
@@ -5019,7 +5058,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore start -- production default: requires full identity setup @preserve */
     const scanner = deps.scanSessions ?? (async () => [] as SessionEntry[])
     /* v8 ignore stop */
-    const sessions = await scanner()
+    const sessions = await scanner(command.agent)
     if (sessions.length === 0) {
       const message = "no active sessions"
       deps.writeStdout(message)

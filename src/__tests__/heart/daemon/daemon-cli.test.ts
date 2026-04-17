@@ -69,6 +69,7 @@ import { OuroDaemon } from "../../../heart/daemon/daemon"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readProviderState } from "../../../heart/provider-state"
+import { createTaskModule } from "../../../repertoire/tasks"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 
@@ -4859,6 +4860,7 @@ describe("ouro task CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       taskModule: mockTaskModule as any,
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5257,6 +5259,7 @@ describe("ouro reminder CLI execution", () => {
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
       taskModule: mockTaskModule as any,
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5349,6 +5352,7 @@ describe("ouro friend CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5793,6 +5797,7 @@ describe("ouro whoami and session list CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -5845,7 +5850,6 @@ describe("ouro whoami and session list CLI execution", () => {
   })
 
   it("default deps session scanner uses the shared session-activity helper", async () => {
-    const getAgentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
     const getAgentRootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue("/tmp/AgentBundles/slugger.ouro")
     const listSpy = vi.spyOn(sessionActivity, "listSessionActivity").mockReturnValue([
       {
@@ -5861,7 +5865,7 @@ describe("ouro whoami and session list CLI execution", () => {
     ])
 
     const deps = createDefaultOuroCliDeps("/tmp/ouro-test.sock")
-    const result = await deps.scanSessions?.()
+    const result = await deps.scanSessions?.("slugger")
 
     expect(listSpy).toHaveBeenCalledWith({
       sessionsDir: "/tmp/AgentBundles/slugger.ouro/state/sessions",
@@ -5879,7 +5883,6 @@ describe("ouro whoami and session list CLI execution", () => {
 
     listSpy.mockRestore()
     getAgentRootSpy.mockRestore()
-    getAgentNameSpy.mockRestore()
   })
 })
 
@@ -6026,6 +6029,13 @@ describe("--agent flag parsing for identity-dependent commands", () => {
 })
 
 describe("--agent flag CLI execution", () => {
+  function addBundleToRoot(bundlesRoot: string, agentName: string, agentJsonRaw: string): string {
+    const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), agentJsonRaw, "utf-8")
+    return agentRoot
+  }
+
   function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     return {
       socketPath: "/tmp/ouro-test.sock",
@@ -6036,6 +6046,7 @@ describe("--agent flag CLI execution", () => {
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
@@ -6074,6 +6085,69 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("ouroboros.ouro")
   })
 
+  it("task board without --agent prompts and reads the selected agent bundle", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      createTaskModule(path.join(tmp.agentRoot, "tasks")).createTask({
+        title: "Slugger task",
+        type: "one-shot",
+        category: "general",
+        body: "",
+      })
+      createTaskModule(path.join(otherAgentRoot, "tasks")).createTask({
+        title: "Ouroboros task",
+        type: "one-shot",
+        category: "general",
+        body: "",
+      })
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["task", "board"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros-task")
+      expect(result).not.toContain("Slugger task")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("reminder create without --agent prompts and writes into the selected agent bundle", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+
+      const result = await runOuroCli(
+        ["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"],
+        deps,
+      )
+
+      const sluggerOneShots = path.join(tmp.agentRoot, "tasks", "one-shots")
+      const ouroborosOneShots = path.join(otherAgentRoot, "tasks", "one-shots")
+      const sluggerFiles = fs.existsSync(sluggerOneShots) ? fs.readdirSync(sluggerOneShots) : []
+      const ouroborosFiles = fs.existsSync(ouroborosOneShots) ? fs.readdirSync(ouroborosOneShots) : []
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros.ouro/tasks")
+      expect(sluggerFiles).toHaveLength(0)
+      expect(ouroborosFiles.length).toBeGreaterThan(0)
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("friend list with --agent creates store for correct agent dir", async () => {
     const mockFriendStore = {
       get: vi.fn(),
@@ -6103,6 +6177,57 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("friend-1")
   })
 
+  it("friend list without --agent prompts and reads the selected agent store", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const sluggerFriendsDir = path.join(tmp.agentRoot, "friends")
+      const ouroborosFriendsDir = path.join(otherAgentRoot, "friends")
+      fs.mkdirSync(sluggerFriendsDir, { recursive: true })
+      fs.mkdirSync(ouroborosFriendsDir, { recursive: true })
+      fs.writeFileSync(path.join(sluggerFriendsDir, "slugger-friend.json"), JSON.stringify({
+        id: "slugger-friend",
+        name: "Slugger Friend",
+        trustLevel: "friend",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+        schemaVersion: 1,
+      }, null, 2))
+      fs.writeFileSync(path.join(ouroborosFriendsDir, "ouroboros-friend.json"), JSON.stringify({
+        id: "ouroboros-friend",
+        name: "Ouroboros Friend",
+        trustLevel: "family",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+        schemaVersion: 1,
+      }, null, 2))
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["friend", "list"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("Ouroboros Friend")
+      expect(result).not.toContain("Slugger Friend")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("task board with --agent uses agent-scoped task module", async () => {
     const taskMod = {
       getBoard: vi.fn(() => ({ full: "task board output", compact: "compact" })),
@@ -6120,6 +6245,23 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("task board output")
   })
 
+  it("session list without --agent prompts and passes the selected agent to the scanner", async () => {
+    const scanSessions = vi.fn(async (agentName: string) => [
+      { friendId: `${agentName}-friend`, friendName: `${agentName} friend`, channel: "cli", lastActivity: "2026-03-09T12:00:00.000Z" },
+    ])
+    const deps = makeDeps({
+      scanSessions,
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "ouroboros"),
+    })
+    const result = await runOuroCli(["session", "list"], deps)
+
+    expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+    expect(scanSessions).toHaveBeenCalledWith("ouroboros")
+    expect(result).toContain("ouroboros-friend")
+    expect(result).toContain("ouroboros friend")
+  })
+
   it("session list with --agent uses agent-scoped session scanner", async () => {
     const deps = makeDeps({
       scanSessions: vi.fn(async () => [
@@ -6130,6 +6272,53 @@ describe("--agent flag CLI execution", () => {
 
     expect(result).toContain("friend-1")
     expect(result).toContain("Ari")
+  })
+
+  it("habit list without --agent prompts and reads the selected agent habits", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
+      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
+      const sluggerHabitsDir = path.join(tmp.agentRoot, "habits")
+      const ouroborosHabitsDir = path.join(otherAgentRoot, "habits")
+      fs.mkdirSync(sluggerHabitsDir, { recursive: true })
+      fs.mkdirSync(ouroborosHabitsDir, { recursive: true })
+      fs.writeFileSync(path.join(sluggerHabitsDir, "slugger-check-in.md"), [
+        "---",
+        "title: Slugger Check-In",
+        "cadence: 24h",
+        "status: active",
+        "lastRun: null",
+        "created: 2026-03-01T00:00:00.000Z",
+        "---",
+        "",
+        "Check in.",
+      ].join("\n"), "utf-8")
+      fs.writeFileSync(path.join(ouroborosHabitsDir, "ouroboros-heartbeat.md"), [
+        "---",
+        "title: Ouroboros Heartbeat",
+        "cadence: 30m",
+        "status: active",
+        "lastRun: 2026-03-27T10:00:00.000Z",
+        "created: 2026-03-01T00:00:00.000Z",
+        "---",
+        "",
+        "Pulse.",
+      ].join("\n"), "utf-8")
+
+      const deps = makeDeps({
+        bundlesRoot: tmp.bundlesRoot,
+        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+        promptInput: vi.fn(async () => "ouroboros"),
+      })
+      const result = await runOuroCli(["habit", "list"], deps)
+
+      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
+      expect(result).toContain("ouroboros-heartbeat")
+      expect(result).not.toContain("slugger-check-in")
+    } finally {
+      tmp.cleanup()
+    }
   })
 
   it("friend create creates a new friend record", async () => {
@@ -7067,6 +7256,7 @@ describe("ouro habit CLI execution", () => {
       checkSocketAlive: vi.fn(async () => true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
       ...overrides,
     }
   }
