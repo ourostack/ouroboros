@@ -57,6 +57,10 @@ export interface PollDaemonStartupDeps {
   isProcessAlive?: (pid: number) => boolean
   /** Read the latest daemon log event message (tail ndjson). Returns null if unavailable. */
   readLatestDaemonEvent?: () => string | null
+  /** Progress callback for parent renderers such as `ouro up`'s checklist. */
+  onProgress?: (message: string) => void
+  /** Whether this poller should render its own TUI. Defaults to true. */
+  render?: boolean
 }
 
 export interface StartupRenderOptions {
@@ -188,6 +192,13 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
   let prevLineCount = 0
   const isTTY = deps.isTTY ?? true
   const isAlive = deps.isProcessAlive ?? defaultIsProcessAlive
+  const shouldRender = deps.render ?? true
+  let lastProgress: string | null = null
+  const reportProgress = (message: string) => {
+    if (!deps.onProgress || message === lastProgress) return
+    lastProgress = message
+    deps.onProgress(message)
+  }
 
   emitNervesEvent({
     component: "daemon",
@@ -230,15 +241,21 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
 
       // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
-      const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount, { isTTY })
-      deps.writeRaw(output)
-      prevLineCount = latestEvent ? 2 : 1
+      reportProgress(latestEvent ?? "waiting for daemon")
+      if (shouldRender) {
+        const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount, { isTTY })
+        deps.writeRaw(output)
+        prevLineCount = latestEvent ? 2 : 1
+      }
     }
 
     if (payload) {
-      const output = renderStartupProgress(payload, elapsed, prevLineCount, { isTTY })
-      deps.writeRaw(output)
-      prevLineCount = payload.workers.length + 1
+      reportProgress(formatStartupProgressDetail(payload))
+      if (shouldRender) {
+        const output = renderStartupProgress(payload, elapsed, prevLineCount, { isTTY })
+        deps.writeRaw(output)
+        prevLineCount = payload.workers.length + 1
+      }
 
       const assessment = assessStability(payload, now)
       if (assessment.resolved) {
@@ -246,8 +263,10 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
           stable: assessment.stable,
           degraded: assessment.degraded,
         }
-        const summary = renderFinalSummary(result, isTTY)
-        deps.writeRaw(summary)
+        if (shouldRender) {
+          const summary = renderFinalSummary(result, isTTY)
+          deps.writeRaw(summary)
+        }
 
         emitNervesEvent({
           component: "daemon",
@@ -265,6 +284,12 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
 
     await deps.sleep(POLL_INTERVAL_MS)
   }
+}
+
+function formatStartupProgressDetail(payload: StatusPayload): string {
+  if (payload.workers.length === 0) return "daemon answered"
+  const workers = payload.workers.map((worker) => `${worker.agent}/${worker.worker} ${worker.status}`).join(", ")
+  return `waiting for agents: ${workers}`
 }
 
 function colorStatus(status: string): string {

@@ -96,6 +96,10 @@ export interface OuroCliDeps {
   sendCommand: (socketPath: string, command: DaemonCommand) => Promise<DaemonResponse>
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   writeStdout: (text: string) => void
+  /** Raw terminal output. Does not append a newline. Use for in-place TTY renderers. */
+  writeRaw?: (text: string) => void
+  /** Whether stdout supports interactive cursor-control rendering. */
+  isTTY?: boolean
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string
@@ -167,6 +171,8 @@ export interface SessionEntry {
 export interface EnsureDaemonResult {
   alreadyRunning: boolean
   message: string
+  verifyStartupStatus?: boolean
+  startedPid?: number | null
   stability?: {
     stable: string[]
     degraded: Array<{ agent: string; errorReason: string; fixHint: string }>

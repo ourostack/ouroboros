@@ -6,8 +6,9 @@
  * cursor control for in-place overwriting in TTY mode, and falls back to
  * static line-per-phase output in non-TTY mode.
  *
- * The caller drives animation by calling `render(now)` on a setInterval.
- * This module owns no timers.
+ * The caller can drive animation by calling `render(now)`. In production CLI
+ * use, `autoRender` starts a short-lived timer while a TTY phase is active so
+ * long operations never leave a dead-looking cursor.
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -36,6 +37,11 @@ interface CurrentPhase {
 export interface UpProgressOptions {
   write?: (text: string) => void
   isTTY?: boolean
+  now?: () => number
+  autoRender?: boolean
+  renderIntervalMs?: number
+  setInterval?: (callback: () => void, ms: number) => unknown
+  clearInterval?: (handle: unknown) => void
 }
 
 // ── UpProgress class ──
@@ -43,16 +49,31 @@ export interface UpProgressOptions {
 export class UpProgress {
   private readonly write: (text: string) => void
   private readonly isTTY: boolean
+  private readonly now: () => number
+  private readonly autoRender: boolean
+  private readonly renderIntervalMs: number
+  private readonly setTimer: (callback: () => void, ms: number) => unknown
+  private readonly clearTimer: (handle: unknown) => void
   private completed: CompletedPhase[] = []
   private currentPhase: CurrentPhase | null = null
+  private currentDetail: string | null = null
   private prevLineCount = 0
   private ended = false
+  private renderTimer: unknown | null = null
 
   constructor(options?: UpProgressOptions) {
     /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
     this.write = options?.write ?? ((text: string) => process.stdout.write(text))
     /* v8 ignore next -- thin wrapper: real isTTY check injected for testability @preserve */
     this.isTTY = options?.isTTY ?? (process.stdout.isTTY === true)
+    /* v8 ignore next -- thin wrapper: real Date.now injected for testability @preserve */
+    this.now = options?.now ?? (() => Date.now())
+    this.autoRender = options?.autoRender ?? false
+    this.renderIntervalMs = options?.renderIntervalMs ?? 80
+    /* v8 ignore start -- real timers are injected in tests when needed @preserve */
+    this.setTimer = options?.setInterval ?? ((callback, ms) => setInterval(callback, ms))
+    this.clearTimer = options?.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>))
+    /* v8 ignore stop */
   }
 
   /**
@@ -63,7 +84,14 @@ export class UpProgress {
     if (this.currentPhase) {
       this.completePhase(this.currentPhase.label)
     }
-    this.currentPhase = { label, startedAt: Date.now() }
+    this.currentPhase = { label, startedAt: this.now() }
+    this.currentDetail = null
+    if (this.isTTY) {
+      this.ensureAutoRender()
+      this.flushRender()
+    } else {
+      this.write(`  ... ${label}\n`)
+    }
   }
 
   /**
@@ -71,18 +99,28 @@ export class UpProgress {
    * accumulated checklist state. Used for daemon startup sub-steps.
    */
   announceStep(label: string): void {
+    if (this.currentPhase) {
+      this.updateDetail(label)
+      return
+    }
     if (this.isTTY) return
-    this.write(label)
+    this.write(`    ${label}\n`)
   }
 
   /**
    * Update the sub-step detail on the current spinner phase. Rendered as
-   * "label (Xs) -- detail" in TTY mode. No-op in non-TTY mode or when
-   * no phase is active.
+   * "label (Xs) -- detail" in TTY mode. In non-TTY mode, writes changed
+   * detail lines so long operations remain visible in logs and captured output.
    */
   updateDetail(detail: string): void {
-    if (!this.isTTY || !this.currentPhase) return
+    if (!this.currentPhase || detail === this.currentDetail) return
+    this.currentDetail = detail
     this.currentPhase.detail = detail
+    if (this.isTTY) {
+      this.flushRender()
+      return
+    }
+    this.write(`    ${detail}\n`)
   }
 
   /**
@@ -94,9 +132,11 @@ export class UpProgress {
       return
     }
 
-    const elapsedMs = Date.now() - this.currentPhase.startedAt
+    const elapsedMs = this.now() - this.currentPhase.startedAt
     this.completed.push({ label, detail })
     this.currentPhase = null
+    this.currentDetail = null
+    this.stopAutoRender()
 
     emitNervesEvent({
       component: "daemon",
@@ -105,7 +145,9 @@ export class UpProgress {
       meta: { phase: label, detail: detail ?? null, elapsedMs },
     })
 
-    if (!this.isTTY) {
+    if (this.isTTY) {
+      this.flushRender()
+    } else {
       const detailStr = detail ? ` \u2014 ${detail}` : ""
       this.write(`  \u2713 ${label}${detailStr}\n`)
     }
@@ -168,13 +210,34 @@ export class UpProgress {
 
     if (this.currentPhase) {
       this.currentPhase = null
+      this.currentDetail = null
     }
+    this.stopAutoRender()
 
     if (this.isTTY) {
-      const output = this.render(Date.now())
-      if (output) {
-        this.write(output)
-      }
+      this.flushRender()
+    }
+  }
+
+  private ensureAutoRender(): void {
+    if (!this.autoRender || !this.isTTY || this.renderTimer !== null) {
+      return
+    }
+    this.renderTimer = this.setTimer(() => this.flushRender(), this.renderIntervalMs)
+  }
+
+  private stopAutoRender(): void {
+    if (this.renderTimer === null) {
+      return
+    }
+    this.clearTimer(this.renderTimer)
+    this.renderTimer = null
+  }
+
+  private flushRender(): void {
+    const output = this.render(this.now())
+    if (output) {
+      this.write(output)
     }
   }
 }

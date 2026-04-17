@@ -142,17 +142,10 @@ function collectRuntimeDriftReasons(
   return reasons
 }
 
-function formatRuntimeValue(reason: RuntimeDriftReason): string {
-  if (reason.key === "configFingerprint") {
-    return `${reason.running.slice(0, 12)} -> ${reason.local.slice(0, 12)}`
-  }
-  return `${reason.running} -> ${reason.local}`
-}
-
-function formatRuntimeDriftSummary(
+function formatRuntimeDriftPublicSummary(
   reasons: RuntimeDriftReason[],
 ): string {
-  return reasons.map((reason) => `${reason.label} ${formatRuntimeValue(reason)}`).join("; ")
+  return reasons.map((reason) => reason.label).join(", ")
 }
 
 export async function ensureCurrentDaemonRuntime(
@@ -174,7 +167,7 @@ export async function ensureCurrentDaemonRuntime(
 
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
-      const driftSummary = formatRuntimeDriftSummary(driftReasons)
+      const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
       try {
         await deps.stopDaemon()
       } catch (error) {
@@ -183,7 +176,7 @@ export async function ensureCurrentDaemonRuntime(
           alreadyRunning: true,
           message: includesVersionDrift
             ? `daemon already running (${deps.socketPath}; could not replace stale daemon ${runningVersion} -> ${deps.localVersion}: ${reason})`
-            : `daemon already running (${deps.socketPath}; could not replace drifted daemon ${driftSummary}: ${reason})`,
+            : `daemon already running (${deps.socketPath}; could not replace runtime drift ${publicDriftSummary}: ${reason})`,
         }
         emitNervesEvent({
           level: "warn",
@@ -215,12 +208,12 @@ export async function ensureCurrentDaemonRuntime(
       const pid = started.pid ?? "unknown"
       const verified = await verifyDaemonStarted(deps)
       /* v8 ignore next -- daemon liveness failure: requires real daemon crash timing @preserve */
-      const suffix = verified ? "" : "\ndaemon did not answer yet, so Ouro is checking repair paths next."
+      const suffix = verified ? "" : "\ndaemon restart has not answered yet; check logs with `ouro logs` or run `ouro doctor`."
       result = {
         alreadyRunning: false,
         message: includesVersionDrift
           ? `restarted stale daemon ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
-          : `restarted drifted daemon (${driftSummary}) (pid ${pid})${suffix}`,
+          : `restarted daemon after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
         verifyStartupStatus: verified,
         startedPid: started.pid ?? null,
       }

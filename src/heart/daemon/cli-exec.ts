@@ -232,6 +232,13 @@ function providerRepairCountSummary(count: number): string {
   return `${count} ${count === 1 ? "needs" : "need"} attention`
 }
 
+function daemonProgressSummary(result: EnsureDaemonResult): string {
+  if (result.verifyStartupStatus === false) return "not answering yet"
+  if (result.alreadyRunning) return "already running"
+  if (result.message.includes("restarted")) return "restarted and ready"
+  return "ready"
+}
+
 async function reportPostRepairProviderHealth(
   deps: OuroCliDeps,
   repairedAgents: string[],
@@ -389,17 +396,19 @@ export async function ensureDaemonRunning(
       sendCommand: deps.sendCommand,
       socketPath: deps.socketPath,
       daemonPid: runtimeResult.startedPid ?? null,
-      /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
-      writeRaw: (text) => process.stdout.write(text),
-      /* v8 ignore next -- thin wrapper: real stdout TTY detection injected for captured-output safety @preserve */
-      isTTY: process.stdout.isTTY === true,
-      /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
-      now: () => Date.now(),
-      /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      /* v8 ignore next -- thin wrapper: real stdout fallback injected by default deps @preserve */
+      writeRaw: deps.writeRaw ?? ((text) => process.stdout.write(text)),
+      /* v8 ignore next -- thin wrapper: real stdout TTY detection injected by default deps @preserve */
+      isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+      /* v8 ignore next -- thin wrapper: real Date.now fallback injected by default deps @preserve */
+      now: deps.now ?? (() => Date.now()),
+      /* v8 ignore next -- thin wrapper: real setTimeout fallback injected by default deps @preserve */
+      sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
       readLatestDaemonEvent: readLatestDaemonStartupEvent,
       /* v8 ignore stop */
+      onProgress: deps.reportDaemonStartupPhase,
+      render: !deps.reportDaemonStartupPhase,
     })
 
     return {
@@ -417,8 +426,8 @@ export async function ensureDaemonRunning(
   let lastPid: number | null = null
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-    deps.reportDaemonStartupPhase?.("starting daemon...")
-    deps.reportDaemonStartupPhase?.("waiting for daemon socket...")
+    deps.reportDaemonStartupPhase?.("launching daemon process")
+    deps.reportDaemonStartupPhase?.("waiting for daemon socket")
     deps.cleanupStaleSocket(deps.socketPath)
 
     const bootStartedAtMs = (deps.now ?? Date.now)()
@@ -434,17 +443,19 @@ export async function ensureDaemonRunning(
         sendCommand: deps.sendCommand,
         socketPath: deps.socketPath,
         daemonPid: lastPid,
-        /* v8 ignore next -- thin wrapper: raw process.stdout.write for ANSI cursor control @preserve */
-        writeRaw: (text) => process.stdout.write(text),
-        /* v8 ignore next -- thin wrapper: real stdout TTY detection injected for captured-output safety @preserve */
-        isTTY: process.stdout.isTTY === true,
-        /* v8 ignore next -- thin wrapper: real Date.now() injected for testability @preserve */
-        now: () => Date.now(),
-        /* v8 ignore next -- thin wrapper: real setTimeout injected for testability @preserve */
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        /* v8 ignore next -- thin wrapper: real stdout fallback injected by default deps @preserve */
+        writeRaw: deps.writeRaw ?? ((text) => process.stdout.write(text)),
+        /* v8 ignore next -- thin wrapper: real stdout TTY detection injected by default deps @preserve */
+        isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+        /* v8 ignore next -- thin wrapper: real Date.now fallback injected by default deps @preserve */
+        now: deps.now ?? (() => Date.now()),
+        /* v8 ignore next -- thin wrapper: real setTimeout fallback injected by default deps @preserve */
+        sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
         /* v8 ignore start -- daemon log tail + pid check: reads real filesystem, tested via deployment @preserve */
         readLatestDaemonEvent: readLatestDaemonStartupEvent,
         /* v8 ignore stop */
+        onProgress: deps.reportDaemonStartupPhase,
+        render: !deps.reportDaemonStartupPhase,
       })
 
       return {
@@ -459,7 +470,7 @@ export async function ensureDaemonRunning(
       break
     }
 
-    deps.reportDaemonStartupPhase?.("daemon startup lost stability; cleaning up and retrying once...")
+    deps.reportDaemonStartupPhase?.("daemon startup lost stability; retrying once")
   }
 
   return {
@@ -564,7 +575,7 @@ async function waitForDaemonStartup(
     if (!sawSocket) {
       sawSocket = true
       stableSinceMs = now()
-      deps.reportDaemonStartupPhase?.("verifying daemon health...")
+      deps.reportDaemonStartupPhase?.("verifying daemon health")
     }
 
     if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
@@ -2851,7 +2862,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
     const linkedVersionBeforeUp = deps.getCurrentCliVersion?.() ?? null
 
-    const progress = new UpProgress({ write: deps.writeStdout, isTTY: false })
+    const outputIsTTY = deps.isTTY ?? process.stdout.isTTY === true
+    const progress = new UpProgress({
+      write: deps.writeRaw ?? deps.writeStdout,
+      isTTY: outputIsTTY,
+      now: deps.now ?? (() => Date.now()),
+      autoRender: true,
+    })
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
@@ -3028,6 +3045,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
     }, { initialAlive: daemonAliveBeforeStart })
+    progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
+    if (daemonResult.verifyStartupStatus === false) {
+      progress.end()
+      deps.writeStdout(daemonResult.message)
+      return daemonResult.message
+    }
     if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
       progress.startPhase("provider checks")
       const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
@@ -3035,7 +3058,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
     }
     progress.end()
-    deps.writeStdout(daemonResult.message)
 
     // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)
     if (daemonResult.stability?.degraded && daemonResult.stability.degraded.length > 0) {

@@ -418,7 +418,7 @@ describe("daemon CLI default dependency branches", () => {
     const unref = vi.fn()
     const spawn = vi.fn(() => ({ pid: undefined, unref }))
     const createConnection = vi.fn()
-    const consoleLog = vi.fn()
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
 
     vi.doMock("child_process", () => ({ spawn }))
     vi.doMock("net", () => ({ createConnection }))
@@ -445,8 +445,6 @@ describe("daemon CLI default dependency branches", () => {
       openSync: vi.fn(() => 99),
       closeSync: vi.fn(),
     }))
-    vi.stubGlobal("console", { ...console, log: consoleLog })
-
     const { createDefaultOuroCliDeps, runOuroCli } = await import("../../../heart/daemon/daemon-cli")
 
     const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
@@ -474,7 +472,46 @@ describe("daemon CLI default dependency branches", () => {
       startupRetryLimit: 0,
     })
     expect(result).toContain("daemon started")
-    expect(consoleLog).toHaveBeenCalled()
+    expect(stdoutWrite).toHaveBeenCalled()
+    stdoutWrite.mockRestore()
+  })
+
+  it("writes stdout messages with exactly one trailing newline", async () => {
+    vi.resetModules()
+
+    const stdoutWrite = vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+
+    vi.doMock("net", () => ({ createConnection: vi.fn() }))
+    vi.doMock("child_process", () => ({ spawn: vi.fn() }))
+    vi.doMock("../../../heart/identity", () => ({
+      getRepoRoot: () => "/mock/repo",
+      getAgentBundlesRoot: () => "/mock/AgentBundles",
+      getAgentDaemonLogsDir: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logs",
+      getAgentDaemonLoggingConfigPath: () => "/tmp/AgentBundles/slugger.ouro/state/daemon/logging.json",
+    }))
+    vi.doMock("../../../heart/daemon/daemon-health", () => ({
+      getDefaultHealthPath: () => "/tmp/daemon-health.json",
+      readHealth: vi.fn(() => null),
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("fs", () => ({
+      existsSync: vi.fn(() => false),
+      unlinkSync: vi.fn(),
+      readdirSync: vi.fn(() => []),
+    }))
+
+    try {
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.writeStdout("hello")
+      deps.writeStdout("already-newlined\n")
+
+      expect(stdoutWrite).toHaveBeenNthCalledWith(1, "hello\n")
+      expect(stdoutWrite).toHaveBeenNthCalledWith(2, "already-newlined\n")
+    } finally {
+      stdoutWrite.mockRestore()
+    }
   })
 
   it("resolves default current CLI version via homedir-backed version layout", async () => {

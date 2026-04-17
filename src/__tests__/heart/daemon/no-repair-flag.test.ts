@@ -163,7 +163,7 @@ describe("--no-repair flag: daemon.up handler", () => {
       socketPath: "/tmp/ouro-test.sock",
     }))
     const allOutput = writeStdout.mock.calls.map((c: any[]) => c[0]).join("\n")
-    expect(allOutput).toContain("daemon already running (/tmp/ouro-test.sock)")
+    expect(allOutput).toContain("\u2713 starting daemon \u2014 already running")
     expect(allOutput).toContain("ouroboros: missing github-copilot provider")
     expect(allOutput).toContain("next: run ouro auth ouroboros")
   })

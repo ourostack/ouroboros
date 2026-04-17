@@ -169,18 +169,71 @@ describe("UpProgress", () => {
       expect(output).toContain("\u2713")
       expect(output).not.toContain("undefined")
     })
+
+    it("auto-renders active TTY phases and clears the timer on completion", () => {
+      let now = 1_000
+      const write = vi.fn()
+      const setIntervalMock = vi.fn((callback: () => void) => {
+        callback()
+        return "timer-1"
+      })
+      const clearIntervalMock = vi.fn()
+      const progress = new UpProgress({
+        write,
+        isTTY: true,
+        autoRender: true,
+        now: () => now,
+        setInterval: setIntervalMock,
+        clearInterval: clearIntervalMock,
+      })
+
+      progress.startPhase("slow step")
+      now = 1_160
+      const timerCallback = setIntervalMock.mock.calls[0]![0] as () => void
+      timerCallback()
+      progress.completePhase("slow step", "done")
+
+      expect(setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 80)
+      expect(write.mock.calls.map((call: unknown[]) => String(call[0])).join("")).toContain("slow step")
+      expect(clearIntervalMock).toHaveBeenCalledWith("timer-1")
+    })
   })
 
   // ── Non-TTY mode ──
 
   describe("non-TTY mode", () => {
-    it("announceStep writes a plain breadcrumb in non-TTY mode", () => {
+    it("writes a visible current phase line immediately in non-TTY mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+
+      progress.startPhase("starting daemon")
+
+      expect(write).toHaveBeenCalledWith(expect.stringContaining("starting daemon"))
+      expect(write).toHaveBeenCalledWith("  ... starting daemon\n")
+    })
+
+    it("announceStep writes an indented breadcrumb in non-TTY mode", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
 
       progress.announceStep("verifying daemon health...")
 
-      expect(write).toHaveBeenCalledWith("verifying daemon health...")
+      expect(write).toHaveBeenCalledWith("    verifying daemon health...\n")
+    })
+
+    it("updateDetail writes changed detail lines in non-TTY mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("provider checks")
+      write.mockClear()
+
+      progress.updateDetail("slugger: checking openai-codex")
+      progress.updateDetail("slugger: checking openai-codex")
+      progress.updateDetail("slugger: ready")
+
+      expect(write).toHaveBeenCalledTimes(2)
+      expect(write).toHaveBeenNthCalledWith(1, "    slugger: checking openai-codex\n")
+      expect(write).toHaveBeenNthCalledWith(2, "    slugger: ready\n")
     })
 
     it("writes a static line on completePhase", () => {
@@ -329,12 +382,11 @@ describe("UpProgress", () => {
       expect(write).not.toHaveBeenCalled()
     })
 
-    it("startPhase in non-TTY mode does not write", () => {
+    it("startPhase in non-TTY mode writes the active phase instead of leaving a blinking cursor", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
       progress.startPhase("test")
-      // startPhase alone should not produce output in non-TTY
-      expect(write).not.toHaveBeenCalled()
+      expect(write).toHaveBeenCalledWith("  ... test\n")
     })
 
     it("accumulated phases render in order", () => {
@@ -403,13 +455,11 @@ describe("UpProgress", () => {
       expect(output).not.toContain("step 1")
     })
 
-    it("is a no-op in non-TTY mode", () => {
+    it("does not affect render() in non-TTY mode", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
       progress.startPhase("loading")
       progress.updateDetail("some detail")
-      // Should not write anything for updateDetail in non-TTY
-      expect(write).not.toHaveBeenCalled()
       const output = progress.render(1000)
       expect(output).toBe("")
     })
