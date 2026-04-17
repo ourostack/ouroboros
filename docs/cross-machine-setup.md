@@ -126,7 +126,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors now show a short `checking current connections` preflight while they read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret.
+The connect bay is the easiest starting point when you do not remember the exact command. `providers`, `perplexity`, `embeddings`, and `teams` are portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors now show a short `checking current connections` preflight while they verify the selected providers live, read portable and machine-local settings, keep progress visible while they read/write the vault and reload the running agent, and do not print the entered secret. The root bay is grouped so the human can scan `Provider core`, portable capabilities, and this-machine attachments separately.
 
 ## Step 4: Start the daemon
 

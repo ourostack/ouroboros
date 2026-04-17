@@ -480,7 +480,9 @@ export async function checkAgentConfigWithProviderHealth(
     }
   }
 
+  let firstFailure: ConfigCheckResult | null = null
   for (const group of pingGroups.values()) {
+    deps.onProgress?.(`checking ${group.provider} / ${group.model}...`)
     const result = await ping(group.provider, providerCredentialConfig(group.record), { model: group.model })
     if (!result.ok) {
       for (const lane of group.lanes) {
@@ -494,7 +496,8 @@ export async function checkAgentConfigWithProviderHealth(
           attempts: pingAttemptCount(result),
         })
       }
-      return failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
+      firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
+      continue
     }
     for (const lane of group.lanes) {
       writeLaneReadiness({
@@ -507,6 +510,8 @@ export async function checkAgentConfigWithProviderHealth(
       })
     }
   }
+
+  if (firstFailure) return firstFailure
 
   emitNervesEvent({
     component: "daemon",

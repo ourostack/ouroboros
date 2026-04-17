@@ -77,7 +77,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local. Before the menu appears, Ouro now prints a short `checking current connections` progress step while it reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
+`ouro connect` opens the connect bay: a short grouped board that separates `Provider core`, portable runtime capabilities, and machine-local attachments. Every time the root connect bay opens, Ouro runs the same live provider verification used by `ouro up` and `ouro auth verify`, then recommends one clear next move instead of making the human decode a wall of status text. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
