@@ -411,6 +411,21 @@ describe("provider CLI command parsing", () => {
 
     expect(parseOuroCommand([
       "use",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ])).toEqual({
+      kind: "provider.use",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    })
+
+    expect(parseOuroCommand([
+      "use",
       "--agent",
       "Slugger",
       "--lane",
@@ -508,6 +523,10 @@ describe("provider CLI command parsing", () => {
       lane: "outward",
       legacyFacing: "human",
     })
+    expect(parseOuroCommand(["check", "--lane", "inner"])).toEqual({
+      kind: "provider.check",
+      lane: "inner",
+    })
   })
 
   it("parses provider refresh and vault lifecycle commands", () => {
@@ -517,8 +536,11 @@ describe("provider CLI command parsing", () => {
       kind: "provider.refresh",
       agent: "Slugger",
     })
+    expect(parseOuroCommand(["provider", "refresh"])).toEqual({
+      kind: "provider.refresh",
+    })
     expect(() => parseOuroCommand(["provider", "refresh", "--agent", "Slugger", "--extra"]))
-      .toThrow("ouro provider refresh --agent <name>")
+      .toThrow("ouro provider refresh [--agent <name>]")
 
     expect(parseOuroCommand([
       "vault",
@@ -620,9 +642,16 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       store: "linux-secret-service",
     })
+    expect(parseOuroCommand(["vault", "unlock", "--store", "auto"])).toEqual({
+      kind: "vault.unlock",
+      store: "auto",
+    })
     expect(parseOuroCommand(["vault", "status", "--agent", "Slugger"])).toEqual({
       kind: "vault.status",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["vault", "status"])).toEqual({
+      kind: "vault.status",
     })
     expect(parseOuroCommand(["vault", "status", "--agent", "Slugger", "--store", "plaintext-file"])).toEqual({
       kind: "vault.status",
@@ -646,9 +675,17 @@ describe("provider CLI command parsing", () => {
       key: "bluebubbles.password",
       value: "secret",
     })
+    expect(parseOuroCommand(["vault", "config", "set", "--key", "bluebubbles.password", "--value", "secret"])).toEqual({
+      kind: "vault.config.set",
+      key: "bluebubbles.password",
+      value: "secret",
+    })
     expect(parseOuroCommand(["vault", "config", "status", "--agent", "Slugger"])).toEqual({
       kind: "vault.config.status",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["vault", "config", "status"])).toEqual({
+      kind: "vault.config.status",
     })
     expect(parseOuroCommand(["vault", "config", "status", "--agent", "Slugger", "--scope", "all"])).toEqual({
       kind: "vault.config.status",
@@ -673,16 +710,21 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
     expect(() => parseOuroCommand(["vault", "delete", "--agent", "Slugger"]))
       .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
-    expect(() => parseOuroCommand(["vault", "status"]))
-      .toThrow("ouro vault create|replace|recover|unlock|status --agent <name>")
   })
 
   it("parses connect commands for guided integration onboarding", () => {
     emitTestEvent("provider cli parse connect")
 
+    expect(parseOuroCommand(["connect"])).toEqual({
+      kind: "connect",
+    })
     expect(parseOuroCommand(["connect", "--agent", "Slugger"])).toEqual({
       kind: "connect",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["connect", "perplexity"])).toEqual({
+      kind: "connect",
+      target: "perplexity",
     })
     expect(parseOuroCommand(["connect", "perplexity", "--agent", "Slugger"])).toEqual({
       kind: "connect",
@@ -714,7 +756,6 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "bluebubbles",
     })
-    expect(() => parseOuroCommand(["connect"])).toThrow("ouro connect --agent <name>")
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
   })
@@ -732,8 +773,6 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro use --agent <name>")
     expect(() => parseOuroCommand(["use", "--agent", "Slugger", "--lane", "inner", "--provider", "minimax", "--model", "m", "--surprise"]))
       .toThrow("ouro use --agent <name>")
-    expect(() => parseOuroCommand(["check", "--lane", "inner"]))
-      .toThrow("ouro check --agent <name>")
     expect(() => parseOuroCommand(["check", "--agent", "Slugger"]))
       .toThrow("ouro check --agent <name>")
     expect(() => parseOuroCommand(["status", "--agent", "Slugger", "extra"]))
@@ -3790,6 +3829,41 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("... refreshing provider credentials")
     expect(output).toContain("opening credential vault")
     expect(output).not.toContain("✓ refreshing provider credentials")
+  })
+
+  it("provider refresh resolves the only discovered agent when --agent is omitted", async () => {
+    emitTestEvent("provider cli refresh single discovered")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-single-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-single-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const result = await runOuroCli(["provider", "refresh"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger"],
+      checkSocketAlive: async () => false,
+    }))
+
+    expect(result).toContain("refreshed provider credential snapshot for Slugger")
+  })
+
+  it("connect prompts for an agent when --agent is omitted and multiple bundles exist", async () => {
+    emitTestEvent("provider cli connect prompt for agent")
+    const bundlesRoot = makeTempDir("provider-cli-connect-agent-prompt-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-agent-prompt-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentConfig(bundlesRoot, "Ouroboros")
+
+    const promptInput = vi.fn()
+      .mockResolvedValueOnce("2")
+      .mockResolvedValueOnce("cancel")
+
+    const result = await runOuroCli(["connect"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger", "Ouroboros"],
+      promptInput,
+    }))
+
+    expect(promptInput).toHaveBeenNthCalledWith(1, expect.stringContaining("Which agent should this use?"))
+    expect(result).toBe("connect cancelled.")
   })
 
   it("provider refresh uses the default timer path and keeps progress visible when the daemon omits the agent", async () => {

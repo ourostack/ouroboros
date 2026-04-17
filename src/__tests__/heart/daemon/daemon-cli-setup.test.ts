@@ -87,9 +87,12 @@ describe("ouro setup command", () => {
       expect(() => parseOuroCommand(["setup", "--agent", "slugger"])).toThrow()
     })
 
-    it("throws when --agent is missing", async () => {
+    it("parses setup without --agent so execution can resolve it", async () => {
       const { parseOuroCommand } = await import("../../../heart/daemon/daemon-cli")
-      expect(() => parseOuroCommand(["setup", "--tool", "claude-code"])).toThrow()
+      expect(parseOuroCommand(["setup", "--tool", "claude-code"])).toEqual({
+        kind: "setup",
+        tool: "claude-code",
+      })
     })
 
     it("throws when --agent is provided without a value", async () => {
@@ -115,6 +118,19 @@ describe("ouro setup command", () => {
       expect(mockExecSync).toHaveBeenCalled()
       const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
       expect(calls.some((c: string) => c.includes("claude") && c.includes("mcp") && c.includes("add"))).toBe(true)
+    })
+
+    it("setup resolves the only discovered agent when --agent is omitted", async () => {
+      const { runOuroCli, createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps()
+      deps.writeStdout = vi.fn()
+      deps.listDiscoveredAgents = vi.fn(() => ["test-agent"])
+
+      await runOuroCli(["setup", "--tool", "claude-code"], deps)
+
+      expect(mockExecSync).toHaveBeenCalled()
+      const calls = mockExecSync.mock.calls.map((c: any[]) => c[0])
+      expect(calls.some((c: string) => c.includes("test-agent"))).toBe(true)
     })
 
     it("claude-code setup writes hooks config", async () => {
