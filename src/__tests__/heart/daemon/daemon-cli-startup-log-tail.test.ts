@@ -120,7 +120,7 @@ describe("ensureDaemonRunning startup log tail", () => {
     })
 
     expect(event).toBe("starting auto-start agents")
-    expect(phases).toContain("verifying daemon health...")
+    expect(phases).toContain("verifying daemon health")
   })
 
   it("returns null when the bundles root does not exist", async () => {
@@ -218,7 +218,7 @@ describe("ensureDaemonRunning startup log tail", () => {
     }))
 
     expect(result.message).toContain("daemon started")
-    expect(phases.filter((phase) => phase === "verifying daemon health...")).toHaveLength(1)
+    expect(phases.filter((phase) => phase === "verifying daemon health")).toHaveLength(1)
     expect(healthReads).toBeGreaterThanOrEqual(2)
   })
 })

@@ -6198,10 +6198,10 @@ describe("ouro up startup progress", () => {
 
     const result = await runOuroCli(["up"], deps)
     const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
-    const startIndex = lines.indexOf("starting daemon...")
-    const socketIndex = lines.indexOf("waiting for daemon socket...")
-    const healthIndex = lines.indexOf("verifying daemon health...")
-    const stableIndex = lines.findIndex((line) => line.includes("daemon started (pid 5683)"))
+    const startIndex = lines.findIndex((line) => line.includes("launching daemon process"))
+    const socketIndex = lines.findIndex((line) => line.includes("waiting for daemon socket"))
+    const healthIndex = lines.findIndex((line) => line.includes("verifying daemon health"))
+    const stableIndex = lines.findIndex((line) => line.includes("\u2713 starting daemon") && line.includes("ready"))
 
     expect(result).toContain("daemon started")
     expect(startIndex).toBeGreaterThanOrEqual(0)

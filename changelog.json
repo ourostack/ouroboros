@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.418",
+      "changes": [
+        "`ouro up` now uses the live progress renderer in interactive terminals instead of forcing static non-TTY output, so long startup/check phases animate instead of leaving a blinking cursor.",
+        "Non-TTY and captured `ouro up` output now prints current phase starts and changed detail lines (`launching daemon process`, `waiting for daemon socket`, `daemon answered`) before completion, avoiding silent waits in logs and terminal sessions that cannot render spinners.",
+        "Daemon startup readiness is completed explicitly before provider checks begin; `ouro up` no longer marks `starting daemon` as done by accidentally auto-completing it when the next phase starts.",
+        "Daemon startup polling can now report progress into the parent `ouro up` checklist without rendering its own nested startup TUI, keeping startup output as one coherent surface.",
+        "Runtime drift restart messages now summarize drift categories such as `code path` or `managed agents` without printing raw worktree/package paths in normal CLI output.",
+        "Default CLI stdout now writes exactly one newline instead of using `console.log`, removing the extra blank lines caused when progress renderers already include newline-terminated output.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the `ouro up` progress polish release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.417",
       "changes": [
         "`isTransientError` now recognizes timeout errors after `formatBwCliError` transforms them, so retries fire correctly even when the raw `ETIMEDOUT` code is lost during formatting.",

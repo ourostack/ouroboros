@@ -72,6 +72,9 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.alreadyRunning).toBe(false)
     expect(result.verifyStartupStatus).toBe(true)
     expect(result.startedPid).toBe(777)
+    expect(result.message).toContain("runtime drift")
+    expect(result.message).toContain("code path")
+    expect(result.message).not.toContain("/Users/arimendelow/Projects")
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
     expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
@@ -344,7 +347,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: expect.stringContaining("could not replace drifted daemon"),
+      message: expect.stringContaining("could not replace runtime drift"),
     })
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()

@@ -68,9 +68,14 @@ export function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: nu
 }
 
 function defaultWriteStdout(text: string): void {
-  // eslint-disable-next-line no-console -- terminal UX: CLI command output
-  console.log(text)
+  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`)
 }
+
+/* v8 ignore start -- thin terminal adapter around process stdout @preserve */
+function defaultWriteRaw(text: string): void {
+  process.stdout.write(text)
+}
+/* v8 ignore stop */
 
 /**
  * Read the runtimeVersion from the first .ouro bundle's bundle-meta.json.
@@ -506,6 +511,8 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     sendCommand: sendDaemonCommand,
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
+    writeRaw: defaultWriteRaw,
+    isTTY: process.stdout.isTTY === true,
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,

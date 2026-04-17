@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   upProgressCompletePhase: vi.fn(),
   upProgressEnd: vi.fn(),
   upProgressRender: vi.fn(() => ""),
+  upProgressUpdateDetail: vi.fn(),
+  upProgressAnnounceStep: vi.fn(),
   UpProgressConstructor: vi.fn(),
 }))
 
@@ -41,6 +43,8 @@ vi.mock("../../../heart/daemon/up-progress", () => ({
     completePhase = mocks.upProgressCompletePhase
     end = mocks.upProgressEnd
     render = mocks.upProgressRender
+    updateDetail = mocks.upProgressUpdateDetail
+    announceStep = mocks.upProgressAnnounceStep
   },
 }))
 
@@ -71,6 +75,20 @@ describe("ouro up: UpProgress integration", () => {
     await runOuroCli(["up"], deps)
 
     expect(mocks.UpProgressConstructor).toHaveBeenCalled()
+  })
+
+  it("does not force ouro up progress into non-TTY mode", async () => {
+    mocks.UpProgressConstructor.mockClear()
+    const deps = makeDeps({
+      isTTY: true,
+      writeRaw: vi.fn(),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.UpProgressConstructor).toHaveBeenCalledWith(expect.objectContaining({
+      isTTY: true,
+    }))
   })
 
   it("calls startPhase('update check') before update check", async () => {
@@ -144,6 +162,98 @@ describe("ouro up: UpProgress integration", () => {
     await runOuroCli(["up"], deps)
 
     expect(mocks.upProgressStartPhase).toHaveBeenCalledWith("starting daemon")
+  })
+
+  it("completes starting daemon explicitly before provider checks", async () => {
+    mocks.upProgressStartPhase.mockClear()
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const completeDaemonIndex = mocks.upProgressCompletePhase.mock.calls.findIndex(
+      (call: unknown[]) => call[0] === "starting daemon",
+    )
+    const startProviderIndex = mocks.upProgressStartPhase.mock.calls.findIndex(
+      (call: unknown[]) => call[0] === "provider checks",
+    )
+    expect(completeDaemonIndex).toBeGreaterThanOrEqual(0)
+    expect(startProviderIndex).toBeGreaterThanOrEqual(0)
+    expect(mocks.upProgressCompletePhase.mock.invocationCallOrder[completeDaemonIndex]).toBeLessThan(
+      mocks.upProgressStartPhase.mock.invocationCallOrder[startProviderIndex]!,
+    )
+  })
+
+  it("ends progress and returns the daemon message when a drift restart does not answer", async () => {
+    vi.useFakeTimers()
+    mocks.upProgressCompletePhase.mockClear()
+    mocks.upProgressEnd.mockClear()
+    const sendCommand = vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: "0.1.0-alpha.1",
+              lastUpdated: "2026-03-09T11:00:00.000Z",
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, summary: "ok" }
+    })
+    const checkSocketAlive = vi.fn(async () => checkSocketAlive.mock.calls.length === 1)
+    const deps = makeDeps({
+      sendCommand,
+      checkSocketAlive,
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      cleanupStaleSocket: vi.fn(),
+    })
+
+    try {
+      const resultPromise = runOuroCli(["up"], deps)
+      await vi.advanceTimersByTimeAsync(10_500)
+      const result = await resultPromise
+
+      expect(result).toContain("daemon restart has not answered yet")
+      expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("starting daemon", "not answering yet")
+      expect(mocks.upProgressEnd).toHaveBeenCalled()
+      expect(deps.writeStdout).toHaveBeenCalledWith(result)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("calls end() before pollDaemonStartup takes over", async () => {
