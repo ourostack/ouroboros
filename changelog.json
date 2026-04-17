@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.422",
+      "changes": [
+        "`ouro auth` now streams provider-vault read progress before browser/token work begins, so a locked, slow, or remote vault never looks like a dead terminal after the initial access check.",
+        "Provider credential saves now stream the post-write provider snapshot reload, including vault item reads and parsing, instead of going silent after `refreshing local provider snapshot`.",
+        "Auth-flow tests cover the pre-auth vault read and real Bitwarden-backed post-save refresh progress so the visible credential path stays protected.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the final auth-flow vault progress sweep."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.421",
       "changes": [
         "`ouro vault create`, `ouro vault unlock`, `ouro vault replace`, `ouro vault recover`, `ouro vault status`, and `ouro vault config` now use the shared human CLI progress checklist for vault account creation, local unlock storage, vault probes, credential reads, runtime config writes, and recovery imports.",
