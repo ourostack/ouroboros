@@ -442,7 +442,9 @@ export async function runRuntimeAuthFlow(
   })
 
   writeAuthProgress(input, `checking ${input.agentName}'s vault access...`)
-  const vault = await refreshProviderCredentialPool(input.agentName)
+  const vault = await refreshProviderCredentialPool(input.agentName, {
+    onProgress: (message) => writeAuthProgress(input, message),
+  })
   if (!vault.ok && vault.reason === "unavailable") {
     const fix = isCredentialVaultNotConfiguredError(vault.error)
       ? vaultCreateRecoverFix(

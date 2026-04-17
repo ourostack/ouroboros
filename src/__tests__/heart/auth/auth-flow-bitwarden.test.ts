@@ -246,9 +246,14 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(result.message).toBe("authenticated VaultSaveBot with minimax")
     expect(progress).toEqual([
       "checking VaultSaveBot's vault access...",
+      "reading vault items for VaultSaveBot...",
+      "parsing provider credentials...",
       "opening VaultSaveBot's vault session...",
       "storing minimax credentials in VaultSaveBot's vault...",
       "refreshing local provider snapshot from VaultSaveBot's vault...",
+      "reading vault items for VaultSaveBot...",
+      "reading minimax credentials...",
+      "parsing provider credentials...",
       "credentials stored at providers/minimax; local provider snapshot refreshed.",
     ])
 
@@ -291,9 +296,12 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
     expect(progress).toEqual([
       "checking VaultRefreshBot's vault access...",
+      "reading vault items for VaultRefreshBot...",
+      "parsing provider credentials...",
       "opening VaultRefreshBot's vault session...",
       "storing minimax credentials in VaultRefreshBot's vault...",
       "refreshing local provider snapshot from VaultRefreshBot's vault...",
+      "reading vault items for VaultRefreshBot...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
   })
@@ -321,6 +329,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     await expect(promise).rejects.toThrow("Run 'ouro vault unlock --agent VaultLockedBot' or 'ouro vault replace --agent VaultLockedBot' if the secret is lost.")
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
+      "reading vault items for VaultLockedBot...",
+      "parsing provider credentials...",
       "opening VaultLockedBot's vault session...",
       "storing minimax credentials in VaultLockedBot's vault...",
     ])
@@ -348,6 +358,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
     expect(progress).toEqual([
       "checking VaultServerBot's vault access...",
+      "reading vault items for VaultServerBot...",
+      "parsing provider credentials...",
       "opening VaultServerBot's vault session...",
       "storing minimax credentials in VaultServerBot's vault...",
     ])
@@ -384,6 +396,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(thrown!.message).not.toContain("secret-value")
     expect(progress).toEqual([
       "checking VaultPromptBot's vault access...",
+      "reading vault items for VaultPromptBot...",
+      "parsing provider credentials...",
       "opening VaultPromptBot's vault session...",
       "storing minimax credentials in VaultPromptBot's vault...",
     ])
