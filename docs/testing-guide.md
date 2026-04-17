@@ -97,6 +97,7 @@ Expected:
 - `ouro auth` stores credentials only in the owning agent's vault
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
+- auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
@@ -159,7 +160,19 @@ Expected:
 - `ouro stop` shuts down cleanly
 - `ouro status` shows the stopped state clearly instead of raw socket errors
 
-## 8. Repo-Code Validation
+## 8. Human CLI Progress Smoke
+
+For human-facing CLI changes, especially auth, repair, startup, and connector flows:
+
+- any wait that may last more than a few seconds should have a current step on screen
+- output should be a short checklist, not a repeated wall of repair text
+- secret prompts must not echo or print the secret later
+- success output should include where the credential/config was stored and the next action
+- failure output should keep the last visible progress context and give one useful repair path
+
+Agent-direct shortcuts can stay terse when they are meant for automation, but human-required and human-choice flows should be understandable to someone who does not know terminal vocabulary.
+
+## 9. Repo-Code Validation
 
 For runtime code changes inside the repo:
 

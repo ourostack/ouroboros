@@ -121,7 +121,7 @@ import {
 } from "./readiness-repair"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
-import { UpProgress } from "./up-progress"
+import { CommandProgress, UpProgress } from "./up-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
 import { listEnabledBundleAgents } from "./agent-discovery"
 
@@ -230,6 +230,17 @@ function writeProviderRepairSummary(
 function providerRepairCountSummary(count: number): string {
   if (count === 0) return "ok"
   return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): CommandProgress {
+  return new CommandProgress({
+    write: deps.writeRaw ?? deps.writeStdout,
+    isTTY: deps.isTTY ?? false,
+    now: deps.now ?? (() => Date.now()),
+    autoRender: true,
+    eventScope: "command",
+    commandName,
+  })
 }
 
 function daemonProgressSummary(result: EnsureDaemonResult): string {
@@ -1380,19 +1391,35 @@ async function storeRuntimeConfigKey(input: {
   value: string
   scope: RuntimeConfigScope
   deps: OuroCliDeps
+  onProgress?: (message: string) => void
 }): Promise<{ revision: string; itemPath: string; machineId?: string }> {
   const machineId = input.scope === "machine" ? currentMachineId(input.deps) : undefined
+  input.onProgress?.("checking existing runtime config")
   const current = input.scope === "machine"
     ? await refreshMachineRuntimeCredentialConfig(input.agent, machineId!, { preserveCachedOnFailure: true })
     : await refreshRuntimeCredentialConfig(input.agent, { preserveCachedOnFailure: true })
   if (!current.ok && current.reason !== "missing") {
     throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
   }
+  input.onProgress?.(`storing ${input.key} in ${current.itemPath}`)
   const nextConfig = setRuntimeConfigValue(current.ok ? current.config : {}, input.key, input.value)
   const stored = input.scope === "machine"
     ? await upsertMachineRuntimeCredentialConfig(input.agent, machineId!, nextConfig, providerCliNow(input.deps))
     : await upsertRuntimeCredentialConfig(input.agent, nextConfig, providerCliNow(input.deps))
+  input.onProgress?.(`stored ${input.key}; credential value was not printed`)
   return { revision: stored.revision, itemPath: stored.itemPath, ...(machineId ? { machineId } : {}) }
+}
+
+async function reloadRunningAgentAfterCredentialChange(agent: string, deps: OuroCliDeps): Promise<string> {
+  try {
+    const alive = await deps.checkSocketAlive(deps.socketPath)
+    if (!alive) return "daemon is not running; next `ouro up` will load it"
+    const response = await deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent })
+    if (response.ok) return `restarted ${agent} so the running agent reloads credentials`
+    return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
+  } catch (error) {
+    return `daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`
+  }
 }
 
 async function executeVaultConfigSet(
@@ -1516,18 +1543,16 @@ function enableAgentSense(agent: string, sense: "bluebubbles", deps: OuroCliDeps
 function connectMenu(agent: string): string {
   return [
     `Connect ${agent}`,
+    "Pick what this agent should be able to use.",
     "",
-    "Portable agent capabilities",
     "  1. Perplexity search",
-    "     stores: agent vault runtime/config -> integrations.perplexityApiKey",
+    "     Portable. Stores an API key in the agent vault.",
     "",
-    "This machine only",
     "  2. BlueBubbles iMessage",
-    "     stores: agent vault runtime/machines/<this-machine>/config",
+    "     This machine only. Connects a local Mac Messages bridge.",
     "",
-    "Model providers",
     "  3. Provider auth",
-    `     runs separately: ouro auth --agent ${agent} --provider <provider>`,
+    `     Model credentials: ouro auth --agent ${agent} --provider <provider>`,
     "",
     "  4. Cancel",
     "",
@@ -1540,22 +1565,43 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect Perplexity on the hatchling agent instead.")
   }
   const promptSecret = requirePromptSecret(deps, "Perplexity API key entry")
+  deps.writeStdout([
+    `Connect Perplexity for ${agent}`,
+    "The API key stays hidden while you type.",
+    `Ouro stores it in ${agent}'s vault runtime/config item.`,
+  ].join("\n"))
   const key = (await promptSecret("Perplexity API key: ")).trim()
   if (!key) throw new Error("Perplexity API key cannot be blank")
-  const stored = await storeRuntimeConfigKey({
-    agent,
-    key: "integrations.perplexityApiKey",
-    value: key,
-    scope: "agent",
-    deps,
-  })
+  const progress = createHumanCommandProgress(deps, "connect perplexity")
+  let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let reload: string
+  try {
+    progress.startPhase("saving Perplexity search")
+    stored = await storeRuntimeConfigKey({
+      agent,
+      key: "integrations.perplexityApiKey",
+      value: key,
+      scope: "agent",
+      deps,
+      onProgress: (message) => progress.updateDetail(message),
+    })
+    progress.completePhase("saving Perplexity search", "secret stored")
+    progress.startPhase(`reloading ${agent}`)
+    reload = await reloadRunningAgentAfterCredentialChange(agent, deps)
+    progress.completePhase(`reloading ${agent}`, reload)
+    progress.end()
+  } catch (error) {
+    progress.end()
+    throw error
+  }
   const message = [
     `Perplexity connected for ${agent}`,
     "capability: Perplexity search",
     `stored: ${stored.itemPath}`,
+    `reload: ${reload}`,
     "secret was not printed",
     "",
-    "Next: ask the agent to search, or run `ouro up` again if the daemon was already running.",
+    "Next: ask the agent to search.",
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -1567,6 +1613,11 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   }
   const promptInput = requirePromptInput(deps, "BlueBubbles setup")
   const promptSecret = requirePromptSecret(deps, "BlueBubbles password entry")
+  deps.writeStdout([
+    `Connect BlueBubbles for ${agent}`,
+    "This is a local attachment for this machine.",
+    "The app password stays hidden while you type.",
+  ].join("\n"))
   const serverUrl = (await promptInput("BlueBubbles server URL for this machine: ")).trim()
   if (!serverUrl) throw new Error("BlueBubbles server URL cannot be blank")
   const password = (await promptSecret("BlueBubbles app password: ")).trim()
@@ -1576,25 +1627,39 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const requestTimeoutMs = parseOptionalPositiveInteger(await promptInput("Request timeout ms [30000]: "), 30000, "BlueBubbles request timeout")
   const machineId = currentMachineId(deps)
 
-  const current = await refreshMachineRuntimeCredentialConfig(agent, machineId, { preserveCachedOnFailure: true })
-  if (!current.ok && current.reason !== "missing") {
-    throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
+  const progress = createHumanCommandProgress(deps, "connect bluebubbles")
+  let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
+  try {
+    progress.startPhase("saving BlueBubbles attachment")
+    progress.updateDetail("checking existing machine runtime config")
+    const current = await refreshMachineRuntimeCredentialConfig(agent, machineId, { preserveCachedOnFailure: true })
+    if (!current.ok && current.reason !== "missing") {
+      progress.end()
+      throw new Error(`cannot read existing machine runtime credentials from ${current.itemPath}: ${current.error}`)
+    }
+    const nextConfig: RuntimeCredentialConfig = {
+      ...(current.ok ? current.config : {}),
+      bluebubbles: {
+        serverUrl,
+        password,
+        accountId: "default",
+      },
+      bluebubblesChannel: {
+        port,
+        webhookPath,
+        requestTimeoutMs,
+      },
+    }
+    progress.updateDetail("storing local machine config")
+    stored = await upsertMachineRuntimeCredentialConfig(agent, machineId, nextConfig, providerCliNow(deps))
+    progress.updateDetail("enabling BlueBubbles in agent.json")
+    enableAgentSense(agent, "bluebubbles", deps)
+    progress.completePhase("saving BlueBubbles attachment", "secret stored")
+    progress.end()
+  } catch (error) {
+    progress.end()
+    throw error
   }
-  const nextConfig: RuntimeCredentialConfig = {
-    ...(current.ok ? current.config : {}),
-    bluebubbles: {
-      serverUrl,
-      password,
-      accountId: "default",
-    },
-    bluebubblesChannel: {
-      port,
-      webhookPath,
-      requestTimeoutMs,
-    },
-  }
-  const stored = await upsertMachineRuntimeCredentialConfig(agent, machineId, nextConfig, providerCliNow(deps))
-  enableAgentSense(agent, "bluebubbles", deps)
 
   const message = appendBundleSyncSummary([
     `BlueBubbles attached for ${agent} on this machine`,
@@ -1950,13 +2015,25 @@ async function executeProviderRefresh(
     return message
   }
 
-  const pool = await refreshProviderCredentialPool(command.agent)
+  const progress = createHumanCommandProgress(deps, "provider refresh")
+  progress.startPhase("refreshing provider credentials")
+  let pool: Awaited<ReturnType<typeof refreshProviderCredentialPool>>
+  try {
+    pool = await refreshProviderCredentialPool(command.agent, {
+      onProgress: (message) => progress.updateDetail(message),
+    })
+  } catch (error) {
+    progress.end()
+    throw error
+  }
   const lines: string[] = []
   if (pool.ok) {
     const summary = summarizeProviderCredentialPool(pool.pool)
     lines.push(`refreshed provider credential snapshot for ${command.agent}`)
     lines.push(`providers: ${summary.providers.map((provider) => provider.provider).join(", ") || "none"}`)
+    progress.completePhase("refreshing provider credentials", summary.providers.map((provider) => provider.provider).join(", ") || "none")
   } else {
+    progress.end()
     lines.push(`provider credential refresh failed for ${command.agent}: ${pool.error}`)
     lines.push(vaultUnlockReplaceRecoverFix(command.agent, "Then retry 'ouro provider refresh'."))
     const message = lines.join("\n")
@@ -1964,21 +2041,13 @@ async function executeProviderRefresh(
     return message
   }
 
-  try {
-    const alive = await deps.checkSocketAlive(deps.socketPath)
-    if (alive) {
-      const response = await deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent: command.agent })
-      if (response.ok) {
-        lines.push(`restarted ${command.agent} so the running agent reloads credentials`)
-      } else {
-        lines.push(`daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`)
-      }
-    } else {
-      lines.push("daemon is not running; the next start will load the refreshed snapshot")
-    }
-  } catch (error) {
-    lines.push(`daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  progress.startPhase(`reloading ${command.agent}`)
+  const reload = await reloadRunningAgentAfterCredentialChange(command.agent, deps)
+  progress.completePhase(`reloading ${command.agent}`, reload)
+  progress.end()
+  lines.push(reload === "daemon is not running; next `ouro up` will load it"
+    ? "daemon is not running; the next start will load the refreshed snapshot"
+    : reload)
 
   const message = lines.join("\n")
   deps.writeStdout(message)
@@ -3770,31 +3839,42 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const provider = command.provider ?? readAgentConfigForAgent(command.agent, deps.bundlesRoot).config.humanFacing.provider
     /* v8 ignore next -- tests always inject runAuthFlow; default is for production @preserve */
     const authRunner = deps.runAuthFlow ?? (await import("../auth/auth-flow")).runRuntimeAuthFlow
-    const result = await authRunner({
-      agentName: command.agent,
-      provider,
-      promptInput: deps.promptInput,
-      onProgress: deps.writeStdout,
-    })
+    const progress = createHumanCommandProgress(deps, "auth")
+    progress.startPhase(`authenticating ${provider}`)
+    let result: Awaited<ReturnType<typeof authRunner>>
+    try {
+      result = await authRunner({
+        agentName: command.agent,
+        provider,
+        promptInput: deps.promptInput,
+        onProgress: (message) => progress.updateDetail(message),
+      })
+    } catch (error) {
+      progress.end()
+      throw error
+    }
+    progress.completePhase(`authenticating ${provider}`, "credentials stored")
     // Behavior: ouro auth stores credentials only — does NOT switch provider.
     // Use `ouro auth switch` to change the active provider.
-    deps.writeStdout(result.message)
 
     // Verify the credentials actually work by pinging the provider
     /* v8 ignore start -- integration: real API ping after auth @preserve */
     try {
-      deps.writeStdout(`verifying ${provider} credentials...`)
+      progress.startPhase(`verifying ${provider}`)
       const credential = await readProviderCredentialRecord(command.agent, provider, deps)
       const status = credential.ok
         ? await verifyProviderCredentials(provider, {
           [provider]: { ...credential.record.config, ...credential.record.credentials },
         })
         : `stored but could not be re-read from vault (${credential.error})`
-      deps.writeStdout(`${provider}: ${status}`)
-    } catch {
-      // Verification failure is non-blocking — credentials were saved regardless
+      progress.completePhase(`verifying ${provider}`, status)
+    } catch (error) {
+      // Verification failure is non-blocking — credentials were saved regardless.
+      progress.completePhase(`verifying ${provider}`, `skipped (${error instanceof Error ? error.message : String(error)})`)
     }
     /* v8 ignore stop */
+    progress.end()
+    deps.writeStdout(result.message)
     return result.message
   }
 

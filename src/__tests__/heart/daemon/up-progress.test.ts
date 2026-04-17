@@ -109,6 +109,22 @@ describe("UpProgress", () => {
       // This test primarily verifies the phase transitions correctly
       expect(progress.render(1000)).toContain("update check")
     })
+
+    it("emits command-scoped completion events without requiring detail text", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({
+        write,
+        isTTY: false,
+        eventScope: "command",
+        commandName: "auth",
+      })
+
+      progress.startPhase("authenticating minimax")
+      progress.completePhase("authenticating minimax")
+
+      const written = write.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+      expect(written).toContain("✓ authenticating minimax")
+    })
   })
 
   // ── render (TTY mode) ──

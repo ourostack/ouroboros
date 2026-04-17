@@ -123,7 +123,7 @@ ouro connect perplexity --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-Perplexity search is portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server.
+Perplexity search is portable agent runtime config. BlueBubbles is a local machine attachment; run the BlueBubbles connector only on machines that can reach the local BlueBubbles server. Guided connectors keep progress visible while they read/write the vault and reload the running agent, and they do not print the entered secret.
 
 ## Step 4: Start the daemon
 

@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.419",
+      "changes": [
+        "`ouro auth`, `ouro provider refresh`, `ouro connect perplexity`, and `ouro connect bluebubbles` now use the shared human CLI progress checklist so browser login, vault reads/writes, daemon reloads, and verification steps stay visible instead of leaving a blinking cursor.",
+        "`ouro connect perplexity` now introduces the flow before the hidden API-key prompt, shows vault storage and reload progress, keeps the key out of output, and ends with a compact next step for using Perplexity search.",
+        "`ouro connect bluebubbles` now introduces the local-machine attachment before prompts, shows machine runtime config and `agent.json` enablement progress, and keeps the app password out of output.",
+        "`ouro provider refresh` now shows vault-read progress and reload status, and refresh/auth/connect failure paths preserve the last visible progress context while still rethrowing actionable errors.",
+        "The CLI progress renderer is documented as a shared human-facing contract: long-running human flows should show current work, stay concise, and never print secrets.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the provider onboarding progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.418",
       "changes": [
         "`ouro up` now uses the live progress renderer in interactive terminals instead of forcing static non-TTY output, so long startup/check phases animate instead of leaving a blinking cursor.",

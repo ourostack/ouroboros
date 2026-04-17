@@ -99,6 +99,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.
 - Provider and runtime credentials are loaded into process memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model or sense request.
+- Human-facing CLI commands that can wait on browser auth, vault IO, daemon startup, daemon restart, provider checks, or connector setup use a shared progress checklist. If a cursor may blink for more than a few seconds, the command should print or animate the current step instead of going quiet.
 - CLI commands that mutate bundle config, such as vault setup or `ouro connect bluebubbles`, run bundle sync after the change when `sync.enabled` is true and report a compact `bundle sync:` line.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
@@ -120,7 +121,7 @@ ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
 ```
 
-`ouro auth` stores credentials in the owning agent's vault. It does not switch a lane or write provider/model selection.
+`ouro auth` stores credentials in the owning agent's vault. It does not switch a lane or write provider/model selection. The command shows progress while browser login, vault storage, refresh, and verification are happening.
 
 When you want this machine to use a provider/model for a lane, use:
 
