@@ -3505,7 +3505,7 @@ describe("ensureDaemonRunning", () => {
     const result = await ensureDaemonRunning(deps)
 
     expect(result.alreadyRunning).toBe(false)
-    expect(result.message).toContain("restarted stale daemon")
+    expect(result.message).toContain("replaced the running background service")
     expect(result.message).toContain("0.1.0-alpha.6")
     expect(result.message).toContain("0.1.0-alpha.20")
     expect(sendCommand).toHaveBeenNthCalledWith(1, "/tmp/ouro-test.sock", { kind: "daemon.status" })
@@ -3759,7 +3759,7 @@ describe("ensureDaemonRunning", () => {
     const result = await ensureDaemonRunning(deps)
 
     expect(result.alreadyRunning).toBe(true)
-    expect(result.message).toContain("could not replace stale daemon")
+    expect(result.message).toContain("could not replace the running background service")
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })

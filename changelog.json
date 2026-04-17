@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.426",
+      "changes": [
+        "`ouro up` no longer marks `starting daemon` complete when a replacement daemon still is not answering; it now narrates replacement progress in plain language and reports replacement timeout as an incomplete replacement instead of a fake success.",
+        "Root `ouro connect --agent <agent>` now prints a short `checking current connections` preflight while it reads portable and machine-local runtime settings before showing the connect bay menu.",
+        "Auth/provider/setup docs now codify the human CLI rule that waits longer than about three seconds should show current work, and they describe the new daemon replacement wording and connect-bay preflight.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the daemon replacement and connect-bay progress release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.425",
       "changes": [
         "Human-facing single-agent CLI commands now resolve an omitted `--agent` through one shared path: use the explicit flag when present, otherwise use runtime identity when it can name the current agent, otherwise use the only discovered local agent, otherwise ask which agent to use, and otherwise explain how to hatch or clone one.",

@@ -19,6 +19,7 @@ export interface DaemonRuntimeSyncDeps {
   cleanupStaleSocket: (socketPath: string) => void
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
+  onProgress?: (message: string) => void
 }
 
 export interface DaemonRuntimeSyncResult {
@@ -34,6 +35,7 @@ async function verifyDaemonStarted(deps: DaemonRuntimeSyncDeps): Promise<boolean
   const maxWaitMs = 10_000
   const pollIntervalMs = 500
   const deadline = Date.now() + maxWaitMs
+  deps.onProgress?.("waiting for the replacement daemon to answer")
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, pollIntervalMs))
     if (await deps.checkSocketAlive(deps.socketPath)) return true
@@ -168,15 +170,17 @@ export async function ensureCurrentDaemonRuntime(
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
+      deps.onProgress?.("preparing a replacement for the running background service")
       try {
+        deps.onProgress?.("stopping the running background service")
         await deps.stopDaemon()
       } catch (error) {
         const reason = formatErrorReason(error)
         result = {
           alreadyRunning: true,
           message: includesVersionDrift
-            ? `daemon already running (${deps.socketPath}; could not replace stale daemon ${runningVersion} -> ${deps.localVersion}: ${reason})`
-            : `daemon already running (${deps.socketPath}; could not replace runtime drift ${publicDriftSummary}: ${reason})`,
+            ? `daemon already running (${deps.socketPath}; could not replace the running background service ${runningVersion} -> ${deps.localVersion}: ${reason})`
+            : `daemon already running (${deps.socketPath}; could not replace the running background service after runtime drift ${publicDriftSummary}: ${reason})`,
         }
         emitNervesEvent({
           level: "warn",
@@ -204,16 +208,17 @@ export async function ensureCurrentDaemonRuntime(
       }
 
       deps.cleanupStaleSocket(deps.socketPath)
+      deps.onProgress?.("starting the replacement background service")
       const started = await deps.startDaemonProcess(deps.socketPath)
       const pid = started.pid ?? "unknown"
       const verified = await verifyDaemonStarted(deps)
       /* v8 ignore next -- daemon liveness failure: requires real daemon crash timing @preserve */
-      const suffix = verified ? "" : "\ndaemon restart has not answered yet; check logs with `ouro logs` or run `ouro doctor`."
+      const suffix = verified ? "" : "\nreplacement daemon did not answer in time; check logs with `ouro logs` or run `ouro doctor`."
       result = {
         alreadyRunning: false,
         message: includesVersionDrift
-          ? `restarted stale daemon ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
-          : `restarted daemon after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
+          ? `replaced the running background service ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
+          : `replaced the running background service after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
         verifyStartupStatus: verified,
         startedPid: started.pid ?? null,
       }

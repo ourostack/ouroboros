@@ -461,9 +461,8 @@ async function runCommandProgressPhase<T>(
 }
 
 function daemonProgressSummary(result: EnsureDaemonResult): string {
-  if (result.verifyStartupStatus === false) return "not answering yet"
   if (result.alreadyRunning) return "already running"
-  if (result.message.includes("restarted")) return "restarted and ready"
+  if (result.message.includes("replaced")) return "replacement ready"
   return "ready"
 }
 
@@ -615,6 +614,7 @@ export async function ensureDaemonRunning(
       cleanupStaleSocket: deps.cleanupStaleSocket,
       startDaemonProcess: deps.startDaemonProcess,
       checkSocketAlive: deps.checkSocketAlive,
+      onProgress: deps.reportDaemonStartupPhase,
     })
     if (!runtimeResult.verifyStartupStatus) {
       return runtimeResult
@@ -2027,7 +2027,11 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams", deps: O
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-async function buildConnectMenu(agent: string, deps: OuroCliDeps): Promise<string> {
+async function buildConnectMenu(
+  agent: string,
+  deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
+): Promise<string> {
   const providerVisibility = buildAgentProviderVisibility({
     agentName: agent,
     agentRoot: providerCliAgentRoot({ agent }, deps),
@@ -2044,7 +2048,9 @@ async function buildConnectMenu(agent: string, deps: OuroCliDeps): Promise<strin
     ? `${lane.lane}: ${lane.provider} / ${lane.model}`
     : `${lane.lane}: choose provider/model`).join(" | ")
 
+  onProgress?.("loading portable settings")
   const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+  onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
   const agentConfig = readAgentConfigForAgent(agent, deps.bundlesRoot).config
   const teamsEnabled = agentConfig.senses?.teams?.enabled === true
@@ -2374,7 +2380,18 @@ async function executeConnect(
   if (command.target === "teams") return executeConnectTeams(command.agent, deps)
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
 
-  const menu = await buildConnectMenu(command.agent, deps)
+  const progress = createHumanCommandProgress(deps, "connect")
+  let menu: string
+  try {
+    menu = await runCommandProgressPhase(
+      progress,
+      "checking current connections",
+      () => buildConnectMenu(command.agent, deps, (message) => progress.updateDetail(message)),
+      () => "ready",
+    )
+  } finally {
+    progress.end()
+  }
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
@@ -3919,12 +3936,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
     }, { initialAlive: daemonAliveBeforeStart })
-    progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
     if (daemonResult.verifyStartupStatus === false) {
+      ;(progress as { announceStep?: (line: string) => void }).announceStep?.("replacement daemon did not answer in time")
       progress.end()
       deps.writeStdout(daemonResult.message)
       return daemonResult.message
     }
+    progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
     if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
       progress.startPhase("provider checks")
       const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
