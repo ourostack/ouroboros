@@ -50,8 +50,10 @@ import {
   upsertMachineRuntimeCredentialConfig,
   upsertRuntimeCredentialConfig,
   type RuntimeCredentialConfig,
+  type RuntimeCredentialConfigReadResult,
 } from "../runtime-credentials"
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
+import { buildAgentProviderVisibility } from "../provider-visibility"
 import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider } from "../provider-models"
@@ -254,7 +256,7 @@ async function runCommandProgressPhase<T>(
     progress.completePhase(label, detail(result))
     return result
   } catch (error) {
-    progress.completePhase(label, "failed")
+    progress.failPhase(label, "failed")
     throw error
   }
 }
@@ -1508,6 +1510,53 @@ function currentMachineId(deps: OuroCliDeps): string {
   }).machineId
 }
 
+const DEFAULT_RUNTIME_APPLY_TIMEOUT_MS = 15_000
+const DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS = 500
+const DEFAULT_DAEMON_STATUS_TIMEOUT_MS = 4_000
+const DEFAULT_AGENT_RESTART_TIMEOUT_MS = 8_000
+const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
+
+function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): boolean {
+  const segments = key.split(".")
+  let cursor: unknown = config
+  for (const segment of segments) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return false
+    cursor = (cursor as Record<string, unknown>)[segment]
+  }
+  return typeof cursor === "string" && cursor.trim().length > 0
+}
+
+function runtimeConfigReadStatus(
+  runtime: Extract<RuntimeCredentialConfigReadResult, { ok: false }>,
+): "missing" | "locked" | "needs attention" {
+  if (runtime.reason === "missing") return "missing"
+  if (/locked/i.test(runtime.error)) return "locked"
+  return "needs attention"
+}
+
+function cliNowMs(deps: OuroCliDeps): number {
+  return (deps.now ?? Date.now)()
+}
+
+function cliSleep(deps: OuroCliDeps, ms: number): Promise<void> {
+  if (deps.sleep) return deps.sleep(ms)
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withCliTimeout<T>(timeoutMs: number, label: string, run: () => Promise<T>): Promise<T> {
+  let timer!: NodeJS.Timeout
+  try {
+    return await Promise.race([
+      run(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function promptRuntimeConfigValue(
   command: Extract<OuroCliCommand, { kind: "vault.config.set" }>,
   deps: OuroCliDeps,
@@ -1527,10 +1576,9 @@ function runtimeScopeLabel(scope: RuntimeConfigScope): string {
   return scope === "machine" ? "this machine's vault runtime config item" : "the agent vault runtime/config item"
 }
 
-async function storeRuntimeConfigKey(input: {
+async function storeRuntimeConfigKeys(input: {
   agent: string
-  key: string
-  value: string
+  entries: Array<{ key: string; value: string }>
   scope: RuntimeConfigScope
   deps: OuroCliDeps
   onProgress?: (message: string) => void
@@ -1543,22 +1591,96 @@ async function storeRuntimeConfigKey(input: {
   if (!current.ok && current.reason !== "missing") {
     throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
   }
-  input.onProgress?.(`storing ${input.key} in ${current.itemPath}`)
-  const nextConfig = setRuntimeConfigValue(current.ok ? current.config : {}, input.key, input.value)
+  let nextConfig = current.ok ? current.config : {}
+  for (const entry of input.entries) {
+    input.onProgress?.(`storing ${entry.key} in ${current.itemPath}`)
+    nextConfig = setRuntimeConfigValue(nextConfig, entry.key, entry.value)
+  }
   const stored = input.scope === "machine"
     ? await upsertMachineRuntimeCredentialConfig(input.agent, machineId!, nextConfig, providerCliNow(input.deps))
     : await upsertRuntimeCredentialConfig(input.agent, nextConfig, providerCliNow(input.deps))
-  input.onProgress?.(`stored ${input.key}; credential value was not printed`)
+  input.onProgress?.(`stored ${input.entries.map((entry) => entry.key).join(", ")}; credential values were not printed`)
   return { revision: stored.revision, itemPath: stored.itemPath, ...(machineId ? { machineId } : {}) }
 }
 
-async function reloadRunningAgentAfterCredentialChange(agent: string, deps: OuroCliDeps): Promise<string> {
+async function storeRuntimeConfigKey(input: {
+  agent: string
+  key: string
+  value: string
+  scope: RuntimeConfigScope
+  deps: OuroCliDeps
+  onProgress?: (message: string) => void
+}): Promise<{ revision: string; itemPath: string; machineId?: string }> {
+  return storeRuntimeConfigKeys({
+    agent: input.agent,
+    entries: [{ key: input.key, value: input.value }],
+    scope: input.scope,
+    deps: input.deps,
+    onProgress: input.onProgress,
+  })
+}
+
+function readRuntimeApplyWorker(
+  payload: NonNullable<ReturnType<typeof parseStatusPayload>>,
+  agent: string,
+): { agent: string; worker: string; status: string; errorReason: string | null; fixHint: string | null } | null {
+  return payload.workers.find((worker) => worker.agent === agent) ?? null
+}
+
+async function applyRuntimeChangeToRunningAgent(
+  agent: string,
+  deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
+): Promise<string> {
   try {
+    onProgress?.("checking daemon socket")
     const alive = await deps.checkSocketAlive(deps.socketPath)
-    if (!alive) return "daemon is not running; next `ouro up` will load it"
-    const response = await deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent })
-    if (response.ok) return `restarted ${agent} so the running agent reloads credentials`
-    return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
+    if (!alive) return "daemon is not running; next `ouro up` will load the change"
+
+    onProgress?.("requesting restart from daemon")
+    const response = await withCliTimeout(
+      DEFAULT_AGENT_RESTART_TIMEOUT_MS,
+      "daemon restart request timed out",
+      () => deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent }),
+    )
+    if (!response.ok) return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
+
+    const deadline = cliNowMs(deps) + DEFAULT_RUNTIME_APPLY_TIMEOUT_MS
+    onProgress?.(`waiting for ${agent} to report running state`)
+    while (cliNowMs(deps) < deadline) {
+      try {
+        const statusResponse = await withCliTimeout(
+          DEFAULT_DAEMON_STATUS_TIMEOUT_MS,
+          "daemon status timed out",
+          () => deps.sendCommand(deps.socketPath, { kind: "daemon.status" }),
+        )
+        if (statusResponse.ok) {
+          const payload = parseStatusPayload(statusResponse.data)
+          if (!payload) {
+            onProgress?.("daemon status did not include structured worker state")
+            return "restart requested; daemon status is unavailable, so verify with `ouro status` if needed"
+          }
+          const worker = readRuntimeApplyWorker(payload, agent)
+          if (!worker) {
+            onProgress?.(`still waiting: ${agent} is not listed by daemon`)
+          } else if (worker.status === "running") {
+            onProgress?.(`daemon reports ${agent}/${worker.worker} running`)
+            return `restarted ${agent} and the daemon reports it running`
+          } else if (worker.status === "crashed") {
+            return `restart requested, but ${agent}/${worker.worker} crashed before reporting running${worker.errorReason ? `: ${worker.errorReason}` : worker.fixHint ? `: ${worker.fixHint}` : ""}`
+          } else {
+            onProgress?.(`still waiting: ${agent}/${worker.worker} is ${worker.status}`)
+          }
+        } else {
+          onProgress?.(`still waiting: daemon status returned ${statusResponse.error ?? statusResponse.message ?? "unknown error"}`)
+        }
+      } catch (error) {
+        onProgress?.(`still waiting: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      if (cliNowMs(deps) >= deadline - DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS) break
+      await cliSleep(deps, DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS)
+    }
+    return `restart requested, but ${agent} did not report running before timeout. The change is stored; run \`ouro status\` or \`ouro up\` if it still looks stale.`
   } catch (error) {
     return `daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`
   }
@@ -1688,7 +1810,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -1706,23 +1828,72 @@ function enableAgentSense(agent: string, sense: "bluebubbles", deps: OuroCliDeps
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-function connectMenu(agent: string): string {
+async function buildConnectMenu(agent: string, deps: OuroCliDeps): Promise<string> {
+  const providerVisibility = buildAgentProviderVisibility({
+    agentName: agent,
+    agentRoot: providerCliAgentRoot({ agent }, deps),
+    homeDir: providerCliHomeDir(deps),
+  })
+  const providerStatus = providerVisibility.lanes.some((lane) => lane.status === "unconfigured")
+    ? "needs setup"
+    : providerVisibility.lanes.some((lane) => lane.status === "configured" && lane.credential.status !== "present")
+      ? "needs auth"
+      : providerVisibility.lanes.some((lane) => lane.status === "configured" && (lane.readiness.status === "failed" || lane.readiness.status === "stale"))
+        ? "needs attention"
+        : "ready"
+  const providerDetail = providerVisibility.lanes.map((lane) => lane.status === "configured"
+    ? `${lane.lane}: ${lane.provider} / ${lane.model}`
+    : `${lane.lane}: choose provider/model`).join(" | ")
+
+  const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+  const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
+  const agentConfig = readAgentConfigForAgent(agent, deps.bundlesRoot).config
+  const teamsEnabled = agentConfig.senses?.teams?.enabled === true
+  const blueBubblesEnabled = agentConfig.senses?.bluebubbles?.enabled === true
+  const perplexityStatus = runtimeConfig.ok
+    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.perplexityApiKey") ? "ready" : "missing"
+    : runtimeConfigReadStatus(runtimeConfig)
+  const embeddingsStatus = runtimeConfig.ok
+    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey") ? "ready" : "missing"
+    : runtimeConfigReadStatus(runtimeConfig)
+  const teamsStatus = runtimeConfig.ok
+    ? hasRuntimeConfigValue(runtimeConfig.config, "teams.clientId")
+      && hasRuntimeConfigValue(runtimeConfig.config, "teams.clientSecret")
+      && hasRuntimeConfigValue(runtimeConfig.config, "teams.tenantId")
+      && teamsEnabled
+      ? "ready"
+      : "missing"
+    : runtimeConfigReadStatus(runtimeConfig)
+  const blueBubblesStatus = machineRuntime.ok
+    ? hasRuntimeConfigValue(machineRuntime.config, "bluebubbles.serverUrl")
+      && hasRuntimeConfigValue(machineRuntime.config, "bluebubbles.password")
+      && blueBubblesEnabled
+      ? "attached"
+      : "not attached"
+    : machineRuntimeReadStatus(machineRuntime)
+
   return [
-    `Connect ${agent}`,
-    "Pick what this agent should be able to use.",
+    `${agent} // connect bay`,
+    "Bring one capability online at a time.",
     "",
-    "  1. Perplexity search",
-    "     Portable. Stores an API key in the agent vault.",
+    `  1. [${providerStatus}] Providers`,
+    `     ${providerDetail}`,
     "",
-    "  2. BlueBubbles iMessage",
-    "     This machine only. Connects a local Mac Messages bridge.",
+    `  2. [${perplexityStatus}] Perplexity search`,
+    "     Portable. Web search via Perplexity.",
     "",
-    "  3. Provider auth",
-    `     Model credentials: ouro auth --agent ${agent} --provider <provider>`,
+    `  3. [${embeddingsStatus}] Memory embeddings`,
+    "     Portable. Memory retrieval and note search.",
     "",
-    "  4. Cancel",
+    `  4. [${teamsStatus}] Teams`,
+    "     Portable. Microsoft Teams sense credentials.",
     "",
-    "Choose [1-4]: ",
+    `  5. [${blueBubblesStatus}] BlueBubbles iMessage`,
+    "     This machine only. Local Mac Messages bridge.",
+    "",
+    "  6. Cancel",
+    "",
+    "Choose [1-6] or type a name: ",
   ].join("\n")
 }
 
@@ -1742,33 +1913,146 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
   let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
   let reload: string
   try {
-    progress.startPhase("saving Perplexity search")
-    stored = await storeRuntimeConfigKey({
-      agent,
-      key: "integrations.perplexityApiKey",
-      value: key,
-      scope: "agent",
-      deps,
-      onProgress: (message) => progress.updateDetail(message),
-    })
-    progress.completePhase("saving Perplexity search", "secret stored")
-    progress.startPhase(`reloading ${agent}`)
-    reload = await reloadRunningAgentAfterCredentialChange(agent, deps)
-    progress.completePhase(`reloading ${agent}`, reload)
+    stored = await runCommandProgressPhase(
+      progress,
+      "saving Perplexity search",
+      () => storeRuntimeConfigKey({
+        agent,
+        key: "integrations.perplexityApiKey",
+        value: key,
+        scope: "agent",
+        deps,
+        onProgress: (message) => progress.updateDetail(message),
+      }),
+      () => "secret stored",
+    )
+    reload = await runCommandProgressPhase(
+      progress,
+      `applying change to running ${agent}`,
+      () => applyRuntimeChangeToRunningAgent(agent, deps, (message) => progress.updateDetail(message)),
+      (result) => result,
+    )
+  } finally {
     progress.end()
-  } catch (error) {
-    progress.end()
-    throw error
   }
   const message = [
     `Perplexity connected for ${agent}`,
     "capability: Perplexity search",
     `stored: ${stored.itemPath}`,
-    `reload: ${reload}`,
+    `running agent: ${reload}`,
     "secret was not printed",
     "",
     "Next: ask the agent to search.",
   ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promise<string> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Connect embeddings on the hatchling agent instead.")
+  }
+  const promptSecret = requirePromptSecret(deps, "OpenAI embeddings API key entry")
+  deps.writeStdout([
+    `Connect embeddings for ${agent}`,
+    "The API key stays hidden while you type.",
+    `Ouro stores it in ${agent}'s vault runtime/config item.`,
+  ].join("\n"))
+  const key = (await promptSecret("OpenAI embeddings API key: ")).trim()
+  if (!key) throw new Error("OpenAI embeddings API key cannot be blank")
+  const progress = createHumanCommandProgress(deps, "connect embeddings")
+  let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let reload: string
+  try {
+    stored = await runCommandProgressPhase(
+      progress,
+      "saving memory embeddings",
+      () => storeRuntimeConfigKey({
+        agent,
+        key: "integrations.openaiEmbeddingsApiKey",
+        value: key,
+        scope: "agent",
+        deps,
+        onProgress: (message) => progress.updateDetail(message),
+      }),
+      () => "secret stored",
+    )
+    reload = await runCommandProgressPhase(
+      progress,
+      `applying change to running ${agent}`,
+      () => applyRuntimeChangeToRunningAgent(agent, deps, (message) => progress.updateDetail(message)),
+      (result) => result,
+    )
+  } finally {
+    progress.end()
+  }
+  const message = [
+    `Embeddings connected for ${agent}`,
+    "capability: memory embeddings",
+    `stored: ${stored.itemPath}`,
+    `running agent: ${reload}`,
+    "secret was not printed",
+    "",
+    "Next: ask the agent to search notes or memory.",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<string> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Connect Teams on the hatchling agent instead.")
+  }
+  const promptInput = requirePromptInput(deps, "Teams setup")
+  const promptSecret = requirePromptSecret(deps, "Teams client secret entry")
+  deps.writeStdout([
+    `Connect Teams for ${agent}`,
+    "This connects the Teams sense.",
+    "The client secret stays hidden while you type.",
+  ].join("\n"))
+  const clientId = (await promptInput("Teams client ID: ")).trim()
+  if (!clientId) throw new Error("Teams client ID cannot be blank")
+  const clientSecret = (await promptSecret("Teams client secret: ")).trim()
+  if (!clientSecret) throw new Error("Teams client secret cannot be blank")
+  const tenantId = (await promptInput("Teams tenant ID: ")).trim()
+  if (!tenantId) throw new Error("Teams tenant ID cannot be blank")
+  const managedIdentityClientId = (await promptInput("Teams managed identity client ID [blank to skip]: ")).trim()
+
+  const progress = createHumanCommandProgress(deps, "connect teams")
+  let stored: Awaited<ReturnType<typeof storeRuntimeConfigKeys>>
+  try {
+    stored = await runCommandProgressPhase(
+      progress,
+      "saving Teams setup",
+      () => storeRuntimeConfigKeys({
+        agent,
+        entries: [
+          { key: "teams.clientId", value: clientId },
+          { key: "teams.clientSecret", value: clientSecret },
+          { key: "teams.tenantId", value: tenantId },
+          ...(managedIdentityClientId ? [{ key: "teams.managedIdentityClientId", value: managedIdentityClientId }] : []),
+        ],
+        scope: "agent",
+        deps,
+        onProgress: (message) => progress.updateDetail(message),
+      }),
+      () => "secret stored",
+    )
+    progress.updateDetail("enabling Teams in agent.json")
+    enableAgentSense(agent, "teams", deps)
+  } finally {
+    progress.end()
+  }
+
+  const message = appendBundleSyncSummary([
+    `Teams connected for ${agent}`,
+    "capability: Teams sense",
+    `stored: ${stored.itemPath}`,
+    "agent.json: senses.teams.enabled = true",
+    "secret was not printed",
+    "",
+    "Next: run `ouro up` so the daemon picks up the Teams sense change.",
+  ].join("\n"), agent, deps)
   deps.writeStdout(message)
   return message
 }
@@ -1840,41 +2124,78 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   return message
 }
 
+async function executeConnectProviders(agent: string, deps: OuroCliDeps): Promise<string> {
+  const promptInput = deps.promptInput
+  if (!promptInput) {
+    const message = [
+      `Provider auth for ${agent}`,
+      "Run one of:",
+      ...CONNECT_PROVIDER_CHOICES.map((provider) => `  ouro auth --agent ${agent} --provider ${provider}`),
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+  const choice = (await promptInput([
+    `Which provider should ${agent} use credentials for?`,
+    ...CONNECT_PROVIDER_CHOICES.map((provider) => `  - ${provider}`),
+    "",
+    "Provider: ",
+  ].join("\n"))).trim().toLowerCase()
+  if (!isAgentProvider(choice)) {
+    throw new Error(`Unknown provider '${choice}'. Use ${CONNECT_PROVIDER_CHOICES.join("|")}.`)
+  }
+  return executeAuthRun({ kind: "auth.run", agent, provider: choice }, deps)
+}
+
+function machineRuntimeReadStatus(
+  runtime: Extract<RuntimeCredentialConfigReadResult, { ok: false }>,
+): "not attached" | "locked" | "needs attention" {
+  if (runtime.reason === "missing") return "not attached"
+  if (/locked/i.test(runtime.error)) return "locked"
+  return "needs attention"
+}
+
+function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "cancel" {
+  const normalized = answer.trim().toLowerCase()
+  if (normalized === "1" || normalized === "providers" || normalized === "provider" || normalized === "auth") return "providers"
+  if (normalized === "2" || normalized === "perplexity" || normalized === "perplexity-search" || normalized === "search") return "perplexity"
+  if (normalized === "3" || normalized === "embeddings" || normalized === "embedding" || normalized === "memory" || normalized === "note-search" || normalized === "notes") return "embeddings"
+  if (normalized === "4" || normalized === "teams" || normalized === "msteams" || normalized === "microsoft-teams") return "teams"
+  if (normalized === "5" || normalized === "bluebubbles" || normalized === "imessage" || normalized === "messages") return "bluebubbles"
+  return "cancel"
+}
+
 async function executeConnect(
   command: Extract<OuroCliCommand, { kind: "connect" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
+  if (command.target === "providers") return executeConnectProviders(command.agent, deps)
   if (command.target === "perplexity") return executeConnectPerplexity(command.agent, deps)
+  if (command.target === "embeddings") return executeConnectEmbeddings(command.agent, deps)
+  if (command.target === "teams") return executeConnectTeams(command.agent, deps)
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
 
+  const menu = await buildConnectMenu(command.agent, deps)
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
-      connectMenu(command.agent).replace(/\nChoose \[1-4\]: $/, ""),
+      menu.replace(/\nChoose \[1-6\] or type a name: $/, ""),
       "",
+      `Run: ouro connect providers --agent ${command.agent}`,
       `Run: ouro connect perplexity --agent ${command.agent}`,
-      `Or:  ouro connect bluebubbles --agent ${command.agent}`,
+      `Run: ouro connect embeddings --agent ${command.agent}`,
+      `Run: ouro connect teams --agent ${command.agent}`,
+      `Run: ouro connect bluebubbles --agent ${command.agent}`,
     ].join("\n")
     deps.writeStdout(message)
     return message
   }
-  const answer = (await promptInput(connectMenu(command.agent))).trim().toLowerCase()
-  if (answer === "1" || answer === "perplexity" || answer === "perplexity-search") {
-    return executeConnectPerplexity(command.agent, deps)
-  }
-  if (answer === "2" || answer === "bluebubbles" || answer === "imessage" || answer === "messages") {
-    return executeConnectBlueBubbles(command.agent, deps)
-  }
-  if (answer === "3" || answer === "provider" || answer === "providers" || answer === "auth") {
-    const message = [
-      "Provider auth is its own flow:",
-      `  ouro auth --agent ${command.agent} --provider <provider>`,
-      "",
-      "Use `ouro connect` for integrations and local senses after provider auth is ready.",
-    ].join("\n")
-    deps.writeStdout(message)
-    return message
-  }
+  const answer = connectMenuTarget(await promptInput(menu))
+  if (answer === "providers") return executeConnectProviders(command.agent, deps)
+  if (answer === "perplexity") return executeConnectPerplexity(command.agent, deps)
+  if (answer === "embeddings") return executeConnectEmbeddings(command.agent, deps)
+  if (answer === "teams") return executeConnectTeams(command.agent, deps)
+  if (answer === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   const message = "connect cancelled."
   deps.writeStdout(message)
   return message
@@ -2254,13 +2575,14 @@ async function executeProviderRefresh(
     return message
   }
 
-  progress.startPhase(`reloading ${command.agent}`)
-  const reload = await reloadRunningAgentAfterCredentialChange(command.agent, deps)
-  progress.completePhase(`reloading ${command.agent}`, reload)
+  const reload = await runCommandProgressPhase(
+    progress,
+    `applying change to running ${command.agent}`,
+    () => applyRuntimeChangeToRunningAgent(command.agent, deps, (message) => progress.updateDetail(message)),
+    (result) => result,
+  )
   progress.end()
-  lines.push(reload === "daemon is not running; next `ouro up` will load it"
-    ? "daemon is not running; the next start will load the refreshed snapshot"
-    : reload)
+  lines.push(`running agent: ${reload}`)
 
   const message = lines.join("\n")
   deps.writeStdout(message)

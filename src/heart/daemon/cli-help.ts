@@ -180,10 +180,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   connect: {
     category: "Auth",
-    description: "Connect integrations and local senses such as Perplexity search and BlueBubbles iMessage",
-    usage: "ouro connect [perplexity|bluebubbles] --agent <name>",
-    example: "ouro connect perplexity --agent ouroboros",
-    subcommands: ["perplexity", "bluebubbles"],
+    description: "Connect providers, portable integrations, and local senses from one guided bay",
+    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles] --agent <name>",
+    example: "ouro connect --agent ouroboros",
+    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles"],
   },
   use: {
     category: "Auth",
@@ -292,6 +292,21 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Connect Perplexity search for this agent",
     usage: "ouro connect perplexity --agent <name>",
     example: "ouro connect perplexity --agent ouroboros",
+  },
+  "connect providers": {
+    description: "Open provider auth from the connect bay without remembering the auth command",
+    usage: "ouro connect providers --agent <name>",
+    example: "ouro connect providers --agent ouroboros",
+  },
+  "connect embeddings": {
+    description: "Connect memory embeddings for this agent",
+    usage: "ouro connect embeddings --agent <name>",
+    example: "ouro connect embeddings --agent ouroboros",
+  },
+  "connect teams": {
+    description: "Connect Microsoft Teams credentials and enable the Teams sense",
+    usage: "ouro connect teams --agent <name>",
+    example: "ouro connect teams --agent ouroboros",
   },
   "connect bluebubbles": {
     description: "Attach BlueBubbles iMessage to this machine only",

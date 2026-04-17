@@ -188,6 +188,14 @@ This tells Teams to enable SSO token exchange with the app registration. The `id
 
 Store these entries in the owning agent's vault-backed Teams/OAuth config:
 
+For the Teams fields, the easiest path is:
+
+```bash
+ouro connect teams --agent <agent>
+```
+
+That guided flow stores the Teams credentials in `runtime/config` and enables `senses.teams.enabled` in `agent.json`.
+
 ```json
 {
   "teams": {

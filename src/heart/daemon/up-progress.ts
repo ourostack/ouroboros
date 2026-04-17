@@ -20,10 +20,12 @@ const RESET = "\x1b[0m"
 const BOLD = "\x1b[1m"
 const DIM = "\x1b[2m"
 const GREEN = "\x1b[38;2;46;204;64m"
+const RED = "\x1b[38;2;255;106;106m"
 
 // ── Types ──
 
 interface CompletedPhase {
+  status: "success" | "failure"
   label: string
   detail?: string
 }
@@ -139,7 +141,7 @@ export class UpProgress {
     }
 
     const elapsedMs = this.now() - this.currentPhase.startedAt
-    this.completed.push({ label, detail })
+    this.completed.push({ status: "success", label, detail })
     this.currentPhase = null
     this.currentDetail = null
     this.stopAutoRender()
@@ -168,6 +170,43 @@ export class UpProgress {
     }
   }
 
+  failPhase(label: string, detail?: string): void {
+    if (!this.currentPhase) {
+      return
+    }
+
+    const elapsedMs = this.now() - this.currentPhase.startedAt
+    this.completed.push({ status: "failure", label, detail })
+    this.currentPhase = null
+    this.currentDetail = null
+    this.stopAutoRender()
+
+    if (this.eventScope === "command") {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.cli_progress_phase_failed",
+        message: `phase failed: ${label}`,
+        meta: { command: this.commandName, phase: label, detail: detail ?? null, elapsedMs },
+      })
+    } else {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.up_phase_failed",
+        message: `phase failed: ${label}`,
+        meta: { phase: label, detail: detail ?? null, elapsedMs },
+      })
+    }
+
+    if (this.isTTY) {
+      this.flushRender()
+    } else {
+      const detailStr = detail ? ` \u2014 ${detail}` : ""
+      this.write(`  \u2717 ${label}${detailStr}\n`)
+    }
+  }
+
   /**
    * Build an ANSI string for in-place terminal display. Returns empty
    * string in non-TTY mode (output is written eagerly in completePhase).
@@ -182,7 +221,11 @@ export class UpProgress {
     // Completed phases
     for (const phase of this.completed) {
       const detailStr = phase.detail ? ` ${DIM}\u2014 ${phase.detail}${RESET}` : ""
-      lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
+      if (phase.status === "failure") {
+        lines.push(`  ${RED}\u2717${RESET} ${phase.label}${detailStr}`)
+      } else {
+        lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
+      }
     }
 
     // Current phase with spinner

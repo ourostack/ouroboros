@@ -70,11 +70,22 @@ Guided integration and local-sense setup starts with:
 
 ```bash
 ouro connect --agent <agent>
+ouro connect providers --agent <agent>
 ouro connect perplexity --agent <agent>
+ouro connect embeddings --agent <agent>
+ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
+`ouro connect` opens the connect bay: one short menu that shows which capabilities are already ready, missing, locked, or machine-local.
+
+`ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
+
 `ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
+
+`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it and stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`.
+
+`ouro connect teams` connects the Teams sense. It prompts for `teams.clientId`, `teams.clientSecret`, `teams.tenantId`, and optional `teams.managedIdentityClientId`, stores them in `runtime/config`, and enables `senses.teams.enabled` in `agent.json`.
 
 `ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. It does not make that local Mac Messages bridge portable to every machine.
 
@@ -356,14 +367,14 @@ Use this checklist for any existing agent that predates the vault-backed credent
 6. Re-enter runtime, sense, integration, travel, and tool credentials into vault items if recovery did not import them or if they are stale.
 
    ```bash
+   ouro connect --agent <agent>
    ouro connect perplexity --agent <agent>
+   ouro connect embeddings --agent <agent>
+   ouro connect teams --agent <agent>
    ouro connect bluebubbles --agent <agent>
-   ouro vault config set --agent <agent> --key teams.clientId
-   ouro vault config set --agent <agent> --key teams.clientSecret
-   ouro vault config set --agent <agent> --key teams.tenantId
    ```
 
-   Use `ouro connect` when a guided connector exists. Use the relevant field names for integrations that do not have a guided connector yet. BlueBubbles is a local attachment; run `ouro connect bluebubbles` separately on each machine that should bridge iMessage.
+   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles is a local attachment; run `ouro connect bluebubbles` separately on each machine that should bridge iMessage.
 
 7. Choose this machine's provider/model lanes.
 
@@ -397,7 +408,10 @@ ouro vault config set --agent <agent> --key <field>
 ouro vault config set --agent <agent> --key <field> --scope machine
 ouro vault config status --agent <agent> [--scope agent|machine|all]
 ouro connect --agent <agent>
+ouro connect providers --agent <agent>
 ouro connect perplexity --agent <agent>
+ouro connect embeddings --agent <agent>
+ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
