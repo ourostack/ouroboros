@@ -100,7 +100,7 @@ function sanitizeBwErrorDetail(message: string): string {
 function formatBwCliError(err: Error, stderr = "", args: string[] = []): Error {
   const operation = formatBwOperation(args)
   if (isBwTimeoutError(err)) {
-    return new Error(`bw CLI error: ${operation} timed out while waiting for a vault response`)
+    return new Error(`bw CLI error: ${operation} timed out -- usually resolves on retry. If it persists, check network connectivity to the vault server.`)
   }
   const detail = sanitizeBwErrorDetail(stderr.trim() || err.message)
   if (detail === "command failed") {
@@ -273,12 +273,15 @@ function isTransientError(err: Error): boolean {
     msg.includes("enotfound") ||
     msg.includes("socket hang up") ||
     msg.includes("503") ||
-    msg.includes("server unavailable")
+    msg.includes("server unavailable") ||
+    msg.includes("timed out")
   )
 }
 
 const MAX_RETRIES = 3
 const BASE_BACKOFF_MS = 1000
+const TRANSIENT_MAX_RETRIES = 3
+const TRANSIENT_RETRY_BASE_MS = 500
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -492,6 +495,10 @@ export class BitwardenCredentialStore implements CredentialStore {
       const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
       this.sessionToken = unlockOutput.trim()
     }
+
+    // Sync vault data after obtaining a fresh session token
+    /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
+    await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
   }
 
   private async ensureSession(): Promise<string | undefined> {
@@ -519,6 +526,37 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
   }
 
+  private async withTransientRetry<T>(operation: () => Promise<T>): Promise<T> {
+    let lastError: Error | undefined
+
+    for (let attempt = 0; attempt < TRANSIENT_MAX_RETRIES; attempt++) {
+      try {
+        return await operation()
+      } catch (err) {
+        /* v8 ignore next -- defensive: operation always throws Error instances @preserve */
+        lastError = err instanceof Error ? err : new Error(String(err))
+
+        if (!isTransientError(lastError)) {
+          throw lastError
+        }
+
+        if (attempt === TRANSIENT_MAX_RETRIES - 1) break
+
+        const backoffMs = TRANSIENT_RETRY_BASE_MS * Math.pow(2, attempt)
+        emitNervesEvent({
+          event: "repertoire.bw_transient_retry",
+          component: "repertoire",
+          message: `transient bw error, retrying in ${backoffMs}ms`,
+          meta: { attempt: attempt + 1, backoffMs, reason: lastError.message },
+        })
+
+        await delay(backoffMs)
+      }
+    }
+
+    throw lastError!
+  }
+
   async get(domain: string): Promise<CredentialMeta | null> {
     emitNervesEvent({
       event: "repertoire.bw_credential_get_start",
@@ -527,7 +565,9 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { domain, backend: "bitwarden" },
     })
 
-    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
+    const item = await this.withTransientRetry(() =>
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+    )
 
     if (!item) {
       emitNervesEvent({
@@ -555,7 +595,9 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   async getRawSecret(domain: string, field: string): Promise<string> {
-    const item = await this.withSessionRetry((session) => this.findItemByDomain(domain, session))
+    const item = await this.withTransientRetry(() =>
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+    )
 
     if (!item) {
       throw new Error(`no credential found for domain "${domain}"`)
@@ -635,7 +677,9 @@ export class BitwardenCredentialStore implements CredentialStore {
       meta: { backend: "bitwarden" },
     })
 
-    const stdout = await this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir))
+    const stdout = await this.withTransientRetry(() =>
+      this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir)),
+    )
     const items = parseBwItems(stdout, "bw list items")
 
     const results: CredentialMeta[] = items.map((item) => ({

@@ -271,7 +271,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextListAllWith = "server unavailable"
+    bwHarness.failNextListAllWith = "access denied by vault policy"
     bwHarness.failListAllAtCall = 2
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
@@ -286,7 +286,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       promptInput: async () => "minimax-secret",
       onProgress: (message) => progress.push(message),
     })).rejects.toThrow(
-      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the local provider snapshot refresh failed: bw CLI error: server unavailable. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
+      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the local provider snapshot refresh failed: bw CLI error: access denied by vault policy. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
     )
 
     expect(progress).toEqual([
