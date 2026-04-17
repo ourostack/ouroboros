@@ -461,7 +461,6 @@ async function runCommandProgressPhase<T>(
 }
 
 function daemonProgressSummary(result: EnsureDaemonResult): string {
-  if (result.verifyStartupStatus === false) return "replacement still waiting"
   if (result.alreadyRunning) return "already running"
   if (result.message.includes("replaced")) return "replacement ready"
   return "ready"
