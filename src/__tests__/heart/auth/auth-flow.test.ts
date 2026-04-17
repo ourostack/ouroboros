@@ -10,15 +10,22 @@ const providerCredentialWrites = vi.hoisted(() => [] as Array<{
   credentials: Record<string, string | number>
   config: Record<string, string | number>
 }>)
-const mockRefreshProviderCredentialPool = vi.hoisted(() => vi.fn(async (agentName: string) => ({
-  ok: true,
-  poolPath: `vault:${agentName}:providers/*`,
-  pool: {
-    schemaVersion: 1,
-    updatedAt: "2026-04-13T00:00:00.000Z",
-    providers: {},
-  },
-})))
+const mockRefreshProviderCredentialPool = vi.hoisted(() => vi.fn(async (
+  agentName: string,
+  options?: { onProgress?: (message: string) => void },
+) => {
+  options?.onProgress?.(`reading vault items for ${agentName}...`)
+  options?.onProgress?.("parsing provider credentials...")
+  return {
+    ok: true,
+    poolPath: `vault:${agentName}:providers/*`,
+    pool: {
+      schemaVersion: 1,
+      updatedAt: "2026-04-13T00:00:00.000Z",
+      providers: {},
+    },
+  }
+}))
 const mockUpsertProviderCredential = vi.hoisted(() => vi.fn(async (input: {
   agentName: string
   provider: string
@@ -262,6 +269,8 @@ describe("runtime auth flow", () => {
     expect(result.message).toBe(`authenticated ${agentName} with openai-codex`)
     expect(progress).toEqual([
       `checking ${agentName}'s vault access...`,
+      `reading vault items for ${agentName}...`,
+      "parsing provider credentials...",
       "starting openai-codex browser login...",
       "openai-codex login complete; reading local Codex token...",
       `opening ${agentName}'s vault session...`,

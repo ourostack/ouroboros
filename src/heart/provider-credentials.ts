@@ -403,7 +403,9 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
     notes: "Ouro provider credentials. The vault item password is a versioned JSON payload.",
   })
   input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
-  const refreshResult = await refreshProviderCredentialPool(input.agentName)
+  const refreshResult = await refreshProviderCredentialPool(input.agentName, {
+    onProgress: input.onProgress,
+  })
   if (!refreshResult.ok) {
     throw new Error(
       `credential stored in vault, but the local provider snapshot could not be refreshed: ${refreshResult.error}. ` +
