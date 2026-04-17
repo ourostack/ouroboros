@@ -66,6 +66,7 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import { OuroDaemon } from "../../../heart/daemon/daemon"
+import * as daemonThoughts from "../../../heart/daemon/thoughts"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readProviderState } from "../../../heart/provider-state"
@@ -6085,6 +6086,18 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("ouroboros.ouro")
   })
 
+  it("whoami falls back to the no-agents message when agent resolution throws unexpectedly", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(() => {
+        throw new Error("exploded discovery")
+      }),
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("no agents found")
+    expect(result).toContain("ouro clone")
+  })
+
   it("task board without --agent prompts and reads the selected agent bundle", async () => {
     const tmp = createTmpBundle({ agentName: "slugger" })
     try {
@@ -6515,6 +6528,71 @@ describe("ouro thoughts CLI execution", () => {
 
     expect(result).toContain("no agents found")
     expect(result).toContain("ouro")
+  })
+
+  it("uses runtime agent context when thoughts omits --agent", async () => {
+    writeSessionFile([
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "waking up.\n\nwhat needs my attention?" },
+      { role: "assistant", content: "runtime context found me." },
+    ])
+    const listDiscoveredAgents = vi.fn(async () => ["other-agent"])
+    const deps = makeDeps({
+      listDiscoveredAgents,
+      whoamiInfo: vi.fn(() => ({
+        agentName: testAgentName,
+      })),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("runtime context found me.")
+    expect(listDiscoveredAgents).not.toHaveBeenCalled()
+  })
+
+  it("returns multi-agent guidance when thoughts omits --agent without prompt support", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("multiple agents found: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns invalid-selection guidance when thoughts prompt answer is blank", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "   "),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("invalid agent selection. Available agents: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns invalid-selection guidance when thoughts prompt answer is not a name or number", async () => {
+    const deps = makeDeps({
+      listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
+      promptInput: vi.fn(async () => "definitely-not-an-agent"),
+    })
+    const result = await runOuroCli(["thoughts"], deps)
+
+    expect(result).toContain("invalid agent selection. Available agents: slugger, ouroboros")
+    expect(result).toContain("Re-run with --agent <name>.")
+  })
+
+  it("returns the defensive no-agent-context message when thought parsing throws unexpectedly", async () => {
+    const parseSpy = vi.spyOn(daemonThoughts, "parseInnerDialogSession").mockImplementation(() => {
+      throw new Error("unexpected parse failure")
+    })
+    try {
+      const deps = makeDeps()
+      const result = await runOuroCli(["thoughts", "--agent", testAgentName], deps)
+
+      expect(result).toContain("error: no agent context")
+    } finally {
+      parseSpy.mockRestore()
+    }
   })
 
   it("enters follow mode and resolves on SIGINT", async () => {

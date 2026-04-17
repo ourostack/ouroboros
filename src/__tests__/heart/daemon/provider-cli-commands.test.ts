@@ -564,6 +564,15 @@ describe("provider CLI command parsing", () => {
     })
     expect(parseOuroCommand([
       "vault",
+      "create",
+      "--email",
+      "operator@example.com",
+    ])).toEqual({
+      kind: "vault.create",
+      email: "operator@example.com",
+    })
+    expect(parseOuroCommand([
+      "vault",
       "replace",
       "--agent",
       "Slugger",
@@ -585,6 +594,9 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["vault", "replace", "--agent", "Slugger"])).toEqual({
       kind: "vault.replace",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["vault", "replace"])).toEqual({
+      kind: "vault.replace",
     })
     expect(() => parseOuroCommand(["vault", "replace", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"]))
       .toThrow("--from is only valid")
@@ -620,6 +632,10 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["vault", "recover", "--agent", "Slugger", "--from", "/tmp/legacy-secrets.json"])).toEqual({
       kind: "vault.recover",
       agent: "Slugger",
+      sources: ["/tmp/legacy-secrets.json"],
+    })
+    expect(parseOuroCommand(["vault", "recover", "--from", "/tmp/legacy-secrets.json"])).toEqual({
+      kind: "vault.recover",
       sources: ["/tmp/legacy-secrets.json"],
     })
     expect(parseOuroCommand(["vault", "unlock", "--agent", "Slugger", "--store", "auto"])).toEqual({
@@ -3844,6 +3860,18 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toContain("refreshed provider credential snapshot for Slugger")
+  })
+
+  it("provider refresh throws multi-agent guidance when --agent is omitted without prompt support", async () => {
+    emitTestEvent("provider cli refresh missing agent throws")
+    const bundlesRoot = makeTempDir("provider-cli-refresh-missing-agent-bundles")
+    const homeDir = makeTempDir("provider-cli-refresh-missing-agent-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentConfig(bundlesRoot, "Ouroboros")
+
+    await expect(runOuroCli(["provider", "refresh"], makeCliDeps(homeDir, bundlesRoot, {
+      listDiscoveredAgents: () => ["Slugger", "Ouroboros"],
+    }))).rejects.toThrow("multiple agents found: Slugger, Ouroboros")
   })
 
   it("connect prompts for an agent when --agent is omitted and multiple bundles exist", async () => {
