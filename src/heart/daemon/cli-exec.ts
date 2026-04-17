@@ -235,8 +235,9 @@ function providerRepairCountSummary(count: number): string {
 async function reportPostRepairProviderHealth(
   deps: OuroCliDeps,
   repairedAgents: string[],
+  onProgress?: (message: string) => void,
 ): Promise<DegradedAgent[]> {
-  const remainingDegraded = await checkAgentProviders(deps, repairedAgents)
+  const remainingDegraded = await checkAgentProviders(deps, repairedAgents, onProgress)
 
   emitNervesEvent({
     level: remainingDegraded.length > 0 ? "warn" : "info",
@@ -3094,7 +3095,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           const repairedAgents = daemonResult.stability.degraded
             .filter(hasRunnableInteractiveRepair)
             .map((entry) => entry.agent)
-          await reportPostRepairProviderHealth(deps, repairedAgents)
+          progress.startPhase("post-repair check")
+          await reportPostRepairProviderHealth(deps, repairedAgents, (msg) => progress.updateDetail(msg))
+          progress.completePhase("post-repair check", providerRepairCountSummary(repairedAgents.length))
         }
       }
     }

@@ -855,7 +855,11 @@ describe("ouro up: interactive repair wiring", () => {
 
     await runOuroCli(["up"], deps)
 
-    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("test-agent", "/tmp/bundles")
+    expect(mocks.checkAgentConfigWithProviderHealth).toHaveBeenCalledWith(
+      "test-agent",
+      "/tmp/bundles",
+      expect.objectContaining({ onProgress: expect.any(Function) }),
+    )
     const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
     expect(output).toContain("Provider checks recovered after repair")
   })
