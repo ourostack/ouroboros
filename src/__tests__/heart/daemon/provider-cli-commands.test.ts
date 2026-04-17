@@ -2739,6 +2739,133 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("Perplexity connected for Slugger")
   })
 
+  it("runs the shared live provider verification path before rendering the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_live",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking selected providers")
+    expect(output).toContain("reading vault items for Slugger...")
+    expect(output).toContain("checking openai-codex / gpt-5.4...")
+    expect(output).toContain("checking minimax / MiniMax-M2.5...")
+    expect(prompts.join("\n")).toContain("Providers - ready")
+    expect(mockPingProvider).toHaveBeenCalledTimes(2)
+    expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, { model: "gpt-5.4" })
+    expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, { model: "MiniMax-M2.5" })
+  })
+
+  it("renders failed live provider checks as attention instead of auth gaps in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu live verification failed")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-failed-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-failed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_connect_failed",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider) => {
+      if (provider === "openai-codex") return { ok: false, message: "400 status code (no body)", attempts: [1] }
+      if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
+      throw new Error(`unexpected provider ${provider}`)
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking openai-codex / gpt-5.4...")
+    expect(prompts.join("\n")).toContain("Providers - needs attention")
+    expect(prompts.join("\n")).toContain("openai-codex / gpt-5.4")
+    expect(prompts.join("\n")).toContain("failed live check: 400 status code (no body)")
+    expect(prompts.join("\n")).not.toContain("Providers - needs credentials")
+  })
+
   it("renders provider repair status in the connect bay when bindings need auth or attention", async () => {
     emitTestEvent("provider cli connect menu provider statuses")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-statuses-bundles")
