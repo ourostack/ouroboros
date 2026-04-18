@@ -230,6 +230,14 @@ function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<Ou
   } as OuroCliDeps & { _output: string[] }
 }
 
+function joinedPrompt(prompts: string[]): string {
+  return prompts.join("\n")
+}
+
+function expectConnectStatus(prompt: string, option: number, name: string, status: string): void {
+  expect(prompt).toContain(`${option}. ${name} [${status}]`)
+}
+
 function writeAgentConfig(bundlesRoot: string, agentName: string): void {
   const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
   fs.mkdirSync(agentRoot, { recursive: true })
@@ -2730,21 +2738,22 @@ describe("provider CLI command execution", () => {
     })
     const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
 
-    expect(prompts.join("\n")).toContain("Slugger connect bay")
-    expect(prompts.join("\n")).toContain("Next best move")
-    expect(prompts.join("\n")).toContain("Provider core")
-    expect(prompts.join("\n")).toContain("Portable")
-    expect(prompts.join("\n")).toContain("This machine")
+    expect(prompt).toContain("Slugger connect bay")
+    expect(prompt).toContain("Next best move")
+    expect(prompt).toContain("Provider core")
+    expect(prompt).toContain("Portable")
+    expect(prompt).toContain("This machine")
     expect(output).toContain("... checking current connections")
     expect(output).toContain("checking selected providers")
     expect(output).toContain("loading portable settings")
     expect(output).toContain("loading this machine's settings")
-    expect(prompts.join("\n")).toContain("Providers")
-    expect(prompts.join("\n")).toContain("Perplexity search")
-    expect(prompts.join("\n")).toContain("Memory embeddings")
-    expect(prompts.join("\n")).toContain("Teams")
-    expect(prompts.join("\n")).toContain("BlueBubbles iMessage")
+    expect(prompt).toContain("Providers")
+    expect(prompt).toContain("Perplexity search")
+    expect(prompt).toContain("Memory embeddings")
+    expect(prompt).toContain("Teams")
+    expect(prompt).toContain("BlueBubbles iMessage")
     expect(result).toContain("Perplexity connected for Slugger")
   })
 
@@ -2801,13 +2810,14 @@ describe("provider CLI command execution", () => {
     })
     const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking selected providers")
     expect(output).toContain("reading vault items for Slugger...")
     expect(output).toContain("checking openai-codex / gpt-5.4...")
     expect(output).toContain("checking minimax / MiniMax-M2.5...")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
+    expectConnectStatus(prompt, 1, "Providers", "ready")
     expect(mockPingProvider).toHaveBeenCalledTimes(2)
     expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, { model: "gpt-5.4" })
     expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, { model: "MiniMax-M2.5" })
@@ -2866,13 +2876,14 @@ describe("provider CLI command execution", () => {
     })
     const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking openai-codex / gpt-5.4...")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
-    expect(prompts.join("\n")).toContain("openai-codex / gpt-5.4")
-    expect(prompts.join("\n")).toContain("failed live check: 400 status code (no body)")
-    expect(prompts.join("\n")).not.toContain("Providers - needs credentials")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("openai-codex / gpt-5.4")
+    expect(prompt).toContain("failed live check: 400 status code (no body)")
+    expect(prompt).not.toContain("Providers - needs credentials")
   })
 
   it("shows an everything-ready next move when every connect capability is already available", async () => {
@@ -2954,7 +2965,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("Everything here is ready. Pick what you want to review or refresh.")
+    expect(joinedPrompt(prompts)).toContain("Everything here is ready. Pick what you want to review or refresh.")
   })
 
   it("renders transient provider-read trouble as attention in the root connect bay", async () => {
@@ -2973,7 +2984,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "needs attention")
   })
 
   it("renders locked provider access with an unlock next move in the root connect bay", async () => {
@@ -3009,8 +3020,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+locked/)
-    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "locked")
+    expect(prompt).toContain("ouro vault unlock --agent Slugger")
   })
 
   it("treats generic provider vault read failures as unlockable in the root connect bay", async () => {
@@ -3046,8 +3058,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+locked/)
-    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "locked")
+    expect(prompt).toContain("ouro vault unlock --agent Slugger")
   })
 
   it("keeps the connect bay usable when provider verification throws unexpectedly", async () => {
@@ -3070,10 +3083,12 @@ describe("provider CLI command execution", () => {
     })
     const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+    const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("opening credential vault")
-    expect(prompts.join("\n")).toContain("Run 'ouro auth verify --agent Slugger' to inspect provider health.")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("run: ouro auth verify --agent Slugger")
   })
 
   it("includes a runnable next-step command when the recommended capability needs setup", async () => {
@@ -3092,7 +3107,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("run: ouro connect perplexity --agent Slugger")
+    expect(joinedPrompt(prompts)).toContain("run: ouro connect perplexity --agent Slugger")
   })
 
   it("keeps the connect bay usable when provider verification throws a string", async () => {
@@ -3114,8 +3129,10 @@ describe("provider CLI command execution", () => {
       },
     }))
 
+    const prompt = joinedPrompt(prompts)
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("Run 'ouro auth verify --agent Slugger' to inspect provider health.")
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("run: ouro auth verify --agent Slugger")
   })
 
   it("renders the connect bay with ANSI section styling on TTY terminals", async () => {
@@ -3135,8 +3152,60 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("\x1b[38;2;78;201;176m──\x1b[0m")
-    expect(prompts.join("\n")).toContain("\x1b[1mSlugger connect bay\x1b[0m")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("\x1b[38;2;78;201;176m╭─ \x1b[0m")
+    expect(prompt).toContain("\x1b[38;2;238;242;234m\x1b[1mSlugger connect bay\x1b[0m")
+  })
+
+  it("renders the TTY connect bay as framed panels with humane provider lane labels", async () => {
+    emitTestEvent("provider cli connect menu framed panels")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-framed-panels-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-framed-panels-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expect(prompt).toContain("╭")
+    expect(prompt).toContain("╰")
+    expect(prompt).toContain("Outward lane")
+    expect(prompt).toContain("Inner lane")
+    expect(prompt).toContain("Pick a path")
+  })
+
+  it("uses a side-by-side layout on wide TTY terminals", async () => {
+    emitTestEvent("provider cli connect menu wide tty layout")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-wide-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-wide-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const prompts: string[] = []
+    const result = await runOuroCli(
+      ["connect", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        isTTY: true,
+        promptInput: async (question) => {
+          prompts.push(question)
+          return "cancel"
+        },
+        ...( { stdoutColumns: 132 } as Record<string, unknown>),
+      }),
+    )
+
+    const promptLines = joinedPrompt(prompts).split("\n")
+    expect(result).toBe("connect cancelled.")
+    expect(promptLines.some((line) => line.includes("Provider core") && line.includes("Portable"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Next best move") && line.includes("This machine"))).toBe(true)
   })
 
   it("shows setup guidance when a provider lane is not configured on this machine", async () => {
@@ -3157,8 +3226,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("choose provider and model")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs setup/)
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("choose provider and model")
+    expectConnectStatus(prompt, 1, "Providers", "needs setup")
   })
 
   it("treats missing agent.json provider selection as setup work in the root connect bay", async () => {
@@ -3180,8 +3250,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs setup/)
-    expect(prompts.join("\n")).toContain("run: ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs setup")
+    expect(prompt).toContain("run: ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
   })
 
   it("surfaces stale provider readiness when another lane blocks the live check", async () => {
@@ -3241,8 +3312,9 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("live check is stale")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs credentials/)
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("live check is stale")
+    expectConnectStatus(prompt, 1, "Providers", "needs credentials")
   })
 
   it("renders provider repair status in the connect bay when bindings need auth or attention", async () => {
@@ -3277,8 +3349,9 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs credentials/)
-    expect(prompts.join("\n")).toContain("credentials missing")
+    let prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs credentials")
+    expect(prompt).toContain("credentials missing")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -3334,8 +3407,9 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+needs attention/)
-    expect(prompts.join("\n")).toContain("failed live check: bad token")
+    prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "needs attention")
+    expect(prompt).toContain("failed live check: bad token")
 
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
       lanes: {
@@ -3371,7 +3445,8 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
+    prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 1, "Providers", "ready")
   })
 
   it("falls back to unknown failed-live-check detail and auth guidance when cached readiness lacks an error", async () => {
@@ -3432,8 +3507,9 @@ describe("provider CLI command execution", () => {
     healthSpy.mockRestore()
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("failed live check: unknown error")
-    expect(prompts.join("\n")).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("failed live check: unknown error")
+    expect(prompt).toContain("run: ouro auth --agent Slugger --provider openai-codex")
   })
 
   it("uses the short stale wording when cached readiness has no stale reason", async () => {
@@ -3494,7 +3570,7 @@ describe("provider CLI command execution", () => {
     healthSpy.mockRestore()
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toContain("live check is stale")
+    expect(joinedPrompt(prompts)).toContain("live check is stale")
   })
 
   it("shows providers as ready in the connect bay when both lanes are configured and healthy", async () => {
@@ -3545,7 +3621,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/1\. Providers\s+ready/)
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "ready")
   })
 
   it("keeps connect menu fallbacks compact for noninteractive shells and alternate choices", async () => {
@@ -4252,7 +4328,7 @@ describe("provider CLI command execution", () => {
       expect(locked).toBe("connect cancelled.")
       expect(output).toContain("... checking current connections")
       expect(output).toContain("loading this machine's settings")
-      expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+locked/)
+      expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "locked")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -4269,7 +4345,7 @@ describe("provider CLI command execution", () => {
       },
     }))
     expect(malformed).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+needs attention/)
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "needs attention")
   })
 
   it("shows BlueBubbles as attached in the connect bay when this machine is already configured", async () => {
@@ -4302,7 +4378,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+attached/)
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "attached")
   })
 
   it("shows BlueBubbles as not attached when this machine config is incomplete", async () => {
@@ -4334,7 +4410,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/5\. BlueBubbles iMessage\s+not attached/)
+    expectConnectStatus(joinedPrompt(prompts), 5, "BlueBubbles iMessage", "not attached")
   })
 
   it("renders portable runtime config trouble clearly in the connect bay", async () => {
@@ -4354,9 +4430,10 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+needs attention/)
-    expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+needs attention/)
-    expect(prompts.join("\n")).toMatch(/4\. Teams\s+needs attention/)
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expectConnectStatus(prompt, 4, "Teams", "needs attention")
   })
 
   it("renders portable runtime config as locked when this machine cannot read the runtime vault item", async () => {
@@ -4383,9 +4460,10 @@ describe("provider CLI command execution", () => {
       }))
 
       expect(result).toBe("connect cancelled.")
-      expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+locked/)
-      expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+locked/)
-      expect(prompts.join("\n")).toMatch(/4\. Teams\s+locked/)
+      const prompt = joinedPrompt(prompts)
+      expectConnectStatus(prompt, 2, "Perplexity search", "locked")
+      expectConnectStatus(prompt, 3, "Memory embeddings", "locked")
+      expectConnectStatus(prompt, 4, "Teams", "locked")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
     }
@@ -4411,9 +4489,10 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/2\. Perplexity search\s+ready/)
-    expect(prompts.join("\n")).toMatch(/3\. Memory embeddings\s+missing/)
-    expect(prompts.join("\n")).toMatch(/4\. Teams\s+missing/)
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "ready")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "missing")
+    expectConnectStatus(prompt, 4, "Teams", "missing")
   })
 
   it("keeps Teams marked missing until the sense is enabled, even when credentials already exist", async () => {
@@ -4439,7 +4518,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/4\. Teams\s+missing/)
+    expectConnectStatus(joinedPrompt(prompts), 4, "Teams", "missing")
   })
 
   it("shows Teams as ready in the connect bay when credentials exist and the sense is enabled", async () => {
@@ -4471,7 +4550,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(prompts.join("\n")).toMatch(/4\. Teams\s+ready/)
+    expectConnectStatus(joinedPrompt(prompts), 4, "Teams", "ready")
   })
 
   it("provider refresh leaves visible progress when vault refresh throws", async () => {

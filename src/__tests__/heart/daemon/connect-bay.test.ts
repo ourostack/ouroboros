@@ -1,0 +1,421 @@
+import { describe, expect, it } from "vitest"
+import { emitNervesEvent } from "../../../nerves/runtime"
+import {
+  renderConnectBay,
+  summarizeProvidersForConnect,
+  type ConnectMenuEntry,
+} from "../../../heart/daemon/connect-bay"
+import type { AgentProviderVisibility, ProviderVisibilityLane } from "../../../heart/provider-visibility"
+
+function emitTestEvent(testName: string): void {
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.test_run",
+    message: testName,
+    meta: { test: true },
+  })
+}
+
+function configuredLane(
+  lane: "outward" | "inner",
+  provider: string,
+  model: string,
+  overrides: Partial<ProviderVisibilityLane> = {},
+): ProviderVisibilityLane {
+  return {
+    lane,
+    status: "configured",
+    provider,
+    model,
+    source: "local",
+    readiness: { status: "ready" },
+    credential: { status: "present", source: "vault", revision: `${provider}-rev-1` },
+    warnings: [],
+    ...overrides,
+  } as ProviderVisibilityLane
+}
+
+function providerVisibility(lanes: ProviderVisibilityLane[]): AgentProviderVisibility {
+  return {
+    agentName: "Slugger",
+    lanes,
+  }
+}
+
+function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "embeddings" | "teams" | "bluebubbles", Partial<ConnectMenuEntry>>> = {}): ConnectMenuEntry[] {
+  return [
+    {
+      option: "1",
+      name: "Providers",
+      section: "Provider core",
+      status: "ready",
+      laneSummaries: [
+        { lane: "outward", status: "ready", title: "anthropic / claude-opus-4-6", detail: "ready" },
+        { lane: "inner", status: "ready", title: "minimax / MiniMax-M2.5", detail: "ready" },
+      ],
+      ...overrides.provider,
+    },
+    {
+      option: "2",
+      name: "Perplexity search",
+      section: "Portable",
+      status: "ready",
+      description: "Web search via Perplexity.",
+      ...overrides.perplexity,
+    },
+    {
+      option: "3",
+      name: "Memory embeddings",
+      section: "Portable",
+      status: "missing",
+      description: "Memory retrieval and note search.",
+      ...overrides.embeddings,
+    },
+    {
+      option: "4",
+      name: "Teams",
+      section: "Portable",
+      status: "missing",
+      description: "Microsoft Teams sense credentials.",
+      ...overrides.teams,
+    },
+    {
+      option: "5",
+      name: "BlueBubbles iMessage",
+      section: "This machine",
+      status: "not attached",
+      description: "Local Mac Messages bridge.",
+      ...overrides.bluebubbles,
+    },
+  ]
+}
+
+describe("connect bay", () => {
+  it("wraps long capability detail lines inside framed TTY panels", () => {
+    emitTestEvent("connect bay wraps long capability detail lines")
+    const longDetail = "Portable notes should wrap cleanly across the framed panel without turning into a jagged wall of text for the human staring at the terminal."
+    const output = renderConnectBay(connectEntries({
+      perplexity: {
+        detailLines: [longDetail],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("╭")
+    expect(output).toContain("Portable notes should wrap cleanly across the framed panel")
+    expect(output).toContain("turning into a jagged wall of text for the human staring at the")
+    expect(output).toContain("terminal.")
+  })
+
+  it("renders non-TTY detail lines without dropping them on the floor", () => {
+    emitTestEvent("connect bay non-tty detail lines")
+    const output = renderConnectBay(connectEntries({
+      perplexity: {
+        detailLines: ["Stored in the portable runtime vault item."],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: false,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Stored in the portable runtime vault item.")
+    expect(output).toContain("2. Perplexity search [ready]")
+  })
+
+  it("handles whitespace-only wrapped detail lines without breaking the panel layout", () => {
+    emitTestEvent("connect bay whitespace-only wrapped detail")
+    const output = renderConnectBay(connectEntries({
+      perplexity: {
+        detailLines: [" ".repeat(120)],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("2  Perplexity search")
+    expect(output).toContain("3  Memory embeddings")
+  })
+
+  it("keeps ready provider summaries quiet when no repair hint is needed", () => {
+    emitTestEvent("connect bay healthy provider summary")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "anthropic", "claude-opus-4-6"),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]))
+
+    expect(summary.status).toBe("ready")
+    expect(summary.nextAction).toBeUndefined()
+    expect(summary.nextNote).toBeUndefined()
+  })
+
+  it("shows the calm ready-state next move on TTY when nothing needs repair", () => {
+    emitTestEvent("connect bay tty everything ready")
+    const output = renderConnectBay(connectEntries({
+      perplexity: { status: "ready" },
+      embeddings: { status: "ready" },
+      teams: { status: "ready" },
+      bluebubbles: { status: "attached" },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Everything here is ready.")
+    expect(output).toContain("Pick what you want to review or refresh.")
+  })
+
+  it("renders provider-core fallback detail lines when lane summaries are absent", () => {
+    emitTestEvent("connect bay provider core fallback details")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        laneSummaries: undefined,
+        detailLines: [
+          "Outward lane: anthropic / claude-opus-4-6",
+          "Inner lane: minimax / MiniMax-M2.5",
+        ],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Outward lane: anthropic / claude-opus-4-6")
+    expect(output).toContain("Inner lane: minimax / MiniMax-M2.5")
+  })
+
+  it("keeps the provider core stable even when fallback detail lines are absent", () => {
+    emitTestEvent("connect bay provider core empty fallback")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        laneSummaries: undefined,
+        detailLines: undefined,
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("1  Providers")
+    expect(output).not.toContain("undefined")
+  })
+
+  it("renders problem lane detail without dimming it in the provider core", () => {
+    emitTestEvent("connect bay provider problem lane detail")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        status: "needs attention",
+        laneSummaries: [
+          { lane: "outward", status: "needs attention", title: "openai-codex / gpt-5.4", detail: "failed live check: bad token" },
+          { lane: "inner", status: "ready", title: "minimax / MiniMax-M2.5", detail: "ready" },
+        ],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("failed live check: bad token")
+    expect(output).toContain("Inner lane")
+  })
+
+  it("pads wide columns cleanly when panel heights do not match", () => {
+    emitTestEvent("connect bay wide layout pads uneven columns")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        laneSummaries: undefined,
+        detailLines: [
+          "Outward lane: anthropic / claude-opus-4-6",
+          "Inner lane: minimax / MiniMax-M2.5",
+          "Repair hints stay grouped with the provider core.",
+          "The provider core can be much taller than the portable side.",
+          "That should still render a stable right column.",
+        ],
+      },
+      bluebubbles: {
+        status: "attached",
+        detailLines: [
+          "Mac mini bridge online.",
+          "Last heartbeat: just now.",
+          "Local messages relay is warm.",
+        ],
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 132,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Provider core")
+    expect(output).toContain("This machine")
+    expect(output).toContain("Mac mini bridge online.")
+    expect(output).toContain("Repair hints stay grouped with the provider core.")
+  })
+
+  it("pads the right column when the left side runs much taller", () => {
+    emitTestEvent("connect bay wide layout right padding")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        laneSummaries: undefined,
+        detailLines: [
+          "Outward lane: anthropic / claude-opus-4-6",
+          "Inner lane: minimax / MiniMax-M2.5",
+          "Repair hints stay grouped with the provider core.",
+          "The provider core can be much taller than the portable side.",
+          "That should still render a stable right column.",
+          "One more line keeps the left column taller.",
+          "And one final line seals the deal.",
+        ],
+      },
+      perplexity: { description: undefined, detailLines: undefined },
+      embeddings: { description: undefined, detailLines: undefined },
+      teams: { description: undefined, detailLines: undefined },
+      bluebubbles: { description: undefined, detailLines: undefined },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 132,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("And one final line seals the deal.")
+    expect(output).toContain("Portable")
+  })
+
+  it("keeps capability rows stable even when a capability omits a description", () => {
+    emitTestEvent("connect bay capability without description")
+    const output = renderConnectBay(connectEntries({
+      teams: {
+        description: undefined,
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("4  Teams")
+    expect(output).not.toContain("undefined")
+  })
+
+  it("shows the next move note and command when a capability carries both", () => {
+    emitTestEvent("connect bay next move note and command")
+    const output = renderConnectBay(connectEntries({
+      provider: {
+        status: "locked",
+        nextNote: "Unlock this agent's credential vault on this machine.",
+        nextAction: "ouro vault unlock --agent Slugger",
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: true,
+      columns: 72,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Unlock this agent's credential vault on this machine.")
+    expect(output).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("extracts ouro use as the next move when provider setup is missing", () => {
+    emitTestEvent("connect bay extracts ouro use repair command")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "anthropic", "claude-opus-4-6"),
+        configuredLane("inner", "minimax", "MiniMax-M2.5"),
+      ]),
+      {
+        ok: false,
+        error: "missing provider binding for outward lane",
+        fix: "Run 'ouro use --agent Slugger --lane outward --provider <provider> --model <model>' to configure this machine's provider binding.",
+      },
+    )
+
+    expect(summary.status).toBe("needs setup")
+    expect(summary.nextAction).toBe("ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
+  })
+
+  it("extracts ouro auth when provider health only offers an auth repair", () => {
+    emitTestEvent("connect bay extracts ouro auth repair command")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "openai-codex", "gpt-5.4", {
+          credential: { status: "missing", repairCommand: "ouro auth --agent Slugger --provider openai-codex" },
+        }),
+        configuredLane("inner", "minimax", "MiniMax-M2.5"),
+      ]),
+      {
+        ok: false,
+        error: "provider auth is required",
+        fix: "Run 'ouro auth --agent Slugger --provider openai-codex' to authenticate.",
+      },
+    )
+
+    expect(summary.status).toBe("needs credentials")
+    expect(summary.nextAction).toBe("ouro auth --agent Slugger --provider openai-codex")
+  })
+
+  it("extracts provider refresh when health guidance is generic attention work", () => {
+    emitTestEvent("connect bay extracts provider refresh repair command")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "anthropic", "claude-opus-4-6"),
+        configuredLane("inner", "minimax", "MiniMax-M2.5"),
+      ]),
+      {
+        ok: false,
+        error: "provider verification summary unavailable",
+        fix: "Run 'ouro provider refresh --agent Slugger' to reload cached credentials.",
+      },
+    )
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.nextAction).toBe("ouro provider refresh --agent Slugger")
+  })
+
+  it("surfaces the next lane note when a specific lane is the blocker", () => {
+    emitTestEvent("connect bay summarizes lane-specific blocker")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4", {
+        readiness: { status: "failed", error: "bad token" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]))
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.nextNote).toBe("Outward lane: failed live check: bad token")
+  })
+
+  it("uses the inner-lane label when the blocker is on the inner lane", () => {
+    emitTestEvent("connect bay inner lane blocker note")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "anthropic", "claude-opus-4-6"),
+      configuredLane("inner", "minimax", "MiniMax-M2.5", {
+        readiness: { status: "failed", error: "provider offline" },
+      }),
+    ]))
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.nextNote).toBe("Inner lane: failed live check: provider offline")
+  })
+})

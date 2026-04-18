@@ -55,8 +55,6 @@ import {
 import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus } from "../provider-binding-resolver"
 import {
   buildAgentProviderVisibility,
-  type AgentProviderVisibility,
-  type ProviderVisibilityLane,
 } from "../provider-visibility"
 import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
@@ -129,6 +127,7 @@ import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
 import { listEnabledBundleAgents } from "./agent-discovery"
+import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 
 // ── ensureDaemonRunning ──
 
@@ -2031,231 +2030,10 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams", deps: O
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-type ConnectMenuStatus =
-  | "ready"
-  | "needs attention"
-  | "needs credentials"
-  | "needs setup"
-  | "missing"
-  | "locked"
-  | "attached"
-  | "not attached"
-
-type ConnectMenuSection = "Provider core" | "Portable" | "This machine"
-
-interface ConnectMenuEntry {
-  option: "1" | "2" | "3" | "4" | "5"
-  name: string
-  section: ConnectMenuSection
-  status: ConnectMenuStatus
-  description?: string
-  detailLines?: string[]
-  nextAction?: string
-  nextNote?: string
-}
-
-interface ConnectProviderLaneSummary {
-  lane: ProviderLane
-  status: ConnectMenuStatus
-  title: string
-  detail: string
-  action?: string
-}
-
-interface ConnectProviderSummary {
-  status: ConnectMenuStatus
-  detailLines: string[]
-  nextAction?: string
-  nextNote?: string
-}
-
 const CONNECT_MENU_PROMPT = "Choose [1-6] or type a name: "
-const CONNECT_TITLE_WIDTH = 34
-const CONNECT_STATUS_PRIORITY: Record<ConnectMenuStatus, number> = {
-  "needs attention": 0,
-  locked: 1,
-  "needs credentials": 2,
-  "needs setup": 3,
-  missing: 4,
-  "not attached": 5,
-  ready: 6,
-  attached: 6,
-}
-
-const RESET = "\x1b[0m"
-const BOLD = "\x1b[1m"
-const DIM = "\x1b[2m"
-const TEAL = "\x1b[38;2;78;201;176m"
-const GREEN = "\x1b[38;2;46;204;64m"
-const YELLOW = "\x1b[38;2;230;190;50m"
-
-/* v8 ignore start -- cosmetic ANSI wrappers @preserve */
-function connectBold(text: string): string { return `${BOLD}${text}${RESET}` }
-function connectDim(text: string): string { return `${DIM}${text}${RESET}` }
-function connectTeal(text: string): string { return `${TEAL}${text}${RESET}` }
-function connectGreen(text: string): string { return `${GREEN}${text}${RESET}` }
-function connectYellow(text: string): string { return `${YELLOW}${text}${RESET}` }
-/* v8 ignore stop */
 
 function connectMenuIsTTY(deps: OuroCliDeps): boolean {
   return deps.isTTY ?? process.stdout.isTTY === true
-}
-
-function connectStatusText(status: ConnectMenuStatus, isTTY: boolean): string {
-  if (!isTTY) return status
-  if (status === "ready" || status === "attached") return connectGreen(status)
-  if (status === "not attached") return connectDim(status)
-  return connectYellow(status)
-}
-
-function connectSectionHeader(label: string, isTTY: boolean): string {
-  const rule = "─".repeat(Math.max(6, CONNECT_TITLE_WIDTH - label.length))
-  if (!isTTY) return `${label}\n${rule}`
-  return `  ${connectTeal("──")} ${connectBold(label)} ${connectTeal(rule)}`
-}
-
-function summarizeProviderLane(agent: string, lane: ProviderVisibilityLane, providerHealth?: { ok: boolean; fix?: string; error?: string }): ConnectProviderLaneSummary {
-  if (lane.status === "unconfigured") {
-    return {
-      lane: lane.lane,
-      status: "needs setup",
-      title: "choose provider and model",
-      detail: "needs setup",
-      action: lane.repairCommand,
-    }
-  }
-
-  const fallbackAction = lane.credential.repairCommand ?? providerHealth?.fix
-  if (lane.credential.status === "missing") {
-    return {
-      lane: lane.lane,
-      status: "needs credentials",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: "credentials missing",
-      action: fallbackAction,
-    }
-  }
-  if (lane.credential.status === "invalid-pool") {
-    return {
-      lane: lane.lane,
-      status: "needs attention",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: "vault unavailable",
-      action: fallbackAction,
-    }
-  }
-  if (lane.readiness.status === "failed") {
-    return {
-      lane: lane.lane,
-      status: "needs attention",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: `failed live check: ${lane.readiness.error ?? "unknown error"}`,
-      action: providerHealth?.fix ?? `ouro auth --agent ${agent} --provider ${lane.provider}`,
-    }
-  }
-  if (lane.readiness.status === "stale") {
-    return {
-      lane: lane.lane,
-      status: "needs attention",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: ["live check is stale", lane.readiness.reason].filter(Boolean).join(": "),
-      action: providerHealth?.fix,
-    }
-  }
-  if (lane.readiness.status === "ready") {
-    return {
-      lane: lane.lane,
-      status: "ready",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: "ready",
-    }
-  }
-  return {
-    lane: lane.lane,
-    status: "needs attention",
-    title: `${lane.provider} / ${lane.model}`,
-    detail: "live check did not complete yet",
-    action: providerHealth?.fix,
-  }
-}
-
-function summarizeProvidersForConnect(
-  agent: string,
-  visibility: AgentProviderVisibility,
-  providerHealth?: { ok: boolean; fix?: string; error?: string },
-): ConnectProviderSummary {
-  const laneSummaries = visibility.lanes.map((lane) => summarizeProviderLane(agent, lane, providerHealth))
-  const worstLaneStatus = laneSummaries.reduce<ConnectMenuStatus>(
-    (worst, lane) => CONNECT_STATUS_PRIORITY[lane.status] < CONNECT_STATUS_PRIORITY[worst] ? lane.status : worst,
-    "ready",
-  )
-  const providerHealthStatus = !providerHealth || providerHealth.ok
-    ? undefined
-    : (() => {
-        const error = String(providerHealth.error).toLowerCase()
-        const fix = String(providerHealth.fix).toLowerCase()
-        if (error.includes("failed live check")) return "needs attention" as const
-        if (error.includes("has no credentials")) return "needs credentials" as const
-        if (error.includes("missing") && error.includes("provider")) return "needs setup" as const
-        if (error.includes("vault is locked") || error.includes("vault locked")) return "locked" as const
-        if (fix.includes("ouro auth")) return "needs credentials" as const
-        if (fix.includes("ouro use")) return "needs setup" as const
-        if (fix.includes("vault unlock")) return "locked" as const
-        return "needs attention" as const
-      })()
-  const nextLane = laneSummaries.find((lane) => lane.status !== "ready")
-  return {
-    status: providerHealthStatus ?? worstLaneStatus,
-    detailLines: laneSummaries.flatMap((lane) => [
-      `${lane.lane.padEnd(8)} ${lane.title}`,
-      `         ${lane.detail}`,
-    ]),
-    nextAction: nextLane?.action ?? providerHealth?.fix,
-    nextNote: nextLane ? `${nextLane.lane} ${nextLane.detail}` : undefined,
-  }
-}
-
-function connectEntryNeedsAttention(entry: ConnectMenuEntry): boolean {
-  return entry.status !== "ready" && entry.status !== "attached"
-}
-
-function connectNextEntry(entries: ConnectMenuEntry[]): ConnectMenuEntry | undefined {
-  return entries.find((entry) => connectEntryNeedsAttention(entry))
-}
-
-function appendConnectOptionalLine(lines: string[], prefix: string, value: string | undefined): void {
-  if (typeof value === "string" && value.length > 0) {
-    lines.push(`  ${prefix}${value}`)
-  }
-}
-
-function connectNextMoveLines(entries: ConnectMenuEntry[], isTTY: boolean): string[] {
-  const next = connectNextEntry(entries)
-  if (!next) {
-    return [
-      connectSectionHeader("Next best move", isTTY),
-      "  Everything here is ready. Pick what you want to review or refresh.",
-    ]
-  }
-  const lines = [
-    connectSectionHeader("Next best move", isTTY),
-    `  ${next.name} - ${next.status}`,
-  ]
-  appendConnectOptionalLine(lines, "", next.nextNote)
-  appendConnectOptionalLine(lines, "run: ", next.nextAction)
-  return lines
-}
-
-function renderConnectEntry(entry: ConnectMenuEntry, isTTY: boolean): string[] {
-  const label = `${entry.option}. ${entry.name}`.padEnd(25)
-  const lines = [`  ${label} ${connectStatusText(entry.status, isTTY)}`]
-  for (const detail of entry.detailLines ?? []) {
-    lines.push(`     ${detail}`)
-  }
-  if (entry.description) {
-    lines.push(isTTY ? `     ${connectDim(entry.description)}` : `     ${entry.description}`)
-  }
-  return lines
 }
 
 function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean } {
@@ -2330,6 +2108,7 @@ async function buildConnectMenu(
       section: "Provider core",
       status: providerSummary.status,
       detailLines: providerSummary.detailLines,
+      laneSummaries: providerSummary.laneSummaries,
       nextAction: providerSummary.nextAction,
       nextNote: providerSummary.nextNote,
     },
@@ -2388,28 +2167,12 @@ async function buildConnectMenu(
   ]
 
   const isTTY = connectMenuIsTTY(deps)
-  const lines: string[] = [
-    isTTY ? connectBold(`${agent} connect bay`) : `${agent} connect bay`,
-    isTTY
-      ? connectDim("Bring one capability online. Provider status is checked live.")
-      : "Bring one capability online. Provider status is checked live.",
-    "",
-    ...connectNextMoveLines(entries, isTTY),
-    "",
-  ]
-
-  for (const section of ["Provider core", "Portable", "This machine"] as ConnectMenuSection[]) {
-    lines.push(connectSectionHeader(section, isTTY))
-    for (const entry of entries.filter((candidate) => candidate.section === section)) {
-      lines.push(...renderConnectEntry(entry, isTTY))
-      lines.push("")
-    }
-  }
-
-  lines.push(isTTY ? `  ${connectDim("6. Not now")}` : "  6. Not now")
-  lines.push("")
-  lines.push(CONNECT_MENU_PROMPT)
-  return lines.join("\n")
+  return renderConnectBay(entries, {
+    agent,
+    isTTY,
+    columns: deps.stdoutColumns ?? process.stdout.columns,
+    prompt: CONNECT_MENU_PROMPT,
+  })
 }
 
 async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promise<string> {

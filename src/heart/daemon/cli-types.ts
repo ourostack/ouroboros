@@ -100,6 +100,8 @@ export interface OuroCliDeps {
   writeRaw?: (text: string) => void
   /** Whether stdout supports interactive cursor-control rendering. */
   isTTY?: boolean
+  /** Terminal width override for width-aware command renderers in tests or alternate hosts. */
+  stdoutColumns?: number
   checkSocketAlive: (socketPath: string) => Promise<boolean>
   cleanupStaleSocket: (socketPath: string) => void
   fallbackPendingMessage: (command: Extract<DaemonCommand, { kind: "message.send" }>) => string

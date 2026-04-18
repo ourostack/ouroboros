@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.428",
+      "changes": [
+        "Root `ouro connect` now renders through a dedicated width-aware connect-bay renderer with a framed header, one recommended next move, and separate `Provider core`, `Portable`, and `This machine` sections instead of flattening everything inside one long menu string.",
+        "The connect bay keeps using the same live provider verification truth path as `ouro up` and `ouro auth verify`, while tightening lane-specific status and next-action mapping so locked vaults, failed live checks, and missing setup each point at the right repair move.",
+        "Added direct connect-bay renderer coverage for wide, narrow, wrapping, lane-summary, and non-TTY branches, plus a nerves event so the new renderer stays under the same file-completeness and audit rules as the rest of the runtime.",
+        "Auth, cross-machine, and testing docs now describe the root connect surface as the framed responsive bay it really is, and `@ouro.bot/cli` plus the `ouro.bot` wrapper are version-synced for the connect-bay polish release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.427",
       "changes": [
         "Root `ouro connect` now runs the same shared live provider verification path as `ouro up` and `ouro auth verify` before it renders the connect bay, so freshly authed providers and failed live checks show their real current state.",
