@@ -77,7 +77,7 @@ Vault unlock material is machine-local cache, not a second credential source.
 
 ### Machine-scoped runtime/test spillover
 
-`~/.agentstate/...`
+`~/.ouro-cli/...`
 
 This is for machine-level artifacts, not bundle-owned identity.
 
@@ -85,13 +85,25 @@ This is for machine-level artifacts, not bundle-owned identity.
 
 `agent.json` is the runtime-facing contract for:
 
-- provider+model selection per facing (`humanFacing` and `agentFacing`)
 - phrases
 - context settings
 - sense enablement
-- `configPath`
+- vault coordinates
+
+`state/providers.json` is the machine-local source of truth for provider/model selection. It owns the `outward` and `inner` lanes for this machine after bootstrap; `agent.json` may seed missing local state, but it is not the ongoing lane authority.
 
 `bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
+
+## Human CLI Surfaces
+
+Human-facing CLI commands share one terminal surface family instead of each command printing its own transcript.
+
+- `src/heart/daemon/terminal-ui.ts` owns the shared Ouro masthead, board layout, wrapping, and action rendering.
+- `src/heart/daemon/human-readiness.ts` owns the canonical human-readable readiness snapshot and recommended next actions.
+- `src/heart/daemon/human-command-screens.ts` owns shared boards for the home deck, agent picker, and readiness screens.
+- `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell should read like one CLI family in a TTY.
+- Non-TTY and automation paths should stay compact and deterministic.
+- Long-running human flows keep visible progress on screen; replacing a daemon stays unresolved until the new background service is actually answering.
 
 ## Senses
 

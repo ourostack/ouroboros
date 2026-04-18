@@ -26,13 +26,7 @@ On first run, this installs the `@ouro.bot/cli` package, creates the `ouro` comm
 
 ## Step 2: Continue An Existing Agent Bundle
 
-On first run with no existing agents, the CLI offers a choice:
-
-```
-No agents found. Would you like to hatch a new agent or clone an existing one? (hatch/clone):
-```
-
-Pick **clone** and enter the git remote URL for the bundle:
+On first run with no existing agents in a human terminal, bare `ouro` opens the home deck and offers the first two moves: hatch a new agent or clone an existing bundle. Pick **clone** and enter the git remote URL for the bundle:
 
 ```
 Enter the git remote URL for the agent bundle: https://github.com/you/youragent.ouro.git
@@ -63,6 +57,12 @@ The agent name is inferred from the URL. Override with `--agent <name>` if neede
 **Already cloned manually?** If you `git clone`d the bundle yourself before running `ouro up`, the daemon will detect it and offer to enable sync.
 
 **Guided flow:** After cloning, the CLI offers to continue with provider auth, daemon start, and dev tool setup — all inline. You can accept each step or skip it and run the commands yourself later.
+
+If you are not in an interactive terminal, run the direct command instead:
+
+```bash
+ouro clone <bundle-git-remote>
+```
 
 ## Step 3: Unlock the agent vault
 

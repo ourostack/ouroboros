@@ -79,6 +79,8 @@ ouro connect bluebubbles --agent <agent>
 
 `ouro connect` opens the connect bay: a framed, width-aware terminal board with a calm header, one recommended next move, and separate areas for `Provider core`, portable runtime capabilities, and machine-local attachments. Every time the root connect bay opens, Ouro runs the same live provider verification used by `ouro up` and `ouro auth verify`, then routes that shared truth into the bay instead of making the human decode a wall of status text. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
 
+When a human runs bare `ouro` in a TTY, Ouro opens the same command family from the home deck instead of silently behaving like `ouro up`. The home deck routes into `ouro up`, `ouro connect`, `ouro repair`, `ouro chat`, `ouro hatch`, and help without requiring the human to remember exact command names first.
+
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
 `ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
@@ -113,6 +115,8 @@ The checklist contract is:
 - for daemon replacement, say that Ouro is replacing the running background service and keep the step unresolved until the replacement is actually answering
 - complete with a compact success/failure summary and one next action
 - never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
+
+TTY help/readiness surfaces should share one visual language instead of every command inventing its own transcript. The shared board layer is the intended human surface for `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell. Non-TTY and automation paths should stay compact plain text.
 
 Agent-runnable shortcuts may stay compact when they are intended for automation and already return structured results. Human-choice and human-required flows should choose friendliness over terseness.
 
