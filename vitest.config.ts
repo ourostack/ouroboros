@@ -13,7 +13,14 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    exclude: ["dist/**", "node_modules/**", "packages/**", ".claude/**", "src/__tests__/senses/cli/*.tsx"],
+    exclude: [
+      "dist/**",
+      "node_modules/**",
+      "packages/**",
+      ".claude/**",
+      "src/__tests__/integration/**",
+      "src/__tests__/senses/cli/*.tsx",
+    ],
     maxWorkers: 1,
     setupFiles: ["src/__tests__/nerves/global-capture.ts"],
     coverage: {

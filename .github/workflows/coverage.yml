@@ -54,8 +54,51 @@ jobs:
           path: ${{ env.COVERAGE_ARTIFACT_ROOT }}
           if-no-files-found: ignore
 
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Hermetic Integration Lane
+        run: npm run test:integration
+
+  package-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Local Package E2E Lane
+        run: npm run test:e2e:package
+
   publish:
-    needs: coverage
+    needs:
+      - coverage
+      - integration
+      - package-e2e
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

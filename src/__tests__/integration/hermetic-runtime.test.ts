@@ -51,4 +51,15 @@ describe("hermetic Ouro runtime integration", () => {
     expect(status.exitCode).toBe(0)
     expect(status.stdout.toLowerCase()).toContain("stopped")
   })
+
+  it("cleans up idempotently after a started daemon", async () => {
+    harness = await createHermeticRuntimeHarness({ providerMode: "ok" })
+
+    const up = await harness.runCli(["up", "--no-repair"])
+    expect(up.exitCode).toBe(0)
+
+    await expect(harness.cleanup()).resolves.toBeUndefined()
+    await expect(harness.cleanup()).resolves.toBeUndefined()
+    harness = null
+  })
 })
