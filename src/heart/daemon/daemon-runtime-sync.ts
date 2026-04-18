@@ -35,7 +35,7 @@ async function verifyDaemonStarted(deps: DaemonRuntimeSyncDeps): Promise<boolean
   const maxWaitMs = 10_000
   const pollIntervalMs = 500
   const deadline = Date.now() + maxWaitMs
-  deps.onProgress?.("waiting for the replacement daemon to answer")
+  deps.onProgress?.("waiting for the new background service to answer")
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, pollIntervalMs))
     if (await deps.checkSocketAlive(deps.socketPath)) return true
@@ -153,6 +153,7 @@ function formatRuntimeDriftPublicSummary(
 export async function ensureCurrentDaemonRuntime(
   deps: DaemonRuntimeSyncDeps,
 ): Promise<DaemonRuntimeSyncResult> {
+  deps.onProgress?.("checking the running background service")
   const localRuntime = normalizeRuntimeIdentity({
     version: deps.localVersion,
     lastUpdated: deps.localLastUpdated,
@@ -170,9 +171,8 @@ export async function ensureCurrentDaemonRuntime(
     if (driftReasons.length > 0) {
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
-      deps.onProgress?.("preparing a replacement for the running background service")
       try {
-        deps.onProgress?.("stopping the running background service")
+        deps.onProgress?.("stopping the old background service")
         await deps.stopDaemon()
       } catch (error) {
         const reason = formatErrorReason(error)
@@ -208,7 +208,7 @@ export async function ensureCurrentDaemonRuntime(
       }
 
       deps.cleanupStaleSocket(deps.socketPath)
-      deps.onProgress?.("starting the replacement background service")
+      deps.onProgress?.("starting the new background service")
       const started = await deps.startDaemonProcess(deps.socketPath)
       const pid = started.pid ?? "unknown"
       const verified = await verifyDaemonStarted(deps)

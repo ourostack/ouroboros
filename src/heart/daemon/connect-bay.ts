@@ -1,6 +1,7 @@
 import type { ProviderLane } from "../provider-state"
 import type { AgentProviderVisibility, ProviderVisibilityLane } from "../provider-visibility"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderOuroMasthead } from "./terminal-ui"
 
 export type ConnectMenuStatus =
   | "ready"
@@ -305,6 +306,11 @@ function combineColumns(left: string[], right: string[], leftWidth: number, righ
 function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions): string {
   const columns = Math.max(options.columns ?? 108, 72)
   const fullWidth = Math.max(56, columns - 2)
+  const masthead = renderOuroMasthead({
+    isTTY: true,
+    columns,
+    subtitle: "Bring one capability online at a time.",
+  }).trimEnd()
   const header = renderHeader(options.agent, fullWidth)
   const nextEntry = entries.find((entry) => isProblemStatus(entry.status))
   const providerEntry = entries.find((entry) => entry.section === "Provider core")!
@@ -325,7 +331,7 @@ function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions
       panel("Portable", renderCapabilityBody(portableEntries, fullWidth), fullWidth),
       panel("This machine", renderCapabilityBody(machineEntries, fullWidth), fullWidth),
     ]
-    return [...stackPanels(panels), "", ...footer].join("\n")
+    return [masthead, "", ...stackPanels(panels), "", ...footer].join("\n")
   }
 
   const gap = 2
@@ -346,7 +352,7 @@ function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions
     rightWidth,
     gap,
   )
-  return [...header, "", ...topRow, "", ...bottomRow, "", ...footer].join("\n")
+  return [masthead, "", ...header, "", ...topRow, "", ...bottomRow, "", ...footer].join("\n")
 }
 
 function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions): string {
@@ -427,6 +433,14 @@ export function summarizeProviderLane(
       title: `${lane.provider} / ${lane.model}`,
       detail: providerHealthStatus === "locked" ? "vault locked on this machine" : "vault unavailable",
       action: fallbackAction,
+    }
+  }
+  if (providerHealth?.ok) {
+    return {
+      lane: lane.lane,
+      status: "ready",
+      title: `${lane.provider} / ${lane.model}`,
+      detail: "ready",
     }
   }
   if (lane.readiness.status === "failed") {

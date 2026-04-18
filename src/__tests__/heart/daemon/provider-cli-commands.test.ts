@@ -1401,6 +1401,35 @@ describe("provider CLI command execution", () => {
     )
   })
 
+  it("ouro repair renders a shared readiness board in TTY mode before prompting", async () => {
+    emitTestEvent("provider cli repair shared board")
+    const bundlesRoot = makeTempDir("provider-cli-repair-board-bundles")
+    const homeDir = makeTempDir("provider-cli-repair-board-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentVaultLocator(bundlesRoot, "Slugger", {
+      email: "slugger@ouro.bot",
+      serverUrl: "https://vault.ouroboros.bot",
+    })
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeUnavailableProviderCredentialPool("Slugger", "vault locked")
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 74,
+      promptInput: async (prompt) => {
+        prompts.push(prompt)
+        return "4"
+      },
+    }))
+
+    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("Repair Slugger")
+    expect(result).toContain("Unlock with saved secret")
+    expect(result).toContain("[human required]")
+    expect(prompts).toContain("Choose [1-4]: ")
+  })
+
   it("ouro repair explains when no agents are available", async () => {
     emitTestEvent("provider cli repair no agents")
     const bundlesRoot = makeTempDir("provider-cli-repair-empty-bundles")
@@ -3449,8 +3478,8 @@ describe("provider CLI command execution", () => {
     expectConnectStatus(prompt, 1, "Providers", "ready")
   })
 
-  it("falls back to unknown failed-live-check detail and auth guidance when cached readiness lacks an error", async () => {
-    emitTestEvent("provider cli connect menu failed readiness fallback")
+  it("clears cached failed-live-check wording once a fresh live provider check succeeds", async () => {
+    emitTestEvent("provider cli connect menu clears stale failed readiness")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -3508,12 +3537,14 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("failed live check: unknown error")
-    expect(prompt).toContain("run: ouro auth --agent Slugger --provider openai-codex")
+    expect(prompt).toContain("1. Providers [ready]")
+    expect(prompt).toContain("Outward lane: openai-codex / gpt-5.4")
+    expect(prompt).toContain("ready")
+    expect(prompt).not.toContain("failed live check: unknown error")
   })
 
-  it("uses the short stale wording when cached readiness has no stale reason", async () => {
-    emitTestEvent("provider cli connect menu stale readiness fallback")
+  it("clears cached stale wording once a fresh live provider check succeeds", async () => {
+    emitTestEvent("provider cli connect menu clears stale readiness")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -3570,7 +3601,8 @@ describe("provider CLI command execution", () => {
     healthSpy.mockRestore()
 
     expect(result).toBe("connect cancelled.")
-    expect(joinedPrompt(prompts)).toContain("live check is stale")
+    expect(joinedPrompt(prompts)).toContain("1. Providers [ready]")
+    expect(joinedPrompt(prompts)).not.toContain("live check is stale")
   })
 
   it("shows providers as ready in the connect bay when both lanes are configured and healthy", async () => {

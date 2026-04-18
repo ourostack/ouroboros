@@ -260,6 +260,46 @@ describe("ouro up: UpProgress integration", () => {
     }
   })
 
+  it("uses plain-English replacement breadcrumbs while swapping in a new daemon", async () => {
+    mocks.upProgressAnnounceStep.mockClear()
+    const sendCommand = vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: "0.1.0-alpha.1",
+              lastUpdated: "2026-03-09T11:00:00.000Z",
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, summary: "ok" }
+    })
+    const deps = makeDeps({
+      sendCommand,
+      checkSocketAlive: vi.fn(async () => true),
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      cleanupStaleSocket: vi.fn(),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const announced = mocks.upProgressAnnounceStep.mock.calls.map((call: unknown[]) => String(call[0]))
+    expect(announced).toContain("checking the running background service")
+    expect(announced).toContain("stopping the old background service")
+    expect(announced).toContain("starting the new background service")
+    expect(announced).toContain("waiting for the new background service to answer")
+  })
+
   it("calls end() before pollDaemonStartup takes over", async () => {
     mocks.upProgressEnd.mockClear()
     const deps = makeDeps()

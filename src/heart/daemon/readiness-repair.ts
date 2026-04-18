@@ -1,6 +1,11 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-state"
+import {
+  buildHumanReadinessSnapshot,
+  readinessItemFromIssue,
+} from "./human-readiness"
+import { renderHumanReadinessBoard } from "./human-command-screens"
 
 export type RepairActor = "agent-runnable" | "human-required" | "human-choice"
 export type RepairSeverity = "blocked" | "degraded" | "advisory"
@@ -63,6 +68,8 @@ export interface GuidedReadinessRepairDeps {
   writeStdout: (text: string) => void
   runRepairAction?: (agentName: string, action: RepairAction, issue: AgentReadinessIssue) => Promise<void>
   onActionAttempted?: (agentName: string, action: RepairAction, issue: AgentReadinessIssue) => void
+  isTTY?: boolean
+  stdoutColumns?: number
 }
 
 export interface GuidedReadinessRepairResult {
@@ -280,7 +287,29 @@ export async function runGuidedReadinessRepair(
   for (const report of reports) {
     if (report.ok || report.issues.length === 0) continue
     for (const issue of report.issues) {
-      deps.writeStdout(renderReadinessIssue(issue))
+      if (deps.isTTY) {
+        const snapshot = buildHumanReadinessSnapshot({
+          agent: report.agent,
+          title: `Repair ${report.agent}`,
+          items: [
+            readinessItemFromIssue(issue, {
+              key: `${report.agent}:${issue.kind}`,
+              title: issue.summary,
+            }),
+          ],
+        })
+        deps.writeStdout(renderHumanReadinessBoard({
+          agent: report.agent,
+          title: `Repair ${report.agent}`,
+          subtitle: "Choose the path that matches what the human actually has.",
+          snapshot,
+          isTTY: true,
+          columns: deps.stdoutColumns,
+          prompt: `Choose [1-${issue.actions.length + 1}]: `,
+        }).trimEnd())
+      } else {
+        deps.writeStdout(renderReadinessIssue(issue))
+      }
       if (!deps.promptInput) {
         deps.writeStdout(`manual repair required for ${report.agent}; run one of the commands above.`)
         continue

@@ -5,13 +5,11 @@ const RESET = "\x1b[0m"
 const BOLD = "\x1b[1m"
 const DIM = "\x1b[2m"
 const VOID = "\x1b[38;2;5;10;7m"
-const DEEP = "\x1b[38;2;13;31;19m"
 const CANOPY = "\x1b[38;2;30;61;40m"
 const SCALE = "\x1b[38;2;45;148;71m"
 const GLOW = "\x1b[38;2;74;227;108m"
 const BONE = "\x1b[38;2;237;242;238m"
 const MIST = "\x1b[38;2;154;174;159m"
-const FANG = "\x1b[38;2;211;72;61m"
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 
@@ -185,7 +183,7 @@ export function renderTerminalBoard(options: RenderTerminalBoardOptions): string
   }).trimEnd())
 
   const introLines = [
-    color(options.title, options.isTTY ? BONE : VOID, true),
+    options.isTTY ? color(options.title, BONE, true) : options.title,
     ...(options.summary ? wrapPlain(options.summary, Math.max(20, width - 4)).map((line) => options.isTTY ? color(line, MIST) : line) : []),
   ]
   blocks.push((options.isTTY ? renderPanelTTY("Overview", introLines, width) : renderPanelPlain("Overview", introLines)).join("\n"))

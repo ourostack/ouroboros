@@ -99,4 +99,22 @@ describe("ouro versions: execution", () => {
     expect(result).toContain("0.1.0-alpha.80")
     expect(result).toContain("published latest: unavailable (registry unavailable)")
   })
+
+  it("renders versions as a shared board in TTY mode", async () => {
+    const deps = makeDeps({
+      listCliVersions: vi.fn(() => ["0.1.0-alpha.80", "0.1.0-alpha.81"]),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.81"),
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      checkForCliUpdate: vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.81" })),
+      isTTY: true,
+      stdoutColumns: 74,
+    })
+
+    const result = await runOuroCli(["versions"], deps)
+
+    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("Versions")
+    expect(result).toContain("0.1.0-alpha.81")
+    expect(result).toContain("published latest")
+  })
 })

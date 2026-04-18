@@ -81,6 +81,35 @@ describe("terminal ui", () => {
     expect(output).toContain("╭")
   })
 
+  it("keeps non-TTY boards free of ANSI escapes", () => {
+    emitTestEvent("terminal ui plain board rendering")
+
+    const output = renderTerminalBoard({
+      isTTY: false,
+      title: "Ouro home",
+      summary: "Pick an agent or system action without memorizing commands.",
+      sections: [
+        {
+          title: "Around the house",
+          lines: ["1. Talk to slugger"],
+        },
+      ],
+      actions: [
+        {
+          label: "Bring the system online",
+          actor: "agent-runnable",
+          command: "ouro up",
+          recommended: true,
+        },
+      ],
+      prompt: "Choose [1-2]: ",
+    })
+
+    expect(output).toContain("Ouro home")
+    expect(output).toContain("Bring the system online")
+    expect(output).not.toContain("\x1b[")
+  })
+
   it("formats actor labels in calm human language", () => {
     emitTestEvent("terminal ui actor labels")
 

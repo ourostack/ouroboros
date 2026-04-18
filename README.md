@@ -99,6 +99,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.
 - Provider and runtime credentials are loaded into process memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model or sense request.
+- Human TTY commands share one CLI surface family: bare `ouro` opens the home deck, `ouro up`/`ouro connect`/`ouro auth verify`/`ouro repair` reuse the same readiness truth, and `ouro help`/`ouro whoami`/`ouro versions`/`ouro hatch` render from the same Ouro-branded board layer.
 - Human-facing CLI commands that can wait on browser auth, vault IO, daemon startup, daemon restart, provider checks, or connector setup use a shared progress checklist. If a cursor may blink for more than a few seconds, the command should print or animate the current step instead of going quiet.
 - CLI commands that mutate bundle config, such as vault setup or `ouro connect bluebubbles`, run bundle sync after the change when `sync.enabled` is true and report a compact `bundle sync:` line.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
@@ -167,6 +168,7 @@ If you are changing runtime code, keep all three green.
 ## Common Commands
 
 ```bash
+ouro                             # open the interactive home deck in a human TTY
 ouro up                          # start daemon from installed production version
 ouro dev                         # start daemon from local repo build (auto-detects CWD)
 ouro dev --repo-path /path       # start from a specific repo checkout
@@ -207,7 +209,7 @@ ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart,
 
 ## Setting Up On Another Machine
 
-To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot`, pick "clone", enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot`, open the home deck, choose clone, enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
 
 ## The Agent's Inner Life
 

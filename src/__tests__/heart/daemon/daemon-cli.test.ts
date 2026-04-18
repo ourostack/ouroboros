@@ -1131,6 +1131,50 @@ describe("ouro CLI execution", () => {
     }
   })
 
+  it("ouro auth verify renders a shared provider health board in TTY mode", async () => {
+    const { pingProvider } = await import("../../../heart/provider-ping")
+    vi.mocked(pingProvider).mockResolvedValueOnce({
+      ok: false,
+      classification: "auth-failure",
+      message: "token expired",
+    })
+    const tmp = createTmpBundle({
+      agentName: "auth-verify-board",
+      agentJson: {
+        version: 2, enabled: true, provider: "openai-codex",
+        humanFacing: { provider: "openai-codex", model: "gpt-5.4" },
+        agentFacing: { provider: "openai-codex", model: "gpt-5.4" },
+        phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+      },
+    })
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true, message: "ok" })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      bundlesRoot: tmp.bundlesRoot,
+      isTTY: true,
+      stdoutColumns: 74,
+    }
+    try {
+      setProviderCredentialPool(tmp.agentName, {
+        "openai-codex": { credentials: { oauthAccessToken: "expired-token" } },
+      })
+      const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
+      expect(result).toContain("OUROBOROS")
+      expect(result).toContain("Provider health")
+      expect(result).toContain("openai-codex")
+      expect(result).toContain("failed (token expired)")
+      expect(result).toContain("ouro auth --agent auth-verify-board --provider openai-codex")
+      expect(result).toContain("[human required]")
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
   it("ouro auth switch updates local provider state instead of agent.json", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-new",
@@ -3082,6 +3126,40 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
     expect(startChat).toHaveBeenCalledWith("slugger")
   })
 
+  it("renders an Ouro home prompt before asking which discovered agent to talk to", async () => {
+    const startChat = vi.fn(async () => {})
+    const promptInput = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain("OUROBOROS")
+      expect(prompt).toContain("Talk to ouroboros")
+      expect(prompt).toContain("Talk to slugger")
+      expect(prompt).toContain("Bring the system online")
+      return "2"
+    })
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+
+      listDiscoveredAgents: vi.fn(async () => ["ouroboros", "slugger"]),
+      startChat,
+      promptInput,
+      isTTY: true,
+      stdoutColumns: 78,
+    } as OuroCliDeps & {
+      listDiscoveredAgents: () => Promise<string[]>
+      startChat: typeof startChat
+      promptInput: typeof promptInput
+    }
+
+    await runOuroCli([], deps)
+
+    expect(startChat).toHaveBeenCalledWith("slugger")
+  })
+
   it("throws on invalid selection in multi-agent prompt", async () => {
     const startChat = vi.fn(async () => {})
     const promptInput = vi.fn(async () => "invalid")
@@ -3137,6 +3215,27 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     expect(result).toContain("Usage:")
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("renders --help as a shared board in TTY mode", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      isTTY: true,
+      stdoutColumns: 74,
+    }
+
+    const result = await runOuroCli(["--help"], deps)
+
+    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("Help")
+    expect(result).toContain("daemon")
+    expect(result).toContain("connect")
   })
 })
 
@@ -4699,6 +4798,29 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(result).toBe("")
   })
 
+  it("renders a shared hatch welcome shell in TTY mode before launching the specialist", async () => {
+    const runSerpentGuide = vi.fn(async () => null)
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      runSerpentGuide,
+      isTTY: true,
+      stdoutColumns: 74,
+    }
+
+    await runOuroCli(["hatch"], deps)
+
+    const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
+    expect(output).toContain("OUROBOROS")
+    expect(output).toContain("Hatch an agent")
+  })
+
   it("returns empty string without starting chat on bare ouro hatch when startChat is not provided", async () => {
     const runSerpentGuide = vi.fn(async () => "NoChatHatch")
     const deps: OuroCliDeps = {
@@ -5817,6 +5939,24 @@ describe("ouro whoami and session list CLI execution", () => {
     expect(result).toContain("/Users/ari/AgentBundles/slugger.ouro")
     expect(result).toContain("0.1.0-alpha.31")
     expect(deps.sendCommand).not.toHaveBeenCalled()
+  })
+
+  it("ouro whoami renders a shared identity board in TTY mode", async () => {
+    const deps = makeDeps({
+      whoamiInfo: vi.fn(() => ({
+        agentName: "slugger",
+        homePath: "/Users/ari/AgentBundles/slugger.ouro",
+        bonesVersion: "0.1.0-alpha.31",
+      })),
+      isTTY: true,
+      stdoutColumns: 74,
+    })
+    const result = await runOuroCli(["whoami"], deps)
+
+    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("Identity")
+    expect(result).toContain("slugger")
+    expect(result).toContain("/Users/ari/AgentBundles/slugger.ouro")
   })
 
   it("ouro session list returns sessions from scanner", async () => {

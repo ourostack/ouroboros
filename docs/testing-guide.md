@@ -98,6 +98,7 @@ Expected:
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
+- bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
 - root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and then opens a framed, width-aware connect bay with one recommended next move
 - `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
@@ -168,6 +169,9 @@ For human-facing CLI changes, especially auth, repair, startup, and connector fl
 
 - any wait that may last more than a few seconds should have a current step on screen
 - output should be a short checklist, not a repeated wall of repair text
+- TTY surfaces should render through the shared Ouro board family rather than each command inventing its own ad hoc transcript
+- `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, and `ouro repair` should agree on provider/vault truth for the same machine state
+- `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell should visually read like the same CLI family
 - secret prompts must not echo or print the secret later
 - success output should include where the credential/config was stored and the next action
 - failure output should keep the last visible progress context and give one useful repair path

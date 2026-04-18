@@ -125,6 +125,7 @@ describe("connect bay", () => {
 
     expect(output).toContain("Stored in the portable runtime vault item.")
     expect(output).toContain("2. Perplexity search [ready]")
+    expect(output).not.toContain("OUROBOROS")
   })
 
   it("handles whitespace-only wrapped detail lines without breaking the panel layout", () => {
@@ -154,6 +155,24 @@ describe("connect bay", () => {
     expect(summary.status).toBe("ready")
     expect(summary.nextAction).toBeUndefined()
     expect(summary.nextNote).toBeUndefined()
+  })
+
+  it("trusts a fresh live provider check over stale lane readiness when connect just checked live", () => {
+    emitTestEvent("connect bay live truth beats stale lane state")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4", {
+        readiness: { status: "failed", error: "400 status code (no body)" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]), { ok: true })
+
+    expect(summary.status).toBe("ready")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "ready",
+      detail: "ready",
+    })
+    expect(summary.nextAction).toBeUndefined()
   })
 
   it("shows the calm ready-state next move on TTY when nothing needs repair", () => {
