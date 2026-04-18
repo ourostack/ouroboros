@@ -124,7 +124,6 @@ import {
 } from "./readiness-repair"
 import {
   buildHumanReadinessSnapshot,
-  readinessItemFromIssue,
   type HumanReadinessItem,
 } from "./human-readiness"
 import {
