@@ -86,7 +86,7 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const status: HabitStatus =
     typeof rawStatus === "string" && isHabitStatus(rawStatus) ? rawStatus : "active"
 
-  const rawLastRun = frontmatter.lastRun
+  const rawLastRun = frontmatter.lastRun ?? frontmatter.last_run
   const lastRun = typeof rawLastRun === "string" && rawLastRun.length > 0 ? rawLastRun : null
 
   const rawCreated = frontmatter.created

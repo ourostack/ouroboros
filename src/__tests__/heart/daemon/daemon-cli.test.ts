@@ -7348,12 +7348,14 @@ describe("ouro habit CLI execution", () => {
     }
   })
 
-  it("ouro habit list scans habits/ and displays name/cadence/status/lastRun", async () => {
+  it("ouro habit list scans habits/ and displays resolved name/cadence/status/lastRun", async () => {
     const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "habit-list-"))
     cleanup.push(tempBundle)
 
     const habitsDir = path.join(tempBundle, "habits")
+    const runtimeStateDir = path.join(tempBundle, "state", "habits")
     fs.mkdirSync(habitsDir, { recursive: true })
+    fs.mkdirSync(runtimeStateDir, { recursive: true })
 
     fs.writeFileSync(path.join(habitsDir, "heartbeat.md"), [
       "---",
@@ -7381,6 +7383,13 @@ describe("ouro habit CLI execution", () => {
       "",
     ].join("\n"), "utf-8")
 
+    fs.writeFileSync(path.join(runtimeStateDir, "heartbeat.json"), JSON.stringify({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: "2026-03-27T12:00:00.000Z",
+      updatedAt: "2026-03-27T12:00:00.000Z",
+    }, null, 2), "utf-8")
+
     const deps = makeDeps({ agentBundleRoot: tempBundle })
     const result = await runOuroCli(["habit", "list", "--agent", "test"], deps)
 
@@ -7390,6 +7399,7 @@ describe("ouro habit CLI execution", () => {
     expect(result).toContain("daily-reflection")
     expect(result).toContain("24h")
     expect(result).toContain("paused")
+    expect(result).toContain("2026-03-27T12:00:00.000Z")
     expect(deps.sendCommand).not.toHaveBeenCalled()
   })
 
@@ -7467,7 +7477,7 @@ describe("ouro habit CLI execution", () => {
     expect(content).toContain("title: morning-check")
     expect(content).toContain("cadence: 1h")
     expect(content).toContain("status: active")
-    expect(content).toContain("lastRun:")
+    expect(content).not.toContain("lastRun:")
     expect(content).toContain("created:")
   })
 

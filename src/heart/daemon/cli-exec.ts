@@ -4613,6 +4613,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── habit subcommands (local, no daemon socket needed) ──
   if (command.kind === "habit.list" || command.kind === "habit.create") {
     const { parseHabitFile, renderHabitFile } = await import("../habits/habit-parser")
+    const { applyHabitRuntimeState } = await import("../habits/habit-runtime-state")
     /* v8 ignore start -- production default: uses real bundle root @preserve */
     const bundleRoot = deps.agentBundleRoot ?? path.join(
       deps.bundlesRoot ?? getAgentBundlesRoot(),
@@ -4638,7 +4639,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const lines: string[] = []
       for (const file of files) {
         const fileContent = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-        const habit = parseHabitFile(fileContent, path.join(habitsDir, file))
+        const habit = applyHabitRuntimeState(bundleRoot, parseHabitFile(fileContent, path.join(habitsDir, file)))
         const lastRunStr = habit.lastRun ?? "never"
         lines.push(`${habit.name}  cadence=${habit.cadence ?? "none"}  status=${habit.status}  lastRun=${lastRunStr}`)
       }
@@ -4661,7 +4662,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         title: command.name,
         cadence: command.cadence ?? "null",
         status: "active",
-        lastRun: now,
         created: now,
       },
       `Habit: ${command.name}`,
