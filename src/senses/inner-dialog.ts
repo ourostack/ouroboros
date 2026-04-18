@@ -35,6 +35,7 @@ import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/habits/habit-parser"
+import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 
@@ -545,7 +546,7 @@ function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () =
 
     try {
       const content = fs.readFileSync(path.join(habitsDir, file), "utf-8")
-      const habit = parseHabitFile(content, path.join(habitsDir, file))
+      const habit = applyHabitRuntimeState(agentRoot, parseHabitFile(content, path.join(habitsDir, file)))
       if (habit.status !== "active" || !habit.cadence) continue
 
       const cadenceMs = parseCadenceToMs(habit.cadence)
@@ -624,7 +625,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       let habitLastRun: string | null = null
       try {
         const habitContent = fs.readFileSync(habitFilePath, "utf-8")
-        const parsed = parseHabitFile(habitContent, habitFilePath)
+        const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
         habitBody = parsed.body || undefined
         habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun

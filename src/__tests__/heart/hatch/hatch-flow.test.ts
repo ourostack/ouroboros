@@ -98,7 +98,7 @@ describe("hatch flow", () => {
     expect(heartbeat).toContain("title: Heartbeat check-in")
     expect(heartbeat).toContain("cadence: 30m")
     expect(heartbeat).toContain("status: active")
-    expect(heartbeat).toContain("lastRun: null")
+    expect(heartbeat).not.toContain("lastRun:")
     expect(heartbeat).toContain("created:")
     // Should NOT have task-system fields
     expect(heartbeat).not.toContain("type:")

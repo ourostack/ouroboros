@@ -1693,6 +1693,39 @@ describe("outlook deep readers", () => {
       expect(missing.isOverdue).toBe(false)
     })
 
+    it("prefers runtime habit state over legacy frontmatter lastRun", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      fs.mkdirSync(path.join(agentRoot, "habits"), { recursive: true })
+      fs.mkdirSync(path.join(agentRoot, "state", "habits"), { recursive: true })
+
+      fs.writeFileSync(path.join(agentRoot, "habits", "checkup.md"), [
+        "---",
+        "title: Checkup",
+        "cadence: 30m",
+        "status: active",
+        "lastRun: 2026-03-30T08:00:00.000Z",
+        "---",
+        "",
+        "Run the checkup.",
+      ].join("\n"), "utf-8")
+
+      fs.writeFileSync(path.join(agentRoot, "state", "habits", "checkup.json"), JSON.stringify({
+        schemaVersion: 1,
+        name: "checkup",
+        lastRun: "2026-03-30T09:50:00.000Z",
+        updatedAt: "2026-03-30T09:50:00.000Z",
+      }, null, 2), "utf-8")
+
+      const habits = readHabitView(agentRoot, {
+        now: () => new Date("2026-03-30T10:00:00.000Z"),
+      })
+
+      const checkup = habits.items.find((habit) => habit.name === "checkup")!
+      expect(checkup.lastRun).toBe("2026-03-30T09:50:00.000Z")
+      expect(checkup.isOverdue).toBe(false)
+    })
+
     it("skips habit markdown files without frontmatter", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")

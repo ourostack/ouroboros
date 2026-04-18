@@ -1,10 +1,9 @@
-import * as fs from "fs"
 import * as path from "path"
 import { runInnerDialogTurn } from "./inner-dialog"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
-import { parseHabitFile, renderHabitFile } from "../heart/habits/habit-parser"
+import { recordHabitRun } from "../heart/habits/habit-runtime-state"
 
 export type InnerDialogWorkerReason = "boot" | "habit" | "instinct"
 
@@ -66,24 +65,15 @@ export function createInnerDialogWorker(
           })
         }
 
-        // Update lastRun in habit frontmatter after a habit turn
+        // Record lastRun after a habit turn without dirtying the tracked habit file.
         if (nextReason === "habit" && nextHabitName) {
           try {
             const agentRoot = getAgentRoot()
-            const habitFilePath = path.join(agentRoot, "habits", `${nextHabitName}.md`)
-            const content = fs.readFileSync(habitFilePath, "utf-8")
-            const parsed = parseHabitFile(content, habitFilePath)
-            const frontmatter: Record<string, unknown> = {
-              title: parsed.title,
-              cadence: parsed.cadence,
-              status: parsed.status,
-              lastRun: new Date().toISOString(),
-              created: parsed.created,
-            }
-            const rendered = renderHabitFile(frontmatter, parsed.body)
-            fs.writeFileSync(habitFilePath, rendered, "utf-8")
+            recordHabitRun(agentRoot, nextHabitName, new Date().toISOString(), {
+              definitionPath: path.join(agentRoot, "habits", `${nextHabitName}.md`),
+            })
           } catch {
-            // Habit file may have been deleted during the turn — skip gracefully
+            // Habit file/state may be unavailable during the turn — skip gracefully
           }
         }
 

@@ -1,6 +1,7 @@
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { parseHabitFile, type HabitFile } from "./habit-parser"
+import { applyHabitRuntimeState } from "./habit-runtime-state"
 import { parseCadenceToCron, parseCadenceToMs } from "../daemon/cadence"
 import type { OsCronManager } from "../daemon/os-cron"
 import type { ScheduledTaskJob } from "../daemon/task-scheduler"
@@ -189,7 +190,7 @@ export class HabitScheduler {
     const filePath = path.join(this.habitsDir, `${name}.md`)
     try {
       const content = this.deps.readFile(filePath, "utf-8")
-      return parseHabitFile(content, filePath)
+      return applyHabitRuntimeState(path.dirname(this.habitsDir), parseHabitFile(content, filePath))
     } catch {
       return null
     }
@@ -360,7 +361,7 @@ export class HabitScheduler {
       const filePath = path.join(this.habitsDir, file)
       try {
         const content = this.deps.readFile(filePath, "utf-8")
-        const habit = parseHabitFile(content, filePath)
+        const habit = applyHabitRuntimeState(path.dirname(this.habitsDir), parseHabitFile(content, filePath))
         habits.push(habit)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)

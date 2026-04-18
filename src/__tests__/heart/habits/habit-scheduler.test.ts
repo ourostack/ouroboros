@@ -13,6 +13,11 @@ vi.mock("../../../heart/habits/habit-parser", () => ({
   parseHabitFile: (...args: any[]) => mockParseHabitFile(...args),
 }))
 
+const mockApplyHabitRuntimeState = vi.fn((_: string, habit: unknown) => habit)
+vi.mock("../../../heart/habits/habit-runtime-state", () => ({
+  applyHabitRuntimeState: (...args: any[]) => mockApplyHabitRuntimeState(...args),
+}))
+
 const mockParseCadenceToCron = vi.fn()
 const mockParseCadenceToMs = vi.fn()
 vi.mock("../../../heart/daemon/cadence", () => ({
@@ -101,6 +106,7 @@ describe("HabitScheduler", () => {
     cronManager = makeMockCronManager()
     deps = makeDeps()
     onHabitFire = vi.fn()
+    mockApplyHabitRuntimeState.mockImplementation((_: string, habit: unknown) => habit)
 
     mockParseCadenceToCron.mockImplementation((raw: string) => {
       if (raw === "30m") return "*/30 * * * *"
@@ -637,6 +643,34 @@ describe("HabitScheduler", () => {
       expect(overdue).toHaveLength(0)
     })
 
+    it("prefers resolved runtime lastRun when calculating overdue habits", () => {
+      const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      const nowFn = vi.fn(() => nowMs)
+      deps = makeDeps({ readdir, readFile, now: nowFn })
+
+      mockParseHabitFile.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T10:00:00.000Z",
+      })
+      mockApplyHabitRuntimeState.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T11:50:00.000Z",
+      })
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      const overdue = scheduler.listOverdueHabits()
+      expect(overdue).toHaveLength(0)
+    })
+
     it("includes habits with null lastRun as overdue", () => {
       const nowMs = new Date("2026-03-27T12:00:00.000Z").getTime()
       const readdir = vi.fn(() => ["heartbeat.md"])
@@ -713,6 +747,10 @@ describe("HabitScheduler", () => {
       deps = makeDeps({ readFile })
 
       mockParseHabitFile.mockReturnValueOnce(makeHeartbeatHabit())
+      mockApplyHabitRuntimeState.mockReturnValueOnce({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T12:00:00.000Z",
+      })
 
       const scheduler = new HabitScheduler({
         agent: "slugger",
@@ -725,7 +763,14 @@ describe("HabitScheduler", () => {
       const habit = scheduler.getHabitFile("heartbeat")
 
       expect(readFile).toHaveBeenCalledWith("/bundles/slugger.ouro/habits/heartbeat.md", "utf-8")
-      expect(habit).toEqual(makeHeartbeatHabit())
+      expect(mockApplyHabitRuntimeState).toHaveBeenCalledWith(
+        "/bundles/slugger.ouro",
+        makeHeartbeatHabit(),
+      )
+      expect(habit).toEqual({
+        ...makeHeartbeatHabit(),
+        lastRun: "2026-03-27T12:00:00.000Z",
+      })
     })
 
     it("returns null when habit file does not exist", () => {
