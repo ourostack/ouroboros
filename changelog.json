@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.430",
+      "changes": [
+        "Interactive bare `ouro` now opens a shared Ouro-branded home deck instead of silently behaving like `ouro up`, while non-TTY and scripted invocations keep the compact, unsurprising command path.",
+        "`ouro up`, `ouro auth verify`, `ouro repair`, `ouro connect`, `ouro whoami`, `ouro versions`, `ouro help`, and the hatch welcome shell now render from one shared terminal UI and one canonical human readiness model, so boards, actions, and repair guidance stay visually and behaviorally aligned.",
+        "Daemon replacement and other long-running CLI flows now narrate what they are doing in plain language, `ouro connect` reuses the same live provider verification truth as startup/auth verification, and the human CLI no longer falls back to stale cached provider status in the connect bay.",
+        "Shared screen-level coverage, non-TTY rendering checks, and updated operator docs now lock the new CLI family in place, while thin dispatch-only seams stay covered through focused command tests instead of duplicated renderer assertions."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.429",
       "changes": [
         "Habit `lastRun` now lives in bundle runtime state under `state/habits/<habit>.json` instead of being rewritten into tracked `habits/*.md` files after every habit turn.",
