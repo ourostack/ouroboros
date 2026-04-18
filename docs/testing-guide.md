@@ -186,9 +186,26 @@ For runtime code changes inside the repo:
 npm test
 npx tsc --noEmit
 npm run test:coverage
+npm run test:integration
+npm run test:e2e:package
 ```
 
-All three should pass before merge.
+All five should pass before merge when the change touches runtime, daemon, provider, auth, or package-install behavior.
+
+What each lane proves:
+
+- `npm test`: fast in-process behavior coverage
+- `npm run test:coverage`: enforced 100% coverage + nerves audit
+- `npm run test:integration`: built runtime in child processes against a hermetic fake machine (temp `HOME`, temp bundles, fake vault CLI/unlock store, fake provider server)
+- `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed
+
+CI now mirrors that split on pull requests:
+
+- coverage gate
+- hermetic integration lane
+- local package e2e lane
+
+`main` also keeps the published-package smoke after `npm publish`.
 
 ## Troubleshooting
 

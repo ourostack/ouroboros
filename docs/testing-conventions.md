@@ -21,6 +21,8 @@ For runtime code changes, keep these green:
 npm test
 npx tsc --noEmit
 npm run test:coverage
+npm run test:integration
+npm run test:e2e:package
 ```
 
 Treat warnings as problems to fix, not background noise.
@@ -71,6 +73,8 @@ Before calling runtime work complete:
 - [ ] `npm test` passes
 - [ ] `npx tsc --noEmit` passes
 - [ ] `npm run test:coverage` passes
+- [ ] `npm run test:integration` passes for runtime/daemon/provider/auth changes
+- [ ] `npm run test:e2e:package` passes for package-install or CLI distribution changes
 - [ ] new or changed code is fully covered
 - [ ] runtime observability contracts remain valid
 
