@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import {
+  padAnsi,
   renderOuroMasthead,
   renderTerminalBoard,
   formatActionActorLabel,
+  wrapPlain,
 } from "../../../heart/daemon/terminal-ui"
 
 describe("terminal ui", () => {
@@ -108,6 +110,68 @@ describe("terminal ui", () => {
     expect(output).toContain("Ouro home")
     expect(output).toContain("Bring the system online")
     expect(output).not.toContain("\x1b[")
+  })
+
+  it("renders a compact fallback masthead and quiet board when optional sections are absent", () => {
+    emitTestEvent("terminal ui compact fallback")
+
+    const masthead = renderOuroMasthead({
+      isTTY: false,
+      columns: 60,
+    })
+    const board = renderTerminalBoard({
+      isTTY: false,
+      columns: 60,
+      title: "Quick check",
+    })
+
+    expect(masthead).toContain("O U R O B O R O S")
+    expect(board).toContain("Quick check")
+    expect(board).not.toContain("Actions")
+  })
+
+  it("renders tty subtitles, blank section lines, and action lists without losing structure", () => {
+    emitTestEvent("terminal ui tty subtitle and actions")
+
+    const masthead = renderOuroMasthead({
+      isTTY: true,
+      columns: 80,
+      subtitle: "Welcome home.",
+    })
+    const board = renderTerminalBoard({
+      isTTY: true,
+      columns: 68,
+      title: "Signal check",
+      sections: [
+        {
+          title: "Quiet corner",
+          lines: [""],
+        },
+      ],
+      actions: [
+        {
+          label: "Warm up the room",
+          actor: "agent-runnable",
+          command: "ouro up",
+        },
+      ],
+    })
+
+    expect(masthead).toContain("Welcome home.")
+    expect(masthead).toContain("\x1b[")
+    expect(board).toContain("Quiet corner")
+    expect(board).toContain("1. Warm up the room")
+    expect(board).toContain("ouro up")
+    expect(board).toContain("\x1b[")
+  })
+
+  it("wraps plain text deterministically and pads ANSI-aware widths", () => {
+    emitTestEvent("terminal ui wrapping helpers")
+
+    expect(wrapPlain("   ", 20)).toEqual([""])
+    expect(wrapPlain("carry on", 0)).toEqual(["carry on"])
+    expect(wrapPlain("carry on steadily", 8)).toEqual(["carry on", "steadily"])
+    expect(padAnsi("\x1b[32mok\x1b[0m", 4)).toBe("\x1b[32mok\x1b[0m  ")
   })
 
   it("formats actor labels in calm human language", () => {

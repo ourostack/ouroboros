@@ -253,6 +253,20 @@ describe("connect bay", () => {
     expect(output).toContain("Inner lane")
   })
 
+  it("falls back to an unknown-error label when a failed live check has no message", () => {
+    emitTestEvent("connect bay failed lane unknown error fallback")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4", {
+        readiness: { status: "failed" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]))
+
+    expect(summary.laneSummaries[0]).toMatchObject({
+      detail: "failed live check: unknown error",
+    })
+  })
+
   it("pads wide columns cleanly when panel heights do not match", () => {
     emitTestEvent("connect bay wide layout pads uneven columns")
     const output = renderConnectBay(connectEntries({

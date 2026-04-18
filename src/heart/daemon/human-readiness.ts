@@ -120,7 +120,7 @@ function uniqueActions(items: HumanReadinessItem[]): HumanReadinessAction[] {
 
 function overallStatus(items: HumanReadinessItem[]): HumanReadinessStatus {
   if (items.length === 0) return "ready"
-  return [...items].sort(compareStatus)[0]?.status ?? "ready"
+  return [...items].sort(compareStatus)[0].status
 }
 
 function summaryFor(status: HumanReadinessStatus): string {

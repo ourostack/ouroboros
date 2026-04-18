@@ -5,8 +5,10 @@ import {
   readinessItemFromIssue,
 } from "../../../heart/daemon/human-readiness"
 import {
+  genericReadinessIssue,
   providerCredentialMissingIssue,
   providerLiveCheckFailedIssue,
+  vaultUnconfiguredIssue,
   vaultLockedIssue,
 } from "../../../heart/daemon/readiness-repair"
 
@@ -103,5 +105,162 @@ describe("human readiness", () => {
     expect(snapshot.status).toBe("ready")
     expect(snapshot.primaryAction).toBeUndefined()
     expect(snapshot.summary).toContain("Everything needed here is ready.")
+  })
+
+  it("maps generic and setup issues into human-readable items", () => {
+    emitTestEvent("human readiness generic and setup mapping")
+
+    const generic = readinessItemFromIssue(genericReadinessIssue({
+      summary: "Provider check did not complete.",
+      fix: "ouro auth verify --agent slugger",
+    }), {
+      key: "generic",
+      title: "Provider core",
+    })
+
+    const needsSetup = buildHumanReadinessSnapshot({
+      agent: "slugger",
+      title: "Portable capabilities",
+      items: [
+        {
+          key: "teams",
+          title: "Teams",
+          status: "needs setup",
+          summary: "Microsoft Teams sense credentials.",
+          detailLines: [],
+          actions: [
+            {
+              label: "Connect Teams",
+              command: "ouro connect teams --agent slugger",
+              actor: "human-required",
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(generic.status).toBe("needs attention")
+    expect(generic.detailLines).toEqual([])
+    expect(generic.actions[0]).toMatchObject({
+      command: "ouro auth verify --agent slugger",
+      executable: false,
+    })
+    expect(needsSetup.status).toBe("needs setup")
+    expect(needsSetup.summary).toContain("needs setup before it can be used")
+  })
+
+  it("maps vault setup and missing-credential issues into the right status copy", () => {
+    emitTestEvent("human readiness vault setup and missing credentials mapping")
+
+    const vaultSetup = readinessItemFromIssue(vaultUnconfiguredIssue("slugger"), {
+      key: "vault-setup",
+      title: "Credential vault",
+    })
+    const needsCredentials = buildHumanReadinessSnapshot({
+      agent: "slugger",
+      title: "Provider health",
+      items: [
+        readinessItemFromIssue(providerCredentialMissingIssue({
+          agentName: "slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          credentialPath: "vault:slugger:providers/*",
+        }), {
+          key: "providers-outward",
+          title: "Outward lane",
+        }),
+      ],
+    })
+
+    expect(vaultSetup.status).toBe("needs setup")
+    expect(vaultSetup.actions[0]).toMatchObject({
+      command: "ouro vault create --agent slugger",
+      actor: "human-required",
+    })
+    expect(needsCredentials.status).toBe("needs credentials")
+    expect(needsCredentials.summary).toContain("credential is missing")
+  })
+
+  it("dedupes repeated actions while keeping the first one recommended", () => {
+    emitTestEvent("human readiness dedupe repeated actions")
+
+    const snapshot = buildHumanReadinessSnapshot({
+      agent: "slugger",
+      title: "Repair slugger",
+      items: [
+        {
+          key: "vault",
+          title: "Credential vault",
+          status: "locked",
+          summary: "Vault is locked on this machine.",
+          detailLines: [],
+          actions: [
+            {
+              label: "Unlock slugger's vault",
+              command: "ouro vault unlock --agent slugger",
+              actor: "human-required",
+            },
+          ],
+        },
+        {
+          key: "providers",
+          title: "Providers",
+          status: "needs attention",
+          summary: "Provider checks are blocked until the vault opens.",
+          detailLines: [],
+          actions: [
+            {
+              label: "Unlock slugger's vault",
+              command: "ouro vault unlock --agent slugger",
+              actor: "human-required",
+            },
+            {
+              label: "Refresh openai-codex",
+              command: "ouro auth --agent slugger --provider openai-codex",
+              actor: "human-required",
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(snapshot.nextActions).toHaveLength(2)
+    expect(snapshot.nextActions[0]).toMatchObject({
+      command: "ouro vault unlock --agent slugger",
+      recommended: true,
+    })
+    expect(snapshot.nextActions[1]).toMatchObject({
+      command: "ouro auth --agent slugger --provider openai-codex",
+    })
+  })
+
+  it("uses the fallback summary for nonblocking missing items and for empty snapshots", () => {
+    emitTestEvent("human readiness fallback summaries")
+
+    const empty = buildHumanReadinessSnapshot({
+      agent: "slugger",
+      title: "Nothing to repair",
+      items: [],
+    })
+    const missing = buildHumanReadinessSnapshot({
+      agent: "slugger",
+      title: "Portable capabilities",
+      items: [
+        {
+          key: "teams",
+          title: "Teams",
+          status: "missing",
+          summary: "Microsoft Teams sense credentials.",
+          detailLines: [],
+          actions: [],
+        },
+      ],
+    })
+
+    expect(empty.status).toBe("ready")
+    expect(empty.summary).toContain("Everything needed here is ready.")
+    expect(missing.status).toBe("missing")
+    expect(missing.summary).toContain("still needs a little attention")
   })
 })

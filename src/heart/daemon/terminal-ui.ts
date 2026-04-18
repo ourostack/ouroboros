@@ -3,7 +3,6 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 const RESET = "\x1b[0m"
 const BOLD = "\x1b[1m"
-const DIM = "\x1b[2m"
 const CANOPY = "\x1b[38;2;30;61;40m"
 const SCALE = "\x1b[38;2;45;148;71m"
 const GLOW = "\x1b[38;2;74;227;108m"
@@ -41,9 +40,9 @@ export interface RenderTerminalBoardOptions {
   prompt?: string
 }
 
-function color(text: string, tone: string, bold = false, dim = false): string {
+function color(text: string, tone: string, bold = false): string {
   if (!text) return text
-  return `${tone}${bold ? BOLD : ""}${dim ? DIM : ""}${text}${RESET}`
+  return `${tone}${bold ? BOLD : ""}${text}${RESET}`
 }
 
 export function stripAnsi(text: string): string {
@@ -192,9 +191,10 @@ export function renderTerminalBoard(options: RenderTerminalBoardOptions): string
     blocks.push((options.isTTY ? renderPanelTTY(section.title, lines, width) : renderPanelPlain(section.title, lines)).join("\n"))
   }
 
-  if ((options.actions?.length ?? 0) > 0) {
+  const actionList = options.actions ?? []
+  if (actionList.length > 0) {
     const lines: string[] = []
-    for (const [index, action] of (options.actions ?? []).entries()) {
+    for (const [index, action] of actionList.entries()) {
       lines.push(`${index + 1}. ${renderActionLine(action)}`)
       lines.push(`   ${action.command}`)
     }
