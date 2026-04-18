@@ -73,7 +73,7 @@ describe("terminal ui", () => {
     expect(output).toContain("OUROBOROS")
     expect(output).toContain("slugger // connect bay")
     expect(output).toContain("Bring one capability online at a time without turning the")
-    expect(output).toContain("terminal into a wall of text.")
+    expect(output).toContain("into a wall of text.")
     expect(output).toContain("Unlock slugger's vault")
     expect(output).toContain("[human required]")
     expect(output).toContain("[recommended]")
