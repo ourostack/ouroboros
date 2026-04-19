@@ -141,6 +141,10 @@ import { CommandProgress, UpProgress } from "./up-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
+import {
+  verifyEmbeddingsCapability,
+  verifyPerplexityCapability,
+} from "../runtime-capability-check"
 
 // ── ensureDaemonRunning ──
 
@@ -552,6 +556,27 @@ function renderCommandBoard(
   }).trimEnd()
 }
 
+function writeConnectorIntro(
+  deps: OuroCliDeps,
+  options: {
+    title: string
+    subtitle: string
+    summary: string
+    sections: TerminalSection[]
+    fallbackLines: string[]
+  },
+): void {
+  const text = ttyBoardEnabled(deps)
+    ? renderCommandBoard(deps, {
+        title: options.title,
+        subtitle: options.subtitle,
+        summary: options.summary,
+        sections: options.sections,
+      })
+    : options.fallbackLines.join("\n")
+  deps.writeStdout(text)
+}
+
 async function promptForNamedAgent(
   title: string,
   subtitle: string,
@@ -755,8 +780,8 @@ export async function ensureDaemonRunning(
   let lastPid: number | null = null
 
   for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
-    deps.reportDaemonStartupPhase?.("launching daemon process")
-    deps.reportDaemonStartupPhase?.("waiting for daemon socket")
+    deps.reportDaemonStartupPhase?.("starting a fresh background service")
+    deps.reportDaemonStartupPhase?.("waiting for the new background service to answer")
     deps.cleanupStaleSocket(deps.socketPath)
 
     const bootStartedAtMs = (deps.now ?? Date.now)()
@@ -799,7 +824,7 @@ export async function ensureDaemonRunning(
       break
     }
 
-    deps.reportDaemonStartupPhase?.("daemon startup lost stability; retrying once")
+    deps.reportDaemonStartupPhase?.("background service startup went sideways once; trying one more time")
   }
 
   return {
@@ -1817,13 +1842,17 @@ const DEFAULT_AGENT_RESTART_TIMEOUT_MS = 8_000
 const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
 
 function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): boolean {
+  return readRuntimeConfigString(config, key) !== null
+}
+
+function readRuntimeConfigString(config: RuntimeCredentialConfig, key: string): string | null {
   const segments = key.split(".")
   let cursor: unknown = config
   for (const segment of segments) {
-    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return false
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null
     cursor = (cursor as Record<string, unknown>)[segment]
   }
-  return typeof cursor === "string" && cursor.trim().length > 0
+  return typeof cursor === "string" && cursor.trim().length > 0 ? cursor : null
 }
 
 function runtimeConfigReadStatus(
@@ -1933,11 +1962,11 @@ async function applyRuntimeChangeToRunningAgent(
   onProgress?: (message: string) => void,
 ): Promise<string> {
   try {
-    onProgress?.("checking daemon socket")
+    onProgress?.("checking whether Ouro is already running")
     const alive = await deps.checkSocketAlive(deps.socketPath)
     if (!alive) return "daemon is not running; next `ouro up` will load the change"
 
-    onProgress?.("requesting restart from daemon")
+    onProgress?.(`asking Ouro to reload ${agent}`)
     const response = await withCliTimeout(
       DEFAULT_AGENT_RESTART_TIMEOUT_MS,
       "daemon restart request timed out",
@@ -1946,7 +1975,7 @@ async function applyRuntimeChangeToRunningAgent(
     if (!response.ok) return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
 
     const deadline = cliNowMs(deps) + DEFAULT_RUNTIME_APPLY_TIMEOUT_MS
-    onProgress?.(`waiting for ${agent} to report running state`)
+    onProgress?.(`waiting for ${agent} to come back\n- reload request accepted`)
     while (cliNowMs(deps) < deadline) {
       try {
         const statusResponse = await withCliTimeout(
@@ -1957,25 +1986,26 @@ async function applyRuntimeChangeToRunningAgent(
         if (statusResponse.ok) {
           const payload = parseStatusPayload(statusResponse.data)
           if (!payload) {
-            onProgress?.("daemon status did not include structured worker state")
+            onProgress?.("waiting for Ouro to confirm the reload\n- daemon status did not include structured worker state")
             return "restart requested; daemon status is unavailable, so verify with `ouro status` if needed"
           }
           const worker = readRuntimeApplyWorker(payload, agent)
           if (!worker) {
-            onProgress?.(`still waiting: ${agent} is not listed by daemon`)
+            onProgress?.(`waiting for ${agent} to come back\n- ${agent} is not listed by daemon yet`)
           } else if (worker.status === "running") {
-            onProgress?.(`daemon reports ${agent}/${worker.worker} running`)
+            onProgress?.(`waiting for ${agent} to come back\n- daemon reports ${agent}/${worker.worker} running`)
             return `restarted ${agent} and the daemon reports it running`
           } else if (worker.status === "crashed") {
+            onProgress?.(`waiting for ${agent} to come back\n- daemon reports ${agent}/${worker.worker} crashed`)
             return `restart requested, but ${agent}/${worker.worker} crashed before reporting running${worker.errorReason ? `: ${worker.errorReason}` : worker.fixHint ? `: ${worker.fixHint}` : ""}`
           } else {
-            onProgress?.(`still waiting: ${agent}/${worker.worker} is ${worker.status}`)
+            onProgress?.(`waiting for ${agent} to come back\n- current worker state: ${worker.status}`)
           }
         } else {
-          onProgress?.(`still waiting: daemon status returned ${statusResponse.error ?? statusResponse.message ?? "unknown error"}`)
+          onProgress?.(`waiting for ${agent} to come back\n- latest status check: ${statusResponse.error ?? statusResponse.message ?? "unknown error"}`)
         }
       } catch (error) {
-        onProgress?.(`still waiting: ${error instanceof Error ? error.message : String(error)}`)
+        onProgress?.(`waiting for ${agent} to come back\n- latest status check: ${error instanceof Error ? error.message : String(error)}`)
       }
       if (cliNowMs(deps) >= deadline - DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS) break
       await cliSleep(deps, DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS)
@@ -2177,12 +2207,42 @@ async function buildConnectMenu(
   onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
   const { teamsEnabled, blueBubblesEnabled } = readConnectBaySenseFlags(agent, deps)
-  const perplexityStatus = runtimeConfig.ok
-    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.perplexityApiKey") ? "ready" : "missing"
-    : runtimeConfigReadStatus(runtimeConfig)
-  const embeddingsStatus = runtimeConfig.ok
-    ? hasRuntimeConfigValue(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey") ? "ready" : "missing"
-    : runtimeConfigReadStatus(runtimeConfig)
+  let perplexityStatus: ConnectMenuEntry["status"]
+  let perplexityDetailLines: string[]
+  const perplexityApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
+    : null
+  if (!runtimeConfig.ok) {
+    perplexityStatus = runtimeConfigReadStatus(runtimeConfig)
+    perplexityDetailLines = []
+  } else if (!perplexityApiKey) {
+    perplexityStatus = "missing"
+    perplexityDetailLines = ["no API key saved yet"]
+  } else {
+    onProgress?.("verifying Perplexity search")
+    const verification = await verifyPerplexityCapability(perplexityApiKey)
+    perplexityStatus = verification.ok ? "ready" : "needs attention"
+    perplexityDetailLines = [verification.ok ? "verified live just now" : `live check failed: ${verification.summary}`]
+  }
+
+  let embeddingsStatus: ConnectMenuEntry["status"]
+  let embeddingsDetailLines: string[]
+  const embeddingsApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  if (!runtimeConfig.ok) {
+    embeddingsStatus = runtimeConfigReadStatus(runtimeConfig)
+    embeddingsDetailLines = []
+  } else if (!embeddingsApiKey) {
+    embeddingsStatus = "missing"
+    embeddingsDetailLines = ["no API key saved yet"]
+  } else {
+    onProgress?.("verifying memory embeddings")
+    const verification = await verifyEmbeddingsCapability(embeddingsApiKey)
+    embeddingsStatus = verification.ok ? "ready" : "needs attention"
+    embeddingsDetailLines = [verification.ok ? "verified live just now" : `live check failed: ${verification.summary}`]
+  }
+
   const teamsStatus = runtimeConfig.ok
     ? hasRuntimeConfigValue(runtimeConfig.config, "teams.clientId")
       && hasRuntimeConfigValue(runtimeConfig.config, "teams.clientSecret")
@@ -2216,6 +2276,7 @@ async function buildConnectMenu(
       section: "Portable",
       status: perplexityStatus,
       description: "Web search via Perplexity.",
+      detailLines: perplexityDetailLines,
       nextAction: connectEntryNeedsAttention({
         option: "2",
         name: "Perplexity search",
@@ -2229,6 +2290,7 @@ async function buildConnectMenu(
       section: "Portable",
       status: embeddingsStatus,
       description: "Memory retrieval and note search.",
+      detailLines: embeddingsDetailLines,
       nextAction: connectEntryNeedsAttention({
         option: "3",
         name: "Memory embeddings",
@@ -2278,15 +2340,43 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect Perplexity on the hatchling agent instead.")
   }
   const promptSecret = requirePromptSecret(deps, "Perplexity API key entry")
-  deps.writeStdout([
-    `Connect Perplexity for ${agent}`,
-    "The API key stays hidden while you type.",
-    `Ouro stores it in ${agent}'s vault runtime/config item.`,
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Perplexity",
+    subtitle: `${agent} gets portable web search.`,
+    summary: "Add one hidden API key, verify it live, and make web search travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Portable web search inside Ouro.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "One Perplexity API key.",
+          "It stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect Perplexity for ${agent}`,
+      "The API key stays hidden while you type.",
+      `Ouro stores it in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const key = (await promptSecret("Perplexity API key: ")).trim()
   if (!key) throw new Error("Perplexity API key cannot be blank")
   const progress = createHumanCommandProgress(deps, "connect perplexity")
   let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let verification: Awaited<ReturnType<typeof verifyPerplexityCapability>>
   let reload: string
   try {
     stored = await runCommandProgressPhase(
@@ -2302,6 +2392,25 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
       }),
       () => "secret stored",
     )
+
+    progress.startPhase("verifying Perplexity search")
+    verification = await verifyPerplexityCapability(key)
+    if (!verification.ok) {
+      progress.failPhase("verifying Perplexity search", verification.summary)
+      progress.end()
+      const message = [
+        `Perplexity key was saved for ${agent}, but the live check failed.`,
+        `stored: ${stored.itemPath}`,
+        `live check: ${verification.summary}`,
+        "secret was not printed",
+        "",
+        `Next: rerun \`ouro connect perplexity --agent ${agent}\` with a working key.`,
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+    progress.completePhase("verifying Perplexity search", verification.summary)
+
     reload = await runCommandProgressPhase(
       progress,
       `applying change to running ${agent}`,
@@ -2329,15 +2438,43 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect embeddings on the hatchling agent instead.")
   }
   const promptSecret = requirePromptSecret(deps, "OpenAI embeddings API key entry")
-  deps.writeStdout([
-    `Connect embeddings for ${agent}`,
-    "The API key stays hidden while you type.",
-    `Ouro stores it in ${agent}'s vault runtime/config item.`,
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Embeddings",
+    subtitle: `${agent} gets portable note and memory search.`,
+    summary: "Add one hidden API key, verify it live, and let semantic memory travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Portable note search and memory retrieval.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "One OpenAI embeddings API key.",
+          "It stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect embeddings for ${agent}`,
+      "The API key stays hidden while you type.",
+      `Ouro stores it in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const key = (await promptSecret("OpenAI embeddings API key: ")).trim()
   if (!key) throw new Error("OpenAI embeddings API key cannot be blank")
   const progress = createHumanCommandProgress(deps, "connect embeddings")
   let stored: Awaited<ReturnType<typeof storeRuntimeConfigKey>>
+  let verification: Awaited<ReturnType<typeof verifyEmbeddingsCapability>>
   let reload: string
   try {
     stored = await runCommandProgressPhase(
@@ -2353,6 +2490,25 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
       }),
       () => "secret stored",
     )
+
+    progress.startPhase("verifying memory embeddings")
+    verification = await verifyEmbeddingsCapability(key)
+    if (!verification.ok) {
+      progress.failPhase("verifying memory embeddings", verification.summary)
+      progress.end()
+      const message = [
+        `Embeddings key was saved for ${agent}, but the live check failed.`,
+        `stored: ${stored.itemPath}`,
+        `live check: ${verification.summary}`,
+        "secret was not printed",
+        "",
+        `Next: rerun \`ouro connect embeddings --agent ${agent}\` with a working key.`,
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+    progress.completePhase("verifying memory embeddings", verification.summary)
+
     reload = await runCommandProgressPhase(
       progress,
       `applying change to running ${agent}`,

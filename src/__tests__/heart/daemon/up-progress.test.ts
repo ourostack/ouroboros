@@ -324,6 +324,20 @@ describe("UpProgress", () => {
       expect(write).toHaveBeenNthCalledWith(2, "    slugger: ready\n")
     })
 
+    it("writes each detail line separately when updateDetail receives multiple lines", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("starting daemon")
+      write.mockClear()
+
+      progress.updateDetail("waiting for slugger to come back\n- daemon accepted restart\n- worker state: starting")
+
+      expect(write).toHaveBeenCalledTimes(3)
+      expect(write).toHaveBeenNthCalledWith(1, "    waiting for slugger to come back\n")
+      expect(write).toHaveBeenNthCalledWith(2, "    - daemon accepted restart\n")
+      expect(write).toHaveBeenNthCalledWith(3, "    - worker state: starting\n")
+    })
+
     it("writes a static line on completePhase", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
@@ -498,18 +512,18 @@ describe("UpProgress", () => {
   // ── updateDetail ──
 
   describe("updateDetail", () => {
-    it("appends detail text after elapsed time in TTY render", () => {
+    it("renders detail text as indented substeps in TTY mode", () => {
       const progress = new UpProgress({ write: vi.fn(), isTTY: true })
       progress.startPhase("provider checks")
       progress["currentPhase"] = { label: "provider checks", startedAt: 0 }
-      progress.updateDetail("slugger: reading vault...")
+      progress.updateDetail("waiting for slugger to come back\n- daemon accepted restart\n- worker state: starting")
 
       const output = progress.render(4200)
-      // Should contain the detail after the elapsed time, separated by --
       expect(output).toContain("provider checks")
       expect(output).toMatch(/\d+\.\d+s/)
-      expect(output).toContain("\u2014")
-      expect(output).toContain("slugger: reading vault...")
+      expect(output).toContain("waiting for slugger to come back")
+      expect(output).toContain("- daemon accepted restart")
+      expect(output).toContain("- worker state: starting")
     })
 
     it("is a no-op when no phase is active (no crash)", () => {

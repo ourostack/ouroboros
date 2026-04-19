@@ -35,7 +35,7 @@ async function verifyDaemonStarted(deps: DaemonRuntimeSyncDeps): Promise<boolean
   const maxWaitMs = 10_000
   const pollIntervalMs = 500
   const deadline = Date.now() + maxWaitMs
-  deps.onProgress?.("waiting for the new background service to answer")
+  deps.onProgress?.("waiting for the replacement background service to answer")
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, pollIntervalMs))
     if (await deps.checkSocketAlive(deps.socketPath)) return true
@@ -153,7 +153,7 @@ function formatRuntimeDriftPublicSummary(
 export async function ensureCurrentDaemonRuntime(
   deps: DaemonRuntimeSyncDeps,
 ): Promise<DaemonRuntimeSyncResult> {
-  deps.onProgress?.("checking the running background service")
+  deps.onProgress?.("checking whether an older background service is already running")
   const localRuntime = normalizeRuntimeIdentity({
     version: deps.localVersion,
     lastUpdated: deps.localLastUpdated,
@@ -172,15 +172,15 @@ export async function ensureCurrentDaemonRuntime(
       const includesVersionDrift = driftReasons.some((entry) => entry.key === "version")
       const publicDriftSummary = formatRuntimeDriftPublicSummary(driftReasons)
       try {
-        deps.onProgress?.("stopping the old background service")
+        deps.onProgress?.("stopping the older background service")
         await deps.stopDaemon()
       } catch (error) {
         const reason = formatErrorReason(error)
         result = {
           alreadyRunning: true,
           message: includesVersionDrift
-            ? `daemon already running (${deps.socketPath}; could not replace the running background service ${runningVersion} -> ${deps.localVersion}: ${reason})`
-            : `daemon already running (${deps.socketPath}; could not replace the running background service after runtime drift ${publicDriftSummary}: ${reason})`,
+            ? `daemon already running (${deps.socketPath}; could not replace the older background service ${runningVersion} -> ${deps.localVersion}: ${reason})`
+            : `daemon already running (${deps.socketPath}; could not replace the older background service after runtime drift ${publicDriftSummary}: ${reason})`,
         }
         emitNervesEvent({
           level: "warn",
@@ -208,7 +208,7 @@ export async function ensureCurrentDaemonRuntime(
       }
 
       deps.cleanupStaleSocket(deps.socketPath)
-      deps.onProgress?.("starting the new background service")
+      deps.onProgress?.("starting the replacement background service")
       const started = await deps.startDaemonProcess(deps.socketPath)
       const pid = started.pid ?? "unknown"
       const verified = await verifyDaemonStarted(deps)
@@ -217,8 +217,8 @@ export async function ensureCurrentDaemonRuntime(
       result = {
         alreadyRunning: false,
         message: includesVersionDrift
-          ? `replaced the running background service ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
-          : `replaced the running background service after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
+          ? `replaced an older background service ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
+          : `replaced an older background service after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
         verifyStartupStatus: verified,
         startedPid: started.pid ?? null,
       }

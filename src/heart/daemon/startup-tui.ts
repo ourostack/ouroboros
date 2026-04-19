@@ -147,10 +147,11 @@ export function renderWaitingForDaemon(
   const spinner = SPINNER_FRAMES[frameIndex]
   const lines: string[] = []
   lines.push(isTTY
-    ? `${spinner} ${BOLD}waiting for daemon${RESET} ${DIM}(${elapsedSec}s)${RESET}`
-    : `${spinner} waiting for daemon (${elapsedSec}s)`)
+    ? `${spinner} ${BOLD}starting background service${RESET} ${DIM}(${elapsedSec}s)${RESET}`
+    : `${spinner} starting background service (${elapsedSec}s)`)
   if (latestEvent) {
-    lines.push(isTTY ? `  ${DIM}${latestEvent}${RESET}` : `  ${latestEvent}`)
+    const detail = `latest daemon event: ${latestEvent}`
+    lines.push(isTTY ? `  ${DIM}${detail}${RESET}` : `  ${detail}`)
   }
   return renderStartupLines(lines, prevLineCount, isTTY)
 }
@@ -241,7 +242,10 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
 
       // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
-      reportProgress(latestEvent ?? "waiting for daemon")
+      reportProgress([
+        "waiting for Ouro to answer",
+        latestEvent ? `- latest daemon event: ${latestEvent}` : "- background service is still starting",
+      ].join("\n"))
       if (shouldRender) {
         const output = renderWaitingForDaemon(elapsed, latestEvent, prevLineCount, { isTTY })
         deps.writeRaw(output)
@@ -286,10 +290,20 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
   }
 }
 
+function formatStartupWorkerLine(payload: StatusPayload["workers"][number]): string {
+  const base = `- ${payload.agent}/${payload.worker}: ${payload.status}`
+  if (payload.status === "crashed" && payload.errorReason) {
+    return `${base} (${payload.errorReason})`
+  }
+  return base
+}
+
 function formatStartupProgressDetail(payload: StatusPayload): string {
-  if (payload.workers.length === 0) return "daemon answered"
-  const workers = payload.workers.map((worker) => `${worker.agent}/${worker.worker} ${worker.status}`).join(", ")
-  return `waiting for agents: ${workers}`
+  if (payload.workers.length === 0) return "Ouro answered"
+  return [
+    "Ouro answered",
+    ...payload.workers.map((worker) => formatStartupWorkerLine(worker)),
+  ].join("\n")
 }
 
 function colorStatus(status: string): string {

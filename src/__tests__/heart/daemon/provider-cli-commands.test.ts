@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { execFileSync } from "child_process"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 vi.mock("../../../heart/provider-ping", () => ({
@@ -48,6 +48,12 @@ const mockVaultDeps = vi.hoisted(() => ({
   credentialProbeGet: vi.fn(async () => null),
   rawSecrets: new Map<string, string>(),
 }))
+
+const { fetchMock } = vi.hoisted(() => ({
+  fetchMock: vi.fn(),
+}))
+
+vi.stubGlobal("fetch", fetchMock)
 
 vi.mock("../../../heart/provider-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
@@ -211,6 +217,37 @@ function readRuntimeSecret(agentName: string, itemName = "runtime/config"): { co
 
 function readProviderCredentialPool(_homeDir: string, agentName = "Slugger"): ProviderCredentialPoolReadResult {
   return mockProviderCredentials.pools.get(agentName) ?? unavailableCredentialPool(agentName, "provider credentials have not been loaded from vault")
+}
+
+function mockJsonResponse(body: unknown, init: { ok?: boolean; status?: number; statusText?: string } = {}): Response {
+  return {
+    ok: init.ok ?? true,
+    status: init.status ?? 200,
+    statusText: init.statusText ?? "OK",
+    json: async () => body,
+  } as Response
+}
+
+function installDefaultCapabilityFetchMock(): void {
+  fetchMock.mockReset()
+  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+    if (url.includes("api.perplexity.ai")) {
+      return mockJsonResponse({
+        results: [{ title: "ping", url: "https://example.com/ping", snippet: "pong" }],
+      })
+    }
+    if (url.includes("api.openai.com/v1/embeddings")) {
+      return mockJsonResponse({
+        data: [{ embedding: [0.1, 0.2, 0.3] }],
+      })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  })
 }
 
 function makeCliDeps(homeDir: string, bundlesRoot: string, overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
@@ -386,7 +423,12 @@ function writeAgentVaultLocator(
   fs.writeFileSync(agentConfigPath, `${JSON.stringify({ ...agentConfig, vault }, null, 2)}\n`, "utf-8")
 }
 
+beforeEach(() => {
+  installDefaultCapabilityFetchMock()
+})
+
 afterEach(() => {
+  installDefaultCapabilityFetchMock()
   mockPingProvider.mockReset()
   mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1] })
   mockPingGithubCopilotModel.mockReset()
@@ -2451,11 +2493,13 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("Connect Perplexity for Slugger")
     expect(output).toContain("The API key stays hidden while you type.")
     expect(output).toContain("... saving Perplexity search")
+    expect(output).toContain("... verifying Perplexity search")
     expect(output).toContain("checking existing runtime config")
     expect(output).toContain("storing integrations.perplexityApiKey")
     expect(output).toContain("✓ saving Perplexity search")
+    expect(output).toContain("✓ verifying Perplexity search")
     expect(output).toContain("... applying change to running Slugger")
-    expect(output).toContain("checking daemon socket")
+    expect(output).toContain("checking whether Ouro is already running")
     expect(output).toContain("daemon is not running; next `ouro up` will load the change")
     expect(output).not.toContain("pplx-secret")
 
@@ -2465,6 +2509,28 @@ describe("provider CLI command execution", () => {
         perplexityApiKey: "pplx-secret",
       },
     })
+  })
+
+  it("renders a richer TTY onboarding board for Perplexity", async () => {
+    emitTestEvent("provider cli connect perplexity tty board")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 90,
+      promptSecret: async () => "pplx-secret",
+    })
+    await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect Perplexity")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(output).toContain("Portable web search inside Ouro")
   })
 
   it("connect Perplexity keeps progress visible when the vault write path fails", async () => {
@@ -3760,7 +3826,9 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("emb-secret")
     expect(output).toContain("Connect embeddings for Slugger")
     expect(output).toContain("... saving memory embeddings")
+    expect(output).toContain("... verifying memory embeddings")
     expect(output).toContain("storing integrations.openaiEmbeddingsApiKey")
+    expect(output).toContain("✓ verifying memory embeddings")
     expect(output).toContain("... applying change to running Slugger")
     expect(output).not.toContain("emb-secret")
 
@@ -3770,6 +3838,132 @@ describe("provider CLI command execution", () => {
         openaiEmbeddingsApiKey: "emb-secret",
       },
     })
+  })
+
+  it("does not claim Perplexity is connected when the live check fails", async () => {
+    emitTestEvent("provider cli connect perplexity verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad api key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "pplx-secret",
+    })
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Perplexity key was saved for Slugger, but the live check failed")
+    expect(result).toContain("stored: vault:Slugger:runtime/config")
+    expect(result).toContain("live check:")
+    expect(result).not.toContain("Perplexity connected for Slugger")
+    expect(output).toContain("✗ verifying Perplexity search")
+  })
+
+  it("does not claim embeddings are connected when the live check fails", async () => {
+    emitTestEvent("provider cli connect embeddings verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-embeddings-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-embeddings-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad embeddings key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "emb-secret",
+    })
+    const result = await runOuroCli(["connect", "embeddings", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toContain("Embeddings key was saved for Slugger, but the live check failed")
+    expect(result).toContain("stored: vault:Slugger:runtime/config")
+    expect(result).toContain("live check:")
+    expect(result).not.toContain("Embeddings connected for Slugger")
+    expect(output).toContain("✗ verifying memory embeddings")
+  })
+
+  it("verifies saved portable capabilities when the root connect bay opens", async () => {
+    emitTestEvent("provider cli connect menu live capability verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-capability-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-live-capability-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "emb-secret",
+      },
+    })
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expect(prompt).toContain("verified live just now")
+    expectConnectStatus(prompt, 2, "Perplexity search", "ready")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "ready")
+  })
+
+  it("marks saved portable capabilities as needing attention when their live checks fail", async () => {
+    emitTestEvent("provider cli connect menu failed capability verification")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-capability-verification-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-failed-capability-verification-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderCredentialPool(homeDir, credentialPool())
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+        openaiEmbeddingsApiKey: "emb-secret",
+      },
+    })
+    fetchMock
+      .mockResolvedValueOnce(mockJsonResponse({
+        error: { message: "bad perplexity key" },
+      }, {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      }))
+      .mockResolvedValueOnce(mockJsonResponse({
+        error: { message: "bad embeddings key" },
+      }, {
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+      }))
+
+    const prompts: string[] = []
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    expect(result).toBe("connect cancelled.")
+    const prompt = joinedPrompt(prompts)
+    expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
+    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expect(prompt).toContain("live check failed: 401 bad perplexity key")
+    expect(prompt).toContain("live check failed: 401 bad embeddings key")
   })
 
   it("connects Teams through a guided flow and enables the sense", async () => {
@@ -3983,10 +4177,11 @@ describe("provider CLI command execution", () => {
     expect(restartOutput).toContain("reading vault items for Slugger")
     expect(restartOutput).toContain("✓ refreshing provider credentials")
     expect(restartOutput).toContain("... applying change to running Slugger")
-    expect(restartOutput).toContain("checking daemon socket")
-    expect(restartOutput).toContain("requesting restart from daemon")
-    expect(restartOutput).toContain("waiting for Slugger to report running state")
-    expect(restartOutput).toContain("daemon reports Slugger/inner-dialog running")
+    expect(restartOutput).toContain("checking whether Ouro is already running")
+    expect(restartOutput).toContain("asking Ouro to reload Slugger")
+    expect(restartOutput).toContain("waiting for Slugger to come back")
+    expect(restartOutput).toContain("- reload request accepted")
+    expect(restartOutput).toContain("- daemon reports Slugger/inner-dialog running")
     expect(restartOutput).toContain("✓ applying change to running Slugger")
 
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
@@ -4066,8 +4261,8 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
     expect(output).toContain("... applying change to running Slugger")
-    expect(output).toContain("waiting for Slugger to report running state")
-    expect(output).toContain("still waiting: Slugger/inner-dialog is starting")
+    expect(output).toContain("waiting for Slugger to come back")
+    expect(output).toContain("- current worker state: starting")
     expect(output).toContain("✓ applying change to running Slugger")
   })
 
@@ -4096,7 +4291,7 @@ describe("provider CLI command execution", () => {
 
       expect(result).toContain("daemon restart skipped: daemon restart request timed out")
       expect(output).toContain("... applying change to running Slugger")
-      expect(output).toContain("requesting restart from daemon")
+      expect(output).toContain("asking Ouro to reload Slugger")
       expect(output).toContain("✓ applying change to running Slugger")
     } finally {
       vi.useRealTimers()
@@ -4198,7 +4393,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned status unavailable")
+    expect(output).toContain("- latest status check: status unavailable")
   })
 
   it("provider refresh keeps progress visible when daemon status returns only a message", async () => {
@@ -4224,7 +4419,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned status said nope")
+    expect(output).toContain("- latest status check: status said nope")
   })
 
   it("provider refresh falls back to unknown error text when daemon status returns no detail", async () => {
@@ -4250,7 +4445,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: daemon status returned unknown error")
+    expect(output).toContain("- latest status check: unknown error")
   })
 
   it("provider refresh keeps progress visible when daemon status throws", async () => {
@@ -4276,7 +4471,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: status probe blew up")
+    expect(output).toContain("- latest status check: status probe blew up")
   })
 
   it("provider refresh keeps progress visible when daemon status throws an Error object", async () => {
@@ -4302,7 +4497,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-    expect(output).toContain("still waiting: status error object")
+    expect(output).toContain("- latest status check: status error object")
   })
 
   it("provider refresh explains when daemon status payload is not structured", async () => {
@@ -4676,7 +4871,7 @@ describe("provider CLI command execution", () => {
       const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
       expect(result).toContain("running agent: restart requested, but Slugger did not report running before timeout")
-      expect(output).toContain("still waiting: Slugger is not listed by daemon")
+      expect(output).toContain("- Slugger is not listed by daemon yet")
     } finally {
       vi.useRealTimers()
     }

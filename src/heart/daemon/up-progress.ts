@@ -36,6 +36,14 @@ interface CurrentPhase {
   detail?: string
 }
 
+function splitDetailLines(detail: string | undefined): string[] {
+  if (!detail) return []
+  return detail
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+}
+
 export interface UpProgressOptions {
   write?: (text: string) => void
   isTTY?: boolean
@@ -128,7 +136,9 @@ export class UpProgress {
       this.flushRender()
       return
     }
-    this.write(`    ${detail}\n`)
+    for (const line of splitDetailLines(detail)) {
+      this.write(`    ${line}\n`)
+    }
   }
 
   /**
@@ -234,8 +244,10 @@ export class UpProgress {
       const elapsedSec = (elapsed / 1000).toFixed(1)
       const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
       const spinner = SPINNER_FRAMES[frameIndex]
-      const detailSuffix = this.currentPhase.detail ? ` \u2014 ${this.currentPhase.detail}` : ""
-      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${detailSuffix}${RESET}`)
+      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${RESET}`)
+      for (const detailLine of splitDetailLines(this.currentPhase.detail)) {
+        lines.push(`    ${DIM}${detailLine}${RESET}`)
+      }
     }
 
     let output = ""

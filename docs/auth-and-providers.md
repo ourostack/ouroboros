@@ -77,15 +77,15 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-`ouro connect` opens the connect bay: a framed, width-aware terminal board with a calm header, one recommended next move, and separate areas for `Provider core`, portable runtime capabilities, and machine-local attachments. Every time the root connect bay opens, Ouro runs the same live provider verification used by `ouro up` and `ouro auth verify`, then routes that shared truth into the bay instead of making the human decode a wall of status text. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
+`ouro connect` opens the connect bay: a framed, width-aware terminal board with a calm header, one recommended next move, and separate areas for `Provider core`, portable runtime capabilities, and machine-local attachments. Every time the root connect bay opens, Ouro runs the same live provider verification used by `ouro up` and `ouro auth verify`, then routes that shared truth into the bay instead of making the human decode a wall of status text. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
 
 When a human runs bare `ouro` in a TTY, Ouro opens the same command family from the home deck instead of silently behaving like `ouro up`. The home deck routes into `ouro up`, `ouro connect`, `ouro repair`, `ouro chat`, `ouro hatch`, and help without requiring the human to remember exact command names first.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
 
-`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it and stores `integrations.perplexityApiKey` in `runtime/config`.
+`ouro connect perplexity` connects Perplexity search. It prompts for the API key without echoing it, stores `integrations.perplexityApiKey` in `runtime/config`, and runs a live Perplexity probe before claiming the capability is ready.
 
-`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it and stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`.
+`ouro connect embeddings` connects memory embeddings. It prompts for the OpenAI embeddings API key without echoing it, stores `integrations.openaiEmbeddingsApiKey` in `runtime/config`, and runs a live embeddings probe before claiming the capability is ready.
 
 `ouro connect teams` connects the Teams sense. It prompts for `teams.clientId`, `teams.clientSecret`, `teams.tenantId`, and optional `teams.managedIdentityClientId`, stores them in `runtime/config`, and enables `senses.teams.enabled` in `agent.json`.
 
