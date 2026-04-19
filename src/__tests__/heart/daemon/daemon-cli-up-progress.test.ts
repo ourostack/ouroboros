@@ -145,6 +145,21 @@ describe("ouro up: UpProgress integration", () => {
     )
   })
 
+  it("calls completePhase('update check', 'skipped; update check unavailable') when the update check throws", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => { throw new Error("kaboom") }),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "update check",
+      "skipped; update check unavailable",
+    )
+  })
+
   it("calls completePhase with version when update is installed", async () => {
     mocks.upProgressCompletePhase.mockClear()
     const reExec = vi.fn(() => { throw new Error("__REEXEC__") }) as unknown as (args: string[]) => never

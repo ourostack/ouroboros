@@ -124,6 +124,7 @@ function defaultReadRecentDaemonLogLines(lines = 10): string[] {
   return recentLines.slice(-lines).map((line) => formatLogLine(line))
 }
 
+/* v8 ignore start -- CLI npm registry fetch wrapper: integration code @preserve */
 async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => {
@@ -144,6 +145,7 @@ async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> 
     clearTimeout(timeoutId)
   }
 }
+/* v8 ignore stop */
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

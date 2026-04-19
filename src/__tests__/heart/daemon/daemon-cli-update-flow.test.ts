@@ -98,6 +98,21 @@ describe("ouro up: CLI update flow", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalled()
   })
 
+  it("keeps booting when the update check throws", async () => {
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => { throw new Error("kaboom") }),
+      installCliVersion: vi.fn(async () => {}),
+      activateCliVersion: vi.fn(),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      reExecFromNewVersion: vi.fn() as unknown as (args: string[]) => never,
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(deps.installCliVersion).not.toHaveBeenCalled()
+    expect(deps.startDaemonProcess).toHaveBeenCalled()
+  })
+
   it("keeps booting when the update check never answers", async () => {
     const deps = makeDeps({
       checkForCliUpdate: vi.fn(() => new Promise<never>(() => {})),
