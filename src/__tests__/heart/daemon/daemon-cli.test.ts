@@ -4025,7 +4025,7 @@ describe("ensureDaemonRunning", () => {
     const result = await ensureDaemonRunning(deps)
 
     expect(result.alreadyRunning).toBe(false)
-    expect(result.message).toContain("replaced the running background service")
+    expect(result.message).toContain("replaced an older background service")
     expect(result.message).toContain("0.1.0-alpha.6")
     expect(result.message).toContain("0.1.0-alpha.20")
     expect(sendCommand).toHaveBeenNthCalledWith(1, "/tmp/ouro-test.sock", { kind: "daemon.status" })
@@ -4279,7 +4279,7 @@ describe("ensureDaemonRunning", () => {
     const result = await ensureDaemonRunning(deps)
 
     expect(result.alreadyRunning).toBe(true)
-    expect(result.message).toContain("could not replace the running background service")
+    expect(result.message).toContain("could not replace the older background service")
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
@@ -7234,8 +7234,8 @@ describe("ouro up startup progress", () => {
 
     const result = await runOuroCli(["up"], deps)
     const lines = writeStdout.mock.calls.map((call: unknown[]) => String(call[0]))
-    const startIndex = lines.findIndex((line) => line.includes("launching daemon process"))
-    const socketIndex = lines.findIndex((line) => line.includes("waiting for daemon socket"))
+    const startIndex = lines.findIndex((line) => line.includes("starting a fresh background service"))
+    const socketIndex = lines.findIndex((line) => line.includes("waiting for the new background service to answer"))
     const healthIndex = lines.findIndex((line) => line.includes("verifying daemon health"))
     const stableIndex = lines.findIndex((line) => line.includes("\u2713 starting daemon") && line.includes("ready"))
 

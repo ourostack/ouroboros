@@ -40,7 +40,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.alreadyRunning).toBe(false)
     expect(result.verifyStartupStatus).toBe(true)
     expect(result.startedPid).toBe(777)
-    expect(result.message).toContain("replaced the running background service")
+    expect(result.message).toContain("replaced an older background service")
     expect(result.message).toContain("0.1.0-alpha.6")
     expect(result.message).toContain("0.1.0-alpha.20")
     expect(deps.stopDaemon).toHaveBeenCalledTimes(1)
@@ -321,7 +321,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: "daemon already running (/tmp/ouro-test.sock; could not replace the running background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
+      message: "daemon already running (/tmp/ouro-test.sock; could not replace the older background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
@@ -347,7 +347,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: expect.stringContaining("could not replace the running background service after runtime drift"),
+      message: expect.stringContaining("could not replace the older background service after runtime drift"),
     })
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
@@ -369,7 +369,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     expect(result).toEqual({
       alreadyRunning: true,
-      message: "daemon already running (/tmp/ouro-test.sock; could not replace the running background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: string-stop-failure)",
+      message: "daemon already running (/tmp/ouro-test.sock; could not replace the older background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: string-stop-failure)",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })

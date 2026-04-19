@@ -60,12 +60,57 @@ function runLocalTarballBinVersionSmoke(input, deps = defaultDeps()) {
   }
 }
 
+function runLocalTarballCommandSmoke(input, deps = defaultDeps()) {
+  const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-package-e2e-"))
+
+  try {
+    deps.execFileSync("npm", buildLocalInstallArgs(prefixDir, input.tarballPath), {
+      cwd: prefixDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    const resolvedPath = localBinPath(prefixDir, input.binName, deps.platform)
+    const output = deps.execFileSync(resolvedPath, input.args, {
+      cwd: prefixDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    if (!output.includes(input.expectOutput)) {
+      return {
+        ok: false,
+        binName: input.binName,
+        resolvedPath,
+        output,
+        message: `${input.binName} from ${path.basename(input.tarballPath)} did not include expected output: ${input.expectOutput}`,
+      }
+    }
+
+    return {
+      ok: true,
+      binName: input.binName,
+      resolvedPath,
+      output,
+      message: `${input.binName} from ${path.basename(input.tarballPath)} ran ${input.args.join(" ")} and printed expected help text`,
+    }
+  } finally {
+    deps.rmSync(prefixDir, { recursive: true, force: true })
+  }
+}
+
 function runPackageE2ESuite(input, deps = defaultDeps()) {
   return [
     runLocalTarballBinVersionSmoke({
       tarballPath: input.tarballPath,
       binName: "ouro",
       version: input.version,
+    }, deps),
+    runLocalTarballCommandSmoke({
+      tarballPath: input.tarballPath,
+      binName: "ouro",
+      args: ["help"],
+      expectOutput: "Connect providers, portable integrations, and local senses from one guided bay",
     }, deps),
   ]
 }
@@ -142,6 +187,7 @@ if (require.main === module) {
 module.exports = {
   buildLocalInstallArgs,
   localBinPath,
+  runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runPackageE2ESuite,
   packCurrentRepo,

@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.430",
+  "version": "0.1.0-alpha.431",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
+    "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
     "typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json",
     "test:outlook-ui": "npm test --prefix packages/outlook-ui",
     "test:coverage:vitest": "vitest run --coverage",

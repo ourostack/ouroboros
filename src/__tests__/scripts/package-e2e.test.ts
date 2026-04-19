@@ -3,6 +3,7 @@ import * as path from "path"
 
 const {
   buildLocalInstallArgs,
+  runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runPackageE2ESuite,
 } = require(path.resolve(__dirname, "../../../scripts/package-e2e.cjs"))
@@ -73,10 +74,32 @@ describe("package-e2e", () => {
     expect(result.message).toContain("reported 0.1.0-alpha.429")
   })
 
+  it("can smoke installed help output from the local tarball", () => {
+    const { deps, calls } = makeDeps([
+      "",
+      "Connect providers, portable integrations, and local senses from one guided bay\n",
+    ])
+
+    const result = runLocalTarballCommandSmoke({
+      tarballPath: "/tmp/ouro-cli-0.1.0-alpha.430.tgz",
+      binName: "ouro",
+      args: ["help"],
+      expectOutput: "Connect providers, portable integrations, and local senses from one guided bay",
+    }, deps)
+
+    expect(result.ok).toBe(true)
+    expect(calls[1]).toMatchObject({
+      command: path.join("/tmp/ouro-package-e2e-abcd", "node_modules", ".bin", "ouro"),
+      args: ["help"],
+    })
+  })
+
   it("runs the current local package e2e suite", () => {
     const { deps } = makeDeps([
       "",
       "0.1.0-alpha.430\n",
+      "",
+      "Connect providers, portable integrations, and local senses from one guided bay\n",
     ])
 
     const results = runPackageE2ESuite({
@@ -84,7 +107,7 @@ describe("package-e2e", () => {
       version: "0.1.0-alpha.430",
     }, deps)
 
-    expect(results).toHaveLength(1)
-    expect(results[0].ok).toBe(true)
+    expect(results).toHaveLength(2)
+    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true])
   })
 })

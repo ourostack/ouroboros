@@ -294,10 +294,10 @@ describe("ouro up: UpProgress integration", () => {
     await runOuroCli(["up"], deps)
 
     const announced = mocks.upProgressAnnounceStep.mock.calls.map((call: unknown[]) => String(call[0]))
-    expect(announced).toContain("checking the running background service")
-    expect(announced).toContain("stopping the old background service")
-    expect(announced).toContain("starting the new background service")
-    expect(announced).toContain("waiting for the new background service to answer")
+    expect(announced).toContain("checking whether an older background service is already running")
+    expect(announced).toContain("stopping the older background service")
+    expect(announced).toContain("starting the replacement background service")
+    expect(announced).toContain("waiting for the replacement background service to answer")
   })
 
   it("calls end() before pollDaemonStartup takes over", async () => {
