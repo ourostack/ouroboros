@@ -127,6 +127,7 @@ export interface OuroCliDeps {
   getChangelogPath?: () => string
   fetchImpl?: typeof fetch
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
+  updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
   activateCliVersion?: (version: string) => void
   getCurrentCliVersion?: () => string | null

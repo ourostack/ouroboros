@@ -14,6 +14,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
 import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS } from "../versioning/update-checker"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -122,6 +123,29 @@ function defaultReadRecentDaemonLogLines(lines = 10): string[] {
   }
   return recentLines.slice(-lines).map((line) => formatLogLine(line))
 }
+
+/* v8 ignore start -- CLI npm registry fetch wrapper: integration code @preserve */
+async function defaultFetchCliRegistryJson(timeoutMs: number): Promise<unknown> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, timeoutMs)
+
+  try {
+    const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli", {
+      signal: controller.signal,
+    })
+    return res.json()
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+/* v8 ignore stop */
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -522,6 +546,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
     sleep: defaultSleep,
     now: () => Date.now(),
+    updateCheckTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS,
     startupPollIntervalMs: 250,
     startupStabilityWindowMs: 1_500,
     startupTimeoutMs: 10_000,
@@ -560,10 +585,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     checkForCliUpdate: async () => {
       const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
-        fetchRegistryJson: async () => {
-          const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
-          return res.json()
-        },
+        fetchRegistryJson: () => defaultFetchCliRegistryJson(CLI_UPDATE_CHECK_TIMEOUT_MS),
         distTag: "latest",
       })
     },

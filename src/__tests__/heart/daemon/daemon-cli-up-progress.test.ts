@@ -103,6 +103,20 @@ describe("ouro up: UpProgress integration", () => {
     expect(mocks.upProgressStartPhase).toHaveBeenCalledWith("update check")
   })
 
+  it("shows a live detail line while checking the registry", async () => {
+    mocks.upProgressUpdateDetail.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => ({ available: false })),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressUpdateDetail).toHaveBeenCalledWith(
+      "checking npm registry\ncontinuing startup if it stays quiet",
+    )
+  })
+
   it("calls completePhase('update check', 'up to date') when no update available", async () => {
     mocks.upProgressCompletePhase.mockClear()
     const deps = makeDeps({
@@ -113,6 +127,37 @@ describe("ouro up: UpProgress integration", () => {
     await runOuroCli(["up"], deps)
 
     expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("update check", "up to date")
+  })
+
+  it("calls completePhase('update check', 'skipped; registry did not answer') when the registry stalls", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(() => new Promise<never>(() => {})),
+      updateCheckTimeoutMs: 1,
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "update check",
+      "skipped; registry did not answer",
+    )
+  })
+
+  it("calls completePhase('update check', 'skipped; update check unavailable') when the update check throws", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    const deps = makeDeps({
+      checkForCliUpdate: vi.fn(async () => { throw new Error("kaboom") }),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+    })
+
+    await runOuroCli(["up"], deps)
+
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith(
+      "update check",
+      "skipped; update check unavailable",
+    )
   })
 
   it("calls completePhase with version when update is installed", async () => {
