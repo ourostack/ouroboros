@@ -188,16 +188,18 @@ npx tsc --noEmit
 npm run test:coverage
 npm run test:integration
 npm run test:e2e:package
+npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json
 ```
 
-All five should pass before merge when the change touches runtime, daemon, provider, auth, or package-install behavior.
+The first five should pass before merge when the change touches runtime, daemon, provider, auth, or package-install behavior. The real-smoke lane is the live external check for sacrificial credentials; run it when you are working on provider auth, portable capability onboarding, or live verification behavior and you have the secrets file available.
 
 What each lane proves:
 
 - `npm test`: fast in-process behavior coverage
 - `npm run test:coverage`: enforced 100% coverage + nerves audit
 - `npm run test:integration`: built runtime in child processes against a hermetic fake machine (temp `HOME`, temp bundles, fake vault CLI/unlock store, fake provider server)
-- `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed
+- `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed for both version truth and a human-facing help surface
+- `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json`: real external provider/capability smoke with sacrificial credentials, using the same live ping path as `ouro up`, `ouro auth verify`, and the connect bay
 
 CI now mirrors that split on pull requests:
 
@@ -205,7 +207,30 @@ CI now mirrors that split on pull requests:
 - hermetic integration lane
 - local package e2e lane
 
-`main` also keeps the published-package smoke after `npm publish`.
+`main` also keeps:
+
+- the published-package smoke after `npm publish`
+- a scheduled `real-smoke` workflow that runs the live external lane whenever repo secret `OURO_REAL_SMOKE_SECRETS_JSON` is configured
+
+Recommended `OURO_REAL_SMOKE_SECRETS_JSON` shape:
+
+```json
+{
+  "providerCheck": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.5",
+    "config": {
+      "apiKey": "replace-me"
+    }
+  },
+  "portableChecks": {
+    "perplexityApiKey": "replace-me",
+    "openaiEmbeddingsApiKey": "replace-me"
+  }
+}
+```
+
+The workflow writes that secret into a temp file with restrictive permissions, runs the shared real-smoke script, and never prints the raw JSON or the secret values.
 
 ## Troubleshooting
 
