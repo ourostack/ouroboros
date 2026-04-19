@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.432",
+      "changes": [
+        "`ouro up` no longer risks hanging forever on an unbounded npm registry check during startup; the update-check phase now shows live detail, aborts the stalled fetch after a short shared timeout, and continues booting with truthful status like `skipped; registry did not answer`.",
+        "The same bounded update-check helper now powers `ouro versions`, so published-version lookup cannot freeze there either and the human-facing status wording stays consistent across commands.",
+        "Focused startup/version coverage plus the full test suite now protect the stalled-registry regression, and `@ouro.bot/cli` plus the `ouro.bot` wrapper are version-synced for the startup freeze fix release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.431",
       "changes": [
         "`ouro up` and related long-running CLI paths now keep visible multi-line progress detail during daemon replacement, startup polling, and runtime reload waits instead of falling back to a dead-looking cursor.",
