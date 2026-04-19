@@ -97,7 +97,22 @@ describe("ouro versions: execution", () => {
     const result = await runOuroCli(["versions"], deps)
 
     expect(result).toContain("0.1.0-alpha.80")
-    expect(result).toContain("published latest: unavailable (registry unavailable)")
+    expect(result).toContain("published latest: unavailable (skipped; registry unavailable)")
+  })
+
+  it("does not hang forever when the published version lookup stalls", async () => {
+    const deps = makeDeps({
+      listCliVersions: vi.fn(() => ["0.1.0-alpha.80"]),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      getPreviousCliVersion: vi.fn(() => null),
+      checkForCliUpdate: vi.fn(() => new Promise<never>(() => {})),
+      updateCheckTimeoutMs: 1,
+    })
+
+    const result = await runOuroCli(["versions"], deps)
+
+    expect(result).toContain("0.1.0-alpha.80")
+    expect(result).toContain("published latest: unavailable (skipped; registry did not answer)")
   })
 
   it("renders versions as a shared board in TTY mode", async () => {

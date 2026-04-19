@@ -20,6 +20,7 @@ export interface StartUpdateCheckerOptions {
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
+export const CLI_UPDATE_CHECK_TIMEOUT_MS = 3_000
 
 export async function checkForUpdate(
   currentVersion: string,

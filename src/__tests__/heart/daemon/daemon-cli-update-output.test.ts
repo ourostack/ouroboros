@@ -25,6 +25,7 @@ vi.mock("../../../heart/daemon/up-progress", () => ({
   UpProgress: class MockUpProgress {
     startPhase = vi.fn()
     completePhase = vi.fn()
+    updateDetail = vi.fn()
     end = vi.fn()
     render = vi.fn(() => "")
   },

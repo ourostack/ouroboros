@@ -60,6 +60,7 @@ import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProvider
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
 
 import type {
@@ -153,6 +154,70 @@ const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+
+function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
+  const normalized = error.trim().toLowerCase()
+  if (timedOut || normalized.includes("timed out") || normalized.includes("abort")) {
+    return "skipped; registry did not answer"
+  }
+  if (normalized.includes("registry unavailable")) {
+    return "skipped; registry unavailable"
+  }
+  if (
+    normalized.includes("network") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("enotfound") ||
+    normalized.includes("eai_again") ||
+    normalized.includes("econnreset")
+  ) {
+    return "skipped; registry unavailable"
+  }
+  return "skipped; update check unavailable"
+}
+
+async function runCliUpdateCheckWithTimeout(
+  deps: OuroCliDeps,
+): Promise<{ result: CheckForUpdateResult; timedOut: boolean }> {
+  if (!deps.checkForCliUpdate) {
+    return { result: { available: false }, timedOut: false }
+  }
+
+  const timeoutMs = deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS
+  if (timeoutMs <= 0) {
+    return {
+      result: await deps.checkForCliUpdate(),
+      timedOut: false,
+    }
+  }
+
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    const timeoutId = setTimeout(() => {
+      settled = true
+      resolve({
+        timedOut: true,
+        result: {
+          available: false,
+          error: `update check timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
+        },
+      })
+    }, timeoutMs)
+
+    void deps.checkForCliUpdate!()
+      .then((result) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        resolve({ result, timedOut: false })
+      })
+      .catch((error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeoutId)
+        reject(error)
+      })
+  })
+}
 
 async function checkAgentProviders(
   deps: OuroCliDeps,
@@ -4201,9 +4266,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
       progress.startPhase("update check")
+      progress.updateDetail("checking npm registry\ncontinuing startup if it stays quiet")
       let pendingReExec = false
+      let updateCheckStatus = "up to date"
       try {
-        const updateResult = await deps.checkForCliUpdate()
+        const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(deps)
         if (updateResult.available && updateResult.latestVersion) {
           /* v8 ignore next -- fallback: getCurrentCliVersion always injected in tests @preserve */
           const currentVersion = linkedVersionBeforeUp ?? "unknown"
@@ -4216,9 +4283,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             deps.writeStdout(`review changes with: ${changelogCommand}`)
           }
           pendingReExec = true
+        } else if (updateResult.error) {
+          updateCheckStatus = summarizeCliUpdateCheckStatus(updateResult.error, timedOut)
         }
       /* v8 ignore start -- update check error: tested via daemon-cli-update-flow.test.ts @preserve */
       } catch (error) {
+        updateCheckStatus = summarizeCliUpdateCheckStatus(
+          error instanceof Error ? error.message : String(error),
+        )
         emitNervesEvent({
           level: "warn",
           component: "daemon",
@@ -4232,7 +4304,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         progress.end()
         deps.reExecFromNewVersion!(args)
       } else {
-        progress.completePhase("update check", "up to date")
+        progress.completePhase("update check", updateCheckStatus)
       }
     }
 
@@ -4647,14 +4719,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const sections = [localSection]
     if (deps.checkForCliUpdate) {
       try {
-        const updateResult = await deps.checkForCliUpdate()
+        const { result: updateResult, timedOut } = await runCliUpdateCheckWithTimeout(deps)
         if (updateResult.latestVersion) {
           sections.push(`published latest: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
         } else if (updateResult.error) {
-          sections.push(`published latest: unavailable (${updateResult.error})`)
+          sections.push(`published latest: unavailable (${summarizeCliUpdateCheckStatus(updateResult.error, timedOut)})`)
         }
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
+        const reason = summarizeCliUpdateCheckStatus(
+          err instanceof Error ? err.message : String(err),
+        )
         sections.push(`published latest: unavailable (${reason})`)
       }
     }
