@@ -40,6 +40,8 @@ export interface ProviderPingOptions {
   model?: string
   attemptPolicy?: Partial<ProviderAttemptPolicy>
   sleep?: (delayMs: number) => Promise<void>
+  onAttemptStart?: (attempt: number, maxAttempts: number) => void | Promise<void>
+  onRetry?: (record: ProviderAttemptRecord, maxAttempts: number) => void | Promise<void>
 }
 
 const PING_TIMEOUT_MS = 10_000
@@ -234,6 +236,8 @@ export async function pingProvider(
       ...options.attemptPolicy,
     },
     sleep: options.sleep,
+    onAttemptStart: options.onAttemptStart,
+    onRetry: options.onRetry,
     run: async () => {
       const controller = new AbortController()
       /* v8 ignore next -- timeout callback: only fires after 10s, tests resolve faster @preserve */

@@ -858,7 +858,10 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
     writeProviderCredentialPool(homeDir, credentialPool())
-    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+    mockPingProvider.mockImplementation(async (_provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
+      return { ok: true, message: "ok", attempts: 1 }
+    })
 
     const deps = makeCliDeps(homeDir, bundlesRoot)
     const result = await runOuroCli([
@@ -882,6 +885,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("reading vault items for Slugger...")
     expect(output).toContain("✓ reading minimax credentials")
     expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     expect(mockPingProvider).toHaveBeenCalledWith("minimax", { apiKey: "minimax-secret" }, expect.anything())
 
@@ -3081,7 +3085,8 @@ describe("provider CLI command execution", () => {
         },
       },
     }))
-    mockPingProvider.mockImplementation(async (provider) => {
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
       if (provider === "openai-codex") return { ok: true, message: "ok", attempts: [1] }
       if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
       throw new Error(`unexpected provider ${provider}`)
@@ -3101,12 +3106,12 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking selected providers")
     expect(output).toContain("reading vault items for Slugger...")
-    expect(output).toContain("checking openai-codex / gpt-5.4...")
-    expect(output).toContain("checking minimax / MiniMax-M2.5...")
+    expect(output).toContain("checking openai-codex / gpt-5.4 (attempt 1 of 3)")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
     expectConnectStatus(prompt, 1, "Providers", "ready")
     expect(mockPingProvider).toHaveBeenCalledTimes(2)
-    expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, { model: "gpt-5.4" })
-    expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, { model: "MiniMax-M2.5" })
+    expect(mockPingProvider).toHaveBeenNthCalledWith(1, "openai-codex", { oauthAccessToken: "openai-secret" }, expect.objectContaining({ model: "gpt-5.4" }))
+    expect(mockPingProvider).toHaveBeenNthCalledWith(2, "minimax", { apiKey: "minimax-secret" }, expect.objectContaining({ model: "MiniMax-M2.5" }))
   })
 
   it("renders failed live provider checks as attention instead of auth gaps in the root connect bay", async () => {
@@ -3147,7 +3152,8 @@ describe("provider CLI command execution", () => {
         },
       },
     }))
-    mockPingProvider.mockImplementation(async (provider) => {
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
       if (provider === "openai-codex") return { ok: false, message: "400 status code (no body)", attempts: [1] }
       if (provider === "minimax") return { ok: true, message: "ok", attempts: [1] }
       throw new Error(`unexpected provider ${provider}`)
@@ -3165,7 +3171,7 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
-    expect(output).toContain("checking openai-codex / gpt-5.4...")
+    expect(output).toContain("checking openai-codex / gpt-5.4 (attempt 1 of 3)")
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("openai-codex / gpt-5.4")
     expect(prompt).toContain("failed live check: 400 status code (no body)")
@@ -3911,6 +3917,79 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "ready")
+  })
+
+  it("surfaces live provider retry progress while the root connect bay verifies providers", async () => {
+    emitTestEvent("provider cli connect menu live provider retry progress")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-retry-progress-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-provider-retry-progress-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool({
+      providers: {
+        ...credentialPool().providers,
+        "openai-codex": {
+          provider: "openai-codex",
+          revision: "cred_openai_live_progress",
+          updatedAt: NOW,
+          credentials: { oauthAccessToken: "openai-secret" },
+          config: {},
+          provenance: {
+            source: "auth-flow",
+            updatedAt: NOW,
+          },
+        },
+      },
+    }))
+    mockPingProvider.mockImplementation(async (provider, _config, options) => {
+      if (provider === "minimax") {
+        await options?.onAttemptStart?.(1, 3)
+        await options?.onRetry?.({
+          attempt: 1,
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          operation: "ping",
+          ok: false,
+          classification: "server-error",
+          errorMessage: "529 High traffic detected",
+          httpStatus: 529,
+          willRetry: true,
+          delayMs: 0,
+        }, 3)
+        await options?.onAttemptStart?.(2, 3)
+      }
+      return { ok: true, attempts: [] }
+    })
+
+    const prompts: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    })
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(result).toBe("connect cancelled.")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
+    expect(output).toContain("minimax / MiniMax-M2.5: provider is busy right now; retrying now (attempt 2 of 3)")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 2 of 3)")
   })
 
   it("keeps connect menu fallbacks compact for noninteractive shells and alternate choices", async () => {
@@ -5448,26 +5527,42 @@ describe("provider CLI command execution", () => {
       readiness: {},
     }))
     writeProviderCredentialPool(homeDir, credentialPool())
-    mockPingProvider.mockResolvedValue({
-      ok: true,
-      attempts: [
-        {
-          attempt: 1,
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          operation: "ping",
-          ok: false,
-          willRetry: true,
-        },
-        {
-          attempt: 2,
-          provider: "minimax",
-          model: "MiniMax-M2.5",
-          operation: "ping",
-          ok: true,
-          willRetry: false,
-        },
-      ],
+    mockPingProvider.mockImplementation(async (_provider, _config, options) => {
+      await options?.onAttemptStart?.(1, 3)
+      await options?.onRetry?.({
+        attempt: 1,
+        provider: "minimax",
+        model: "MiniMax-M2.5",
+        operation: "ping",
+        ok: false,
+        classification: "server-error",
+        errorMessage: "provider busy",
+        httpStatus: 529,
+        willRetry: true,
+        delayMs: 0,
+      }, 3)
+      await options?.onAttemptStart?.(2, 3)
+      return {
+        ok: true,
+        attempts: [
+          {
+            attempt: 1,
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            operation: "ping",
+            ok: false,
+            willRetry: true,
+          },
+          {
+            attempt: 2,
+            provider: "minimax",
+            model: "MiniMax-M2.5",
+            operation: "ping",
+            ok: true,
+            willRetry: false,
+          },
+        ],
+      }
     })
 
     const deps = makeCliDeps(homeDir, bundlesRoot)
@@ -5482,6 +5577,9 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("reading vault items for Slugger...")
     expect(output).toContain("✓ reading minimax credentials")
     expect(output).toContain("... checking minimax / MiniMax-M2.5")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
+    expect(output).toContain("minimax / MiniMax-M2.5: provider is busy right now; retrying now (attempt 2 of 3)")
+    expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 2 of 3)")
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
