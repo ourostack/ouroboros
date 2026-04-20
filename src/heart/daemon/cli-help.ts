@@ -289,7 +289,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro auth switch --provider minimax",
   },
   "connect perplexity": {
-    description: "Connect Perplexity search for this agent",
+    description: "Connect portable Perplexity search that travels with this agent",
     usage: "ouro connect perplexity [--agent <name>]",
     example: "ouro connect perplexity",
   },
@@ -299,17 +299,17 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect providers",
   },
   "connect embeddings": {
-    description: "Connect memory embeddings for this agent",
+    description: "Connect portable memory embeddings that travel with this agent",
     usage: "ouro connect embeddings [--agent <name>]",
     example: "ouro connect embeddings",
   },
   "connect teams": {
-    description: "Connect Microsoft Teams credentials and enable the Teams sense",
+    description: "Connect portable Microsoft Teams credentials and enable the Teams sense",
     usage: "ouro connect teams [--agent <name>]",
     example: "ouro connect teams",
   },
   "connect bluebubbles": {
-    description: "Attach BlueBubbles iMessage to this machine only",
+    description: "Attach BlueBubbles iMessage to this machine only; it does not travel with the agent",
     usage: "ouro connect bluebubbles [--agent <name>]",
     example: "ouro connect bluebubbles",
   },

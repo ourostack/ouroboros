@@ -3459,7 +3459,8 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     const result = await runOuroCli([], deps)
 
-    expect(result).toContain("hatched Sprout")
+    expect(result).toContain("Hatch complete")
+    expect(result).toContain("Sprout is ready for first contact.")
     expect(runHatchFlow).toHaveBeenCalled()
   })
 
@@ -5241,6 +5242,43 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
     expect(result).not.toContain("vault unlock secret")
+  })
+
+  it("renders a shared hatch completion board in TTY mode for explicit hatch flows", async () => {
+    const runHatchFlow = vi.fn(async () => ({
+      bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
+      selectedIdentity: "python.md",
+    }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 33 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      isTTY: true,
+      stdoutColumns: 78,
+    }
+
+    const result = await runOuroCli([
+      "hatch",
+      "--agent",
+      "ExplicitBot",
+      "--human",
+      "Ari",
+      "--provider",
+      "anthropic",
+      "--setup-token",
+      "sk-ant-oat01-test-token",
+    ], deps)
+
+    expect(result).toContain("Hatch complete")
+    expect(result).toContain("ExplicitBot is ready for first contact.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
   })
 
   it("routes bare ouro hatch through specialist when no explicit args given", async () => {

@@ -117,6 +117,7 @@ import type { DegradedAgent } from "./interactive-repair"
 import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
 import {
   genericReadinessIssue,
+  isKnownReadinessIssue,
   renderReadinessIssueNextSteps,
   runGuidedReadinessRepair,
   type AgentReadinessIssue,
@@ -130,13 +131,14 @@ import {
 import {
   buildOuroHomeActions,
   renderAgentPickerScreen,
+  renderHumanCommandBoard,
   renderHouseStatusScreen,
   renderHumanReadinessBoard,
   renderOuroHomeScreen,
   resolveNamedAgentSelection,
   resolveOuroHomeAction,
 } from "./human-command-screens"
-import { renderOuroMasthead, renderTerminalBoard, type TerminalSection } from "./terminal-ui"
+import { renderOuroMasthead, type TerminalSection } from "./terminal-ui"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
@@ -599,17 +601,17 @@ function renderCommandBoard(
     subtitle: string
     summary: string
     sections: TerminalSection[]
+    actions?: import("./terminal-ui").TerminalAction[]
   },
 ): string {
-  return renderTerminalBoard({
+  return renderHumanCommandBoard({
+    title: options.title,
+    subtitle: options.subtitle,
+    summary: options.summary,
     isTTY: true,
     columns: deps.stdoutColumns ?? process.stdout.columns,
-    masthead: {
-      subtitle: options.subtitle,
-    },
-    title: options.title,
-    summary: options.summary,
     sections: options.sections,
+    actions: options.actions,
   }).trimEnd()
 }
 
@@ -632,6 +634,88 @@ function writeConnectorIntro(
       })
     : options.fallbackLines.join("\n")
   deps.writeStdout(text)
+}
+
+function formatLocalUnlockStoreLine(store: { kind: string; secure: boolean }): string {
+  return `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`
+}
+
+function writeCommandOutcome(
+  deps: OuroCliDeps,
+  options: {
+    title: string
+    subtitle: string
+    summary: string
+    sections: TerminalSection[]
+    fallbackLines: string[]
+  },
+): string {
+  const message = ttyBoardEnabled(deps)
+    ? renderCommandBoard(deps, {
+        title: options.title,
+        subtitle: options.subtitle,
+        summary: options.summary,
+        sections: options.sections,
+      })
+    : options.fallbackLines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+function writeCapabilityOutcome(
+  deps: OuroCliDeps,
+  options: {
+    subtitle: string
+    summary: string
+    whatChanged: string[]
+    nextMoves: string[]
+    fallbackLines: string[]
+  },
+): string {
+  return writeCommandOutcome(deps, {
+    title: "Capability connected",
+    subtitle: options.subtitle,
+    summary: options.summary,
+    sections: [
+      {
+        title: "What changed",
+        lines: options.whatChanged,
+      },
+      {
+        title: "Next moves",
+        lines: options.nextMoves,
+      },
+    ],
+    fallbackLines: options.fallbackLines,
+  })
+}
+
+function writeCapabilityAttention(
+  deps: OuroCliDeps,
+  options: {
+    subtitle: string
+    summary: string
+    whatChanged: string[]
+    nextMoves: string[]
+    fallbackLines: string[]
+  },
+): string {
+  return writeCommandOutcome(deps, {
+    title: "Capability needs attention",
+    subtitle: options.subtitle,
+    summary: options.summary,
+    sections: [
+      {
+        title: "What changed",
+        lines: options.whatChanged,
+      },
+      {
+        title: "Next moves",
+        lines: options.nextMoves,
+      },
+    ],
+    fallbackLines: options.fallbackLines,
+  })
 }
 
 async function promptForNamedAgent(
@@ -1247,11 +1331,6 @@ function pushAgentBundleAfterCliMutation(agent: string, deps: OuroCliDeps): stri
   return `bundle sync: could not push bundle changes (${result.error})`
 }
 
-function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
-  return syncSummary ? `${message}\n${syncSummary}` : message
-}
-
 function writeAgentVaultConfig(
   agentName: string,
   configPath: string,
@@ -1503,13 +1582,34 @@ async function executeVaultUnlock(
   } finally {
     progress.end()
   }
-  const message = [
+  const fallbackLines = [
     `vault unlocked for ${command.agent} on this machine`,
     `vault: ${vault.email} at ${vault.serverUrl}`,
-    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+    formatLocalUnlockStoreLine(store),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent}'s vault is open on this machine again.`,
+    summary: `This machine can now open ${command.agent}'s vault without re-entering the unlock secret every request.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${vault.email} at ${vault.serverUrl}`,
+          formatLocalUnlockStoreLine(store),
+          "secret was not printed",
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Run ouro up to let the house retry ${command.agent}.`,
+          `If credentials are still missing, run ouro auth --agent ${command.agent} --provider <provider>.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultCreate(
@@ -1578,15 +1678,40 @@ async function executeVaultCreate(
   }
   /* v8 ignore next -- defensive: success path assigns store before continuing @preserve */
   if (!store) throw new Error(`vault create failed for ${command.agent}: local unlock material was not saved`)
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault created for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${store.kind}${store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(store),
     "All raw credentials for this agent will be stored in this Ouro credential vault.",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent} has a vault home now.`,
+    summary: `All raw credentials for ${command.agent} now live in this vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(store),
+          "This vault will hold provider and runtime credentials for the agent.",
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Authenticate the providers ${command.agent} should use with ouro auth --agent ${command.agent} --provider <provider>.`,
+          `Then run ouro up so the house can bring ${command.agent} online.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultReplace(
@@ -1630,17 +1755,42 @@ async function executeVaultReplace(
   /* v8 ignore next -- defensive: createRepairVaultForAgent either returns or throws @preserve */
   if (!repair) throw new Error(`vault replace failed for ${command.agent}: no vault repair result`)
   if (!repair.ok) return repair.message
-
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault replaced for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(repair.store),
     "imported: none",
     `next: ouro repair --agent ${command.agent}`,
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent} has a fresh vault.`,
+    summary: `${command.agent} now has a fresh empty vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(repair.store),
+          "Imported: none",
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Re-enter provider credentials with ouro auth --agent ${command.agent} --provider <provider>.`,
+          `Re-enter runtime secrets with ouro connect --agent ${command.agent} or ouro vault config set --agent ${command.agent} --key <field>.`,
+          `Then run ouro repair --agent ${command.agent} or ouro up.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultRecover(
@@ -1726,19 +1876,47 @@ async function executeVaultRecover(
     progress.end()
   }
   const providerList = [...importedProviders].sort()
-  const message = appendBundleSyncSummary([
+  const syncSummary = pushAgentBundleAfterCliMutation(command.agent, deps)
+  const fallbackLines = [
     `vault recovered for ${command.agent}`,
     `vault: ${email} at ${serverUrl}`,
-    `local unlock store: ${repair.store.kind}${repair.store.secure ? "" : " (explicit plaintext fallback)"}`,
+    formatLocalUnlockStoreLine(repair.store),
     `sources imported: ${sourceImports.length}`,
     `provider credentials imported: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
     `runtime credentials imported: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
     `machine runtime credentials imported: ${machineRuntimeFields.length === 0 ? "none" : machineRuntimeFields.join(", ")}`,
     "credential values were not printed",
     "Keep the vault unlock secret saved outside Ouro. Another machine will need it once.",
-  ].join("\n"), command.agent, deps)
-  deps.writeStdout(message)
-  return message
+    ...(syncSummary ? [syncSummary] : []),
+  ]
+  return writeCommandOutcome(deps, {
+    title: "Credential vault",
+    subtitle: `${command.agent}'s vault is back in service.`,
+    summary: `Recovered credentials have been moved back into ${command.agent}'s vault.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Vault: ${email} at ${serverUrl}`,
+          formatLocalUnlockStoreLine(repair.store),
+          `Sources imported: ${sourceImports.length}`,
+          `Provider credentials: ${providerList.length === 0 ? "none" : providerList.join(", ")}`,
+          `Runtime credentials: ${runtimeFields.length === 0 ? "none" : runtimeFields.join(", ")}`,
+          `Machine runtime credentials: ${machineRuntimeFields.length === 0 ? "none" : machineRuntimeFields.join(", ")}`,
+          "secret was not printed",
+          ...(syncSummary ? [syncSummary] : []),
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Run ouro auth verify --agent ${command.agent} to re-check the stored providers.`,
+          `Then run ouro up so the house can retry ${command.agent}.`,
+        ],
+      },
+    ],
+    fallbackLines,
+  })
 }
 
 async function executeVaultStatus(
@@ -2455,16 +2633,27 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
     if (!verification.ok) {
       progress.failPhase("verifying Perplexity search", verification.summary)
       progress.end()
-      const message = [
+      return writeCapabilityAttention(deps, {
+        subtitle: `${agent}'s Perplexity key needs another pass.`,
+        summary: "Perplexity search was saved, but the live check failed.",
+        whatChanged: [
+          `Stored: ${stored.itemPath}`,
+          `Live check: ${verification.summary}`,
+          "secret was not printed",
+        ],
+        nextMoves: [
+          `Rerun ouro connect perplexity --agent ${agent} with a working key.`,
+          `Use ouro connect --agent ${agent} to review the rest of the capability bay.`,
+        ],
+        fallbackLines: [
         `Perplexity key was saved for ${agent}, but the live check failed.`,
         `stored: ${stored.itemPath}`,
         `live check: ${verification.summary}`,
         "secret was not printed",
         "",
         `Next: rerun \`ouro connect perplexity --agent ${agent}\` with a working key.`,
-      ].join("\n")
-      deps.writeStdout(message)
-      return message
+        ],
+      })
     }
     progress.completePhase("verifying Perplexity search", verification.summary)
 
@@ -2477,17 +2666,29 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
   } finally {
     progress.end()
   }
-  const message = [
-    `Perplexity connected for ${agent}`,
-    "capability: Perplexity search",
-    `stored: ${stored.itemPath}`,
-    `running agent: ${reload}`,
-    "secret was not printed",
-    "",
-    "Next: ask the agent to search.",
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s search compass is online.`,
+    summary: `Perplexity search is ready to travel with ${agent}.`,
+    whatChanged: [
+      `Capability: Perplexity search`,
+      `Stored: ${stored.itemPath}`,
+      `Running agent: ${reload}`,
+      "secret was not printed",
+    ],
+    nextMoves: [
+      "Ask the agent to search.",
+      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Perplexity connected for ${agent}`,
+      "capability: Perplexity search",
+      `stored: ${stored.itemPath}`,
+      `running agent: ${reload}`,
+      "secret was not printed",
+      "",
+      "Next: ask the agent to search.",
+    ],
+  })
 }
 
 async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2553,16 +2754,27 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
     if (!verification.ok) {
       progress.failPhase("verifying memory embeddings", verification.summary)
       progress.end()
-      const message = [
+      return writeCapabilityAttention(deps, {
+        subtitle: `${agent}'s memory key needs another pass.`,
+        summary: "Memory embeddings were saved, but the live check failed.",
+        whatChanged: [
+          `Stored: ${stored.itemPath}`,
+          `Live check: ${verification.summary}`,
+          "secret was not printed",
+        ],
+        nextMoves: [
+          `Rerun ouro connect embeddings --agent ${agent} with a working key.`,
+          `Use ouro connect --agent ${agent} to review the rest of the capability bay.`,
+        ],
+        fallbackLines: [
         `Embeddings key was saved for ${agent}, but the live check failed.`,
         `stored: ${stored.itemPath}`,
         `live check: ${verification.summary}`,
         "secret was not printed",
         "",
         `Next: rerun \`ouro connect embeddings --agent ${agent}\` with a working key.`,
-      ].join("\n")
-      deps.writeStdout(message)
-      return message
+        ],
+      })
     }
     progress.completePhase("verifying memory embeddings", verification.summary)
 
@@ -2575,17 +2787,29 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
   } finally {
     progress.end()
   }
-  const message = [
-    `Embeddings connected for ${agent}`,
-    "capability: memory embeddings",
-    `stored: ${stored.itemPath}`,
-    `running agent: ${reload}`,
-    "secret was not printed",
-    "",
-    "Next: ask the agent to search notes or memory.",
-  ].join("\n")
-  deps.writeStdout(message)
-  return message
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s memory index is online.`,
+    summary: `Memory embeddings are ready to travel with ${agent}.`,
+    whatChanged: [
+      "Capability: memory embeddings",
+      `Stored: ${stored.itemPath}`,
+      `Running agent: ${reload}`,
+      "secret was not printed",
+    ],
+    nextMoves: [
+      "Ask the agent to search notes or memory.",
+      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Embeddings connected for ${agent}`,
+      "capability: memory embeddings",
+      `stored: ${stored.itemPath}`,
+      `running agent: ${reload}`,
+      "secret was not printed",
+      "",
+      "Next: ask the agent to search notes or memory.",
+    ],
+  })
 }
 
 async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2594,11 +2818,38 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   }
   const promptInput = requirePromptInput(deps, "Teams setup")
   const promptSecret = requirePromptSecret(deps, "Teams client secret entry")
-  deps.writeStdout([
-    `Connect Teams for ${agent}`,
-    "This connects the Teams sense.",
-    "The client secret stays hidden while you type.",
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect Teams",
+    subtitle: `${agent} gets a portable Teams sense.`,
+    summary: "Add the app credentials once, keep the secret hidden, and let Teams travel with this agent.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Microsoft Teams messages and actions inside Ouro.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "A Teams client ID, client secret, and tenant ID.",
+          "The client secret stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s vault runtime/config item.`,
+          "It travels with the agent across machines.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect Teams for ${agent}`,
+      "The client secret stays hidden while you type.",
+      `Ouro stores the setup in ${agent}'s vault runtime/config item.`,
+    ],
+  })
   const clientId = (await promptInput("Teams client ID: ")).trim()
   if (!clientId) throw new Error("Teams client ID cannot be blank")
   const clientSecret = (await promptSecret("Teams client secret: ")).trim()
@@ -2632,18 +2883,32 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
   } finally {
     progress.end()
   }
-
-  const message = appendBundleSyncSummary([
-    `Teams connected for ${agent}`,
-    "capability: Teams sense",
-    `stored: ${stored.itemPath}`,
-    "agent.json: senses.teams.enabled = true",
-    "secret was not printed",
-    "",
-    "Next: run `ouro up` so the daemon picks up the Teams sense change.",
-  ].join("\n"), agent, deps)
-  deps.writeStdout(message)
-  return message
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s Teams sense is configured.`,
+    summary: `Teams is ready for ${agent}.`,
+    whatChanged: [
+      "Capability: Teams sense",
+      `Stored: ${stored.itemPath}`,
+      "agent.json: senses.teams.enabled = true",
+      "secret was not printed",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+    nextMoves: [
+      "Run ouro up so the daemon picks up the Teams sense change.",
+      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+    ],
+    fallbackLines: [
+      `Teams connected for ${agent}`,
+      "capability: Teams sense",
+      `stored: ${stored.itemPath}`,
+      "agent.json: senses.teams.enabled = true",
+      "secret was not printed",
+      "",
+      "Next: run `ouro up` so the daemon picks up the Teams sense change.",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+  })
 }
 
 async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -2652,11 +2917,38 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   }
   const promptInput = requirePromptInput(deps, "BlueBubbles setup")
   const promptSecret = requirePromptSecret(deps, "BlueBubbles password entry")
-  deps.writeStdout([
-    `Connect BlueBubbles for ${agent}`,
-    "This is a local attachment for this machine.",
-    "The app password stays hidden while you type.",
-  ].join("\n"))
+  writeConnectorIntro(deps, {
+    title: "Connect BlueBubbles",
+    subtitle: `${agent} gets a local Messages bridge on this machine.`,
+    summary: "Attach this Mac's BlueBubbles bridge without pretending it travels anywhere else.",
+    sections: [
+      {
+        title: "Unlocks",
+        lines: [
+          "Local iMessage bridge access on this machine only.",
+        ],
+      },
+      {
+        title: "What you need",
+        lines: [
+          "A BlueBubbles server URL and app password.",
+          "The app password stays hidden while you type.",
+        ],
+      },
+      {
+        title: "Where it lives",
+        lines: [
+          `${agent}'s machine runtime config for this machine.`,
+          "It does not travel to other machines unless you attach them too.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Connect BlueBubbles for ${agent}`,
+      "This is a local attachment for this machine.",
+      "The app password stays hidden while you type.",
+    ],
+  })
   const serverUrl = (await promptInput("BlueBubbles server URL for this machine: ")).trim()
   if (!serverUrl) throw new Error("BlueBubbles server URL cannot be blank")
   const password = (await promptSecret("BlueBubbles app password: ")).trim()
@@ -2699,18 +2991,32 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.end()
     throw error
   }
-
-  const message = appendBundleSyncSummary([
-    `BlueBubbles attached for ${agent} on this machine`,
-    `machine: ${machineId}`,
-    `stored: ${stored.itemPath}`,
-    "agent.json: senses.bluebubbles.enabled = true",
-    "secret was not printed",
-    "",
-    "Next: point BlueBubbles at this machine's webhook, then run `ouro up`.",
-  ].join("\n"), agent, deps)
-  deps.writeStdout(message)
-  return message
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s local bridge is attached.`,
+    summary: `BlueBubbles is attached on this machine for ${agent}.`,
+    whatChanged: [
+      `Machine: ${machineId}`,
+      `Stored: ${stored.itemPath}`,
+      "agent.json: senses.bluebubbles.enabled = true",
+      "secret was not printed",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+    nextMoves: [
+      "Point BlueBubbles at this machine's webhook, then run ouro up.",
+      `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
+    ],
+    fallbackLines: [
+      `BlueBubbles attached for ${agent} on this machine`,
+      `machine: ${machineId}`,
+      `stored: ${stored.itemPath}`,
+      "agent.json: senses.bluebubbles.enabled = true",
+      "secret was not printed",
+      "",
+      "Next: point BlueBubbles at this machine's webhook, then run `ouro up`.",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+  })
 }
 
 async function executeConnectProviders(agent: string, deps: OuroCliDeps): Promise<string> {
@@ -3215,26 +3521,50 @@ async function executeAuthRun(
   // Use `ouro auth switch` to change the active provider.
 
   // Verify the credentials actually work by pinging the provider.
+  let verificationStatus = "not checked"
   /* v8 ignore start -- integration: real API ping after auth @preserve */
   try {
     progress.startPhase(`verifying ${provider}`)
     const credential = await readProviderCredentialRecord(command.agent, provider, deps, {
       onProgress: (message) => progress.updateDetail(message),
     })
-    const status = credential.ok
+    verificationStatus = credential.ok
       ? await verifyProviderCredentials(provider, {
         [provider]: { ...credential.record.config, ...credential.record.credentials },
       })
       : `stored but could not be re-read from vault (${credential.error})`
-    progress.completePhase(`verifying ${provider}`, status)
+    progress.completePhase(`verifying ${provider}`, verificationStatus)
   } catch (error) {
     // Verification failure is non-blocking — credentials were saved regardless.
-    progress.completePhase(`verifying ${provider}`, `skipped (${error instanceof Error ? error.message : String(error)})`)
+    verificationStatus = `skipped (${error instanceof Error ? error.message : String(error)})`
+    progress.completePhase(`verifying ${provider}`, verificationStatus)
   }
   /* v8 ignore stop */
   progress.end()
-  deps.writeStdout(result.message)
-  return result.message
+  return writeCommandOutcome(deps, {
+    title: "Provider auth",
+    subtitle: `${command.agent} just refreshed ${provider}.`,
+    summary: `${command.agent} can now use ${provider} when this lane is selected.`,
+    sections: [
+      {
+        title: "What changed",
+        lines: [
+          `Stored in: ${result.credentialPath}`,
+          `Provider: ${provider}`,
+          `Live check: ${verificationStatus}`,
+          "secret was not printed",
+        ],
+      },
+      {
+        title: "Next moves",
+        lines: [
+          `Choose it for a lane with ouro use --agent ${command.agent} --lane <outward|inner> --provider ${provider} --model <model>.`,
+          `Double-check it any time with ouro auth verify --agent ${command.agent} --provider ${provider}.`,
+        ],
+      },
+    ],
+    fallbackLines: [result.message],
+  })
 }
 
 async function readinessReportForAgent(agent: string, deps: OuroCliDeps): Promise<AgentReadinessReport> {
@@ -4469,54 +4799,73 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           meta: { degradedCount: daemonResult.stability.degraded.length },
         })
       } else {
-        const repairResult = await runAgenticRepair(daemonResult.stability.degraded, {
-          /* v8 ignore start -- production provider discovery wiring @preserve */
-          discoverWorkingProvider: async (agentName: string) => {
-            const { discoverWorkingProvider: discover } = await import("./provider-discovery")
-            const { pingProvider } = await import("../provider-ping")
-            return discover({
-              agentName,
-              pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
-            })
-          },
-          createProviderRuntime: createAgenticDiagnosisProviderRuntime,
-          readDaemonLogsTail: () => {
-            try {
-              const fs = require("node:fs") as typeof import("node:fs")
-              const path = require("node:path") as typeof import("node:path")
-              const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
-              const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
-              if (files.length === 0) return "(no daemon logs found)"
-              const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
-              const lines = lastLog.split("\n")
-              return lines.slice(-50).join("\n")
-            } catch {
-              return "(unable to read daemon logs)"
-            }
-          },
-          /* v8 ignore stop */
-          runInteractiveRepair,
-          promptInput: deps.promptInput ?? (async () => "n"),
-          writeStdout: deps.writeStdout,
-          runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
-            await executeAuthRun({
-              kind: "auth.run",
-              agent,
-              ...(providerOverride ? { provider: providerOverride } : {}),
-            }, deps)
-          },
-          runVaultUnlock: async (agent: string) => {
-            await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
-          },
-          skipQueueSummary: true,
-        })
-        if (repairResult.repairsAttempted) {
-          const repairedAgents = daemonResult.stability.degraded
-            .filter(hasRunnableInteractiveRepair)
-            .map((entry) => entry.agent)
+        const typedDegraded = daemonResult.stability.degraded.filter((entry) => isKnownReadinessIssue(entry.issue))
+        const untypedDegraded = daemonResult.stability.degraded.filter((entry) => !isKnownReadinessIssue(entry.issue))
+        let repairsAttempted = false
+        const repairedAgents = new Set<string>()
+
+        if (typedDegraded.length > 0) {
+          const guidedRepair = await runReadinessRepairForDegraded(typedDegraded, deps)
+          if (guidedRepair.repairsAttempted) {
+            repairsAttempted = true
+            typedDegraded.forEach((entry) => repairedAgents.add(entry.agent))
+          }
+        }
+
+        if (untypedDegraded.length > 0) {
+          const repairResult = await runAgenticRepair(untypedDegraded, {
+            /* v8 ignore start -- production provider discovery wiring @preserve */
+            discoverWorkingProvider: async (agentName: string) => {
+              const { discoverWorkingProvider: discover } = await import("./provider-discovery")
+              const { pingProvider } = await import("../provider-ping")
+              return discover({
+                agentName,
+                pingProvider: pingProvider as unknown as (provider: AgentProvider, config: Record<string, string>) => Promise<import("../provider-ping").PingResult>,
+              })
+            },
+            createProviderRuntime: createAgenticDiagnosisProviderRuntime,
+            readDaemonLogsTail: () => {
+              try {
+                const fs = require("node:fs") as typeof import("node:fs")
+                const path = require("node:path") as typeof import("node:path")
+                const logsDir = path.join(process.env["HOME"] ?? "", ".agentstate", "daemon", "logs")
+                const files = fs.readdirSync(logsDir).filter((f: string) => f.endsWith(".log")).sort()
+                if (files.length === 0) return "(no daemon logs found)"
+                const lastLog = fs.readFileSync(path.join(logsDir, files[files.length - 1]!), "utf8")
+                const lines = lastLog.split("\n")
+                return lines.slice(-50).join("\n")
+              } catch {
+                return "(unable to read daemon logs)"
+              }
+            },
+            /* v8 ignore stop */
+            runInteractiveRepair,
+            promptInput: deps.promptInput ?? (async () => "n"),
+            writeStdout: deps.writeStdout,
+            runAuthFlow: async (agent: string, providerOverride?: AgentProvider) => {
+              await executeAuthRun({
+                kind: "auth.run",
+                agent,
+                ...(providerOverride ? { provider: providerOverride } : {}),
+              }, deps)
+            },
+            runVaultUnlock: async (agent: string) => {
+              await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
+            },
+            skipQueueSummary: true,
+          })
+          if (repairResult.repairsAttempted) {
+            repairsAttempted = true
+            untypedDegraded
+              .filter(hasRunnableInteractiveRepair)
+              .forEach((entry) => repairedAgents.add(entry.agent))
+          }
+        }
+
+        if (repairsAttempted) {
           progress.startPhase("post-repair check")
-          await reportPostRepairProviderHealth(deps, repairedAgents, (msg) => progress.updateDetail(msg))
-          progress.completePhase("post-repair check", providerRepairCountSummary(repairedAgents.length))
+          await reportPostRepairProviderHealth(deps, [...repairedAgents], (msg) => progress.updateDetail(msg))
+          progress.completePhase("post-repair check", providerRepairCountSummary(repairedAgents.size))
         }
       }
     }
@@ -5787,9 +6136,31 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return ""
     }
 
-    const message = `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`
-    deps.writeStdout(message)
-    return message
+    return writeCommandOutcome(deps, {
+      title: "Hatch complete",
+      subtitle: `${hatchInput.agentName} just arrived.`,
+      summary: `${hatchInput.agentName} is ready for first contact.`,
+      sections: [
+        {
+          title: "What changed",
+          lines: [
+            `Bundle: ${result.bundleRoot}`,
+            `Specialist identity: ${result.selectedIdentity}`,
+            `House status: ${daemonResult.message}`,
+          ],
+        },
+        {
+          title: "Next moves",
+          lines: [
+            `Talk to them with ouro chat ${hatchInput.agentName}.`,
+            `Use ouro connect --agent ${hatchInput.agentName} to bring more capabilities online.`,
+          ],
+        },
+      ],
+      fallbackLines: [
+        `hatched ${hatchInput.agentName} at ${result.bundleRoot} using specialist identity ${result.selectedIdentity}; ${daemonResult.message}`,
+      ],
+    })
   }
 
   // ── doctor (local, no daemon socket needed) ──

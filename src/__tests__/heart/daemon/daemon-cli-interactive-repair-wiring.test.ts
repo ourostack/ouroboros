@@ -215,6 +215,40 @@ describe("ouro up: interactive repair wiring", () => {
     )
   })
 
+  it("uses the guided readiness board instead of legacy interactive repair for typed degraded agents", async () => {
+    const degraded = [
+      {
+        agent: "test-agent",
+        errorReason: "missing credentials",
+        fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+        issue: providerCredentialMissingIssue({
+          agentName: "test-agent",
+          lane: "outward",
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialPath: "vault:test-agent:providers/*",
+        }),
+      },
+    ]
+    mocks.pollDaemonStartup.mockResolvedValueOnce({ stable: ["healthy-agent"], degraded })
+    mocks.runInteractiveRepair.mockClear()
+    const writeStdout = vi.fn()
+
+    await runOuroCli(["up"], makeDeps({
+      bundlesRoot: "/tmp/bundles",
+      isTTY: true,
+      stdoutColumns: 76,
+      writeStdout,
+      promptInput: vi.fn(async () => "3"),
+    }))
+
+    expect(mocks.runInteractiveRepair).not.toHaveBeenCalled()
+    const output = writeStdout.mock.calls.map((call: any[]) => call[0]).join("\n")
+    expect(output).toContain("Repair test-agent")
+    expect(output).toContain("Authenticate anthropic")
+    expect(output).toContain("Choose another provider/model")
+  })
+
   it("checks selected providers before starting a stopped daemon and stops on declined typed repair", async () => {
     mocks.checkAgentConfigWithProviderHealth.mockResolvedValueOnce({
       ok: false,

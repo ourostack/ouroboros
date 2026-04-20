@@ -18,6 +18,7 @@ import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
+import type { AgentReadinessIssue } from "./readiness-repair"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
@@ -178,7 +179,7 @@ export interface EnsureDaemonResult {
   startedPid?: number | null
   stability?: {
     stable: string[]
-    degraded: Array<{ agent: string; errorReason: string; fixHint: string }>
+    degraded: Array<{ agent: string; errorReason: string; fixHint: string; issue?: AgentReadinessIssue }>
   }
 }
 

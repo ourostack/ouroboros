@@ -41,6 +41,17 @@ interface HumanReadinessBoardOptions {
   prompt?: string
 }
 
+export interface HumanCommandBoardOptions {
+  title: string
+  subtitle: string
+  summary: string
+  isTTY: boolean
+  columns?: number
+  sections?: TerminalSection[]
+  actions?: TerminalAction[]
+  prompt?: string
+}
+
 function renderScreenEvent(screen: string): void {
   emitNervesEvent({
     component: "daemon",
@@ -166,6 +177,20 @@ export function renderHumanReadinessBoard(options: HumanReadinessBoardOptions): 
     ],
   }))
 
+  return renderHumanCommandBoard({
+    title: options.title,
+    subtitle: options.subtitle,
+    summary: options.snapshot.summary,
+    isTTY: options.isTTY,
+    columns: options.columns,
+    sections,
+    actions: options.snapshot.nextActions,
+    prompt: options.prompt,
+  })
+}
+
+export function renderHumanCommandBoard(options: HumanCommandBoardOptions): string {
+  renderScreenEvent("command-board")
   return renderTerminalBoard({
     isTTY: options.isTTY,
     columns: options.columns,
@@ -173,9 +198,9 @@ export function renderHumanReadinessBoard(options: HumanReadinessBoardOptions): 
       subtitle: options.subtitle,
     },
     title: options.title,
-    summary: options.snapshot.summary,
-    sections,
-    actions: options.snapshot.nextActions,
+    summary: options.summary,
+    sections: options.sections,
+    actions: options.actions,
     prompt: options.prompt,
   })
 }
@@ -252,14 +277,12 @@ export function renderHouseStatusScreen(options: {
     })
   }
 
-  return renderTerminalBoard({
+  return renderHumanCommandBoard({
+    title: "House status",
+    subtitle: "The house is awake enough to answer clearly.",
+    summary: "What is awake, resting, or asking for care.",
     isTTY: options.isTTY,
     columns: options.columns,
-    masthead: {
-      subtitle: "The house is awake enough to answer clearly.",
-    },
-    title: "House status",
-    summary: "What is awake, resting, or asking for care.",
     sections,
   })
 }

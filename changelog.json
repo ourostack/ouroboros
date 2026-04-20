@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.433",
+      "changes": [
+        "The human-facing CLI now speaks one shared terminal language across `ouro`, `ouro up`, `ouro connect`, repair, auth, vault, and hatch: the Ouroboros control deck, calm capability intros, and clear `What changed` / `Next moves` landings instead of raw transcript walls.",
+        "Guided connector and repair flows now tell the truth about what is portable versus machine-local, use the same live provider verification path as startup and auth verification, and keep visible progress on long-running work so the terminal never degrades into a dead blinking cursor while real work is still happening.",
+        "The refreshed CLI surface is now locked in by expanded screen-level daemon tests, full-suite regression coverage, hermetic built-runtime integration coverage, and packaged-install e2e coverage, with operator docs updated to match the new house-style behavior."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.432",
       "changes": [
         "`ouro up` no longer risks hanging forever on an unbounded npm registry check during startup; the update-check phase now shows live detail, aborts the stalled fetch after a short shared timeout, and continues booting with truthful status like `skipped; registry did not answer`.",

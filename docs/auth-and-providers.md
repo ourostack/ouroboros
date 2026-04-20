@@ -79,6 +79,8 @@ ouro connect bluebubbles --agent <agent>
 
 `ouro connect` opens the connect bay: a framed, width-aware terminal board with a calm header, one recommended next move, and separate areas for `Provider core`, portable runtime capabilities, and machine-local attachments. Every time the root connect bay opens, Ouro runs the same live provider verification used by `ouro up` and `ouro auth verify`, then routes that shared truth into the bay instead of making the human decode a wall of status text. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings, so the terminal does not sit there looking dead.
 
+Guided connectors open with a short capability board that answers three questions up front: what this unlocks, what the human needs, and where the credential will live. They close with the same shared outcome board language used by auth, vault, and hatch: a calm title, `What changed`, and `Next moves`.
+
 When a human runs bare `ouro` in a TTY, Ouro opens the same command family from the home deck instead of silently behaving like `ouro up`. The home deck routes into `ouro up`, `ouro connect`, `ouro repair`, `ouro chat`, `ouro hatch`, and help without requiring the human to remember exact command names first.
 
 `ouro connect providers` routes into the same provider auth flow as `ouro auth`, but from the connect bay instead of making the human remember the auth command first.
@@ -113,7 +115,7 @@ The checklist contract is:
 - print or animate the active step when work may take more than about three seconds
 - show changed substeps such as `reading vault items`, `storing openai-codex credentials`, or `opening credential vault`
 - for daemon replacement, say that Ouro is replacing the running background service and keep the step unresolved until the replacement is actually answering
-- complete with a compact success/failure summary and one next action
+- complete with a compact success/failure summary, `What changed`, and a `Next moves` landing
 - never print raw secrets, OAuth tokens, provider API keys, vault unlock secrets, or machine-local passwords
 
 TTY help/readiness surfaces should share one visual language instead of every command inventing its own transcript. The shared board layer is the intended human surface for `ouro`, `ouro up`, `ouro connect`, `ouro auth verify`, `ouro repair`, `ouro help`, `ouro whoami`, `ouro versions`, and the `ouro hatch` welcome shell. Non-TTY and automation paths should stay compact plain text.
