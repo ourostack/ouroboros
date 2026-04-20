@@ -110,7 +110,7 @@ function runPackageE2ESuite(input, deps = defaultDeps()) {
       tarballPath: input.tarballPath,
       binName: "ouro",
       args: ["help"],
-      expectOutput: "Connect providers, portable integrations, and local senses from one guided bay",
+      expectOutput: "Set up providers, portable integrations, and local senses from one guided screen",
     }, deps),
   ]
 }

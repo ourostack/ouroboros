@@ -77,14 +77,14 @@ describe("package-e2e", () => {
   it("can smoke installed help output from the local tarball", () => {
     const { deps, calls } = makeDeps([
       "",
-      "Connect providers, portable integrations, and local senses from one guided bay\n",
+      "Set up providers, portable integrations, and local senses from one guided screen\n",
     ])
 
     const result = runLocalTarballCommandSmoke({
       tarballPath: "/tmp/ouro-cli-0.1.0-alpha.430.tgz",
       binName: "ouro",
       args: ["help"],
-      expectOutput: "Connect providers, portable integrations, and local senses from one guided bay",
+      expectOutput: "Set up providers, portable integrations, and local senses from one guided screen",
     }, deps)
 
     expect(result.ok).toBe(true)
@@ -99,7 +99,7 @@ describe("package-e2e", () => {
       "",
       "0.1.0-alpha.430\n",
       "",
-      "Connect providers, portable integrations, and local senses from one guided bay\n",
+      "Set up providers, portable integrations, and local senses from one guided screen\n",
     ])
 
     const results = runPackageE2ESuite({
