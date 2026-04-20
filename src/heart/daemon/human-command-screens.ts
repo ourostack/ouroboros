@@ -235,7 +235,7 @@ export function renderHouseStatusScreen(options: {
         if (worker.lastSignal !== null) details.push(`signal=${worker.lastSignal}`)
         if (worker.errorReason) details.push(`error: ${worker.errorReason}`)
         if (worker.fixHint) details.push(`fix: ${worker.fixHint}`)
-        return `${worker.agent} — ${worker.worker} — ${worker.status}${details.length > 0 ? ` — ${details.join("; ")}` : ""}`
+        return `${worker.agent} — ${worker.worker} — ${worker.status} — ${details.join("; ")}`
       }),
     })
   }

@@ -251,14 +251,15 @@ function formatOperationStep(step: TerminalOperationStep): string {
 }
 
 export function renderTerminalOperation(options: RenderTerminalOperationOptions): string {
+  const steps = options.steps ?? []
   const currentLines = options.currentStep
     ? [
         options.currentStep.label,
         ...(options.currentStep.detailLines ?? []),
       ]
     : ["Standing by."]
-  const progressLines = (options.steps ?? []).length > 0
-    ? (options.steps ?? []).map((step) => formatOperationStep(step))
+  const progressLines = steps.length > 0
+    ? steps.map((step) => formatOperationStep(step))
     : ["No active steps yet."]
 
   return renderTerminalBoard({

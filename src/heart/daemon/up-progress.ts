@@ -288,9 +288,7 @@ export class UpProgress {
 
   private flushRender(): void {
     const output = this.render(this.now())
-    if (output) {
-      this.write(output)
-    }
+    this.write(output)
   }
 
   private renderLines(now: number): string[] {
@@ -345,7 +343,7 @@ export class UpProgress {
       })
     }
 
-    const rendered = renderTerminalOperation({
+    return renderTerminalOperation({
       isTTY: true,
       columns: this.columns,
       masthead: {
@@ -359,9 +357,7 @@ export class UpProgress {
       },
       steps,
       suppressEvent: true,
-    }).trimEnd()
-
-    return rendered.length === 0 ? [] : rendered.split("\n")
+    }).trimEnd().split("\n")
   }
 }
 

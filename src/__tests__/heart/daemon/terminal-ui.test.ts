@@ -106,6 +106,7 @@ describe("terminal ui", () => {
         { label: "update check", status: "done", detail: "up to date" },
         { label: "system setup", status: "done" },
         { label: "provider checks", status: "active" },
+        { label: "vault unlock", status: "failed", detail: "still locked" },
         { label: "daemon handshake", status: "pending" },
       ],
     })
@@ -114,8 +115,55 @@ describe("terminal ui", () => {
     expect(output).toContain("Right now")
     expect(output).toContain("Progress")
     expect(output).toContain("slugger: checking openai-codex")
+    expect(output).toContain("vault unlock")
     expect(output).toContain("daemon handshake")
     expect(output).toContain("╭")
+  })
+
+  it("renders operation fallbacks when nothing is active yet", () => {
+    emitTestEvent("terminal ui operation fallbacks")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Waiting for the house",
+    })
+
+    expect(output).toContain("Waiting for the house")
+    expect(output).toContain("Standing by.")
+    expect(output).toContain("No active steps yet.")
+    expect(output).not.toContain("\x1b[")
+  })
+
+  it("renders an operation step even when the current step has no detail lines", () => {
+    emitTestEvent("terminal ui operation current step without detail")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Still moving",
+      currentStep: {
+        label: "provider checks",
+      },
+      steps: [
+        { label: "provider checks", status: "active" },
+      ],
+    })
+
+    expect(output).toContain("provider checks")
+    expect(output).toContain("→ provider checks")
+    expect(output).not.toContain("\x1b[")
+  })
+
+  it("treats an explicitly empty step list as no active steps yet", () => {
+    emitTestEvent("terminal ui operation explicit empty steps")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Quiet house",
+      steps: [],
+    })
+
+    expect(output).toContain("Quiet house")
+    expect(output).toContain("No active steps yet.")
   })
 
   it("keeps non-TTY boards free of ANSI escapes", () => {
