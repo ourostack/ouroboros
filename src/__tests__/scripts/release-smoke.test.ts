@@ -113,20 +113,21 @@ describe("release-smoke", () => {
     expect(result.message).toContain("reported 0.1.0-alpha.323")
   })
 
-  it("can verify a bootstrap package by exact package ref and isolated bin resolution only", () => {
+  it("can verify the supported bootstrap package path at latest", () => {
     const { deps } = makeDeps([
       "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
+      "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
     ])
 
-    const result = runPublishedBinResolutionSmoke({
-      packageName: "ouro.bot",
+    const result = runPublishedBinVersionSmoke({
+      packageRef: "ouro.bot@latest",
       binName: "ouro.bot",
-      version: "0.1.0-alpha.327",
+      expectedVersion: "0.1.0-alpha.327",
     }, deps)
 
     expect(result.ok).toBe(true)
-    expect(result.message).toContain("resolved from npm exec package")
-    expect(deps.execFileSync).toHaveBeenCalledTimes(1)
+    expect(result.message).toContain("verified at 0.1.0-alpha.327")
+    expect(deps.execFileSync).toHaveBeenCalledTimes(2)
   })
 
   it("smokes both supported published binaries", () => {
@@ -134,6 +135,7 @@ describe("release-smoke", () => {
       "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro\n",
       "0.1.0-alpha.327\n",
       "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
+      "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
     ])
 
     const results = runReleaseSmokeSuite("0.1.0-alpha.327", deps)

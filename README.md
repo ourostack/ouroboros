@@ -6,7 +6,7 @@ Ouroboros is a TypeScript harness for daemon-managed agents that live in externa
 
 ## What The Runtime Looks Like
 
-- `npx ouro.bot` is the bootstrap path.
+- `npx ouro.bot@latest` is the supported bootstrap path.
 - `ouro` is the installed day-to-day command.
 - `ouro up` starts the daemon from the installed production version, syncs the launcher, installs workflow helpers, and reconciles stale runtime state.
 - `ouro dev` starts the daemon from a local repo build. It auto-builds from source, disables launchd auto-restart (so the installed daemon doesn't respawn underneath you), persists the repo path in `~/.ouro-cli/dev-config.json` for next time, and force-restarts the daemon. If you run `ouro dev` from inside the repo, it detects the CWD automatically. Run `ouro up` to return to production mode (this also cleans up `dev-config.json`).
@@ -142,15 +142,15 @@ For a clean smoke test, run from outside the repo:
 
 ```bash
 cd ~
-npx ouro.bot -v
-npx ouro.bot up
+npx ouro.bot@latest -v
+npx ouro.bot@latest up
 ouro -v
 ouro status
 ```
 
 Expected shape:
 
-- `npx ouro.bot` and `ouro` report the same version.
+- `npx ouro.bot@latest` and `ouro` report the same version.
 - `ouro status` shows the daemon overview plus discovered agents, senses, and workers.
 
 ### Work On The Harness
@@ -209,7 +209,7 @@ ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart,
 
 ## Setting Up On Another Machine
 
-To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot`, open the home deck, choose clone, enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
+To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2), see **[docs/cross-machine-setup.md](docs/cross-machine-setup.md)**. The short version is bundle plus vault: `npx ouro.bot@latest`, open the home deck, choose clone, enter the bundle's git remote URL, unlock the agent vault, refresh/verify credentials, and start with `ouro up`.
 
 ## The Agent's Inner Life
 

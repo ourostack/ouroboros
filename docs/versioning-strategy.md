@@ -14,7 +14,7 @@ Example:
 
 This is the version reported by:
 
-- `npx ouro.bot -v`
+- `npx ouro.bot@latest -v`
 - `ouro -v`
 - `ouro status`
 
@@ -78,7 +78,7 @@ then `ouro up` replaces the stale daemon instead of leaving launcher and daemon 
 
 That keeps:
 
-- `npx ouro.bot`
+- `npx ouro.bot@latest`
 - `ouro`
 - daemon behavior
 
@@ -139,7 +139,7 @@ For humans, the desired update path is:
 
 ```bash
 cd ~
-npx ouro.bot up
+npx ouro.bot@latest up
 ouro status
 ```
 
