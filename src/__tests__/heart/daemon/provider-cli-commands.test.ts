@@ -1210,6 +1210,45 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.outward.provider).toBe("anthropic")
   })
 
+  it("ouro auth lands on a shared completion board in TTY mode", async () => {
+    emitTestEvent("provider cli auth tty board")
+    const bundlesRoot = makeTempDir("provider-cli-auth-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-auth-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      runAuthFlow: async (input) => {
+        input.onProgress?.("starting minimax credential entry...")
+        input.onProgress?.("storing minimax credentials in Slugger's vault...")
+        return {
+          agentName: "Slugger",
+          provider: "minimax",
+          message: "authenticated Slugger with minimax",
+          credentialPath: "providers/minimax",
+          credentials: { apiKey: "new-minimax-secret" },
+        }
+      },
+    })
+
+    const result = await runOuroCli([
+      "auth",
+      "--agent",
+      "Slugger",
+      "--provider",
+      "minimax",
+    ], deps)
+
+    expect(result).toContain("Provider auth")
+    expect(result).toContain("Slugger can now use minimax when this lane is selected.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+    expect(result).toContain("secret was not printed")
+  })
+
   it("vault unlock stores local unlock material and probes the agent vault", async () => {
     emitTestEvent("provider cli vault unlock")
     const bundlesRoot = makeTempDir("provider-cli-vault-unlock-bundles")
@@ -1754,6 +1793,62 @@ describe("provider CLI command execution", () => {
     expect(mockVaultDeps.rawSecrets.size).toBe(0)
   })
 
+  it("vault replace lands on a shared TTY repair board instead of a raw transcript", async () => {
+    emitTestEvent("provider cli vault replace tty board")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--server",
+      "https://vault.example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      promptSecret: async () => "Chosen-replacement-secret1!",
+    }))
+
+    expect(result).toContain("Credential vault")
+    expect(result).toContain("Slugger now has a fresh empty vault.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+    expect(result).toContain("secret was not printed")
+  })
+
+  it("vault replace reports bundle sync when the repaired bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli vault replace bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-vault-replace-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-replace-sync-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+
+    const result = await runOuroCli([
+      "vault",
+      "replace",
+      "--agent",
+      "Slugger",
+      "--server",
+      "https://vault.example.com",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      isTTY: true,
+      stdoutColumns: 78,
+      promptSecret: async () => "Chosen-replacement-secret1!",
+    }))
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
+  })
+
   it("vault replace repairs prior generated replacement emails instead of compounding them", async () => {
     emitTestEvent("provider cli vault replace stable default")
     const bundlesRoot = makeTempDir("provider-cli-vault-replace-stable-bundles")
@@ -1989,6 +2084,50 @@ describe("provider CLI command execution", () => {
     })
     expect(runtime.config).not.toHaveProperty("providers")
     expect(runtime.config).not.toHaveProperty("vault")
+  })
+
+  it("vault recover reports bundle sync when the recovered bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli vault recover bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-vault-recover-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-recover-sync-home")
+    const sourceDir = makeTempDir("provider-cli-vault-recover-sync-source")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+    writeMachineIdentity(homeDir, "machine_recover_sync")
+
+    const legacySecretsPath = path.join(sourceDir, "legacy-secrets.json")
+    fs.writeFileSync(legacySecretsPath, JSON.stringify({
+      providers: {
+        minimax: { apiKey: "mini-secret", model: "MiniMax-M2.5" },
+      },
+      vault: { masterPassword: "" },
+    }), "utf-8")
+
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async () => "Chosen-recovery-secret1!",
+    })
+    const result = await runOuroCli([
+      "vault",
+      "recover",
+      "--agent",
+      "Slugger",
+      "--from",
+      legacySecretsPath,
+      "--server",
+      "https://vault.example.com",
+      "--store",
+      "plaintext-file",
+    ], deps)
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
   })
 
 	  it("vault recover covers empty imports, prompted secrets, failures, and guards", async () => {
@@ -2533,6 +2672,25 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("Portable web search inside Ouro")
   })
 
+  it("renders a shared TTY completion board for Perplexity", async () => {
+    emitTestEvent("provider cli connect perplexity tty completion")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-complete-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-complete-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptSecret: async () => "pplx-secret",
+    }))
+
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("Perplexity search is ready to travel with Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+  })
+
   it("connect Perplexity keeps progress visible when the vault write path fails", async () => {
     emitTestEvent("provider cli connect perplexity failure")
     const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-failure-bundles")
@@ -2622,6 +2780,39 @@ describe("provider CLI command execution", () => {
     }
     expect(agentJson.senses?.bluebubbles?.enabled).toBe(true)
     expect(agentJson.senses?.bluebubbles?.preserved).toBe("yes")
+  })
+
+  it("renders a richer TTY onboarding board and shared completion board for BlueBubbles", async () => {
+    emitTestEvent("provider cli connect bluebubbles tty boards")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_tty")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect BlueBubbles")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("BlueBubbles is attached on this machine for Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
   })
 
   it("guards connect flows that cannot persist credentials", async () => {
@@ -3867,6 +4058,32 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("✗ verifying Perplexity search")
   })
 
+  it("renders a shared TTY failure board when Perplexity live verification fails", async () => {
+    emitTestEvent("provider cli connect perplexity tty verify failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-perplexity-tty-verify-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-perplexity-tty-verify-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      error: { message: "bad api key" },
+    }, {
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+    }))
+
+    const result = await runOuroCli(["connect", "perplexity", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptSecret: async () => "pplx-secret",
+    }))
+
+    expect(result).toContain("Capability needs attention")
+    expect(result).toContain("Perplexity search was saved, but the live check failed.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+  })
+
   it("does not claim embeddings are connected when the live check fails", async () => {
     emitTestEvent("provider cli connect embeddings verify failure")
     const bundlesRoot = makeTempDir("provider-cli-connect-embeddings-verify-failure-bundles")
@@ -4014,6 +4231,66 @@ describe("provider CLI command execution", () => {
     expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
       teams: { enabled: true },
     })
+  })
+
+  it("renders a richer TTY onboarding board and shared completion board for Teams", async () => {
+    emitTestEvent("provider cli connect teams tty boards")
+    const bundlesRoot = makeTempDir("provider-cli-connect-teams-tty-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-teams-tty-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const answers = [
+      "teams-client-id",
+      "teams-tenant-id",
+      "",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      isTTY: true,
+      stdoutColumns: 88,
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "teams-secret",
+    })
+    const result = await runOuroCli(["connect", "teams", "--agent", "Slugger"], deps)
+    const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
+
+    expect(output).toContain("Connect Teams")
+    expect(output).toContain("Unlocks")
+    expect(output).toContain("What you need")
+    expect(output).toContain("Where it lives")
+    expect(result).toContain("Capability connected")
+    expect(result).toContain("Teams is ready for Slugger.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
+  })
+
+  it("reports bundle sync from Teams onboarding when the bundle is sync-enabled", async () => {
+    emitTestEvent("provider cli connect teams bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-connect-teams-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-teams-sync-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+
+    const answers = [
+      "teams-client-id",
+      "teams-tenant-id",
+      "",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "teams-secret",
+    })
+    const result = await runOuroCli(["connect", "teams", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["log", "--oneline", "-1"], {
+      cwd: agentRoot(bundlesRoot, "Slugger"),
+      stdio: "pipe",
+    }).toString()).toContain("sync: post-turn update")
   })
 
   it("rejects blank required Teams fields before storing anything", async () => {

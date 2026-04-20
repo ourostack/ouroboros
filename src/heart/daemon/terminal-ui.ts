@@ -38,6 +38,30 @@ export interface RenderTerminalBoardOptions {
   sections?: TerminalSection[]
   actions?: TerminalAction[]
   prompt?: string
+  suppressEvent?: boolean
+}
+
+export interface TerminalOperationCurrentStep {
+  label: string
+  detailLines?: string[]
+}
+
+export interface TerminalOperationStep {
+  label: string
+  status: "done" | "active" | "pending" | "failed"
+  detail?: string
+}
+
+export interface RenderTerminalOperationOptions {
+  isTTY: boolean
+  columns?: number
+  masthead?: Omit<TerminalMastheadOptions, "isTTY" | "columns">
+  title: string
+  summary?: string
+  currentStep?: TerminalOperationCurrentStep
+  steps?: TerminalOperationStep[]
+  prompt?: string
+  suppressEvent?: boolean
 }
 
 function color(text: string, tone: string, bold = false): string {
@@ -118,11 +142,14 @@ function renderPanelPlain(title: string, lines: string[]): string[] {
 function mastheadArt(columns?: number): string[] {
   if ((columns ?? 88) >= 74) {
     return [
-      "  ____  _   _ ____   ___  ____   ___  ____   ___  ____",
-      " / __ \\| | | |  _ \\ / _ \\|  _ \\ / _ \\| __ ) / _ \\|  _ \\",
-      "| |  | | | | | |_) | | | | |_) | | | |  _ \\| | | | |_) |",
-      "| |__| | |_| |  _ <| |_| |  _ <| |_| | |_) | |_| |  _ <",
-      " \\____/ \\___/|_| \\_\\\\___/|_| \\_\\\\___/|____/ \\___/|_| \\_\\",
+      "              .----------------------------.",
+      "          .--'    O U R O B O R O S        '--.",
+      "        .'       .--------------------.       '.",
+      "       /        /  .--------------.   \\        \\",
+      "       \\        \\  '--------------'   /        /",
+      "        '.       '--------------------'      .'",
+      "          '--._                          _.--'",
+      "               '------------------------'",
     ]
   }
   return [
@@ -133,10 +160,11 @@ function mastheadArt(columns?: number): string[] {
 
 export function renderOuroMasthead(options: TerminalMastheadOptions): string {
   const lines = mastheadArt(options.columns)
+  const subtitle = options.subtitle ?? "the house wakes when called"
   const branded = [
     ...lines,
     "OUROBOROS",
-    ...(options.subtitle ? [options.subtitle] : []),
+    subtitle,
   ]
   if (!options.isTTY) {
     return `${branded.join("\n")}\n`
@@ -144,7 +172,7 @@ export function renderOuroMasthead(options: TerminalMastheadOptions): string {
   const ttyLines = [
     ...lines.map((line, index) => color(line, index < 2 ? GLOW : SCALE, true)),
     color("OUROBOROS", BONE, true),
-    ...(options.subtitle ? [color(options.subtitle, MIST)] : []),
+    color(subtitle, MIST),
   ]
   return `${ttyLines.join("\n")}\n`
 }
@@ -160,17 +188,19 @@ function renderActionLine(action: TerminalAction): string {
 }
 
 export function renderTerminalBoard(options: RenderTerminalBoardOptions): string {
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.terminal_board_rendered",
-    message: "rendered shared terminal board",
-    meta: {
-      title: options.title,
-      sections: options.sections?.length ?? 0,
-      actions: options.actions?.length ?? 0,
-      tty: options.isTTY,
-    },
-  })
+  if (!options.suppressEvent) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.terminal_board_rendered",
+      message: "rendered shared terminal board",
+      meta: {
+        title: options.title,
+        sections: options.sections?.length ?? 0,
+        actions: options.actions?.length ?? 0,
+        tty: options.isTTY,
+      },
+    })
+  }
 
   const width = boardWidth(options.columns)
   const blocks: string[] = []
@@ -206,4 +236,49 @@ export function renderTerminalBoard(options: RenderTerminalBoardOptions): string
   }
 
   return `${blocks.join("\n\n")}\n`
+}
+
+function formatOperationStep(step: TerminalOperationStep): string {
+  const marker = step.status === "done"
+    ? "✓"
+    : step.status === "failed"
+      ? "✗"
+      : step.status === "active"
+        ? "→"
+        : "○"
+  const detail = step.detail ? ` — ${step.detail}` : ""
+  return `${marker} ${step.label}${detail}`
+}
+
+export function renderTerminalOperation(options: RenderTerminalOperationOptions): string {
+  const steps = options.steps ?? []
+  const currentLines = options.currentStep
+    ? [
+        options.currentStep.label,
+        ...(options.currentStep.detailLines ?? []),
+      ]
+    : ["Standing by."]
+  const progressLines = steps.length > 0
+    ? steps.map((step) => formatOperationStep(step))
+    : ["No active steps yet."]
+
+  return renderTerminalBoard({
+    isTTY: options.isTTY,
+    columns: options.columns,
+    masthead: options.masthead,
+    title: options.title,
+    summary: options.summary,
+    sections: [
+      {
+        title: "Right now",
+        lines: currentLines,
+      },
+      {
+        title: "Progress",
+        lines: progressLines,
+      },
+    ],
+    prompt: options.prompt,
+    suppressEvent: options.suppressEvent,
+  })
 }

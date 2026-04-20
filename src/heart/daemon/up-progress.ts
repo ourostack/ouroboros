@@ -12,6 +12,7 @@
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderTerminalOperation, type TerminalOperationStep } from "./terminal-ui"
 
 // ── ANSI constants (shared with startup-tui.ts pattern) ──
 
@@ -47,6 +48,7 @@ function splitDetailLines(detail: string | undefined): string[] {
 export interface UpProgressOptions {
   write?: (text: string) => void
   isTTY?: boolean
+  columns?: number
   now?: () => number
   autoRender?: boolean
   renderIntervalMs?: number
@@ -61,6 +63,7 @@ export interface UpProgressOptions {
 export class UpProgress {
   private readonly write: (text: string) => void
   private readonly isTTY: boolean
+  private readonly columns: number | undefined
   private readonly now: () => number
   private readonly autoRender: boolean
   private readonly renderIntervalMs: number
@@ -80,6 +83,7 @@ export class UpProgress {
     this.write = options?.write ?? ((text: string) => process.stdout.write(text))
     /* v8 ignore next -- thin wrapper: real isTTY check injected for testability @preserve */
     this.isTTY = options?.isTTY ?? (process.stdout.isTTY === true)
+    this.columns = options?.columns
     /* v8 ignore next -- thin wrapper: real Date.now injected for testability @preserve */
     this.now = options?.now ?? (() => Date.now())
     this.autoRender = options?.autoRender ?? false
@@ -226,29 +230,7 @@ export class UpProgress {
       return ""
     }
 
-    const lines: string[] = []
-
-    // Completed phases
-    for (const phase of this.completed) {
-      const detailStr = phase.detail ? ` ${DIM}\u2014 ${phase.detail}${RESET}` : ""
-      if (phase.status === "failure") {
-        lines.push(`  ${RED}\u2717${RESET} ${phase.label}${detailStr}`)
-      } else {
-        lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
-      }
-    }
-
-    // Current phase with spinner
-    if (this.currentPhase) {
-      const elapsed = now - this.currentPhase.startedAt
-      const elapsedSec = (elapsed / 1000).toFixed(1)
-      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
-      const spinner = SPINNER_FRAMES[frameIndex]
-      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${RESET}`)
-      for (const detailLine of splitDetailLines(this.currentPhase.detail)) {
-        lines.push(`    ${DIM}${detailLine}${RESET}`)
-      }
-    }
+    const lines = this.renderLines(now)
 
     let output = ""
     if (this.prevLineCount > 0) {
@@ -306,9 +288,76 @@ export class UpProgress {
 
   private flushRender(): void {
     const output = this.render(this.now())
-    if (output) {
-      this.write(output)
+    this.write(output)
+  }
+
+  private renderLines(now: number): string[] {
+    if (this.eventScope === "up") {
+      return this.renderUpScreen(now)
     }
+
+    const lines: string[] = []
+
+    for (const phase of this.completed) {
+      const detailStr = phase.detail ? ` ${DIM}\u2014 ${phase.detail}${RESET}` : ""
+      if (phase.status === "failure") {
+        lines.push(`  ${RED}\u2717${RESET} ${phase.label}${detailStr}`)
+      } else {
+        lines.push(`  ${GREEN}\u2713${RESET} ${phase.label}${detailStr}`)
+      }
+    }
+
+    if (this.currentPhase) {
+      const elapsed = now - this.currentPhase.startedAt
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      lines.push(`  ${BOLD}${spinner}${RESET} ${this.currentPhase.label} ${DIM}(${elapsedSec}s)${RESET}`)
+      for (const detailLine of splitDetailLines(this.currentPhase.detail)) {
+        lines.push(`    ${DIM}${detailLine}${RESET}`)
+      }
+    }
+
+    return lines
+  }
+
+  private renderUpScreen(now: number): string[] {
+    const steps: TerminalOperationStep[] = this.completed.map((phase) => ({
+      label: phase.label,
+      status: phase.status === "failure" ? "failed" : "done",
+      detail: phase.detail,
+    }))
+
+    let currentStepLabel = "Standing by."
+    let currentStepDetails: string[] = []
+    if (this.currentPhase) {
+      const elapsed = now - this.currentPhase.startedAt
+      const elapsedSec = (elapsed / 1000).toFixed(1)
+      const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
+      const spinner = SPINNER_FRAMES[frameIndex]
+      currentStepLabel = `${spinner} ${this.currentPhase.label} (${elapsedSec}s)`
+      currentStepDetails = splitDetailLines(this.currentPhase.detail)
+      steps.push({
+        label: this.currentPhase.label,
+        status: "active",
+      })
+    }
+
+    return renderTerminalOperation({
+      isTTY: true,
+      columns: this.columns,
+      masthead: {
+        subtitle: "Preparing the house.",
+      },
+      title: "Preparing the house",
+      summary: "Ouro is warming the background systems and checking what still needs care before anyone steps in.",
+      currentStep: {
+        label: currentStepLabel,
+        detailLines: currentStepDetails,
+      },
+      steps,
+      suppressEvent: true,
+    }).trimEnd().split("\n")
   }
 }
 

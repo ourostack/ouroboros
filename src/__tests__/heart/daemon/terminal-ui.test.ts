@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   padAnsi,
   renderOuroMasthead,
+  renderTerminalOperation,
   renderTerminalBoard,
   formatActionActorLabel,
   wrapPlain,
@@ -83,6 +84,88 @@ describe("terminal ui", () => {
     expect(output).toContain("╭")
   })
 
+  it("renders a shared operation deck with a live step, completed steps, and queued path", () => {
+    emitTestEvent("terminal ui operation deck rendering")
+
+    const output = renderTerminalOperation({
+      isTTY: true,
+      columns: 76,
+      masthead: {
+        subtitle: "Preparing the house.",
+      },
+      title: "Preparing the house",
+      summary: "Ouro is warming the background systems and checking what still needs care before anyone steps in.",
+      currentStep: {
+        label: "provider checks",
+        detailLines: [
+          "slugger: checking openai-codex",
+          "ouroboros: waiting for vault unlock",
+        ],
+      },
+      steps: [
+        { label: "update check", status: "done", detail: "up to date" },
+        { label: "system setup", status: "done" },
+        { label: "provider checks", status: "active" },
+        { label: "vault unlock", status: "failed", detail: "still locked" },
+        { label: "daemon handshake", status: "pending" },
+      ],
+    })
+
+    expect(output).toContain("Preparing the house")
+    expect(output).toContain("Right now")
+    expect(output).toContain("Progress")
+    expect(output).toContain("slugger: checking openai-codex")
+    expect(output).toContain("vault unlock")
+    expect(output).toContain("daemon handshake")
+    expect(output).toContain("╭")
+  })
+
+  it("renders operation fallbacks when nothing is active yet", () => {
+    emitTestEvent("terminal ui operation fallbacks")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Waiting for the house",
+    })
+
+    expect(output).toContain("Waiting for the house")
+    expect(output).toContain("Standing by.")
+    expect(output).toContain("No active steps yet.")
+    expect(output).not.toContain("\x1b[")
+  })
+
+  it("renders an operation step even when the current step has no detail lines", () => {
+    emitTestEvent("terminal ui operation current step without detail")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Still moving",
+      currentStep: {
+        label: "provider checks",
+      },
+      steps: [
+        { label: "provider checks", status: "active" },
+      ],
+    })
+
+    expect(output).toContain("provider checks")
+    expect(output).toContain("→ provider checks")
+    expect(output).not.toContain("\x1b[")
+  })
+
+  it("treats an explicitly empty step list as no active steps yet", () => {
+    emitTestEvent("terminal ui operation explicit empty steps")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      title: "Quiet house",
+      steps: [],
+    })
+
+    expect(output).toContain("Quiet house")
+    expect(output).toContain("No active steps yet.")
+  })
+
   it("keeps non-TTY boards free of ANSI escapes", () => {
     emitTestEvent("terminal ui plain board rendering")
 
@@ -98,7 +181,7 @@ describe("terminal ui", () => {
       ],
       actions: [
         {
-          label: "Bring the system online",
+          label: "Prepare the house",
           actor: "agent-runnable",
           command: "ouro up",
           recommended: true,
@@ -108,7 +191,7 @@ describe("terminal ui", () => {
     })
 
     expect(output).toContain("Ouro home")
-    expect(output).toContain("Bring the system online")
+    expect(output).toContain("Prepare the house")
     expect(output).not.toContain("\x1b[")
   })
 
@@ -126,6 +209,7 @@ describe("terminal ui", () => {
     })
 
     expect(masthead).toContain("O U R O B O R O S")
+    expect(masthead).toContain("the house wakes when called")
     expect(board).toContain("Quick check")
     expect(board).not.toContain("Actions")
   })

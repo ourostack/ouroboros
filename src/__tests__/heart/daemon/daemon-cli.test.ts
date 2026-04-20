@@ -1500,6 +1500,54 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("running")
   })
 
+  it("renders tty status as a house-status control deck", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=1\tsenses=0\thealth=ok",
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            version: PACKAGE_VERSION.version,
+            lastUpdated: "2026-04-19T20:10:00.000Z",
+            workerCount: 1,
+            senseCount: 0,
+            health: "ok",
+            outlookUrl: "http://127.0.0.1:4310/outlook",
+            entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
+            mode: "production",
+          },
+          senses: [],
+          workers: [
+            {
+              agent: "slugger",
+              worker: "inner-dialog",
+              status: "running",
+              pid: null,
+              restartCount: 0,
+            },
+          ],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      isTTY: true,
+      stdoutColumns: 82,
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toContain("House status")
+    expect(result).toContain("What is awake, resting, or asking for care.")
+    expect(result).toContain("inner-dialog")
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("House status"))
+  })
+
   it("surfaces the Outlook URL from daemon status and can fetch JSON from the same seam", async () => {
     const fetchImpl = vi.fn(async (target: string | URL | Request) => ({
       ok: true,
@@ -3132,7 +3180,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
       expect(prompt).toContain("OUROBOROS")
       expect(prompt).toContain("Talk to ouroboros")
       expect(prompt).toContain("Talk to slugger")
-      expect(prompt).toContain("Bring the system online")
+      expect(prompt).toContain("Prepare the house")
       return "2"
     })
     const deps = {
@@ -3411,7 +3459,8 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     const result = await runOuroCli([], deps)
 
-    expect(result).toContain("hatched Sprout")
+    expect(result).toContain("Hatch complete")
+    expect(result).toContain("Sprout is ready for first contact.")
     expect(runHatchFlow).toHaveBeenCalled()
   })
 
@@ -5193,6 +5242,43 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(runHatchFlow).toHaveBeenCalled()
     expect(result).toContain("hatched ExplicitBot")
     expect(result).not.toContain("vault unlock secret")
+  })
+
+  it("renders a shared hatch completion board in TTY mode for explicit hatch flows", async () => {
+    const runHatchFlow = vi.fn(async () => ({
+      bundleRoot: "/tmp/AgentBundles/ExplicitBot.ouro",
+      selectedIdentity: "python.md",
+    }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 33 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      registerOuroBundleType: vi.fn(async () => ({ attempted: true, registered: true })),
+      runHatchFlow,
+      isTTY: true,
+      stdoutColumns: 78,
+    }
+
+    const result = await runOuroCli([
+      "hatch",
+      "--agent",
+      "ExplicitBot",
+      "--human",
+      "Ari",
+      "--provider",
+      "anthropic",
+      "--setup-token",
+      "sk-ant-oat01-test-token",
+    ], deps)
+
+    expect(result).toContain("Hatch complete")
+    expect(result).toContain("ExplicitBot is ready for first contact.")
+    expect(result).toContain("What changed")
+    expect(result).toContain("Next moves")
   })
 
   it("routes bare ouro hatch through specialist when no explicit args given", async () => {

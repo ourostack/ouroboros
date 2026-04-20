@@ -185,6 +185,30 @@ describe("UpProgress", () => {
       expect(output).toContain("failed")
     })
 
+    it("keeps command-scoped tty failures on the compact checklist renderer", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true, eventScope: "command", commandName: "connect" })
+
+      progress.startPhase("saving secret")
+      progress.failPhase("saving secret", "denied")
+
+      const output = progress.render(1000)
+      expect(output).toContain("\u2717")
+      expect(output).toContain("saving secret")
+      expect(output).not.toContain("Preparing the house")
+    })
+
+    it("keeps command-scoped tty successes on the compact checklist renderer", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true, eventScope: "command", commandName: "connect" })
+
+      progress.startPhase("saving secret")
+      progress.completePhase("saving secret")
+
+      const output = progress.render(1000)
+      expect(output).toContain("\u2713")
+      expect(output).toContain("saving secret")
+      expect(output).not.toContain("Preparing the house")
+    })
+
     it("renders failed phases without detail in default event scope", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
@@ -455,8 +479,11 @@ describe("UpProgress", () => {
       // Complete c and render again — now only 3 completed lines, no spinner
       progress.completePhase("c", "done")
       const output = progress.render(2000)
-      // cursor-up should reference previous line count
-      expect(output).toContain("\x1b[3A")
+      // cursor-up should reference the previous render height, whatever the
+      // current screen language chooses to be.
+      const match = output.match(/\x1b\[(\d+)A/)
+      expect(match).not.toBeNull()
+      expect(Number(match?.[1] ?? 0)).toBeGreaterThan(0)
     })
 
     it("end() with an active phase in TTY mode writes final output", () => {

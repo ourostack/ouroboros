@@ -29,7 +29,7 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Start the ouro daemon. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
+    description: "Prepare the house: start the background runtime, refresh what this machine needs, and surface anything still asking for care. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
     usage: "ouro [up] [--no-repair]",
     example: "ouro up --no-repair",
   },
@@ -47,7 +47,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   status: {
     category: "Lifecycle",
-    description: "Show daemon status",
+    description: "Show the house status",
     usage: "ouro status",
     example: "ouro status",
   },
@@ -289,7 +289,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro auth switch --provider minimax",
   },
   "connect perplexity": {
-    description: "Connect Perplexity search for this agent",
+    description: "Connect portable Perplexity search that travels with this agent",
     usage: "ouro connect perplexity [--agent <name>]",
     example: "ouro connect perplexity",
   },
@@ -299,17 +299,17 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect providers",
   },
   "connect embeddings": {
-    description: "Connect memory embeddings for this agent",
+    description: "Connect portable memory embeddings that travel with this agent",
     usage: "ouro connect embeddings [--agent <name>]",
     example: "ouro connect embeddings",
   },
   "connect teams": {
-    description: "Connect Microsoft Teams credentials and enable the Teams sense",
+    description: "Connect portable Microsoft Teams credentials and enable the Teams sense",
     usage: "ouro connect teams [--agent <name>]",
     example: "ouro connect teams",
   },
   "connect bluebubbles": {
-    description: "Attach BlueBubbles iMessage to this machine only",
+    description: "Attach BlueBubbles iMessage to this machine only; it does not travel with the agent",
     usage: "ouro connect bluebubbles [--agent <name>]",
     example: "ouro connect bluebubbles",
   },

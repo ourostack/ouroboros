@@ -141,6 +141,18 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
+  it("describes `up` as preparing the house rather than vaguely starting the daemon", () => {
+    expect(COMMAND_REGISTRY["up"].description).toContain("Prepare the house")
+  })
+
+  it("describes connect subcommands in terms of what travels with the agent versus this machine", () => {
+    expect(COMMAND_REGISTRY["connect"].description).toContain("guided bay")
+    expect(getCommandHelp("connect perplexity")).toContain("portable")
+    expect(getCommandHelp("connect embeddings")).toContain("portable")
+    expect(getCommandHelp("connect teams")).toContain("portable")
+    expect(getCommandHelp("connect bluebubbles")).toContain("this machine only")
+  })
+
   it("includes usage for known command", () => {
     const result = getCommandHelp("task")!
     expect(result).toContain(COMMAND_REGISTRY["task"].usage)
