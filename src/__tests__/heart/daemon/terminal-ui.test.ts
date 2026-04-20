@@ -32,6 +32,21 @@ describe("terminal ui", () => {
     expect(output).not.toContain("\x1b[")
   })
 
+  it("renders the wide masthead as a correctly spelled classic wordmark", () => {
+    emitTestEvent("terminal ui classic masthead")
+
+    const output = renderOuroMasthead({
+      isTTY: false,
+      columns: 80,
+    })
+
+    expect(output).toContain("___    _   _")
+    expect(output).toContain("|____/ ")
+    expect(output).toContain("OUROBOROS")
+    expect(output).not.toContain("OUROROBOR")
+    expect(output).not.toContain(".----------------------------.")
+  })
+
   it("renders a framed board with sections, wrapped copy, and actor-labelled actions", () => {
     emitTestEvent("terminal ui board rendering")
 

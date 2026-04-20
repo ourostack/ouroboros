@@ -138,7 +138,7 @@ import {
   resolveNamedAgentSelection,
   resolveOuroHomeAction,
 } from "./human-command-screens"
-import { renderOuroMasthead, type TerminalSection } from "./terminal-ui"
+import { type TerminalSection } from "./terminal-ui"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
@@ -4594,13 +4594,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const linkedVersionBeforeUp = deps.getCurrentCliVersion?.() ?? null
 
     const outputIsTTY = deps.isTTY ?? process.stdout.isTTY === true
-    if (outputIsTTY && deps.writeRaw) {
-      deps.writeRaw(`${renderOuroMasthead({
-        isTTY: true,
-        columns: deps.stdoutColumns ?? process.stdout.columns,
-        subtitle: "Preparing the house.",
-      }).trimEnd()}\n\n`)
-    }
     const progress = new UpProgress({
       write: deps.writeRaw ?? deps.writeStdout,
       isTTY: outputIsTTY,

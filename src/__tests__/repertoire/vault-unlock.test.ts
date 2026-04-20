@@ -378,6 +378,58 @@ describe("vault unlock local stores", () => {
       .toThrow("failed to store vault unlock secret in macOS Keychain")
   })
 
+  it("reuses legacy macOS keychain accounts and rewrites the canonical account", () => {
+    emitTestEvent("vault unlock macos alias fallback")
+    const canonicalConfig = {
+      ...config,
+      serverUrl: "https://vault.ouroboros.bot",
+    }
+    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const spawn = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("security")
+      if (args[0] === "find-generic-password") {
+        const account = String(args[4])
+        if (account === primaryAccount) return fail("The specified item could not be found in the keychain.")
+        if (account === legacyAccount) return ok("legacy-unlock-material\n")
+      }
+      if (args[0] === "add-generic-password") return ok()
+      return fail("unexpected command")
+    })
+
+    expect(readVaultUnlockSecret(canonicalConfig, { platform: "darwin", spawnSync: spawn as VaultUnlockDeps["spawnSync"] }).secret)
+      .toBe("legacy-unlock-material")
+
+    const lookupAccounts = spawn.mock.calls
+      .filter((call: unknown[]) => Array.isArray(call[1]) && (call[1] as string[])[0] === "find-generic-password")
+      .map((call: unknown[]) => String((call[1] as string[])[4]))
+    expect(lookupAccounts).toEqual([primaryAccount, legacyAccount])
+    expect(spawn).toHaveBeenCalledWith(
+      "security",
+      expect.arrayContaining(["add-generic-password", "-a", primaryAccount, "-w", "legacy-unlock-material"]),
+      expect.anything(),
+    )
+  })
+
+  it("surfaces macOS keychain read failures instead of relabeling them as a locked vault", () => {
+    emitTestEvent("vault unlock macos read failure")
+    const deniedRead = vi.fn(() => fail("User interaction is not allowed."))
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "darwin",
+      spawnSync: deniedRead as VaultUnlockDeps["spawnSync"],
+    })).toThrow("failed to read vault unlock secret from macOS Keychain: User interaction is not allowed.")
+
+    expect(getVaultUnlockStatus(config, {
+      platform: "darwin",
+      spawnSync: deniedRead as VaultUnlockDeps["spawnSync"],
+    })).toMatchObject({
+      configured: false,
+      stored: false,
+      error: "failed to read vault unlock secret from macOS Keychain: User interaction is not allowed.",
+    })
+  })
+
   it("uses Linux Secret Service commands for read and write", () => {
     emitTestEvent("vault unlock linux commands")
     const spawn = vi.fn((command: string, args: readonly string[], options: { input?: string } = {}) => {

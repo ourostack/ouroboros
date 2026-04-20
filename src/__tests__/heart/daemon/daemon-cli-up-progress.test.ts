@@ -91,7 +91,7 @@ describe("ouro up: UpProgress integration", () => {
     }))
   })
 
-  it("greets tty ouro up with the preparing-the-house masthead copy", async () => {
+  it("lets the shared UpProgress TUI own the tty masthead render path", async () => {
     const writeRaw = vi.fn()
     const deps = makeDeps({
       isTTY: true,
@@ -100,9 +100,7 @@ describe("ouro up: UpProgress integration", () => {
 
     await runOuroCli(["up"], deps)
 
-    const written = writeRaw.mock.calls.map((call: unknown[]) => String(call[0])).join("")
-    expect(written).toContain("Preparing the house.")
-    expect(written).not.toContain("Bringing the house online.")
+    expect(writeRaw).not.toHaveBeenCalled()
   })
 
   it("calls startPhase('update check') before update check", async () => {

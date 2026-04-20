@@ -10,6 +10,15 @@ const BONE = "\x1b[38;2;237;242;238m"
 const MIST = "\x1b[38;2;154;174;159m"
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
+const MASTHEAD_WORD = "OUROBOROS"
+
+const CLASSIC_WORDMARK_GLYPHS: Record<string, string[]> = {
+  O: ["  ___  ", " / _ \\ ", "| | | |", "| |_| |", " \\___/ "],
+  U: [" _   _ ", "| | | |", "| | | |", "| |_| |", " \\___/ "],
+  R: [" ____  ", "|  _ \\ ", "| |_) |", "|  _ < ", "|_| \\_\\"],
+  B: [" ____  ", "| __ ) ", "|  _ \\ ", "| |_) |", "|____/ "],
+  S: [" ____  ", "/ ___| ", "\\___ \\ ", " ___) |", "|____/ "],
+}
 
 export interface TerminalMastheadOptions {
   isTTY: boolean
@@ -141,16 +150,15 @@ function renderPanelPlain(title: string, lines: string[]): string[] {
 
 function mastheadArt(columns?: number): string[] {
   if ((columns ?? 88) >= 74) {
-    return [
-      "              .----------------------------.",
-      "          .--'    O U R O B O R O S        '--.",
-      "        .'       .--------------------.       '.",
-      "       /        /  .--------------.   \\        \\",
-      "       \\        \\  '--------------'   /        /",
-      "        '.       '--------------------'      .'",
-      "          '--._                          _.--'",
-      "               '------------------------'",
-    ]
+    const rows = Array.from({ length: 5 }, () => [] as string[])
+    for (const letter of MASTHEAD_WORD) {
+      const glyph = CLASSIC_WORDMARK_GLYPHS[letter]
+      if (!glyph) continue
+      for (const [index, line] of glyph.entries()) {
+        rows[index].push(line)
+      }
+    }
+    return rows.map((row) => row.join(" "))
   }
   return [
     "  O U R O B O R O S",
@@ -163,7 +171,7 @@ export function renderOuroMasthead(options: TerminalMastheadOptions): string {
   const subtitle = options.subtitle ?? "the house wakes when called"
   const branded = [
     ...lines,
-    "OUROBOROS",
+    MASTHEAD_WORD,
     subtitle,
   ]
   if (!options.isTTY) {
@@ -171,7 +179,7 @@ export function renderOuroMasthead(options: TerminalMastheadOptions): string {
   }
   const ttyLines = [
     ...lines.map((line, index) => color(line, index < 2 ? GLOW : SCALE, true)),
-    color("OUROBOROS", BONE, true),
+    color(MASTHEAD_WORD, BONE, true),
     color(subtitle, MIST),
   ]
   return `${ttyLines.join("\n")}\n`

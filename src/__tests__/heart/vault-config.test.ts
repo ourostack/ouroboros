@@ -24,6 +24,17 @@ describe("resolveVaultConfig", () => {
     expect(result.serverUrl).toBe("https://custom.vault.example")
   })
 
+  it("normalizes known legacy vault hosts and trailing slashes to the canonical host", () => {
+    const shortHost = resolveVaultConfig("ouroboros", { email: "x@y.com", serverUrl: "https://vault.ouro.bot/" })
+    expect(shortHost.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
+
+    const legacyAzureHost = resolveVaultConfig("ouroboros", {
+      email: "x@y.com",
+      serverUrl: "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
+    })
+    expect(legacyAzureHost.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
+  })
+
   it("falls back to defaults for missing fields", () => {
     const result = resolveVaultConfig("slugger", { email: "slugger@ouro.bot" })
     expect(result.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
