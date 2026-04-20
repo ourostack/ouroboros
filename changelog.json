@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.436",
+      "changes": [
+        "Distinct live provider pings now run in parallel during startup, repair, and connect-bay readiness checks, so the CLI stops making humans wait for one selected provider/model lane to finish before it even starts checking the next one.",
+        "The connect bay and provider-health surfaces still keep the same truthful live verification path and the same dedupe behavior when both lanes share one provider/model/revision, but healthy multi-provider setups now reach a ready state sooner.",
+        "New agent-config coverage locks in the concurrency contract directly: when two different provider lanes need live checks, the second ping must start before the first one finishes, so this speedup cannot silently regress back into serialized health checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.435",
       "changes": [
         "Structured agent-vault items like `providers/*` and `runtime/*` now take a direct Bitwarden `bw get item` lookup fast path before falling back to filtered search, so connect, auth, and runtime-config reads spend less time holding the vault lane for work that already has an exact item name.",
