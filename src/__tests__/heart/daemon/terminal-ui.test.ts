@@ -3,6 +3,7 @@ import * as nervesRuntime from "../../../nerves/runtime"
 import {
   padAnsi,
   renderOuroMasthead,
+  renderOverwriteFrame,
   renderTerminalOperation,
   renderTerminalBoard,
   formatActionActorLabel,
@@ -72,6 +73,18 @@ describe("terminal ui", () => {
 
     expect(output).toContain("OUROBOROS")
     expect(output).toContain("\x1b[")
+    expect(output).not.toContain("___    _   _")
+  })
+
+  it("falls back to the compact tty masthead when the wide art would overflow", () => {
+    emitTestEvent("terminal ui masthead fit check")
+
+    const output = renderOuroMasthead({
+      isTTY: true,
+      columns: 70,
+    })
+
+    expect(output).toContain("OUROBOROS")
     expect(output).not.toContain("___    _   _")
   })
 
@@ -166,12 +179,12 @@ describe("terminal ui", () => {
     })
 
     expect(output).toContain("Starting Ouro")
-    expect(output).toContain("Right now")
-    expect(output).toContain("Progress")
+    expect(output).toContain("Checklist")
+    expect(output).toContain("Current work")
     expect(output).toContain("slugger: checking openai-codex")
     expect(output).toContain("vault unlock")
     expect(output).toContain("daemon handshake")
-    expect(output).toContain("╭")
+    expect(output).not.toContain("Overview")
   })
 
   it("renders operation fallbacks when nothing is active yet", () => {
@@ -186,6 +199,50 @@ describe("terminal ui", () => {
     expect(output).toContain("Standing by.")
     expect(output).toContain("No active steps yet.")
     expect(output).not.toContain("\x1b[")
+  })
+
+  it("renders operation prompts in both tty and plain modes", () => {
+    emitTestEvent("terminal ui operation prompt rendering")
+
+    const ttyOutput = renderTerminalOperation({
+      isTTY: true,
+      title: "Starting Ouro",
+      prompt: "Press Enter to continue",
+    })
+    const plainOutput = renderTerminalOperation({
+      isTTY: false,
+      title: "Starting Ouro",
+      prompt: "Press Enter to continue",
+    })
+
+    expect(ttyOutput).toContain("Press Enter to continue")
+    expect(ttyOutput).toContain("\x1b[")
+    expect(plainOutput).toContain("Press Enter to continue")
+    expect(plainOutput).not.toContain("\x1b[")
+  })
+
+  it("renders plain operation summaries and step markers for every status", () => {
+    emitTestEvent("terminal ui plain operation status rendering")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      columns: 64,
+      title: "Starting Ouro",
+      summary: "Check the local runtime, keep the checklist truthful, and surface the next thing a human should do.",
+      steps: [
+        { label: "update check", status: "done", detail: "up to date" },
+        { label: "provider checks", status: "active" },
+        { label: "vault unlock", status: "failed", detail: "still locked" },
+        { label: "daemon handshake", status: "pending" },
+      ],
+    })
+
+    expect(output).toContain("Check the local runtime, keep the checklist truthful, and")
+    expect(output).toContain("surface the next thing a human should do.")
+    expect(output).toContain("✓ update check — up to date")
+    expect(output).toContain("→ provider checks")
+    expect(output).toContain("✗ vault unlock — still locked")
+    expect(output).toContain("○ daemon handshake")
   })
 
   it("renders an operation step even when the current step has no detail lines", () => {
@@ -247,6 +304,14 @@ describe("terminal ui", () => {
     expect(output).toContain("Ouro home")
     expect(output).toContain("Start or check Ouro")
     expect(output).not.toContain("\x1b[")
+  })
+
+  it("returns a plain overwrite frame when tty repaint is unavailable", () => {
+    emitTestEvent("terminal ui plain overwrite frame")
+
+    const output = renderOverwriteFrame(["one", "two"], 4, false)
+
+    expect(output).toBe("one\ntwo\n")
   })
 
   it("renders a compact fallback masthead and quiet board when optional sections are absent", () => {
@@ -332,5 +397,19 @@ describe("terminal ui", () => {
     expect(formatActionActorLabel("agent-runnable")).toBe("agent runnable")
     expect(formatActionActorLabel("human-required")).toBe("human required")
     expect(formatActionActorLabel("human-choice")).toBe("human choice")
+  })
+
+  it("moves back to the new frame bottom after clearing stale tty lines", () => {
+    emitTestEvent("terminal ui shrinking overwrite frame")
+
+    const output = renderOverwriteFrame([
+      "Ouro boot checklist",
+      "Doing now",
+      "provider checks",
+    ], 5, true)
+
+    expect(output.startsWith("\x1b[5A")).toBe(true)
+    expect((output.match(/\x1b\[2K/g) || [])).toHaveLength(5)
+    expect(output.endsWith("\x1b[2A")).toBe(true)
   })
 })

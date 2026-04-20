@@ -4,6 +4,10 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 // The module under test does not exist yet — these imports will fail (red phase)
 import { UpProgress } from "../../../heart/daemon/up-progress"
 
+function outputWithoutAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+}
+
 describe("UpProgress", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -43,6 +47,27 @@ describe("UpProgress", () => {
       const output = progress.render(1000)
       expect(output).toContain("Check for updates")
       expect(output).toContain("Confirm the background service stayed up")
+    })
+
+    it("re-renders the boot surface immediately when the tty checklist changes", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: true })
+
+      progress.setPhasePlan(["alpha", "beta"])
+
+      expect(write).toHaveBeenCalled()
+      const written = write.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+      expect(written).toContain("alpha")
+      expect(written).toContain("beta")
+    })
+
+    it("does not re-render immediately when the checklist changes outside boot mode", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: true, eventScope: "command", commandName: "connect" })
+
+      progress.setPhasePlan(["alpha", "beta"])
+
+      expect(write).not.toHaveBeenCalled()
     })
   })
 
@@ -221,6 +246,19 @@ describe("UpProgress", () => {
       expect(output).not.toContain("Starting Ouro")
     })
 
+    it("shows detail lines for an active command-scoped tty phase", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true, eventScope: "command", commandName: "connect" })
+
+      progress.startPhase("saving secret")
+      progress.updateDetail("writing vault item\nwaiting for reload")
+
+      const output = progress.render(1000)
+      expect(output).toContain("saving secret")
+      expect(output).toContain("writing vault item")
+      expect(output).toContain("waiting for reload")
+      expect(output).not.toContain("Starting Ouro")
+    })
+
     it("renders failed phases without detail in default event scope", () => {
       const write = vi.fn()
       const progress = new UpProgress({ write, isTTY: false })
@@ -343,6 +381,18 @@ describe("UpProgress", () => {
       progress.announceStep("verifying daemon health...")
 
       expect(write).toHaveBeenCalledWith("    verifying daemon health...\n")
+    })
+
+    it("announceStep updates the active phase detail instead of writing a second breadcrumb", () => {
+      const write = vi.fn()
+      const progress = new UpProgress({ write, isTTY: false })
+      progress.startPhase("starting daemon")
+      write.mockClear()
+
+      progress.announceStep("verifying daemon health...")
+
+      expect(write).toHaveBeenCalledWith("    verifying daemon health...\n")
+      expect(write).toHaveBeenCalledTimes(1)
     })
 
     it("updateDetail writes changed detail lines in non-TTY mode", () => {
@@ -546,11 +596,54 @@ describe("UpProgress", () => {
       expect(alphaIdx).toBeLessThan(betaIdx)
       expect(betaIdx).toBeLessThan(gammaIdx)
     })
+
+    it("keeps failed out-of-plan phases visible after the main boot checklist", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("custom repair")
+      progress.failPhase("custom repair", "still blocked")
+
+      const output = outputWithoutAnsi(progress.render(5000))
+      expect(output).toContain("Check for updates")
+      expect(output).toContain("Confirm the background service stayed up")
+      expect(output).toContain("custom repair")
+      expect(output).toContain("still blocked")
+    })
   })
 
   // ── updateDetail ──
 
   describe("updateDetail", () => {
+    it("renders the boot surface without falling back to the generic board cards", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("provider checks")
+      progress["currentPhase"] = { label: "provider checks", startedAt: 0 }
+      progress.updateDetail("reading azure credentials...")
+
+      const output = progress.render(4200)
+      expect(output).toContain("Boot checklist")
+      expect(output).toContain("Doing now")
+      expect(output).not.toContain("Overview")
+      expect(output).not.toContain("Right now")
+      expect(output).not.toContain("Progress")
+    })
+
+    it("keeps boot checklist rows in plan order while a middle step is active", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+      progress.startPhase("provider checks")
+      progress["currentPhase"] = { label: "provider checks", startedAt: 0 }
+
+      const output = outputWithoutAnsi(progress.render(4200))
+      const updateIndex = output.indexOf("Check for updates")
+      const providerIndex = output.indexOf("Check the providers your agents use right now")
+      const daemonIndex = output.indexOf("Start the background service")
+
+      expect(updateIndex).toBeGreaterThan(-1)
+      expect(providerIndex).toBeGreaterThan(-1)
+      expect(daemonIndex).toBeGreaterThan(-1)
+      expect(updateIndex).toBeLessThan(providerIndex)
+      expect(providerIndex).toBeLessThan(daemonIndex)
+    })
+
     it("renders detail text as indented substeps in TTY mode", () => {
       const progress = new UpProgress({ write: vi.fn(), isTTY: true })
       progress.startPhase("provider checks")
