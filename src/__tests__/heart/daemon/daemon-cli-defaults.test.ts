@@ -460,7 +460,27 @@ describe("daemon CLI default dependency branches", () => {
 
     const result = await runOuroCli(["up"], {
       ...deps,
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/daemon.sock",
+                version: "9.9.9",
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, data: {} }
+      }),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       getCurrentCliVersion: () => null,
       detectMode: () => "production" as const,
@@ -503,6 +523,7 @@ describe("daemon CLI default dependency branches", () => {
     try {
       const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
       const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+      stdoutWrite.mockClear()
 
       deps.writeStdout("hello")
       deps.writeStdout("already-newlined\n")

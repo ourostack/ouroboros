@@ -225,7 +225,6 @@ async function checkAgentProviders(
 
   for (const agent of [...new Set(agents)]) {
     try {
-      onProgress?.(`${agent}: checking providers...`)
       const result = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress)
       if (result.ok) continue
       const errorReason = result.error ?? "agent provider health check failed"
@@ -508,8 +507,14 @@ function writeProviderRepairSummary(
 }
 
 function providerRepairCountSummary(count: number): string {
-  if (count === 0) return "ok"
+  if (count === 0) return "selected providers answered live checks"
   return `${count} ${count === 1 ? "needs" : "need"} attention`
+}
+
+function bootPhasePlan(daemonAlive: boolean): readonly string[] {
+  return daemonAlive
+    ? ["update check", "system setup", "starting daemon", "provider checks", "final daemon check"]
+    : ["update check", "system setup", "provider checks", "starting daemon", "final daemon check"]
 }
 
 function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): CommandProgress {
@@ -542,8 +547,82 @@ async function runCommandProgressPhase<T>(
 
 function daemonProgressSummary(result: EnsureDaemonResult): string {
   if (result.alreadyRunning) return "already running"
-  if (result.message.includes("replaced")) return "replacement ready"
-  return "ready"
+  if (result.message.includes("replaced")) return "replacement answered"
+  return "background service answered"
+}
+
+interface FinalDaemonCheckResult {
+  ok: boolean
+  summary: string
+  message?: string
+}
+
+function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
+  const lines = [`background service stopped before boot finished: ${reason}`]
+  const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
+  if (recentLogLines.length > 0) {
+    lines.push("recent daemon logs:")
+    lines.push(...recentLogLines.map((line) => `  ${line}`))
+  }
+  lines.push("Run `ouro up` again or `ouro doctor` for a deeper diagnosis.")
+  return lines.join("\n")
+}
+
+async function verifyDaemonReadyForHandoff(deps: OuroCliDeps): Promise<FinalDaemonCheckResult> {
+  const socketAlive = await deps.checkSocketAlive(deps.socketPath)
+  if (!socketAlive) {
+    return {
+      ok: false,
+      summary: "background service stopped",
+      message: finalDaemonFailureMessage(deps, "the daemon socket is no longer answering"),
+    }
+  }
+
+  try {
+    const response = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
+    if (!response.ok) {
+      const reason = response.error ?? response.message ?? "daemon status did not answer cleanly"
+      return {
+        ok: false,
+        summary: "daemon status did not answer",
+        message: finalDaemonFailureMessage(deps, reason),
+      }
+    }
+
+    const payload = parseStatusPayload(response.data)
+    if (!payload) {
+      return {
+        ok: true,
+        summary: "daemon answered",
+      }
+    }
+    if (payload.overview.daemon !== "running") {
+      return {
+        ok: false,
+        summary: `daemon reported ${payload.overview.daemon}`,
+        message: finalDaemonFailureMessage(
+          deps,
+          `the daemon reported state ${payload.overview.daemon}`,
+        ),
+      }
+    }
+    const workerCount = payload.workers.length
+    return {
+      ok: true,
+      summary: workerCount === 0
+        ? "daemon answered"
+        : `${workerCount} worker${workerCount === 1 ? "" : "s"} still answering`,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      summary: "daemon status did not answer",
+      message: finalDaemonFailureMessage(
+        deps,
+        error instanceof Error ? error.message : String(error),
+      ),
+    }
+  }
 }
 
 async function reportPostRepairProviderHealth(
@@ -4601,6 +4680,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       now: deps.now ?? (() => Date.now()),
       autoRender: true,
     })
+    const daemonAliveAtBootStart = await deps.checkSocketAlive(deps.socketPath)
+    ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveAtBootStart))
 
     // ── versioned CLI update check ──
     if (deps.checkForCliUpdate) {
@@ -4745,6 +4826,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     })
 
     const daemonAliveBeforeStart = await deps.checkSocketAlive(deps.socketPath)
+    ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveBeforeStart))
     let providerChecksAlreadyRun = false
     if (!daemonAliveBeforeStart) {
       progress.startPhase("provider checks")
@@ -4800,6 +4882,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
       progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
     }
+    progress.startPhase("final daemon check")
+    const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps)
+    if (!finalDaemonCheck.ok) {
+      ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
+        "final daemon check",
+        finalDaemonCheck.summary,
+      )
+      progress.end()
+      const message = finalDaemonCheck.message ?? "background service stopped before boot finished"
+      deps.writeStdout(message)
+      return message
+    }
+    progress.completePhase("final daemon check", finalDaemonCheck.summary)
     progress.end()
 
     // Interactive repair for degraded agents (Unit 5) — skipped by --no-repair (Unit 6)

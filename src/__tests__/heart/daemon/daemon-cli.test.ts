@@ -78,6 +78,43 @@ const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "package.json"), "utf-8"),
 ) as { version: string }
 
+function runningDaemonStatusResponse(overrides?: {
+  socketPath?: string
+  version?: string
+  lastUpdated?: string
+  workerCount?: number
+  senseCount?: number
+}): { ok: true; summary: string; data: { overview: Record<string, unknown>; senses: []; workers: [] } } {
+  return {
+    ok: true,
+    summary: "running",
+    data: {
+      overview: {
+        daemon: "running",
+        health: "ok",
+        socketPath: overrides?.socketPath ?? "/tmp/ouro-test.sock",
+        version: overrides?.version ?? PACKAGE_VERSION.version,
+        ...(overrides?.lastUpdated ? { lastUpdated: overrides.lastUpdated } : {}),
+        workerCount: overrides?.workerCount ?? 0,
+        senseCount: overrides?.senseCount ?? 0,
+      },
+      senses: [],
+      workers: [],
+    },
+  }
+}
+
+function sendCommandWithRunningStatus(
+  response = runningDaemonStatusResponse(),
+): ReturnType<typeof vi.fn> {
+  return vi.fn(async (_socketPath, command) => {
+    if (command.kind === "daemon.status") {
+      return response
+    }
+    return { ok: true, summary: "ok" }
+  })
+}
+
 function setProviderCredentialPool(
   agentName: string,
   providers: Record<string, { credentials?: Record<string, string | number>; config?: Record<string, string | number>; revision?: string }>,
@@ -774,10 +811,10 @@ describe("ouro CLI execution", () => {
   it("starts daemon on `up` when socket is not live", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     }
@@ -786,7 +823,280 @@ describe("ouro CLI execution", () => {
 
     expect(result).toContain("daemon started")
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
-    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.sendCommand).toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
+  })
+
+  it("fails `up` when the daemon socket dies before final handoff", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: sendCommandWithRunningStatus(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      readRecentDaemonLogLines: vi.fn(() => ["daemon crashed hard"]),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("the daemon socket is no longer answering")
+    expect(result).toContain("recent daemon logs:")
+    expect(result).toContain("daemon crashed hard")
+    expect(deps.sendCommand).not.toHaveBeenCalledWith("/tmp/ouro-test.sock", { kind: "daemon.status" })
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("background service stopped before boot finished"))
+  })
+
+  it("fails `up` when final daemon status does not answer cleanly", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return { ok: false }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("daemon status did not answer cleanly")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("daemon status did not answer cleanly"))
+  })
+
+  it("fails `up` when final daemon status reports a non-running state", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "stopped",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: PACKAGE_VERSION.version,
+                workerCount: 0,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("the daemon reported state stopped")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("the daemon reported state stopped"))
+  })
+
+  it("reports a single worker still answering during final daemon handoff", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/ouro-test.sock",
+                version: PACKAGE_VERSION.version,
+                workerCount: 1,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [{
+                agent: "slugger",
+                worker: "inner-dialog",
+                status: "running",
+                pid: 7777,
+                restartCount: 0,
+                lastExitCode: null,
+                lastSignal: null,
+                startedAt: null,
+                errorReason: null,
+                fixHint: null,
+              }],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+    const output = writeStdout.mock.calls.map((call) => String(call[0])).join("")
+
+    expect(result).toContain("daemon started")
+    expect(output).toContain("1 worker still answering")
+  })
+
+  it("reports multiple workers still answering during final daemon handoff", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: {
+                daemon: "running",
+                health: "ok",
+                socketPath: "/tmp/ouro-test.sock",
+                version: PACKAGE_VERSION.version,
+                workerCount: 2,
+                senseCount: 0,
+              },
+              senses: [],
+              workers: [
+                {
+                  agent: "slugger",
+                  worker: "inner-dialog",
+                  status: "running",
+                  pid: 7777,
+                  restartCount: 0,
+                  lastExitCode: null,
+                  lastSignal: null,
+                  startedAt: null,
+                  errorReason: null,
+                  fixHint: null,
+                },
+                {
+                  agent: "ouroboros",
+                  worker: "inner-dialog",
+                  status: "running",
+                  pid: 8888,
+                  restartCount: 0,
+                  lastExitCode: null,
+                  lastSignal: null,
+                  startedAt: null,
+                  errorReason: null,
+                  fixHint: null,
+                },
+              ],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+    const output = writeStdout.mock.calls.map((call) => String(call[0])).join("")
+
+    expect(result).toContain("daemon started")
+    expect(output).toContain("2 workers still answering")
+  })
+
+  it("fails `up` when the final daemon status probe throws an Error", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          throw new Error("status probe exploded")
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("status probe exploded")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("status probe exploded"))
+  })
+
+  it("fails `up` when the final daemon status probe throws a non-Error value", async () => {
+    const writeStdout = vi.fn()
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          throw "string-status-probe-failure"
+        }
+        return { ok: true, summary: "ok" }
+      }),
+      startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+      writeStdout,
+      checkSocketAlive: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("string-status-probe-failure")
+    expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("string-status-probe-failure"))
   })
 
   it("runs `auth` locally with provider autodetected from agent.json", async () => {
@@ -1376,7 +1686,7 @@ describe("ouro CLI execution", () => {
   it("is idempotent for `up` when daemon already running", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
       writeStdout: vi.fn(),
       checkSocketAlive: vi.fn(async () => true),
@@ -1396,10 +1706,10 @@ describe("ouro CLI execution", () => {
     const ensureDaemonBootPersistence = vi.fn(async () => undefined)
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 4321 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1419,10 +1729,10 @@ describe("ouro CLI execution", () => {
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 5678 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1441,10 +1751,10 @@ describe("ouro CLI execution", () => {
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 6789 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -1463,10 +1773,10 @@ describe("ouro CLI execution", () => {
     })
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 6790 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -2820,10 +3130,10 @@ describe("ouro CLI execution", () => {
   it("continues `up` flow when UTI registration throws a non-Error value", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 404 })),
       writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
 
@@ -7308,10 +7618,10 @@ describe("ouro up startup progress", () => {
     })
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout,
-      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
       healthFilePath: "/tmp/ouro-health.json",
@@ -7359,7 +7669,7 @@ describe("ouro up startup progress", () => {
     const startIndex = lines.findIndex((line) => line.includes("starting a fresh background service"))
     const socketIndex = lines.findIndex((line) => line.includes("waiting for the new background service to answer"))
     const healthIndex = lines.findIndex((line) => line.includes("verifying daemon health"))
-    const stableIndex = lines.findIndex((line) => line.includes("\u2713 starting daemon") && line.includes("ready"))
+    const stableIndex = lines.findIndex((line) => line.includes("\u2713 starting daemon"))
 
     expect(result).toContain("daemon started")
     expect(startIndex).toBeGreaterThanOrEqual(0)
@@ -8497,7 +8807,7 @@ describe("ouro up post-repair progress phase", () => {
     const writeStdout = vi.fn()
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
+      sendCommand: sendCommandWithRunningStatus(),
       startDaemonProcess: vi.fn(async () => ({ pid: 5683 })),
       writeStdout,
       checkSocketAlive: vi.fn().mockResolvedValue(true),

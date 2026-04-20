@@ -43,10 +43,29 @@ const PACKAGE_VERSION = JSON.parse(
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(async () => ({ ok: true, data: {} })),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: PACKAGE_VERSION.version,
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, data: {} }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
-    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     listDiscoveredAgents: vi.fn(async () => []),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),

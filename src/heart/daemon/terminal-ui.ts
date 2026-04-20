@@ -69,6 +69,8 @@ export interface RenderTerminalOperationOptions {
   summary?: string
   currentStep?: TerminalOperationCurrentStep
   steps?: TerminalOperationStep[]
+  currentTitle?: string
+  stepsTitle?: string
   prompt?: string
   suppressEvent?: boolean
 }
@@ -268,11 +270,11 @@ export function renderTerminalOperation(options: RenderTerminalOperationOptions)
     summary: options.summary,
     sections: [
       {
-        title: "Right now",
+        title: options.currentTitle ?? "Right now",
         lines: currentLines,
       },
       {
-        title: "Progress",
+        title: options.stepsTitle ?? "Progress",
         lines: progressLines,
       },
     ],

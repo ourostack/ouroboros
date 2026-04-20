@@ -412,6 +412,41 @@ function credentialRecordForLane(
   return pool.providers[provider]
 }
 
+function laneAudienceLabel(lane: ProviderLane): string {
+  return lane === "outward" ? "chat" : "inner dialog"
+}
+
+function bindingLabel(binding: { provider: AgentProvider; model: string }): string {
+  return `${binding.provider} / ${binding.model}`
+}
+
+function selectedProviderPlan(agentName: string, state: ProviderState): string {
+  return [
+    `${agentName}: checking the providers this agent uses right now`,
+    ...(["outward", "inner"] as ProviderLane[]).map((lane) => `- ${laneAudienceLabel(lane)}: ${bindingLabel(state.lanes[lane])}`),
+  ].join("\n")
+}
+
+function mapVaultRefreshProgress(
+  agentName: string,
+  onProgress: (message: string) => void,
+): (message: string) => void {
+  return (message: string) => {
+    if (message.startsWith("reading vault items for ")) {
+      onProgress(`${agentName}: opening saved provider credentials in the vault`)
+      return
+    }
+    if (message === "parsing provider credentials...") {
+      onProgress(`${agentName}: organizing saved provider credentials`)
+    }
+  }
+}
+
+function providerPingSubject(agentName: string, lanes: ProviderLane[]): string {
+  const laneList = lanes.map((lane) => laneAudienceLabel(lane)).join(" + ")
+  return `${agentName} (${laneList})`
+}
+
 /**
  * Structural validation only. Live provider credential validation belongs to
  * checkAgentConfigWithProviderHealth(), which reads the agent vault and pings.
@@ -449,8 +484,13 @@ export async function checkAgentConfigWithProviderHealth(
   if (!stateResult.ok) return stateResult.result
   if (stateResult.disabled) return { ok: true }
 
+  deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
+
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
-  const poolResult = await refreshProviderCredentialPool(agentName, deps.onProgress ? { onProgress: deps.onProgress } : undefined)
+  const poolResult = await refreshProviderCredentialPool(
+    agentName,
+    deps.onProgress ? { onProgress: mapVaultRefreshProgress(agentName, deps.onProgress) } : undefined,
+  )
 
   const pingGroups = new Map<string, {
     provider: AgentProvider
@@ -494,7 +534,11 @@ export async function checkAgentConfigWithProviderHealth(
       model: group.model,
       ...(deps.onProgress
         ? createProviderPingProgressReporter(
-            { provider: group.provider, model: group.model },
+            {
+              provider: group.provider,
+              model: group.model,
+              subject: providerPingSubject(agentName, group.lanes),
+            },
             deps.onProgress,
           )
         : {}),

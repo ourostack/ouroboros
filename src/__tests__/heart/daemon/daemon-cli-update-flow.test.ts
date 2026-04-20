@@ -25,6 +25,8 @@ vi.mock("../../../heart/daemon/up-progress", () => ({
   UpProgress: class MockUpProgress {
     startPhase = vi.fn()
     completePhase = vi.fn()
+    failPhase = vi.fn()
+    setPhasePlan = vi.fn()
     updateDetail = vi.fn()
     end = vi.fn()
     render = vi.fn(() => "")
@@ -36,10 +38,30 @@ import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              version: "0.1.0-alpha.80",
+              workerCount: 0,
+              senseCount: 0,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, summary: "ok" }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
-    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     ...overrides,

@@ -44,7 +44,10 @@ describe("provider ping progress", () => {
     ["network-error", undefined, "network connection dropped"],
     ["unknown", undefined, "last check failed"],
   ] as const)("formats retry progress for %s", (classification, httpStatus, reason) => {
-    const message = formatProviderRetryProgress(retryRecord({
+    const message = formatProviderRetryProgress({
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    }, retryRecord({
       classification,
       httpStatus,
     }), 3)
@@ -53,7 +56,10 @@ describe("provider ping progress", () => {
   })
 
   it("falls back to a generic retry reason for unexpected classifications", () => {
-    const message = formatProviderRetryProgress(retryRecord({
+    const message = formatProviderRetryProgress({
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    }, retryRecord({
       classification: "mystery" as never,
     }), 3)
 
@@ -61,7 +67,10 @@ describe("provider ping progress", () => {
   })
 
   it("formats retry timing when a non-zero retry delay is present", () => {
-    const message = formatProviderRetryProgress(retryRecord({
+    const message = formatProviderRetryProgress({
+      provider: "anthropic",
+      model: "",
+    }, retryRecord({
       provider: "anthropic",
       model: "",
       classification: "network-error",
@@ -73,11 +82,31 @@ describe("provider ping progress", () => {
   })
 
   it("formats integer-second retry delays without a decimal tail", () => {
-    const message = formatProviderRetryProgress(retryRecord({
+    const message = formatProviderRetryProgress({
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+    }, retryRecord({
       delayMs: 2_000,
     }), 3)
 
     expect(message).toBe("minimax / MiniMax-M2.5: provider is busy right now; retrying in 2s (attempt 2 of 3)")
+  })
+
+  it("includes the subject when the retry belongs to a specific agent lane", () => {
+    const message = formatProviderRetryProgress({
+      provider: "openai-codex",
+      model: "gpt-5.4",
+      subject: "slugger (chat)",
+    }, retryRecord({
+      provider: "openai-codex",
+      model: "gpt-5.4",
+      classification: "rate-limit",
+      httpStatus: 429,
+    }), 3)
+
+    expect(message).toBe(
+      "slugger (chat): provider asked us to slow down; retrying now (attempt 2 of 3) while checking openai-codex / gpt-5.4",
+    )
   })
 
   it("builds reporter callbacks that emit shared attempt and retry lines", async () => {

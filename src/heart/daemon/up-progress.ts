@@ -37,6 +37,24 @@ interface CurrentPhase {
   detail?: string
 }
 
+const BASE_UP_PHASE_PLAN = [
+  "update check",
+  "system setup",
+  "provider checks",
+  "starting daemon",
+  "final daemon check",
+] as const
+
+const FRIENDLY_UP_PHASE_LABELS: Record<string, string> = {
+  "update check": "Check for updates",
+  "system setup": "Prepare this machine",
+  "agent updates": "Update installed agents",
+  "bundle cleanup": "Clean up stale bundles",
+  "provider checks": "Check the providers your agents use right now",
+  "starting daemon": "Start the background service",
+  "final daemon check": "Confirm the background service stayed up",
+}
+
 function splitDetailLines(detail: string | undefined): string[] {
   if (!detail) return []
   return detail
@@ -74,6 +92,7 @@ export class UpProgress {
   private completed: CompletedPhase[] = []
   private currentPhase: CurrentPhase | null = null
   private currentDetail: string | null = null
+  private upPhasePlan: readonly string[] = BASE_UP_PHASE_PLAN
   private prevLineCount = 0
   private ended = false
   private renderTimer: unknown | null = null
@@ -125,6 +144,14 @@ export class UpProgress {
     }
     if (this.isTTY) return
     this.write(`    ${label}\n`)
+  }
+
+  setPhasePlan(labels: readonly string[]): void {
+    const nextPlan = [...new Set(labels.map((label) => label.trim()).filter((label) => label.length > 0))]
+    this.upPhasePlan = nextPlan.length > 0 ? nextPlan : BASE_UP_PHASE_PLAN
+    if (this.isTTY && this.eventScope === "up") {
+      this.flushRender()
+    }
   }
 
   /**
@@ -321,41 +348,65 @@ export class UpProgress {
     return lines
   }
 
-  private renderUpScreen(now: number): string[] {
-    const steps: TerminalOperationStep[] = this.completed.map((phase) => ({
-      label: phase.label,
-      status: phase.status === "failure" ? "failed" : "done",
-      detail: phase.detail,
-    }))
+  private renderUpStepLabel(label: string): string {
+    return FRIENDLY_UP_PHASE_LABELS[label] ?? label
+  }
 
-    let currentStepLabel = "Standing by."
+  private renderUpScreen(now: number): string[] {
+    const seenLabels = new Set<string>()
+    const steps: TerminalOperationStep[] = this.completed.map((phase) => {
+      seenLabels.add(phase.label)
+      return {
+        label: this.renderUpStepLabel(phase.label),
+        status: phase.status === "failure" ? "failed" : "done",
+        detail: phase.detail,
+      }
+    })
+
+    let currentStepLabel = this.completed.some((phase) => phase.status === "failure")
+      ? "Boot paused."
+      : this.completed.length > 0
+        ? "Boot checklist complete."
+        : "Waiting to begin."
     let currentStepDetails: string[] = []
     if (this.currentPhase) {
       const elapsed = now - this.currentPhase.startedAt
       const elapsedSec = (elapsed / 1000).toFixed(1)
       const frameIndex = Math.floor(elapsed / 80) % SPINNER_FRAMES.length
       const spinner = SPINNER_FRAMES[frameIndex]
-      currentStepLabel = `${spinner} ${this.currentPhase.label} (${elapsedSec}s)`
+      currentStepLabel = `${spinner} ${this.renderUpStepLabel(this.currentPhase.label)} (${elapsedSec}s)`
       currentStepDetails = splitDetailLines(this.currentPhase.detail)
       steps.push({
-        label: this.currentPhase.label,
+        label: this.renderUpStepLabel(this.currentPhase.label),
         status: "active",
       })
+      seenLabels.add(this.currentPhase.label)
+    }
+
+    for (const label of this.upPhasePlan) {
+      if (!seenLabels.has(label)) {
+        steps.push({
+          label: this.renderUpStepLabel(label),
+          status: "pending",
+        })
+      }
     }
 
     return renderTerminalOperation({
       isTTY: true,
       columns: this.columns,
       masthead: {
-        subtitle: "Starting the local agent runtime.",
+        subtitle: "Booting the local agent runtime.",
       },
-      title: "Starting Ouro",
-      summary: "Ouro is starting the background runtime, checking credentials, and surfacing anything that needs attention before chat begins.",
+      title: "Ouro boot checklist",
+      summary: "Ouro will check for updates, prepare this machine, verify the providers your agents use right now, start the background service, and make sure it stays up.",
       currentStep: {
         label: currentStepLabel,
         detailLines: currentStepDetails,
       },
       steps,
+      currentTitle: "Doing now",
+      stepsTitle: "Boot checklist",
       suppressEvent: true,
     }).trimEnd().split("\n")
   }

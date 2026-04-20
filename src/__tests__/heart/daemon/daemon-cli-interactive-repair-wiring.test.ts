@@ -108,12 +108,33 @@ import { getRuntimeMetadata } from "../../../heart/daemon/runtime-metadata"
 import { providerCredentialMissingIssue, vaultLockedIssue, type AgentReadinessIssue } from "../../../heart/daemon/readiness-repair"
 
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+  const runtime = currentRuntimeOverview()
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return {
+          ok: true,
+          summary: "running",
+          data: {
+            overview: {
+              daemon: "running",
+              health: "ok",
+              socketPath: "/tmp/ouro-test.sock",
+              workerCount: 0,
+              senseCount: 0,
+              ...runtime,
+            },
+            senses: [],
+            workers: [],
+          },
+        }
+      }
+      return { ok: true, summary: "ok" }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
-    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+    checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
     bundlesRoot: "/tmp/ouro-test-bundles-nonexistent",

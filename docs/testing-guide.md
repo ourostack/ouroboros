@@ -21,6 +21,11 @@ ouro status
 Expected:
 
 - `npx ouro.bot@latest -v` and `ouro -v` report the same version.
+- `ouro up` opens the shared boot checklist instead of a raw transcript wall:
+  - the full startup path is visible up front
+  - the current step keeps live detail while work is happening
+  - provider verification names the selected providers Ouro is checking right now
+  - startup does not claim success unless the daemon survives the final handoff check
 - `ouro status` shows:
   - daemon overview
   - version
@@ -102,6 +107,7 @@ Expected:
 - root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and if a provider is slow or retrying it narrates the real attempt count and retry reason before opening the framed, width-aware connect bay
 - auth, vault, hatch, and guided connector completions land on the shared board language with `What changed` and `Next moves` instead of raw transcript walls
 - `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
+- if the background service dies after startup work but before handoff is complete, `ouro up` fails with a daemon diagnosis instead of printing a false-ready board
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault

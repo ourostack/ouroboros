@@ -3105,7 +3105,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking selected providers")
-    expect(output).toContain("reading vault items for Slugger...")
+    expect(output).toContain("Slugger: opening saved provider credentials in the vault")
     expect(output).toContain("checking openai-codex / gpt-5.4 (attempt 1 of 3)")
     expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
     expectConnectStatus(prompt, 1, "Providers", "ready")
@@ -3378,7 +3378,7 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
-    expect(output).toContain("opening credential vault")
+    expect(output).toContain("Slugger: checking the providers this agent uses right now")
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("run: ouro auth verify --agent Slugger")
   })
@@ -3988,7 +3988,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 1 of 3)")
-    expect(output).toContain("minimax / MiniMax-M2.5: provider is busy right now; retrying now (attempt 2 of 3)")
+    expect(output).toContain("Slugger (inner dialog): provider is busy right now; retrying now (attempt 2 of 3) while checking minimax / MiniMax-M2.5")
     expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 2 of 3)")
   })
 

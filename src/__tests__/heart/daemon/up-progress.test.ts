@@ -34,6 +34,18 @@ describe("UpProgress", () => {
     })
   })
 
+  describe("setPhasePlan", () => {
+    it("falls back to the default boot checklist when labels are blank", () => {
+      const progress = new UpProgress({ write: vi.fn(), isTTY: true })
+
+      progress.setPhasePlan(["   ", ""])
+
+      const output = progress.render(1000)
+      expect(output).toContain("Check for updates")
+      expect(output).toContain("Confirm the background service stayed up")
+    })
+  })
+
   // ── startPhase ──
 
   describe("startPhase", () => {
@@ -41,7 +53,7 @@ describe("UpProgress", () => {
       const progress = new UpProgress({ write: vi.fn(), isTTY: true })
       progress.startPhase("update check")
       const output = progress.render(1000)
-      expect(output).toContain("update check")
+      expect(output).toContain("Check for updates")
     })
 
     it("auto-completes the previous phase when starting a new one", () => {
@@ -65,7 +77,7 @@ describe("UpProgress", () => {
       progress.completePhase("update check", "up to date")
       const output = progress.render(1000)
       expect(output).toContain("\u2713")
-      expect(output).toContain("update check")
+      expect(output).toContain("Check for updates")
       expect(output).toContain("up to date")
     })
 
@@ -83,7 +95,7 @@ describe("UpProgress", () => {
       progress.completePhase("system setup")
       const output = progress.render(1000)
       expect(output).toContain("\u2713")
-      expect(output).toContain("system setup")
+      expect(output).toContain("Prepare this machine")
     })
 
     it("does nothing when no phase is active", () => {
@@ -107,7 +119,7 @@ describe("UpProgress", () => {
       progress.completePhase("update check", "up to date")
       // The nerves event is fire-and-forget; we trust the implementation calls it
       // This test primarily verifies the phase transitions correctly
-      expect(progress.render(1000)).toContain("update check")
+      expect(progress.render(1000)).toContain("Check for updates")
     })
 
     it("emits command-scoped completion events without requiring detail text", () => {
@@ -181,7 +193,7 @@ describe("UpProgress", () => {
 
       const output = progress.render(1000)
       expect(output).toContain("\u2717")
-      expect(output).toContain("starting daemon")
+      expect(output).toContain("Start the background service")
       expect(output).toContain("failed")
     })
 
@@ -546,7 +558,7 @@ describe("UpProgress", () => {
       progress.updateDetail("waiting for slugger to come back\n- daemon accepted restart\n- worker state: starting")
 
       const output = progress.render(4200)
-      expect(output).toContain("provider checks")
+      expect(output).toContain("Check the providers your agents use right now")
       expect(output).toMatch(/\d+\.\d+s/)
       expect(output).toContain("waiting for slugger to come back")
       expect(output).toContain("- daemon accepted restart")

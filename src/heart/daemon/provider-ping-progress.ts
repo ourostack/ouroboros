@@ -6,6 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 interface ProviderPingProgressContext {
   provider: AgentProvider
   model?: string
+  subject?: string
 }
 
 function formatProviderPingLabel(context: ProviderPingProgressContext): string {
@@ -43,15 +44,21 @@ export function formatProviderAttemptProgress(
   attempt: number,
   maxAttempts: number,
 ): string {
-  return `checking ${formatProviderPingLabel(context)} (attempt ${attempt} of ${maxAttempts})...`
+  const prefix = context.subject ? `${context.subject}: ` : ""
+  return `${prefix}checking ${formatProviderPingLabel(context)} (attempt ${attempt} of ${maxAttempts})...`
 }
 
 export function formatProviderRetryProgress(
+  context: ProviderPingProgressContext,
   record: ProviderAttemptRecord,
   maxAttempts: number,
 ): string {
   const nextAttempt = Math.min(record.attempt + 1, maxAttempts)
-  return `${formatProviderPingLabel(record)}: ${providerRetryReason(record)}; retrying ${providerRetryTiming(record.delayMs)} (attempt ${nextAttempt} of ${maxAttempts})`
+  const retryDetail = `${providerRetryReason(record)}; retrying ${providerRetryTiming(record.delayMs)} (attempt ${nextAttempt} of ${maxAttempts})`
+  if (context.subject) {
+    return `${context.subject}: ${retryDetail} while checking ${formatProviderPingLabel(context)}`
+  }
+  return `${formatProviderPingLabel(record)}: ${retryDetail}`
 }
 
 export function createProviderPingProgressReporter(
@@ -88,7 +95,7 @@ export function createProviderPingProgressReporter(
           classification: record.classification ?? "unknown",
         },
       })
-      onProgress(formatProviderRetryProgress(record, maxAttempts))
+      onProgress(formatProviderRetryProgress(context, record, maxAttempts))
     },
   }
 }

@@ -8,10 +8,12 @@ const mocks = vi.hoisted(() => ({
   pruneStaleEphemeralBundles: vi.fn(() => [] as string[]),
   upProgressStartPhase: vi.fn(),
   upProgressCompletePhase: vi.fn(),
+  upProgressFailPhase: vi.fn(),
   upProgressEnd: vi.fn(),
   upProgressRender: vi.fn(() => ""),
   upProgressUpdateDetail: vi.fn(),
   upProgressAnnounceStep: vi.fn(),
+  upProgressSetPhasePlan: vi.fn(),
   UpProgressConstructor: vi.fn(),
 }))
 
@@ -41,19 +43,46 @@ vi.mock("../../../heart/daemon/up-progress", () => ({
     }
     startPhase = mocks.upProgressStartPhase
     completePhase = mocks.upProgressCompletePhase
+    failPhase = mocks.upProgressFailPhase
     end = mocks.upProgressEnd
     render = mocks.upProgressRender
     updateDetail = mocks.upProgressUpdateDetail
     announceStep = mocks.upProgressAnnounceStep
+    setPhasePlan = mocks.upProgressSetPhasePlan
   },
 }))
 
 import { runOuroCli, type OuroCliDeps } from "../../../heart/daemon/daemon-cli"
 
+function daemonStatusOk() {
+  return {
+    ok: true,
+    summary: "running",
+    data: {
+      overview: {
+        daemon: "running",
+        health: "ok",
+        socketPath: "/tmp/ouro-test.sock",
+        version: "0.1.0-alpha.20",
+        lastUpdated: "2026-03-09T11:00:00.000Z",
+        workerCount: 0,
+        senseCount: 0,
+      },
+      senses: [],
+      workers: [],
+    },
+  }
+}
+
 function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
   return {
     socketPath: "/tmp/ouro-test.sock",
-    sendCommand: vi.fn(),
+    sendCommand: vi.fn(async (_socketPath, command) => {
+      if (command.kind === "daemon.status") {
+        return daemonStatusOk()
+      }
+      return { ok: true, summary: "ok" }
+    }),
     startDaemonProcess: vi.fn(async () => ({ pid: 123 })),
     writeStdout: vi.fn(),
     checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
@@ -292,7 +321,7 @@ describe("ouro up: UpProgress integration", () => {
       }
       return { ok: true, summary: "ok" }
     })
-    const checkSocketAlive = vi.fn(async () => checkSocketAlive.mock.calls.length === 1)
+    const checkSocketAlive = vi.fn(async () => checkSocketAlive.mock.calls.length <= 2)
     const deps = makeDeps({
       sendCommand,
       checkSocketAlive,

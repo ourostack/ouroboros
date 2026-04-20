@@ -520,11 +520,21 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider, onProgress })
 
     expect(result).toEqual({ ok: true })
-    // Verify refreshProviderCredentialPool was called with options containing onProgress
-    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith(
-      "myagent",
-      expect.objectContaining({ onProgress }),
-    )
+    const callArgs = refreshProviderCredentialPoolMock.mock.calls[0]
+    expect(callArgs?.[0]).toBe("myagent")
+    expect(callArgs?.[1]).toEqual(expect.objectContaining({
+      onProgress: expect.any(Function),
+    }))
+
+    const refreshProgress = callArgs?.[1]?.onProgress as ((message: string) => void) | undefined
+    expect(refreshProgress).toBeDefined()
+    refreshProgress?.("reading vault items for myagent...")
+    refreshProgress?.("parsing provider credentials...")
+    refreshProgress?.("reading azure credentials...")
+
+    expect(onProgress).toHaveBeenCalledWith("myagent: opening saved provider credentials in the vault")
+    expect(onProgress).toHaveBeenCalledWith("myagent: organizing saved provider credentials")
+    expect(onProgress).not.toHaveBeenCalledWith("reading azure credentials...")
   })
 
   it("does not pass onProgress when not provided in deps (backward compat)", async () => {
