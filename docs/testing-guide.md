@@ -99,7 +99,7 @@ Expected:
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
 - bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
-- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and then opens a framed, width-aware connect bay with one recommended next move
+- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and if a provider is slow or retrying it narrates the real attempt count and retry reason before opening the framed, width-aware connect bay
 - auth, vault, hatch, and guided connector completions land on the shared board language with `What changed` and `Next moves` instead of raw transcript walls
 - `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
 - provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`

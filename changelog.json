@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.440",
+      "changes": [
+        "Shared live provider checks now narrate each real attempt and retry across `ouro up`, the connect bay, `ouro check`, `ouro use`, and auth verification, so a slow or busy provider no longer feels like one frozen `checking <provider>` line.",
+        "One shared retry-progress formatter translates the real failure class into plain language like `provider is busy right now` or `provider asked us to slow down`, while the shared provider attempt runner now exposes attempt-start callbacks for every human-facing verification surface.",
+        "New daemon/provider progress coverage locks in the shared callback contract and the human-facing retry narration, with the full coverage, integration, package-e2e, and installed-product verification stack carried through for the published release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.439",
       "changes": [
         "When an older Ouro-owned launcher is shadowing the managed `~/.ouro-cli/bin/ouro` path, system setup now repairs it in place instead of dumping a PATH lecture onto the human. Old global Homebrew/npm launchers that clearly belong to Ouro get rewritten to the current managed wrapper automatically.",

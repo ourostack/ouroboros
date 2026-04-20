@@ -142,7 +142,8 @@ import { renderOuroMasthead, type TerminalSection } from "./terminal-ui"
 import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
-import { pingGithubCopilotModel, pingProvider, type PingResult } from "../provider-ping"
+import { createProviderPingProgressReporter } from "./provider-ping-progress"
+import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
 import { listEnabledBundleAgents } from "./agent-discovery"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 import {
@@ -1146,12 +1147,17 @@ export async function listGithubCopilotModels(
 async function verifyProviderCredentials(
   provider: string,
   providers: Record<string, Record<string, unknown>>,
+  options: ProviderPingOptions = {},
 ): Promise<string> {
   const config = providers[provider]
   if (!config) return "not configured"
   try {
     const { pingProvider } = await import("../../heart/provider-ping")
-    const result = await pingProvider(provider as AgentProvider, config as unknown as Parameters<typeof pingProvider>[1])
+    const result = await pingProvider(
+      provider as AgentProvider,
+      config as unknown as Parameters<typeof pingProvider>[1],
+      options,
+    )
     return result.ok ? "ok" : `failed (${result.message})`
   } catch (error) {
     return `failed (${error instanceof Error ? error.message : String(error)})`
@@ -3284,6 +3290,10 @@ async function executeProviderUse(
       model: command.model,
       attemptPolicy: { baseDelayMs: 0 },
       sleep: deps.sleep,
+      ...createProviderPingProgressReporter(
+        { provider: command.provider, model: command.model },
+        (message) => progress?.updateDetail(message),
+      ),
     })
     const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
@@ -3354,6 +3364,10 @@ async function executeProviderCheck(
       model: binding.model,
       attemptPolicy: { baseDelayMs: 0 },
       sleep: deps.sleep,
+      ...createProviderPingProgressReporter(
+        { provider: binding.provider, model: binding.model },
+        (message) => progress.updateDetail(message),
+      ),
     })
     const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
@@ -3531,6 +3545,12 @@ async function executeAuthRun(
     verificationStatus = credential.ok
       ? await verifyProviderCredentials(provider, {
         [provider]: { ...credential.record.config, ...credential.record.credentials },
+      }, {
+        sleep: deps.sleep,
+        ...createProviderPingProgressReporter(
+          { provider },
+          (message) => progress.updateDetail(message),
+        ),
       })
       : `stored but could not be re-read from vault (${credential.error})`
     progress.completePhase(`verifying ${provider}`, verificationStatus)
@@ -5630,6 +5650,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         progress.startPhase(`verifying ${command.provider}`)
         const status = await verifyProviderCredentials(command.provider, {
           [command.provider]: { ...record.config, ...record.credentials },
+        }, {
+          sleep: deps.sleep,
+          ...createProviderPingProgressReporter(
+            { provider: command.provider },
+            (message) => progress.updateDetail(message),
+          ),
         })
         progress.completePhase(`verifying ${command.provider}`, status)
         const message = useTTYBoard
@@ -5646,6 +5672,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       for (const [p, record] of entries) {
         const status = await verifyProviderCredentials(p, {
           [p]: { ...record.config, ...record.credentials },
+        }, {
+          sleep: deps.sleep,
+          ...createProviderPingProgressReporter(
+            { provider: p },
+            (message) => progress.updateDetail(message),
+          ),
         })
         const line = `${p}: ${status}`
         lines.push(line)

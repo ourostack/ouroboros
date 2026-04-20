@@ -27,6 +27,7 @@ import {
   vaultUnconfiguredIssue,
   type AgentReadinessIssue,
 } from "./readiness-repair"
+import { createProviderPingProgressReporter } from "./provider-ping-progress"
 
 export interface ConfigCheckResult {
   ok: boolean
@@ -489,8 +490,15 @@ export async function checkAgentConfigWithProviderHealth(
 
   const groups = [...pingGroups.values()]
   const pingResults = await Promise.all(groups.map(async (group) => {
-    deps.onProgress?.(`checking ${group.provider} / ${group.model}...`)
-    const result = await ping(group.provider, providerCredentialConfig(group.record), { model: group.model })
+    const result = await ping(group.provider, providerCredentialConfig(group.record), {
+      model: group.model,
+      ...(deps.onProgress
+        ? createProviderPingProgressReporter(
+            { provider: group.provider, model: group.model },
+            deps.onProgress,
+          )
+        : {}),
+    })
     return { group, result }
   }))
 
