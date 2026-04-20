@@ -141,6 +141,10 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
+  it("describes `up` as preparing the house rather than vaguely starting the daemon", () => {
+    expect(COMMAND_REGISTRY["up"].description).toContain("Prepare the house")
+  })
+
   it("includes usage for known command", () => {
     const result = getCommandHelp("task")!
     expect(result).toContain(COMMAND_REGISTRY["task"].usage)

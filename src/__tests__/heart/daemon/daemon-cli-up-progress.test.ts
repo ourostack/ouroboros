@@ -91,6 +91,20 @@ describe("ouro up: UpProgress integration", () => {
     }))
   })
 
+  it("greets tty ouro up with the preparing-the-house masthead copy", async () => {
+    const writeRaw = vi.fn()
+    const deps = makeDeps({
+      isTTY: true,
+      writeRaw,
+    })
+
+    await runOuroCli(["up"], deps)
+
+    const written = writeRaw.mock.calls.map((call: unknown[]) => String(call[0])).join("")
+    expect(written).toContain("Preparing the house.")
+    expect(written).not.toContain("Bringing the house online.")
+  })
+
   it("calls startPhase('update check') before update check", async () => {
     mocks.upProgressStartPhase.mockClear()
     const deps = makeDeps({

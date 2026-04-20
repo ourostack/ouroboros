@@ -3,6 +3,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 import {
   padAnsi,
   renderOuroMasthead,
+  renderTerminalOperation,
   renderTerminalBoard,
   formatActionActorLabel,
   wrapPlain,
@@ -83,6 +84,40 @@ describe("terminal ui", () => {
     expect(output).toContain("╭")
   })
 
+  it("renders a shared operation deck with a live step, completed steps, and queued path", () => {
+    emitTestEvent("terminal ui operation deck rendering")
+
+    const output = renderTerminalOperation({
+      isTTY: true,
+      columns: 76,
+      masthead: {
+        subtitle: "Preparing the house.",
+      },
+      title: "Preparing the house",
+      summary: "Ouro is warming the background systems and checking what still needs care before anyone steps in.",
+      currentStep: {
+        label: "provider checks",
+        detailLines: [
+          "slugger: checking openai-codex",
+          "ouroboros: waiting for vault unlock",
+        ],
+      },
+      steps: [
+        { label: "update check", status: "done", detail: "up to date" },
+        { label: "system setup", status: "done" },
+        { label: "provider checks", status: "active" },
+        { label: "daemon handshake", status: "pending" },
+      ],
+    })
+
+    expect(output).toContain("Preparing the house")
+    expect(output).toContain("Right now")
+    expect(output).toContain("Progress")
+    expect(output).toContain("slugger: checking openai-codex")
+    expect(output).toContain("daemon handshake")
+    expect(output).toContain("╭")
+  })
+
   it("keeps non-TTY boards free of ANSI escapes", () => {
     emitTestEvent("terminal ui plain board rendering")
 
@@ -98,7 +133,7 @@ describe("terminal ui", () => {
       ],
       actions: [
         {
-          label: "Bring the system online",
+          label: "Prepare the house",
           actor: "agent-runnable",
           command: "ouro up",
           recommended: true,
@@ -108,7 +143,7 @@ describe("terminal ui", () => {
     })
 
     expect(output).toContain("Ouro home")
-    expect(output).toContain("Bring the system online")
+    expect(output).toContain("Prepare the house")
     expect(output).not.toContain("\x1b[")
   })
 
@@ -126,6 +161,7 @@ describe("terminal ui", () => {
     })
 
     expect(masthead).toContain("O U R O B O R O S")
+    expect(masthead).toContain("the house wakes when called")
     expect(board).toContain("Quick check")
     expect(board).not.toContain("Actions")
   })
