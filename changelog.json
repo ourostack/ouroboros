@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.439",
+      "changes": [
+        "When an older Ouro-owned launcher is shadowing the managed `~/.ouro-cli/bin/ouro` path, system setup now repairs it in place instead of dumping a PATH lecture onto the human. Old global Homebrew/npm launchers that clearly belong to Ouro get rewritten to the current managed wrapper automatically.",
+        "That repair is intentionally narrow and truthful: Ouro only rewrites a shadowed launcher when its realpath or readable content proves it is one of our old launchers. Unknown launchers still keep the explicit PATH warning instead of being touched.",
+        "New path-installer and startup output coverage lock in the self-heal path, including readable non-Ouro launchers, disappearing files, write failures, and the happy-path repair of a stale `/opt/homebrew/bin/ouro`, with full coverage, integration, and packaged-install validation on top."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.438",
       "changes": [
         "Live provider failures now keep their real diagnosis all the way through startup, repair, and the connect bay: expired credentials still prompt re-auth, but busy providers, provider outages, rate limits, quota failures, and network trouble now point humans toward retrying later, checking usage, or switching lanes instead of being mislabeled as an auth problem.",

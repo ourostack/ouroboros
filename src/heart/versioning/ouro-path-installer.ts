@@ -10,6 +10,7 @@ export interface OuroPathInstallResult {
   shellProfileUpdated: string | null
   skippedReason?: string
   repairedOldLauncher: boolean
+  repairedShadowedLauncherPath?: string | null
   pathResolution?: OuroPathResolution
 }
 
@@ -30,6 +31,9 @@ export interface OuroPathInstallerDeps {
   readFileSync?: (p: string, encoding: BufferEncoding) => string
   appendFileSync?: (p: string, data: string) => void
   chmodSync?: (p: string, mode: fs.Mode) => void
+  realpathSync?: (p: string) => string
+  lstatSync?: (p: string) => Pick<fs.Stats, "isSymbolicLink">
+  unlinkSync?: (p: string) => void
   ensureCliLayout?: () => void
   envPath?: string
   shell?: string
@@ -113,6 +117,89 @@ function isWrapperCurrent(
   }
 }
 
+function isOwnedOuroLauncherPath(resolvedPath: string): boolean {
+  const normalized = path.normalize(resolvedPath)
+  return (
+    normalized.includes(`${path.sep}node_modules${path.sep}@ouro.bot${path.sep}cli${path.sep}`) ||
+    normalized.includes(`${path.sep}node_modules${path.sep}ouro.bot${path.sep}`)
+  )
+}
+
+function isOwnedOuroLauncherContent(content: string): boolean {
+  return (
+    content.includes("@ouro.bot/cli") ||
+    content.includes("ouro.bot@latest") ||
+    content.includes('exec npx --yes ouro.bot "$@"') ||
+    content.includes("CurrentVersion/node_modules/@ouro.bot/cli")
+  )
+}
+
+function canRepairShadowedLauncher(
+  shadowPath: string,
+  existsSync: (p: string) => boolean,
+  readFileSync: (p: string, encoding: BufferEncoding) => string,
+  realpathSync: (p: string) => string,
+): boolean {
+  if (!existsSync(shadowPath)) return false
+  try {
+    if (isOwnedOuroLauncherPath(realpathSync(shadowPath))) return true
+  } catch {
+    // Fall through to content detection below.
+  }
+  try {
+    return isOwnedOuroLauncherContent(readFileSync(shadowPath, "utf-8"))
+  } catch {
+    return false
+  }
+}
+
+function repairShadowedLauncher(input: {
+  shadowPath: string
+  existsSync: (p: string) => boolean
+  readFileSync: (p: string, encoding: BufferEncoding) => string
+  writeFileSync: NonNullable<OuroPathInstallerDeps["writeFileSync"]>
+  chmodSync: NonNullable<OuroPathInstallerDeps["chmodSync"]>
+  realpathSync: (p: string) => string
+  lstatSync: (p: string) => Pick<fs.Stats, "isSymbolicLink">
+  unlinkSync: (p: string) => void
+}): string | null {
+  if (!canRepairShadowedLauncher(input.shadowPath, input.existsSync, input.readFileSync, input.realpathSync)) {
+    return null
+  }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.ouro_path_shadow_repair_start",
+    message: "repairing stale shadowed ouro launcher",
+    meta: { shadowPath: input.shadowPath },
+  })
+  try {
+    if (input.lstatSync(input.shadowPath).isSymbolicLink()) {
+      input.unlinkSync(input.shadowPath)
+    }
+    input.writeFileSync(input.shadowPath, WRAPPER_SCRIPT, { mode: 0o755 })
+    input.chmodSync(input.shadowPath, 0o755)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.ouro_path_shadow_repair_end",
+      message: "repaired stale shadowed ouro launcher",
+      meta: { shadowPath: input.shadowPath },
+    })
+    return input.shadowPath
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.ouro_path_shadow_repair_error",
+      message: "failed to repair stale shadowed ouro launcher",
+      meta: {
+        shadowPath: input.shadowPath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return null
+  }
+}
+
 function firstOuroOnPath(envPath: string, existsSync: (p: string) => boolean): string | null {
   for (const dir of envPath.split(path.delimiter)) {
     if (!dir) continue
@@ -182,6 +269,9 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
   const readFileSync = deps.readFileSync ?? ((p: string, enc: BufferEncoding) => fs.readFileSync(p, enc))
   const appendFileSync = deps.appendFileSync ?? fs.appendFileSync
   const chmodSync = deps.chmodSync ?? fs.chmodSync
+  const realpathSync = deps.realpathSync ?? fs.realpathSync
+  const lstatSync = deps.lstatSync ?? fs.lstatSync
+  const unlinkSync = deps.unlinkSync ?? fs.unlinkSync
   const envPath = deps.envPath ?? process.env.PATH ?? ""
   const shell = deps.shell ?? process.env.SHELL
   /* v8 ignore stop */
@@ -234,7 +324,22 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
 
   // ── Fast-path: modern wrapper already current ──
   if (modernCurrent) {
-    const pathResolution = resolvePath()
+    let pathResolution = resolvePath()
+    const repairedShadowedLauncherPath = pathResolution.status === "shadowed" && pathResolution.resolvedPath
+      ? repairShadowedLauncher({
+          shadowPath: pathResolution.resolvedPath,
+          existsSync,
+          readFileSync,
+          writeFileSync,
+          chmodSync,
+          realpathSync,
+          lstatSync,
+          unlinkSync,
+        })
+      : null
+    if (repairedShadowedLauncherPath) {
+      pathResolution = resolvePath()
+    }
     if (pathResolution.status === "shadowed") {
       emitNervesEvent({
         level: "warn",
@@ -250,7 +355,16 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
       message: "ouro command already installed",
       meta: { scriptPath, pathStatus: pathResolution.status, resolvedPath: pathResolution.resolvedPath },
     })
-    return { installed: false, scriptPath, pathReady: isBinDirInPath(binDir, envPath), shellProfileUpdated: null, skippedReason: "already-installed", repairedOldLauncher, pathResolution }
+    return {
+      installed: false,
+      scriptPath,
+      pathReady: isBinDirInPath(binDir, envPath),
+      shellProfileUpdated: null,
+      skippedReason: "already-installed",
+      repairedOldLauncher,
+      repairedShadowedLauncherPath,
+      pathResolution,
+    }
   }
 
   emitNervesEvent({
@@ -306,7 +420,22 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     }
   }
 
-  const pathResolution = resolvePath()
+  let pathResolution = resolvePath()
+  const repairedShadowedLauncherPath = pathResolution.status === "shadowed" && pathResolution.resolvedPath
+    ? repairShadowedLauncher({
+        shadowPath: pathResolution.resolvedPath,
+        existsSync,
+        readFileSync,
+        writeFileSync,
+        chmodSync,
+        realpathSync,
+        lstatSync,
+        unlinkSync,
+      })
+    : null
+  if (repairedShadowedLauncherPath) {
+    pathResolution = resolvePath()
+  }
   if (pathResolution.status === "shadowed") {
     emitNervesEvent({
       level: "warn",
@@ -321,8 +450,24 @@ export function installOuroCommand(deps: OuroPathInstallerDeps = {}): OuroPathIn
     component: "daemon",
     event: "daemon.ouro_path_install_end",
     message: "ouro command installed",
-    meta: { scriptPath, pathReady, shellProfileUpdated, oldScriptPath: oldExists ? oldScriptPath : null, pathStatus: pathResolution.status, resolvedPath: pathResolution.resolvedPath },
+    meta: {
+      scriptPath,
+      pathReady,
+      shellProfileUpdated,
+      oldScriptPath: oldExists ? oldScriptPath : null,
+      repairedShadowedLauncherPath,
+      pathStatus: pathResolution.status,
+      resolvedPath: pathResolution.resolvedPath,
+    },
   })
 
-  return { installed: true, scriptPath, pathReady, shellProfileUpdated, repairedOldLauncher, pathResolution }
+  return {
+    installed: true,
+    scriptPath,
+    pathReady,
+    shellProfileUpdated,
+    repairedOldLauncher,
+    repairedShadowedLauncherPath,
+    pathResolution,
+  }
 }

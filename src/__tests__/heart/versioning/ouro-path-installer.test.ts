@@ -11,12 +11,14 @@ describe("installOuroCommand", () => {
   let appended: Record<string, string>
   let chmoded: Record<string, number>
   let mkdirCalls: string[]
+  let unlinked: string[]
 
   function makeDeps(overrides: Partial<OuroPathInstallerDeps> = {}): OuroPathInstallerDeps {
     written = {}
     appended = {}
     chmoded = {}
     mkdirCalls = []
+    unlinked = []
     return {
       homeDir: "/home/test",
       platform: "darwin",
@@ -26,6 +28,9 @@ describe("installOuroCommand", () => {
       readFileSync: () => { throw new Error("ENOENT") },
       appendFileSync: (p, data) => { appended[p] = (appended[p] ?? "") + data },
       chmodSync: (p, mode) => { chmoded[p] = typeof mode === "number" ? mode : 0 },
+      realpathSync: (p) => p,
+      lstatSync: () => ({ isSymbolicLink: () => false }) as never,
+      unlinkSync: (p) => { unlinked.push(p) },
       envPath: "/usr/bin:/usr/local/bin",
       shell: "/bin/zsh",
       ...overrides,
@@ -273,6 +278,200 @@ exec node "$ENTRY" "$@"
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.ouro_path_shadowed",
       meta: expect.objectContaining({ resolvedPath: "/opt/homebrew/bin/ouro" }),
+    }))
+  })
+
+  it("repairs a shadowing symlink when it points at a stale global @ouro.bot/cli entrypoint", () => {
+    const deps = makeDeps({
+      existsSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return true
+        if (p === "/opt/homebrew/bin/ouro") return !unlinked.includes(p) || p in written
+        return false
+      },
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/opt/homebrew/bin/ouro" && p in written) return written[p]
+        if (p === "/opt/homebrew/bin/ouro") return '"use strict"; require("./node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js")\n'
+        throw new Error("ENOENT")
+      },
+      realpathSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro" && p in written) return p
+        if (p === "/opt/homebrew/bin/ouro") {
+          return "/opt/homebrew/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+        }
+        return p
+      },
+      lstatSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro" && !(p in written)) {
+          return { isSymbolicLink: () => true } as never
+        }
+        return { isSymbolicLink: () => false } as never
+      },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.installed).toBe(false)
+    expect(result.repairedShadowedLauncherPath).toBe("/opt/homebrew/bin/ouro")
+    expect(result.pathResolution).toMatchObject({
+      status: "ok",
+      resolvedPath: "/opt/homebrew/bin/ouro",
+      remediation: null,
+    })
+    expect(unlinked).toContain("/opt/homebrew/bin/ouro")
+    expect(written["/opt/homebrew/bin/ouro"]).toContain("CurrentVersion")
+    expect(chmoded["/opt/homebrew/bin/ouro"]).toBe(0o755)
+  })
+
+  it.each([
+    '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n',
+    'echo ouro.bot@latest',
+    '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n',
+    '#!/bin/sh\nENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"\nexec node "$ENTRY" "$@"\n',
+  ])("repairs an Ouro-owned shadow launcher based on legacy content signature: %s", (shadowContent) => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/usr/local/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/usr/local/bin/ouro" && p in written) return written[p]
+        if (p === "/usr/local/bin/ouro") return shadowContent
+        throw new Error("ENOENT")
+      },
+      realpathSync: (p) => {
+        if (p === "/usr/local/bin/ouro" && p in written) return p
+        throw new Error("EINVAL")
+      },
+      envPath: "/usr/local/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedShadowedLauncherPath).toBe("/usr/local/bin/ouro")
+    expect(result.pathResolution?.status).toBe("ok")
+    expect(written["/usr/local/bin/ouro"]).toContain("CurrentVersion")
+  })
+
+  it("stays calm when the shadowed launcher disappears before repair runs", () => {
+    let shadowChecks = 0
+    const deps = makeDeps({
+      existsSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return true
+        if (p === "/usr/local/bin/ouro") {
+          shadowChecks += 1
+          return shadowChecks === 1
+        }
+        return false
+      },
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/usr/local/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
+        throw new Error("ENOENT")
+      },
+      envPath: "/usr/local/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.pathResolution?.status).toBe("shadowed")
+    expect(result.repairedShadowedLauncherPath).toBeNull()
+  })
+
+  it("keeps warning when the shadowed launcher cannot be identified as Ouro-owned", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        throw new Error("EACCES")
+      },
+      realpathSync: () => { throw new Error("EINVAL") },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedShadowedLauncherPath).toBeNull()
+    expect(result.pathResolution?.status).toBe("shadowed")
+    expect(written["/opt/homebrew/bin/ouro"]).toBeUndefined()
+  })
+
+  it("keeps warning when a readable shadowed launcher has non-Ouro content", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\necho "hello from a different launcher"\n'
+        throw new Error("ENOENT")
+      },
+      realpathSync: () => { throw new Error("EINVAL") },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedShadowedLauncherPath).toBeNull()
+    expect(result.pathResolution?.status).toBe("shadowed")
+    expect(written["/opt/homebrew/bin/ouro"]).toBeUndefined()
+  })
+
+  it("keeps warning when repairing an owned shadowed launcher fails", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
+        throw new Error("ENOENT")
+      },
+      realpathSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") {
+          return "/opt/homebrew/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+        }
+        return p
+      },
+      writeFileSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") throw new Error("EPERM")
+        written[p] = CORRECT_CONTENT
+      },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedShadowedLauncherPath).toBeNull()
+    expect(result.pathResolution?.status).toBe("shadowed")
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.ouro_path_shadow_repair_error",
+      meta: expect.objectContaining({ shadowPath: "/opt/homebrew/bin/ouro", error: "EPERM" }),
+    }))
+  })
+
+  it("records non-Error shadow-repair failures without crashing", () => {
+    const deps = makeDeps({
+      existsSync: (p) => p === "/home/test/.ouro-cli/bin/ouro" || p === "/opt/homebrew/bin/ouro",
+      readFileSync: (p) => {
+        if (p === "/home/test/.ouro-cli/bin/ouro") return CORRECT_CONTENT
+        if (p === "/opt/homebrew/bin/ouro") return '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n'
+        throw new Error("ENOENT")
+      },
+      realpathSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") {
+          return "/opt/homebrew/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
+        }
+        return p
+      },
+      writeFileSync: (p) => {
+        if (p === "/opt/homebrew/bin/ouro") throw "nope"
+        written[p] = CORRECT_CONTENT
+      },
+      envPath: "/opt/homebrew/bin:/home/test/.ouro-cli/bin:/usr/bin",
+    })
+
+    const result = installOuroCommand(deps)
+
+    expect(result.repairedShadowedLauncherPath).toBeNull()
+    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.ouro_path_shadow_repair_error",
+      meta: expect.objectContaining({ shadowPath: "/opt/homebrew/bin/ouro", error: "nope" }),
     }))
   })
 

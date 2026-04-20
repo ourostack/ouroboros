@@ -5152,6 +5152,42 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("move /home/test/.ouro-cli/bin before /opt/homebrew/bin in PATH"))
   })
 
+  it("announces when system setup repairs a stale shadowing ouro launcher", async () => {
+    const writeStdout = vi.fn()
+    const installOuroCommand = vi.fn(() => ({
+      installed: false,
+      scriptPath: "/home/test/.ouro-cli/bin/ouro",
+      pathReady: true,
+      shellProfileUpdated: null,
+      repairedOldLauncher: false,
+      repairedShadowedLauncherPath: "/opt/homebrew/bin/ouro",
+      pathResolution: {
+        status: "ok" as const,
+        expectedPath: "/home/test/.ouro-cli/bin/ouro",
+        resolvedPath: "/opt/homebrew/bin/ouro",
+        detail: "PATH resolves ouro through a compatible wrapper at /opt/homebrew/bin/ouro",
+        remediation: null,
+      },
+    }))
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout,
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => []),
+      runSerpentGuide: vi.fn(async () => null),
+      installOuroCommand,
+    }
+
+    await runOuroCli([], deps)
+
+    expect(writeStdout).toHaveBeenCalledWith("updated stale ouro launcher at /opt/homebrew/bin/ouro")
+    expect(writeStdout).not.toHaveBeenCalledWith(expect.stringContaining("fix ouro PATH:"))
+  })
+
   it("handles installOuroCommand failure gracefully during system setup", async () => {
     const installOuroCommand = vi.fn(() => { throw new Error("permission denied") })
     const runSerpentGuide = vi.fn(async () => "GracefulBot")
