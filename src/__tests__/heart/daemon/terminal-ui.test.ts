@@ -201,6 +201,50 @@ describe("terminal ui", () => {
     expect(output).not.toContain("\x1b[")
   })
 
+  it("renders operation prompts in both tty and plain modes", () => {
+    emitTestEvent("terminal ui operation prompt rendering")
+
+    const ttyOutput = renderTerminalOperation({
+      isTTY: true,
+      title: "Starting Ouro",
+      prompt: "Press Enter to continue",
+    })
+    const plainOutput = renderTerminalOperation({
+      isTTY: false,
+      title: "Starting Ouro",
+      prompt: "Press Enter to continue",
+    })
+
+    expect(ttyOutput).toContain("Press Enter to continue")
+    expect(ttyOutput).toContain("\x1b[")
+    expect(plainOutput).toContain("Press Enter to continue")
+    expect(plainOutput).not.toContain("\x1b[")
+  })
+
+  it("renders plain operation summaries and step markers for every status", () => {
+    emitTestEvent("terminal ui plain operation status rendering")
+
+    const output = renderTerminalOperation({
+      isTTY: false,
+      columns: 64,
+      title: "Starting Ouro",
+      summary: "Check the local runtime, keep the checklist truthful, and surface the next thing a human should do.",
+      steps: [
+        { label: "update check", status: "done", detail: "up to date" },
+        { label: "provider checks", status: "active" },
+        { label: "vault unlock", status: "failed", detail: "still locked" },
+        { label: "daemon handshake", status: "pending" },
+      ],
+    })
+
+    expect(output).toContain("Check the local runtime, keep the checklist truthful, and")
+    expect(output).toContain("surface the next thing a human should do.")
+    expect(output).toContain("✓ update check — up to date")
+    expect(output).toContain("→ provider checks")
+    expect(output).toContain("✗ vault unlock — still locked")
+    expect(output).toContain("○ daemon handshake")
+  })
+
   it("renders an operation step even when the current step has no detail lines", () => {
     emitTestEvent("terminal ui operation current step without detail")
 
@@ -260,6 +304,14 @@ describe("terminal ui", () => {
     expect(output).toContain("Ouro home")
     expect(output).toContain("Start or check Ouro")
     expect(output).not.toContain("\x1b[")
+  })
+
+  it("returns a plain overwrite frame when tty repaint is unavailable", () => {
+    emitTestEvent("terminal ui plain overwrite frame")
+
+    const output = renderOverwriteFrame(["one", "two"], 4, false)
+
+    expect(output).toBe("one\ntwo\n")
   })
 
   it("renders a compact fallback masthead and quiet board when optional sections are absent", () => {
