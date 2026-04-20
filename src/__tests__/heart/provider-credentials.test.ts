@@ -265,8 +265,65 @@ describe("provider credentials vault store", () => {
         config: { endpoint: "https://example.openai.azure.com", deployment: "gpt-4.1" },
       },
     })
-    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(1)
+    expect(mockCredentialStore.store.list).not.toHaveBeenCalled()
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(5)
     expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("azure"), "password")
+  })
+
+  it("refreshes known provider items directly without listing the whole vault", async () => {
+    emitTestEvent("provider credential refresh direct provider reads")
+    mockCredentialStore.items.set(providerCredentialItemName("azure"), {
+      username: "azure",
+      password: validPayload("azure"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+    mockCredentialStore.store.list.mockRejectedValueOnce(new Error("list should not be called during provider refresh"))
+
+    const result = await refreshProviderCredentialPool("slugger")
+
+    expect(result).toMatchObject({
+      ok: true,
+      pool: {
+        providers: {
+          azure: {
+            provider: "azure",
+            credentials: { apiKey: "azure-key" },
+          },
+        },
+      },
+    })
+    expect(mockCredentialStore.store.list).not.toHaveBeenCalled()
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("azure"), "password")
+  })
+
+  it("treats direct item 'not found' errors as missing provider credentials during refresh", async () => {
+    emitTestEvent("provider credential refresh not-found direct reads")
+    mockCredentialStore.store.getRawSecret.mockImplementation(async (domain: string, field: string) => {
+      if (field !== "password") throw new Error(`unexpected field ${field}`)
+      if (domain === providerCredentialItemName("azure")) {
+        throw new Error(`bw CLI error: item not found for ${providerCredentialItemName("azure")}`)
+      }
+      const item = mockCredentialStore.items.get(domain)
+      if (!item) throw new Error(`missing ${domain}`)
+      return item.password
+    })
+    mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+      username: "minimax",
+      password: validPayload("minimax"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+
+    const result = await refreshProviderCredentialPool("slugger")
+
+    expect(result).toMatchObject({
+      ok: true,
+      pool: {
+        providers: {
+          minimax: { provider: "minimax" },
+        },
+      },
+    })
+    expect(result.ok && result.pool.providers.azure).toBeUndefined()
   })
 
   it("preserves a cached runtime pool when vault refresh fails during retry", async () => {
@@ -280,7 +337,7 @@ describe("provider credentials vault store", () => {
       now: new Date("2026-04-13T12:00:00.000Z"),
     })
     cacheProviderCredentialRecords("slugger", [minimax])
-    mockCredentialStore.store.list.mockRejectedValueOnce(new Error("vault unavailable: operator password manager offline"))
+    mockCredentialStore.store.getRawSecret.mockRejectedValueOnce(new Error("vault unavailable: operator password manager offline"))
 
     const preserved = await refreshProviderCredentialPool("slugger", { preserveCachedOnFailure: true })
     expect(preserved).toMatchObject({
@@ -296,7 +353,7 @@ describe("provider credentials vault store", () => {
       },
     }))
 
-    mockCredentialStore.store.list.mockRejectedValueOnce(new Error("vault unavailable: operator password manager offline"))
+    mockCredentialStore.store.getRawSecret.mockRejectedValueOnce(new Error("vault unavailable: operator password manager offline"))
     const failed = await refreshProviderCredentialPool("slugger")
     expect(failed).toMatchObject({
       ok: false,
@@ -308,7 +365,7 @@ describe("provider credentials vault store", () => {
 
   it("normalizes non-Error vault failures during refresh", async () => {
     emitTestEvent("provider credential non error refresh failure")
-    mockCredentialStore.store.list.mockRejectedValueOnce("vault string failure")
+    mockCredentialStore.store.getRawSecret.mockRejectedValueOnce("vault string failure")
 
     const result = await refreshProviderCredentialPool("slugger")
 
@@ -390,14 +447,17 @@ describe("provider credentials vault store", () => {
 
   it("fails clearly when the vault write succeeds but the local provider snapshot refresh does not", async () => {
     emitTestEvent("provider credential refresh failure after store")
-    const originalList = mockCredentialStore.store.list.getMockImplementation()
-    let listCalls = 0
-    mockCredentialStore.store.list.mockImplementation(async () => {
-      listCalls += 1
-      if (listCalls === 1) {
+    const originalGetRawSecret = mockCredentialStore.store.getRawSecret.getMockImplementation()
+    let refreshCalls = 0
+    mockCredentialStore.store.getRawSecret.mockImplementation(async (domain: string, field: string) => {
+      refreshCalls += 1
+      if (refreshCalls === 1) {
         throw new Error("vault unavailable: session expired during refresh")
       }
-      return []
+      if (field !== "password") throw new Error(`unexpected field ${field}`)
+      const item = mockCredentialStore.items.get(domain)
+      if (!item) throw new Error(`missing ${domain}`)
+      return item.password
     })
 
     try {
@@ -414,13 +474,13 @@ describe("provider credentials vault store", () => {
 
       expect(mockCredentialStore.items.has(providerCredentialItemName("openai-codex"))).toBe(true)
     } finally {
-      mockCredentialStore.store.list.mockImplementation(
-        originalList ?? (async () => [...mockCredentialStore.items.entries()].map(([domain, item]) => ({
-          domain,
-          username: item.username,
-          notes: item.notes,
-          createdAt: item.createdAt,
-        }))),
+      mockCredentialStore.store.getRawSecret.mockImplementation(
+        originalGetRawSecret ?? (async (domain: string, field: string) => {
+          if (field !== "password") throw new Error(`unexpected field ${field}`)
+          const item = mockCredentialStore.items.get(domain)
+          if (!item) throw new Error(`missing ${domain}`)
+          return item.password
+        }),
       )
     }
   })

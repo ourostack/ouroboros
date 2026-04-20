@@ -96,6 +96,31 @@ describe("BitwardenCredentialStore", () => {
       expect(store.isReady()).toBe(true)
     })
 
+    it("uses the resolved bw binary path for later vault commands", async () => {
+      const commands: string[] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        commands.push(cmd)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.list()
+
+      expect(commands.length).toBeGreaterThan(0)
+      expect(new Set(commands)).toEqual(new Set(["/usr/local/bin/bw"]))
+    })
+
     it("handles JSON login output without access_token field", async () => {
       mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
         cb(null, '{"some_other_field":"value"}', "")
@@ -524,6 +549,43 @@ describe("BitwardenCredentialStore", () => {
       })
 
       await expect(store.get("providers/openai-codex")).rejects.toThrow("bw CLI error: server unavailable")
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+    })
+
+    it("treats a missing structured Ouro item as missing without falling back to filtered search", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get" && args[1] === "item") {
+          const err = new Error("Command failed: /tmp/fake-bw get item providers/azure\nitem not found") as NodeJS.ErrnoException
+          err.code = "EFAIL"
+          cb(err, "", "item not found")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{
+            id: "provider-item",
+            name: "providers/azure",
+            login: { username: "azure", password: "provider-token" },
+            revisionDate: "2026-04-20T05:01:00.000Z",
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.get("providers/azure")
+
+      expect(result).toBeNull()
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/azure")).toBeDefined()
       expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
     })
   })

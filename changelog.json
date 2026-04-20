@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.437",
+      "changes": [
+        "Provider-credential refresh now reads the known `providers/<provider>` vault items directly instead of starting with a full `bw list items` scan, so startup, repair, and connect-bay readiness stop paying whole-vault latency just to inspect the handful of provider records Ouro already names exactly.",
+        "Structured Ouro vault items now treat an exact-item `not found` from Bitwarden as a real miss instead of falling back into a fuzzy filtered search, which removes the slow retrying scan path for absent `providers/*` and `runtime/*` records without changing the safety fallback for malformed direct responses.",
+        "This closes the remaining real-world `connect` slowdown found after the live-ping work: local dogfood dropped the branch connect-bay readiness run from 127 seconds in the shipped path to 18 seconds after the direct provider-read fix, with new coverage locking the direct-read contract in place."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.436",
       "changes": [
         "Distinct live provider pings now run in parallel during startup, repair, and connect-bay readiness checks, so the CLI stops making humans wait for one selected provider/model lane to finish before it even starts checking the next one.",
