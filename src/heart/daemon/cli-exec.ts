@@ -3873,6 +3873,9 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
       if (installResult.repairedOldLauncher) {
         deps.writeStdout("repaired stale ouro launcher at ~/.local/bin/ouro")
       }
+      if (installResult.repairedShadowedLauncherPath) {
+        deps.writeStdout(`updated stale ouro launcher at ${installResult.repairedShadowedLauncherPath}`)
+      }
       if (installResult.pathResolution?.status === "shadowed") {
         deps.writeStdout(
           `fix ouro PATH: ${installResult.pathResolution.detail}; ` +
