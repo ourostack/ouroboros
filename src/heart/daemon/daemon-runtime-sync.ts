@@ -20,13 +20,19 @@ export interface DaemonRuntimeSyncDeps {
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
   onProgress?: (message: string) => void
+  waitForDaemonStartup?: (options: { pid: number | null }) => Promise<{
+    ok: boolean
+    reason?: string
+  }>
 }
 
 export interface DaemonRuntimeSyncResult {
+  ok: boolean
   alreadyRunning: boolean
   message: string
   verifyStartupStatus?: boolean
   startedPid?: number | null
+  startupFailureReason?: string | null
 }
 
 /* v8 ignore start -- daemon liveness poll: real socket timing untestable in vitest @preserve */
@@ -177,10 +183,14 @@ export async function ensureCurrentDaemonRuntime(
       } catch (error) {
         const reason = formatErrorReason(error)
         result = {
+          ok: false,
           alreadyRunning: true,
           message: includesVersionDrift
             ? `daemon already running (${deps.socketPath}; could not replace the older background service ${runningVersion} -> ${deps.localVersion}: ${reason})`
             : `daemon already running (${deps.socketPath}; could not replace the older background service after runtime drift ${publicDriftSummary}: ${reason})`,
+          startupFailureReason: includesVersionDrift
+            ? "could not replace the older background service"
+            : "could not replace the older background service after runtime drift",
         }
         emitNervesEvent({
           level: "warn",
@@ -211,16 +221,23 @@ export async function ensureCurrentDaemonRuntime(
       deps.onProgress?.("starting the replacement background service")
       const started = await deps.startDaemonProcess(deps.socketPath)
       const pid = started.pid ?? "unknown"
-      const verified = await verifyDaemonStarted(deps)
+      const startupCheck = deps.waitForDaemonStartup
+        ? await deps.waitForDaemonStartup({ pid: started.pid ?? null })
+        : { ok: await verifyDaemonStarted(deps) }
+      const verified = startupCheck.ok
       /* v8 ignore next -- daemon liveness failure: requires real daemon crash timing @preserve */
-      const suffix = verified ? "" : "\nreplacement daemon did not answer in time; check logs with `ouro logs` or run `ouro doctor`."
+      const suffix = verified
+        ? ""
+        : `\n${startupCheck.reason ?? "replacement background service did not answer in time"}; check logs with \`ouro logs\` or run \`ouro doctor\`.`
       result = {
+        ok: verified,
         alreadyRunning: false,
         message: includesVersionDrift
           ? `replaced an older background service ${runningVersion} -> ${deps.localVersion} (pid ${pid})${suffix}`
           : `replaced an older background service after runtime drift: ${publicDriftSummary} (pid ${pid})${suffix}`,
         verifyStartupStatus: verified,
         startedPid: started.pid ?? null,
+        startupFailureReason: verified ? null : (startupCheck.reason ?? "replacement background service did not answer in time"),
       }
       emitNervesEvent({
         component: "daemon",
@@ -248,6 +265,7 @@ export async function ensureCurrentDaemonRuntime(
 
     if (!isKnownVersion(localRuntime.version) || !isKnownVersion(runningVersion)) {
       result = {
+        ok: true,
         alreadyRunning: true,
         message: `daemon already running (${deps.socketPath}; unable to verify version)`,
       }
@@ -275,6 +293,7 @@ export async function ensureCurrentDaemonRuntime(
   } catch (error) {
     const reason = formatErrorReason(error)
     const result = {
+      ok: true,
       alreadyRunning: true,
       message: `daemon already running (${deps.socketPath}; unable to verify version: ${reason})`,
     }
@@ -298,10 +317,12 @@ export async function ensureCurrentDaemonRuntime(
   }
 
   const result = {
+    ok: true,
     alreadyRunning: true,
     message: `daemon already running (${deps.socketPath})`,
     verifyStartupStatus: true,
     startedPid: null,
+    startupFailureReason: null,
   }
   emitNervesEvent({
     component: "daemon",

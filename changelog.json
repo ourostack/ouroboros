@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.444",
+      "changes": [
+        "`ouro up` now treats daemon startup as one truthful boot story across fresh starts and daemon replacement: both paths wait on the same current-boot readiness check, keep narrating real progress while the background service warms up, and stop calling startup done just because one quick socket probe answered.",
+        "Slow real-world boots now get more patience and better visibility. The default startup timeout was extended to 60 seconds, the boot checklist keeps printing live startup detail instead of stalling on a blinking cursor, and replacement boot failures now land as a failed `starting daemon` step with plain-language diagnosis.",
+        "Startup failures now behave like failures to the shell as well as to the human: `ouro up` sets a non-zero exit code when daemon boot does not finish, and `ouro logs` is wired into the installed CLI again so the recovery path it points to actually opens the live daemon/agent log tail."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.443",
       "changes": [
         "`ouro up` now renders as a real boot checklist instead of a loose progress wall: the screen shows the full startup path up front, marks what is running now, and keeps pending steps visible so humans can see where Ouro is in the bring-up flow.",

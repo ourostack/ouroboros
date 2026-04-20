@@ -297,6 +297,7 @@ describe("ouro up: UpProgress integration", () => {
   it("keeps daemon startup unresolved and surfaces replacement breadcrumbs when a drift restart does not answer", async () => {
     vi.useFakeTimers()
     mocks.upProgressCompletePhase.mockClear()
+    mocks.upProgressFailPhase.mockClear()
     mocks.upProgressEnd.mockClear()
     mocks.upProgressAnnounceStep.mockClear()
     const sendCommand = vi.fn(async (_socketPath, command) => {
@@ -321,23 +322,30 @@ describe("ouro up: UpProgress integration", () => {
       }
       return { ok: true, summary: "ok" }
     })
-    const checkSocketAlive = vi.fn(async () => checkSocketAlive.mock.calls.length <= 2)
+    const checkSocketAlive = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false)
     const deps = makeDeps({
       sendCommand,
       checkSocketAlive,
       startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
       cleanupStaleSocket: vi.fn(),
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 10,
     })
 
     try {
       const resultPromise = runOuroCli(["up"], deps)
-      await vi.advanceTimersByTimeAsync(10_500)
+      await vi.advanceTimersByTimeAsync(50)
       const result = await resultPromise
 
-      expect(result).toContain("replacement daemon did not answer in time")
+      expect(result).toContain("did not finish booting")
+      expect(result).toContain("did not answer within 1s")
       expect(mocks.upProgressCompletePhase).not.toHaveBeenCalledWith("starting daemon", expect.anything())
+      expect(mocks.upProgressFailPhase).toHaveBeenCalledWith(
+        "starting daemon",
+        expect.stringContaining("did not answer"),
+      )
       expect(mocks.upProgressAnnounceStep.mock.calls.some(
-        (call: unknown[]) => String(call[0]).includes("replacement"),
+        (call: unknown[]) => String(call[0]).includes("background service"),
       )).toBe(true)
       expect(mocks.upProgressEnd).toHaveBeenCalled()
       expect(deps.writeStdout).toHaveBeenCalledWith(result)
@@ -383,7 +391,7 @@ describe("ouro up: UpProgress integration", () => {
     expect(announced).toContain("checking whether an older background service is already running")
     expect(announced).toContain("stopping the older background service")
     expect(announced).toContain("starting the replacement background service")
-    expect(announced).toContain("waiting for the replacement background service to answer")
+    expect(announced.some((line: string) => line.includes("replacement background service"))).toBe(true)
   })
 
   it("calls end() before pollDaemonStartup takes over", async () => {

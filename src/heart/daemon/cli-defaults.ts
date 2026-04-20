@@ -33,7 +33,7 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../versioning/ouro-bot-global-installer"
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
-import { discoverLogFiles, formatLogLine, readLastLines } from "./log-tailer"
+import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
 import { writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
@@ -535,11 +535,16 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     sendCommand: sendDaemonCommand,
     startDaemonProcess: defaultStartDaemonProcess,
     writeStdout: defaultWriteStdout,
+    setExitCode: (code: number) => {
+      const current = typeof process.exitCode === "number" ? process.exitCode : 0
+      process.exitCode = Math.max(current, code)
+    },
     writeRaw: defaultWriteRaw,
     isTTY: process.stdout.isTTY === true,
     checkSocketAlive: checkDaemonSocketAlive,
     cleanupStaleSocket: defaultCleanupStaleSocket,
     fallbackPendingMessage: defaultFallbackPendingMessage,
+    tailLogs: (options) => defaultTailLogs(options),
     healthFilePath: getDefaultHealthPath(),
     readHealthState: readHealth,
     readHealthUpdatedAt: defaultReadHealthUpdatedAt,
@@ -549,7 +554,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     updateCheckTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS,
     startupPollIntervalMs: 250,
     startupStabilityWindowMs: 1_500,
-    startupTimeoutMs: 10_000,
+    startupTimeoutMs: 60_000,
     startupRetryLimit: 1,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,

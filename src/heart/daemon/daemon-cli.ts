@@ -31,6 +31,7 @@ export {
   runOuroCli,
   ensureDaemonRunning,
   listGithubCopilotModels,
+  summarizeDaemonStartupFailure,
 } from "./cli-exec"
 
 export { pingGithubCopilotModel } from "../provider-ping"

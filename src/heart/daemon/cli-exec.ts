@@ -153,7 +153,7 @@ import {
 
 // ── ensureDaemonRunning ──
 
-const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 10_000
+const DEFAULT_DAEMON_STARTUP_TIMEOUT_MS = 60_000
 const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
@@ -177,6 +177,38 @@ function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string 
     return "skipped; registry unavailable"
   }
   return "skipped; update check unavailable"
+}
+
+function returnCliFailure(deps: Pick<OuroCliDeps, "setExitCode" | "writeStdout">, message: string, exitCode = 1): string {
+  deps.setExitCode?.(exitCode)
+  deps.writeStdout(message)
+  return message
+}
+
+export function summarizeDaemonStartupFailure(result: EnsureDaemonResult): string {
+  if (result.startupFailureReason && result.startupFailureReason.trim().length > 0) {
+    return result.startupFailureReason
+  }
+  const firstLine = result.message.split(/\r?\n/, 1)[0]?.trim()
+  return firstLine && firstLine.length > 0
+    ? firstLine
+    : "background service failed to finish booting"
+}
+
+function formatDaemonStartupProgressLine(
+  serviceLabel: string,
+  status: "waiting" | "answering" | "stabilizing",
+  latestEvent?: string | null,
+): string {
+  const base = status === "waiting"
+    ? `waiting for the ${serviceLabel} to answer`
+    : status === "answering"
+      ? `${serviceLabel} answered\n- waiting for this boot to publish its ready signal`
+      : `${serviceLabel} answered\n- ready signal received; making sure it holds`
+  const trimmedEvent = latestEvent?.trim()
+  return trimmedEvent && status !== "stabilizing"
+    ? `${base}\n- latest daemon event: ${trimmedEvent}`
+    : base
 }
 
 async function runCliUpdateCheckWithTimeout(
@@ -884,7 +916,7 @@ export async function ensureDaemonRunning(
       // The daemon writes structured events to daemon.ndjson in the first
       // agent bundle's state/daemon/logs/ directory. Read the last line to
       // surface what it's currently doing (e.g., "starting auto-start agents").
-      const bundlesRoot = getAgentBundlesRoot()
+      const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
       if (!fs.existsSync(bundlesRoot)) return null
       const agents = fs.readdirSync(bundlesRoot).filter((d) => d.endsWith(".ouro"))
       for (const agent of agents) {
@@ -962,9 +994,27 @@ export async function ensureDaemonRunning(
       startDaemonProcess: deps.startDaemonProcess,
       checkSocketAlive: deps.checkSocketAlive,
       onProgress: deps.reportDaemonStartupPhase,
+      waitForDaemonStartup: async ({ pid }) => {
+        const startupFailure = await waitForDaemonStartup(deps, {
+          bootStartedAtMs: (deps.now ?? Date.now)(),
+          pid,
+          serviceLabel: "replacement background service",
+          readLatestDaemonEvent: readLatestDaemonStartupEvent,
+        })
+        return startupFailure
+          ? { ok: false, reason: startupFailure.reason }
+          : { ok: true }
+      },
     })
-    if (!runtimeResult.verifyStartupStatus) {
-      return runtimeResult
+    if (!runtimeResult.ok) {
+      return {
+        ok: false,
+        alreadyRunning: runtimeResult.alreadyRunning,
+        message: runtimeResult.message,
+        verifyStartupStatus: runtimeResult.verifyStartupStatus,
+        startedPid: runtimeResult.startedPid,
+        startupFailureReason: runtimeResult.startupFailureReason ?? null,
+      }
     }
 
     const stability = await pollDaemonStartup({
@@ -987,8 +1037,12 @@ export async function ensureDaemonRunning(
     })
 
     return {
+      ok: true,
       alreadyRunning: runtimeResult.alreadyRunning,
       message: runtimeResult.message,
+      verifyStartupStatus: runtimeResult.verifyStartupStatus,
+      startedPid: runtimeResult.startedPid,
+      startupFailureReason: null,
       stability,
     }
   }
@@ -1012,6 +1066,8 @@ export async function ensureDaemonRunning(
     const startupFailure = await waitForDaemonStartup(deps, {
       bootStartedAtMs,
       pid: lastPid,
+      serviceLabel: "new background service",
+      readLatestDaemonEvent: readLatestDaemonStartupEvent,
     })
     if (!startupFailure) {
       const stability = await pollDaemonStartup({
@@ -1034,8 +1090,10 @@ export async function ensureDaemonRunning(
       })
 
       return {
+        ok: true,
         alreadyRunning: false,
         message: `daemon started (pid ${lastPid ?? "unknown"})`,
+        startupFailureReason: null,
         stability,
       }
     }
@@ -1049,8 +1107,10 @@ export async function ensureDaemonRunning(
   }
 
   return {
+    ok: false,
     alreadyRunning: false,
     message: formatDaemonStartupFailureMessage(lastPid, lastFailure, deps),
+    startupFailureReason: lastFailure.reason,
   }
 }
 
@@ -1089,14 +1149,14 @@ function formatDaemonStartupFailureMessage(
   deps: OuroCliDeps,
 ): string {
   const lines = [
-    `daemon spawned (pid ${pid ?? "unknown"}) but failed to stabilize: ${failure.reason}`,
+    `background service started (pid ${pid ?? "unknown"}) but did not finish booting: ${failure.reason}`,
   ]
   const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
   if (recentLogLines.length > 0) {
     lines.push("recent daemon logs:")
     lines.push(...recentLogLines.map((line) => `  ${line}`))
   }
-  lines.push("fix hint for daemon: check daemon logs or run `ouro doctor`")
+  lines.push("Run `ouro logs` to watch live startup logs or `ouro doctor` for a deeper diagnosis.")
   return lines.join("\n")
 }
 
@@ -1105,6 +1165,8 @@ async function waitForDaemonStartup(
   options: {
     bootStartedAtMs: number
     pid: number | null
+    serviceLabel: string
+    readLatestDaemonEvent?: () => string | null
   },
 ): Promise<DaemonStartupFailure | null> {
   const now = deps.now ?? Date.now
@@ -1118,20 +1180,16 @@ async function waitForDaemonStartup(
   let sawSocket = false
 
   if (!useHealthMonitor) {
-    const verified = await verifyDaemonAlive(
-      deps.checkSocketAlive,
-      deps.socketPath,
-      timeoutMs,
-      pollIntervalMs,
-      sleep,
-      now,
-    )
-    return verified
-      ? null
-      : {
-          reason: `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
-          retryable: false,
-        }
+    while (now() < deadline) {
+      await sleep(pollIntervalMs)
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "waiting", latestEvent))
+      if (await deps.checkSocketAlive(deps.socketPath)) return null
+    }
+    return {
+      reason: `${options.serviceLabel} did not answer within ${Math.ceil(timeoutMs / 1000)}s`,
+      retryable: false,
+    }
   }
 
   while (now() < deadline) {
@@ -1140,23 +1198,29 @@ async function waitForDaemonStartup(
     if (!aliveNow) {
       if (sawSocket) {
         return {
-          reason: "daemon socket disappeared during startup",
+          reason: `${options.serviceLabel} answered once and then disappeared during startup`,
           retryable: true,
         }
       }
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "waiting", latestEvent))
       continue
     }
 
     if (!sawSocket) {
       sawSocket = true
       stableSinceMs = now()
-      deps.reportDaemonStartupPhase?.("verifying daemon health")
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "answering", latestEvent))
     }
 
     if (!hasFreshCurrentBootHealthSignal(deps, options.bootStartedAtMs, options.pid)) {
+      const latestEvent = options.readLatestDaemonEvent?.() ?? null
+      deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "answering", latestEvent))
       continue
     }
 
+    deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "stabilizing"))
     if (stableSinceMs !== null && now() - stableSinceMs >= stabilityWindowMs) {
       return null
     }
@@ -1164,26 +1228,10 @@ async function waitForDaemonStartup(
 
   return {
     reason: sawSocket
-      ? "daemon did not publish fresh health for the current boot attempt"
-      : `daemon failed to respond within ${Math.ceil(timeoutMs / 1000)}s`,
+      ? `${options.serviceLabel} answered but this boot never published a ready signal within ${Math.ceil(timeoutMs / 1000)}s`
+      : `${options.serviceLabel} did not answer within ${Math.ceil(timeoutMs / 1000)}s`,
     retryable: sawSocket,
   }
-}
-
-async function verifyDaemonAlive(
-  checkSocketAlive: (socketPath: string) => Promise<boolean>,
-  socketPath: string,
-  maxWaitMs = 10_000,
-  pollIntervalMs = 500,
-  sleep: (ms: number) => Promise<void> = defaultSleep,
-  now: () => number = Date.now,
-): Promise<boolean> {
-  const deadline = now() + maxWaitMs
-  while (now() < deadline) {
-    await sleep(pollIntervalMs)
-    if (await checkSocketAlive(socketPath)) return true
-  }
-  return false
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -4839,24 +4887,21 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         if (command.noRepair) {
           writeProviderRepairSummary(deps, "Provider checks need attention", preflightProviderDegraded)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
-          deps.writeStdout(message)
-          return message
+          return returnCliFailure(deps, message)
         }
 
         const repairResult = await runReadinessRepairForDegraded(preflightProviderDegraded, deps)
         if (!repairResult.repairsAttempted) {
           writeProviderRepairSummary(deps, "Provider checks still need attention", repairResult.remainingDegraded)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
-          deps.writeStdout(message)
-          return message
+          return returnCliFailure(deps, message)
         }
 
         const remainingDegraded = repairResult.remainingDegraded
         if (remainingDegraded.length > 0) {
           writeProviderRepairSummary(deps, "Still needs attention", remainingDegraded)
           const message = "daemon not started: provider checks still need repair."
-          deps.writeStdout(message)
-          return message
+          return returnCliFailure(deps, message)
         }
         deps.writeStdout("All set. Provider checks recovered after repair.")
       }
@@ -4869,11 +4914,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         ;(progress as { announceStep?: (line: string) => void }).announceStep?.(label)
       },
     }, { initialAlive: daemonAliveBeforeStart })
-    if (daemonResult.verifyStartupStatus === false) {
-      ;(progress as { announceStep?: (line: string) => void }).announceStep?.("replacement daemon did not answer in time")
+    if (!daemonResult.ok) {
+      ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
+        "starting daemon",
+        summarizeDaemonStartupFailure(daemonResult),
+      )
       progress.end()
-      deps.writeStdout(daemonResult.message)
-      return daemonResult.message
+      return returnCliFailure(deps, daemonResult.message)
     }
     progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
     if (!providerChecksAlreadyRun || daemonResult.alreadyRunning) {
@@ -4891,8 +4938,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       )
       progress.end()
       const message = finalDaemonCheck.message ?? "background service stopped before boot finished"
-      deps.writeStdout(message)
-      return message
+      return returnCliFailure(deps, message)
     }
     progress.completePhase("final daemon check", finalDaemonCheck.summary)
     progress.end()

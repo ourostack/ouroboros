@@ -25,7 +25,9 @@ Expected:
   - the full startup path is visible up front
   - the current step keeps live detail while work is happening
   - provider verification names the selected providers Ouro is checking right now
+  - daemon boot waits keep narrating real startup progress instead of leaving a blinking cursor while the service is still warming up
   - startup does not claim success unless the daemon survives the final handoff check
+  - if startup fails, the command exits non-zero and `ouro logs` shows the live daemon log tail that the diagnosis points to
 - `ouro status` shows:
   - daemon overview
   - version
@@ -103,6 +105,7 @@ Expected:
 - `ouro auth --agent Hatchling` reauths the provider already selected for Hatchling's outward lane
 - `--provider <provider>` authenticates that provider in the owning agent's vault without switching a lane
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
+- `ouro logs` now tails the daemon/agent logs from the installed runtime path instead of falling back to a socket help message
 - bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
 - root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and if a provider is slow or retrying it narrates the real attempt count and retry reason before opening the framed, width-aware connect bay
 - auth, vault, hatch, and guided connector completions land on the shared board language with `What changed` and `Next moves` instead of raw transcript walls

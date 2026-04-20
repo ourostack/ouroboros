@@ -212,6 +212,23 @@ describe("ouro up: interactive repair wiring", () => {
     })
   })
 
+  it("builds a degraded-only startup result when no prior stability snapshot exists", () => {
+    const result = mergeStartupStability(undefined, [{
+      agent: "test-agent",
+      errorReason: "provider failed",
+      fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+    }])
+
+    expect(result).toEqual({
+      stable: [],
+      degraded: [{
+        agent: "test-agent",
+        errorReason: "provider failed",
+        fixHint: "Run 'ouro auth --agent test-agent --provider anthropic'.",
+      }],
+    })
+  })
+
   it("calls runInteractiveRepair when degraded agents are present", async () => {
     const degraded = [
       { agent: "test-agent", errorReason: "missing credentials", fixHint: "run ouro auth test-agent" },

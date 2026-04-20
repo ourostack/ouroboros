@@ -42,7 +42,7 @@ describe("hermetic Ouro runtime integration", () => {
     harness = await createHermeticRuntimeHarness({ providerMode: "fail-live-check" })
 
     const up = await harness.runCli(["up", "--no-repair"])
-    expect(up.exitCode).toBe(0)
+    expect(up.exitCode).toBe(1)
     expect(up.stdout).toContain("Provider checks need attention")
     expect(up.stdout).toContain("failed live check")
     expect(up.stdout).toContain("daemon not started")

@@ -16,10 +16,12 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: true,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock)",
       verifyStartupStatus: true,
       startedPid: null,
+      startupFailureReason: null,
     })
     expect(deps.stopDaemon).not.toHaveBeenCalled()
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
@@ -229,6 +231,31 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.message).toContain("pid unknown")
   })
 
+  it("uses the replacement startup check result when the restarted daemon never answers", async () => {
+    const waitForDaemonStartup = vi.fn(async () => ({ ok: false as const }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: null })),
+      waitForDaemonStartup,
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(waitForDaemonStartup).toHaveBeenCalledWith({ pid: null })
+    expect(result).toEqual({
+      ok: false,
+      alreadyRunning: false,
+      message: "replaced an older background service 0.1.0-alpha.6 -> 0.1.0-alpha.20 (pid unknown)\nreplacement background service did not answer in time; check logs with `ouro logs` or run `ouro doctor`.",
+      verifyStartupStatus: false,
+      startedPid: null,
+      startupFailureReason: "replacement background service did not answer in time",
+    })
+  })
+
   it("keeps the daemon when the local version is unknown", async () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -242,6 +269,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: true,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; unable to verify version)",
     })
@@ -260,6 +288,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: true,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; unable to verify version)",
     })
@@ -280,6 +309,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: true,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; unable to verify version: status unavailable)",
     })
@@ -300,6 +330,7 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: true,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; unable to verify version: non-error-status-failure)",
     })
@@ -320,8 +351,10 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: false,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; could not replace the older background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: permission denied)",
+      startupFailureReason: "could not replace the older background service",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
@@ -345,10 +378,12 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     const result = await ensureCurrentDaemonRuntime(deps)
 
-    expect(result).toEqual({
+    expect(result).toEqual(expect.objectContaining({
+      ok: false,
       alreadyRunning: true,
       message: expect.stringContaining("could not replace the older background service after runtime drift"),
-    })
+      startupFailureReason: "could not replace the older background service after runtime drift",
+    }))
     expect(result.message).toContain("permission denied")
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
@@ -368,8 +403,10 @@ describe("ensureCurrentDaemonRuntime", () => {
     const result = await ensureCurrentDaemonRuntime(deps)
 
     expect(result).toEqual({
+      ok: false,
       alreadyRunning: true,
       message: "daemon already running (/tmp/ouro-test.sock; could not replace the older background service 0.1.0-alpha.6 -> 0.1.0-alpha.20: string-stop-failure)",
+      startupFailureReason: "could not replace the older background service",
     })
     expect(deps.startDaemonProcess).not.toHaveBeenCalled()
   })
