@@ -61,8 +61,8 @@ describe("hermetic Ouro runtime integration", () => {
     expect(connect.stdout).toContain("slugger connect bay")
     expect(connect.stdout).toContain("Provider core")
     expect(connect.stdout).toContain("Providers [ready]")
-    expect(connect.stdout).toContain("Perplexity search [missing]")
-    expect(connect.stdout).toContain("Memory embeddings [missing]")
+    expect(connect.stdout).toContain("Perplexity search [needs attention]")
+    expect(connect.stdout).toContain("Memory embeddings [needs attention]")
     expect(connect.stdout).toContain("run: ouro connect perplexity --agent slugger")
   })
 

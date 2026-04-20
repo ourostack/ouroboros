@@ -118,6 +118,20 @@ function isBwConfigLogoutRequired(err: Error): boolean {
   return message.includes("logout") && message.includes("required")
 }
 
+function shouldPreferExactItemLookup(domain: string): boolean {
+  return domain.includes("/")
+}
+
+function isBwDirectLookupFallbackError(err: Error): boolean {
+  const message = err.message.toLowerCase()
+  return (
+    message.includes("bw cli error: not found") ||
+    message.includes("bw cli error: item not found") ||
+    message.includes("invalid json from bw get item") ||
+    message.includes("invalid item from bw get item")
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Cross-process bw CLI lock
 // ---------------------------------------------------------------------------
@@ -734,6 +748,17 @@ export class BitwardenCredentialStore implements CredentialStore {
   // --- Private ---
 
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
+    if (shouldPreferExactItemLookup(domain)) {
+      try {
+        const stdout = await execBw(["get", "item", domain], session, this.appDataDir)
+        const item = parseBwItem(stdout, "bw get item")
+        if (item.name === domain) return item
+      } catch (error) {
+        const err = error as Error
+        if (!isBwDirectLookupFallbackError(err)) throw err
+      }
+    }
+
     const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
     const items = parseBwItems(stdout, "bw list items --search")
 

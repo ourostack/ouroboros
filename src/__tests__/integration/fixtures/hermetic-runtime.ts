@@ -230,7 +230,7 @@ if (args[0] === "list" && args[1] === "items") {
 if (args[0] === "get" && args[1] === "item") {
   requireSession()
   const state = readState()
-  const item = state.items.find((entry) => entry.id === args[2])
+  const item = state.items.find((entry) => entry.id === args[2] || entry.name === args[2])
   if (!item) {
     process.stderr.write("item not found\\n")
     process.exit(1)

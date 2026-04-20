@@ -424,6 +424,108 @@ describe("BitwardenCredentialStore", () => {
       expect(result!.createdAt).toBeDefined()
       expect(result!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}/)
     })
+
+    it("uses direct bw get item lookup for structured Ouro item names", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get" && args[1] === "item") {
+          cb(null, JSON.stringify({
+            id: "provider-item",
+            name: "providers/openai-codex",
+            login: { username: "openai-codex", password: "provider-token" },
+            revisionDate: "2026-04-20T05:00:00.000Z",
+          }), "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.get("providers/openai-codex")
+
+      expect(result?.domain).toBe("providers/openai-codex")
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+    })
+
+    it("falls back to filtered search when direct bw get item returns a fuzzy mismatch", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get" && args[1] === "item") {
+          cb(null, JSON.stringify({
+            id: "stale-provider-item",
+            name: "providers/openai-codex-stale",
+            login: { username: "openai-codex", password: "provider-token" },
+            revisionDate: "2026-04-20T05:00:00.000Z",
+          }), "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{
+            id: "provider-item",
+            name: "providers/openai-codex",
+            login: { username: "openai-codex", password: "provider-token" },
+            revisionDate: "2026-04-20T05:01:00.000Z",
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.get("providers/openai-codex")
+
+      expect(result?.domain).toBe("providers/openai-codex")
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[3] === "providers/openai-codex")).toBeDefined()
+    })
+
+    it("rethrows non-fallback direct lookup errors for structured Ouro item names", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get" && args[1] === "item") {
+          cb(new Error("Command failed: bw get item providers/openai-codex"), "", "server unavailable")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.get("providers/openai-codex")).rejects.toThrow("bw CLI error: server unavailable")
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+    })
   })
 
   describe("getRawSecret", () => {
@@ -1325,7 +1427,7 @@ describe("BitwardenCredentialStore", () => {
       })
 
       expect(unlockCount).toBe(2)
-      expect(searchCount).toBe(2)
+      expect(searchCount).toBe(0)
       expect(editCount).toBe(2)
       expect(stdinWrites).toHaveLength(2)
     })
@@ -1336,6 +1438,7 @@ describe("BitwardenCredentialStore", () => {
       let createCount = 0
       let editCount = 0
       let getCount = 0
+      let verificationCount = 0
       let savedItem: {
         id: string
         name: string
@@ -1402,7 +1505,10 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "get") {
           getCount += 1
-          if (getCount === 1) {
+          if (args[2] === "item-1") {
+            verificationCount += 1
+          }
+          if (args[2] === "item-1" && verificationCount === 1) {
             cb(new Error("Command failed: bw get item item-1"), "", "Session key is invalid or expired")
             return
           }
@@ -1418,10 +1524,10 @@ describe("BitwardenCredentialStore", () => {
       })
 
       expect(unlockCount).toBe(2)
-      expect(listCount).toBe(2)
+      expect(listCount).toBe(1)
       expect(createCount).toBe(1)
       expect(editCount).toBe(1)
-      expect(getCount).toBe(2)
+      expect(getCount).toBe(4)
     })
 
     it("stops before create when the pre-create lookup fails for a non-session reason", async () => {

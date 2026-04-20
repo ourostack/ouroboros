@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.435",
+      "changes": [
+        "Structured agent-vault items like `providers/*` and `runtime/*` now take a direct Bitwarden `bw get item` lookup fast path before falling back to filtered search, so connect, auth, and runtime-config reads spend less time holding the vault lane for work that already has an exact item name.",
+        "The Bitwarden store only trusts that fast path on an exact name match and still falls back to the older filtered search on fuzzy hits, missing items, or malformed direct responses, so the speedup lands without weakening correctness or duplicate protection.",
+        "Hermetic built-runtime coverage now understands the newer direct item lookup path too, so the connect bay, startup provider checks, and vault-backed runtime reads are tested against the same Bitwarden command shape the shipped CLI now uses."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.434",
       "changes": [
         "The supported bootstrap command is now explicitly `npx ouro.bot@latest` across the wrapper hints, operator docs, architecture docs, and runtime fallback messages, so humans are steered onto the channel that actually lands on the current published runtime.",
