@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.441",
+      "changes": [
+        "`ouro up` now lets the shared startup TUI own the masthead render path, so the screen no longer double-prints into scrollback and the shipped banner is a clean, correctly spelled classic `OUROBOROS` wordmark.",
+        "Vault unlock lookup now normalizes the canonical vault host while still reusing previously saved local unlock material from legacy vault coordinates, so a machine that already unlocked an agent vault does not get treated like it forgot after harmless vault-host drift.",
+        "macOS keychain read failures now surface as truthful local-store errors instead of being mislabeled as a locked vault, and new masthead/vault coverage plus packaged-install verification lock the fix into the shipped CLI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.440",
       "changes": [
         "Shared live provider checks now narrate each real attempt and retry across `ouro up`, the connect bay, `ouro check`, `ouro use`, and auth verification, so a slow or busy provider no longer feels like one frozen `checking <provider>` line.",

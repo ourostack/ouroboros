@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest"
-import { emitNervesEvent } from "../../../nerves/runtime"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as nervesRuntime from "../../../nerves/runtime"
 import {
   padAnsi,
   renderOuroMasthead,
@@ -10,8 +10,12 @@ import {
 } from "../../../heart/daemon/terminal-ui"
 
 describe("terminal ui", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
   function emitTestEvent(testName: string): void {
-    emitNervesEvent({
+    nervesRuntime.emitNervesEvent({
       component: "daemon",
       event: "daemon.test_run",
       message: testName,
@@ -30,6 +34,21 @@ describe("terminal ui", () => {
     expect(output).toContain("OUROBOROS")
     expect(output).toContain("A warm home for your agents.")
     expect(output).not.toContain("\x1b[")
+  })
+
+  it("renders the wide masthead as a correctly spelled classic wordmark", () => {
+    emitTestEvent("terminal ui classic masthead")
+
+    const output = renderOuroMasthead({
+      isTTY: false,
+      columns: 80,
+    })
+
+    expect(output).toContain("___    _   _")
+    expect(output).toContain("|____/ ")
+    expect(output).toContain("OUROBOROS")
+    expect(output).not.toContain("OUROROBOR")
+    expect(output).not.toContain(".----------------------------.")
   })
 
   it("renders a framed board with sections, wrapped copy, and actor-labelled actions", () => {
@@ -247,6 +266,21 @@ describe("terminal ui", () => {
     expect(board).toContain("1. Warm up the room")
     expect(board).toContain("ouro up")
     expect(board).toContain("\x1b[")
+  })
+
+  it("can suppress board render events when progress rendering already owns the screen", () => {
+    emitTestEvent("terminal ui suppress event")
+    const spy = vi.spyOn(nervesRuntime, "emitNervesEvent")
+
+    renderTerminalBoard({
+      isTTY: false,
+      title: "Quiet render",
+      suppressEvent: true,
+    })
+
+    expect(spy).not.toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.terminal_board_rendered",
+    }))
   })
 
   it("wraps plain text deterministically and pads ANSI-aware widths", () => {

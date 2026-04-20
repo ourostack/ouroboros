@@ -91,6 +91,45 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
 }
 
 export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouroboros.bot"
+export const LEGACY_VAULT_SERVER_URL_ALIASES = [
+  "https://vault.ouro.bot",
+  "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
+] as const
+
+export function normalizeVaultServerUrl(serverUrl: string): string {
+  const trimmed = serverUrl.trim()
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, "")
+  if (!withoutTrailingSlash) {
+    return DEFAULT_VAULT_SERVER_URL
+  }
+  if (LEGACY_VAULT_SERVER_URL_ALIASES.includes(withoutTrailingSlash as typeof LEGACY_VAULT_SERVER_URL_ALIASES[number])) {
+    return DEFAULT_VAULT_SERVER_URL
+  }
+  return withoutTrailingSlash
+}
+
+export function getVaultServerUrlCandidates(serverUrl: string): string[] {
+  const raw = serverUrl.trim()
+  const withoutTrailingSlash = raw.replace(/\/+$/, "")
+  const normalized = normalizeVaultServerUrl(serverUrl)
+  const candidates = [normalized]
+
+  for (const candidate of [withoutTrailingSlash, raw]) {
+    if (candidate && !candidates.includes(candidate)) {
+      candidates.push(candidate)
+    }
+  }
+
+  if (normalized === DEFAULT_VAULT_SERVER_URL) {
+    for (const alias of LEGACY_VAULT_SERVER_URL_ALIASES) {
+      if (!candidates.includes(alias)) {
+        candidates.push(alias)
+      }
+    }
+  }
+
+  return candidates
+}
 
 export function defaultStableVaultEmail(agentName: string): string {
   const local = agentName
@@ -107,7 +146,7 @@ export function defaultStableVaultEmail(agentName: string): string {
 export function resolveVaultConfig(agentName: string, config?: AgentConfig["vault"]): { email: string; serverUrl: string } {
   return {
     email: config?.email ?? defaultStableVaultEmail(agentName),
-    serverUrl: config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL,
+    serverUrl: normalizeVaultServerUrl(config?.serverUrl ?? DEFAULT_VAULT_SERVER_URL),
   }
 }
 
