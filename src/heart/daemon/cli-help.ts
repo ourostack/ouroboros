@@ -29,7 +29,7 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Prepare the house: start the background runtime, refresh what this machine needs, and surface anything still asking for care. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
+    description: "Start and check Ouro: bring up the background runtime, refresh what this machine needs, and show anything that still needs attention. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
     usage: "ouro [up] [--no-repair]",
     example: "ouro up --no-repair",
   },
@@ -47,7 +47,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   status: {
     category: "Lifecycle",
-    description: "Show the house status",
+    description: "Show Ouro status for this machine",
     usage: "ouro status",
     example: "ouro status",
   },
@@ -180,7 +180,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   connect: {
     category: "Auth",
-    description: "Connect providers, portable integrations, and local senses from one guided bay",
+    description: "Set up providers, portable integrations, and local senses from one guided screen",
     usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
     example: "ouro connect",
     subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles"],
@@ -294,7 +294,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect perplexity",
   },
   "connect providers": {
-    description: "Open provider auth from the connect bay without remembering the auth command",
+    description: "Open provider setup from the connections screen without remembering the auth command",
     usage: "ouro connect providers [--agent <name>]",
     example: "ouro connect providers",
   },

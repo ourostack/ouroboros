@@ -64,7 +64,7 @@ function renderScreenEvent(screen: string): void {
 export function buildOuroHomeActions(agents: string[]): HomeScreenAction[] {
   if (agents.length === 0) {
     return [
-      { key: "1", label: "Hatch a new agent", kind: "hatch", command: "ouro hatch" },
+      { key: "1", label: "Create a new agent", kind: "hatch", command: "ouro hatch" },
       { key: "2", label: "Clone an existing bundle", kind: "clone", command: "ouro clone <remote>" },
       { key: "3", label: "Show help", kind: "help", command: "ouro --help" },
       { key: "4", label: "Exit", kind: "exit", command: "exit" },
@@ -81,9 +81,9 @@ export function buildOuroHomeActions(agents: string[]): HomeScreenAction[] {
 
   return [
     ...actions,
-    { key: String(actions.length + 1), label: "Prepare the house", kind: "up", command: "ouro up" },
-    { key: String(actions.length + 2), label: "Connect an agent", kind: "connect", command: "ouro connect --agent <agent>" },
-    { key: String(actions.length + 3), label: "Repair an agent", kind: "repair", command: "ouro repair --agent <agent>" },
+    { key: String(actions.length + 1), label: "Start or check Ouro", kind: "up", command: "ouro up" },
+    { key: String(actions.length + 2), label: "Set up connections", kind: "connect", command: "ouro connect --agent <agent>" },
+    { key: String(actions.length + 3), label: "Fix setup issues", kind: "repair", command: "ouro repair --agent <agent>" },
     { key: String(actions.length + 4), label: "Show help", kind: "help", command: "ouro --help" },
     { key: String(actions.length + 5), label: "Exit", kind: "exit", command: "exit" },
   ]
@@ -104,10 +104,10 @@ export function renderOuroHomeScreen(options: HomeScreenOptions): string {
   const actions = buildOuroHomeActions(options.agents)
   const sections: TerminalSection[] = [
     {
-      title: options.agents.length === 0 ? "Start here" : "Around the house",
+      title: options.agents.length === 0 ? "Start here" : "Available agents",
       lines: options.agents.length === 0
-        ? ["No agents are home yet. Hatch someone new or bring an existing bundle aboard."]
-        : options.agents.map((agent) => `${agent} is home and ready when called.`),
+        ? ["No agents are set up on this machine yet."]
+        : options.agents.map((agent) => `${agent} is available.`),
     },
   ]
   const actionRows: TerminalAction[] = actions.map((action, index) => ({
@@ -122,13 +122,13 @@ export function renderOuroHomeScreen(options: HomeScreenOptions): string {
     columns: options.columns,
     masthead: {
       subtitle: options.agents.length === 0
-        ? "No agents are home yet."
-        : "Welcome home.",
+        ? "No agents are set up on this machine yet."
+        : "Choose an agent or a setup task.",
     },
     title: "Ouro home",
     summary: options.agents.length === 0
-      ? "Hatch someone new or bring an existing bundle aboard."
-      : "Choose who to wake or what to prepare without memorizing commands.",
+      ? "Create a new agent or clone an existing bundle to get started."
+      : "Choose an agent or a setup task without memorizing commands.",
     sections,
     actions: actionRows,
     prompt: `Choose [1-${actions.length}] or type a name: `,
@@ -213,7 +213,7 @@ export function renderHouseStatusScreen(options: {
   renderScreenEvent("house-status")
   const sections: TerminalSection[] = [
     {
-      title: "House pulse",
+      title: "Runtime",
       lines: [
         `Daemon: ${options.payload.overview.daemon}`,
         `Health: ${options.payload.overview.health}`,
@@ -278,9 +278,9 @@ export function renderHouseStatusScreen(options: {
   }
 
   return renderHumanCommandBoard({
-    title: "House status",
-    subtitle: "The house is awake enough to answer clearly.",
-    summary: "What is awake, resting, or asking for care.",
+    title: "Ouro status",
+    subtitle: "Current runtime status for this machine.",
+    summary: "What is running, what is stopped, and what needs attention.",
     isTTY: options.isTTY,
     columns: options.columns,
     sections,

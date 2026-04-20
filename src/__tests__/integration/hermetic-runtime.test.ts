@@ -52,28 +52,28 @@ describe("hermetic Ouro runtime integration", () => {
     expect(status.stdout.toLowerCase()).toContain("stopped")
   })
 
-  it("renders the noninteractive connect bay from the built runtime with live provider truth", async () => {
+  it("renders the noninteractive connections screen from the built runtime with live provider truth", async () => {
     harness = await createHermeticRuntimeHarness({ providerMode: "ok" })
 
     const connect = await harness.runCli(["connect", "--agent", "slugger"])
 
     expect(connect.exitCode).toBe(0)
-    expect(connect.stdout).toContain("slugger connect bay")
-    expect(connect.stdout).toContain("Provider core")
+    expect(connect.stdout).toContain("slugger connections")
+    expect(connect.stdout).toContain("Providers")
     expect(connect.stdout).toContain("Providers [ready]")
     expect(connect.stdout).toContain("Perplexity search [missing]")
     expect(connect.stdout).toContain("Memory embeddings [missing]")
     expect(connect.stdout).toContain("run: ouro connect perplexity --agent slugger")
   })
 
-  it("keeps connect-bay provider guidance truthful when the live provider check fails", async () => {
+  it("keeps connections-screen provider guidance truthful when the live provider check fails", async () => {
     harness = await createHermeticRuntimeHarness({ providerMode: "fail-live-check" })
 
     const connect = await harness.runCli(["connect", "--agent", "slugger"])
 
     expect(connect.exitCode).toBe(0)
-    expect(connect.stdout).toContain("slugger connect bay")
-    expect(connect.stdout).toContain("Providers - needs credentials")
+    expect(connect.stdout).toContain("slugger connections")
+    expect(connect.stdout).toContain("Providers - needs attention")
     expect(connect.stdout).toContain("Outward lane: github-copilot / claude-sonnet-4.6")
     expect(connect.stdout).toContain("failed live check")
     expect(connect.stdout).toContain("run: ouro auth --agent slugger --provider github-copilot")

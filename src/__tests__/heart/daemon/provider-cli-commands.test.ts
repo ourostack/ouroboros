@@ -1508,7 +1508,7 @@ describe("provider CLI command execution", () => {
       },
     }))
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Repair Slugger")
     expect(result).toContain("Unlock with saved secret")
     expect(result).toContain("[human required]")
@@ -3030,9 +3030,9 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
     const prompt = joinedPrompt(prompts)
 
-    expect(prompt).toContain("Slugger connect bay")
-    expect(prompt).toContain("Next best move")
-    expect(prompt).toContain("Provider core")
+    expect(prompt).toContain("Slugger connections")
+    expect(prompt).toContain("Recommended next step")
+    expect(prompt).toContain("Providers")
     expect(prompt).toContain("Portable")
     expect(prompt).toContain("This machine")
     expect(output).toContain("... checking current connections")
@@ -3446,7 +3446,7 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
     expect(prompt).toContain("\x1b[38;2;78;201;176m╭─ \x1b[0m")
-    expect(prompt).toContain("\x1b[38;2;238;242;234m\x1b[1mSlugger connect bay\x1b[0m")
+    expect(prompt).toContain("\x1b[38;2;238;242;234m\x1b[1mSlugger connections\x1b[0m")
   })
 
   it("renders the TTY connect bay as framed panels with humane provider lane labels", async () => {
@@ -3471,7 +3471,7 @@ describe("provider CLI command execution", () => {
     expect(prompt).toContain("╰")
     expect(prompt).toContain("Outward lane")
     expect(prompt).toContain("Inner lane")
-    expect(prompt).toContain("Pick a path")
+    expect(prompt).toContain("Choose a number, or type the capability name.")
   })
 
   it("uses a side-by-side layout on wide TTY terminals", async () => {
@@ -3496,8 +3496,8 @@ describe("provider CLI command execution", () => {
 
     const promptLines = joinedPrompt(prompts).split("\n")
     expect(result).toBe("connect cancelled.")
-    expect(promptLines.some((line) => line.includes("Provider core") && line.includes("Portable"))).toBe(true)
-    expect(promptLines.some((line) => line.includes("Next best move") && line.includes("This machine"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Providers") && line.includes("Portable"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Recommended next step") && line.includes("This machine"))).toBe(true)
   })
 
   it("shows setup guidance when a provider lane is not configured on this machine", async () => {
@@ -4000,8 +4000,8 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_menu")
 
     const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
-    expect(noninteractive).toContain("Slugger connect bay")
-    expect(noninteractive).toContain("Next best move")
+    expect(noninteractive).toContain("Slugger connections")
+    expect(noninteractive).toContain("Recommended next step")
     expect(noninteractive).toContain("ouro connect providers --agent Slugger")
     expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
     expect(noninteractive).toContain("ouro connect embeddings --agent Slugger")

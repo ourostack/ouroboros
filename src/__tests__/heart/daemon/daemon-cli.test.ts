@@ -1164,7 +1164,7 @@ describe("ouro CLI execution", () => {
         "openai-codex": { credentials: { oauthAccessToken: "expired-token" } },
       })
       const result = await runOuroCli(["auth", "verify", "--agent", tmp.agentName], deps)
-      expect(result).toContain("OUROBOROS")
+      expect(result).toContain("___    _   _")
       expect(result).toContain("Provider health")
       expect(result).toContain("openai-codex")
       expect(result).toContain("failed (token expired)")
@@ -1500,7 +1500,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("running")
   })
 
-  it("renders tty status as a house-status control deck", async () => {
+  it("renders tty status as an Ouro status control deck", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({
@@ -1542,10 +1542,10 @@ describe("ouro CLI execution", () => {
 
     const result = await runOuroCli(["status"], deps)
 
-    expect(result).toContain("House status")
-    expect(result).toContain("What is awake, resting, or asking for care.")
+    expect(result).toContain("Ouro status")
+    expect(result).toContain("What is running, what is stopped, and what needs attention.")
     expect(result).toContain("inner-dialog")
-    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("House status"))
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("Ouro status"))
   })
 
   it("surfaces the Outlook URL from daemon status and can fetch JSON from the same seam", async () => {
@@ -3177,10 +3177,10 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
   it("renders an Ouro home prompt before asking which discovered agent to talk to", async () => {
     const startChat = vi.fn(async () => {})
     const promptInput = vi.fn(async (prompt: string) => {
-      expect(prompt).toContain("OUROBOROS")
+      expect(prompt).toContain("___    _   _")
       expect(prompt).toContain("Talk to ouroboros")
       expect(prompt).toContain("Talk to slugger")
-      expect(prompt).toContain("Prepare the house")
+      expect(prompt).toContain("Start or check Ouro")
       return "2"
     })
     const deps = {
@@ -3644,7 +3644,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Help")
     expect(result).toContain("daemon")
     expect(result).toContain("connect")
@@ -3664,7 +3664,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     const result = await runOuroCli(["--help"], deps)
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Help")
   })
 
@@ -3683,7 +3683,7 @@ describe("multi-agent prompt, agent-name shortcut, and help", () => {
 
     const result = await runOuroCli(["help"], deps)
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Command groups")
     expect(result).toContain("Everything Ouro can do from the terminal.")
   })
@@ -5360,7 +5360,7 @@ describe("specialist integration (zero agents -> serpent guide)", () => {
     await runOuroCli(["hatch"], deps)
 
     const output = writeStdout.mock.calls.map(([text]) => text).join("\n")
-    expect(output).toContain("OUROBOROS")
+    expect(output).toContain("___    _   _")
     expect(output).toContain("Hatch an agent")
   })
 
@@ -6496,7 +6496,7 @@ describe("ouro whoami and session list CLI execution", () => {
     })
     const result = await runOuroCli(["whoami"], deps)
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Identity")
     expect(result).toContain("slugger")
     expect(result).toContain("/Users/ari/AgentBundles/slugger.ouro")

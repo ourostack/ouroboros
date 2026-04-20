@@ -14,7 +14,7 @@ export type ConnectMenuStatus =
   | "attached"
   | "not attached"
 
-export type ConnectMenuSection = "Provider core" | "Portable" | "This machine"
+export type ConnectMenuSection = "Providers" | "Portable" | "This machine"
 
 export interface ConnectMenuEntry {
   option: "1" | "2" | "3" | "4" | "5"
@@ -138,9 +138,7 @@ function resolveProviderHealthStatus(
   if (issue?.kind === "vault-locked") return "locked"
   if (issue?.kind === "vault-unconfigured") return "needs setup"
   if (issue?.kind === "provider-credentials-missing") return "needs credentials"
-  if (issue?.kind === "provider-live-check-failed") {
-    return issue.actions[0]?.kind === "provider-auth" ? "needs credentials" : "needs attention"
-  }
+  if (issue?.kind === "provider-live-check-failed") return "needs attention"
   const error = String(providerHealth.error).toLowerCase()
   const fix = String(providerHealth.fix).toLowerCase()
   if (error.includes("failed live check")) return "needs attention"
@@ -219,9 +217,9 @@ function panel(title: string, body: string[], width: number): string[] {
 
 function renderHeader(agent: string, width: number): string[] {
   return panel(
-    `${agent} connect bay`,
+    `${agent} connections`,
     [
-      tty("Bring one capability online.", BONE, true),
+      tty("Set up or review one capability at a time.", BONE, true),
       tty("Everything on this screen was checked live just now.", MIST),
     ],
     width,
@@ -320,25 +318,25 @@ function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions
   const masthead = renderOuroMasthead({
     isTTY: true,
     columns,
-    subtitle: "Bring one capability online at a time.",
+    subtitle: "Set up connections one step at a time.",
   }).trimEnd()
   const header = renderHeader(options.agent, fullWidth)
   const nextEntry = entries.find((entry) => isProblemStatus(entry.status))
-  const providerEntry = entries.find((entry) => entry.section === "Provider core")!
+  const providerEntry = entries.find((entry) => entry.section === "Providers")!
   const portableEntries = entries.filter((entry) => entry.section === "Portable")
   const machineEntries = entries.filter((entry) => entry.section === "This machine")
 
   const wide = columns >= 118
   const footer = [
-    tty("Pick a path. Type the number or the name.", MIST),
+    tty("Choose a number, or type the capability name.", MIST),
     options.prompt,
   ]
 
   if (!wide) {
     const panels = [
       header,
-      panel("Next best move", nextMoveBody(nextEntry), fullWidth),
-      panel("Provider core", renderProviderBody(providerEntry, fullWidth), fullWidth),
+      panel("Recommended next step", nextMoveBody(nextEntry), fullWidth),
+      panel("Providers", renderProviderBody(providerEntry, fullWidth), fullWidth),
       panel("Portable", renderCapabilityBody(portableEntries, fullWidth), fullWidth),
       panel("This machine", renderCapabilityBody(machineEntries, fullWidth), fullWidth),
     ]
@@ -350,14 +348,14 @@ function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions
   const rightWidth = Math.max(40, fullWidth - gap - leftWidth)
 
   const topRow = combineColumns(
-    panel("Next best move", nextMoveBody(nextEntry), leftWidth),
+    panel("Recommended next step", nextMoveBody(nextEntry), leftWidth),
     panel("This machine", renderCapabilityBody(machineEntries, rightWidth), rightWidth),
     leftWidth,
     rightWidth,
     gap,
   )
   const bottomRow = combineColumns(
-    panel("Provider core", renderProviderBody(providerEntry, leftWidth), leftWidth),
+    panel("Providers", renderProviderBody(providerEntry, leftWidth), leftWidth),
     panel("Portable", renderCapabilityBody(portableEntries, rightWidth), rightWidth),
     leftWidth,
     rightWidth,
@@ -369,11 +367,11 @@ function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions
 function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions): string {
   const nextEntry = entries.find((entry) => isProblemStatus(entry.status))
   const lines = [
-    `${options.agent} connect bay`,
-    "Bring one capability online. Provider status was checked live just now.",
+    `${options.agent} connections`,
+    "Set up or review one capability at a time. Provider status was checked live just now.",
     "",
-    "Next best move",
-    "--------------",
+    "Recommended next step",
+    "---------------------",
   ]
   if (!nextEntry) {
     lines.push("Everything here is ready. Pick what you want to review or refresh.")
@@ -384,7 +382,7 @@ function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOpti
   }
   lines.push("")
 
-  for (const section of ["Provider core", "Portable", "This machine"] as ConnectMenuSection[]) {
+  for (const section of ["Providers", "Portable", "This machine"] as ConnectMenuSection[]) {
     lines.push(section)
     lines.push("-".repeat(Math.max(6, section.length + 4)))
     for (const entry of entries.filter((candidate) => candidate.section === section)) {
@@ -405,7 +403,7 @@ function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOpti
 
   lines.push("6. Not now")
   lines.push("")
-  lines.push("Pick a path. Type the number or the name.")
+  lines.push("Choose a number, or type the capability name.")
   lines.push(options.prompt)
   return lines.join("\n")
 }

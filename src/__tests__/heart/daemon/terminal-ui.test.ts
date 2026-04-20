@@ -28,11 +28,11 @@ describe("terminal ui", () => {
 
     const output = renderOuroMasthead({
       isTTY: false,
-      subtitle: "A warm home for your agents.",
+      subtitle: "Built for people and agents.",
     })
 
     expect(output).toContain("OUROBOROS")
-    expect(output).toContain("A warm home for your agents.")
+    expect(output).toContain("Built for people and agents.")
     expect(output).not.toContain("\x1b[")
   })
 
@@ -44,9 +44,7 @@ describe("terminal ui", () => {
       columns: 80,
     })
 
-    expect(output).toContain("___    _   _")
-    expect(output).toContain("|____/ ")
-    expect(output).toContain("OUROBOROS")
+    expect(output.trim()).toBe("OUROBOROS")
     expect(output).not.toContain("OUROROBOR")
     expect(output).not.toContain(".----------------------------.")
   })
@@ -58,9 +56,9 @@ describe("terminal ui", () => {
       isTTY: true,
       columns: 74,
       masthead: {
-        subtitle: "Bring one capability online at a time.",
+        subtitle: "Set up connections one step at a time.",
       },
-      title: "slugger // connect bay",
+      title: "slugger connections",
       summary: "Bring one capability online at a time without turning the terminal into a wall of text.",
       sections: [
         {
@@ -92,8 +90,8 @@ describe("terminal ui", () => {
       prompt: "Choose [1-2]: ",
     })
 
-    expect(output).toContain("OUROBOROS")
-    expect(output).toContain("slugger // connect bay")
+    expect(output).toContain("___    _   _")
+    expect(output).toContain("slugger connections")
     expect(output).toContain("Bring one capability online at a time without turning the")
     expect(output).toContain("into a wall of text.")
     expect(output).toContain("Unlock slugger's vault")
@@ -110,10 +108,10 @@ describe("terminal ui", () => {
       isTTY: true,
       columns: 76,
       masthead: {
-        subtitle: "Preparing the house.",
+        subtitle: "Starting the local agent runtime.",
       },
-      title: "Preparing the house",
-      summary: "Ouro is warming the background systems and checking what still needs care before anyone steps in.",
+      title: "Starting Ouro",
+      summary: "Ouro is starting the background runtime, checking credentials, and surfacing anything that needs attention before chat begins.",
       currentStep: {
         label: "provider checks",
         detailLines: [
@@ -130,7 +128,7 @@ describe("terminal ui", () => {
       ],
     })
 
-    expect(output).toContain("Preparing the house")
+    expect(output).toContain("Starting Ouro")
     expect(output).toContain("Right now")
     expect(output).toContain("Progress")
     expect(output).toContain("slugger: checking openai-codex")
@@ -144,10 +142,10 @@ describe("terminal ui", () => {
 
     const output = renderTerminalOperation({
       isTTY: false,
-      title: "Waiting for the house",
+      title: "Waiting on Ouro",
     })
 
-    expect(output).toContain("Waiting for the house")
+    expect(output).toContain("Waiting on Ouro")
     expect(output).toContain("Standing by.")
     expect(output).toContain("No active steps yet.")
     expect(output).not.toContain("\x1b[")
@@ -177,11 +175,11 @@ describe("terminal ui", () => {
 
     const output = renderTerminalOperation({
       isTTY: false,
-      title: "Quiet house",
+      title: "Quiet check",
       steps: [],
     })
 
-    expect(output).toContain("Quiet house")
+    expect(output).toContain("Quiet check")
     expect(output).toContain("No active steps yet.")
   })
 
@@ -194,13 +192,13 @@ describe("terminal ui", () => {
       summary: "Pick an agent or system action without memorizing commands.",
       sections: [
         {
-          title: "Around the house",
+          title: "Available agents",
           lines: ["1. Talk to slugger"],
         },
       ],
       actions: [
         {
-          label: "Prepare the house",
+          label: "Start or check Ouro",
           actor: "agent-runnable",
           command: "ouro up",
           recommended: true,
@@ -210,7 +208,7 @@ describe("terminal ui", () => {
     })
 
     expect(output).toContain("Ouro home")
-    expect(output).toContain("Prepare the house")
+    expect(output).toContain("Start or check Ouro")
     expect(output).not.toContain("\x1b[")
   })
 
@@ -227,8 +225,7 @@ describe("terminal ui", () => {
       title: "Quick check",
     })
 
-    expect(masthead).toContain("O U R O B O R O S")
-    expect(masthead).toContain("the house wakes when called")
+    expect(masthead.trim()).toBe("OUROBOROS")
     expect(board).toContain("Quick check")
     expect(board).not.toContain("Actions")
   })
@@ -239,7 +236,7 @@ describe("terminal ui", () => {
     const masthead = renderOuroMasthead({
       isTTY: true,
       columns: 80,
-      subtitle: "Welcome home.",
+      subtitle: "Choose an agent or a setup task.",
     })
     const board = renderTerminalBoard({
       isTTY: true,
@@ -260,7 +257,7 @@ describe("terminal ui", () => {
       ],
     })
 
-    expect(masthead).toContain("Welcome home.")
+    expect(masthead).toContain("Choose an agent or a setup task.")
     expect(masthead).toContain("\x1b[")
     expect(board).toContain("Quiet corner")
     expect(board).toContain("1. Warm up the room")

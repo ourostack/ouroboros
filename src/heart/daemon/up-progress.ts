@@ -347,10 +347,10 @@ export class UpProgress {
       isTTY: true,
       columns: this.columns,
       masthead: {
-        subtitle: "Preparing the house.",
+        subtitle: "Starting the local agent runtime.",
       },
-      title: "Preparing the house",
-      summary: "Ouro is warming the background systems and checking what still needs care before anyone steps in.",
+      title: "Starting Ouro",
+      summary: "Ouro is starting the background runtime, checking credentials, and surfacing anything that needs attention before chat begins.",
       currentStep: {
         label: currentStepLabel,
         detailLines: currentStepDetails,

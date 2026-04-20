@@ -25,7 +25,7 @@ describe("human command screens", () => {
     emitTestEvent("human command screens no-agent actions")
 
     expect(buildOuroHomeActions([])).toEqual([
-      { key: "1", label: "Hatch a new agent", kind: "hatch", command: "ouro hatch" },
+      { key: "1", label: "Create a new agent", kind: "hatch", command: "ouro hatch" },
       { key: "2", label: "Clone an existing bundle", kind: "clone", command: "ouro clone <remote>" },
       { key: "3", label: "Show help", kind: "help", command: "ouro --help" },
       { key: "4", label: "Exit", kind: "exit", command: "exit" },
@@ -59,9 +59,9 @@ describe("human command screens", () => {
       isTTY: false,
     })
 
-    expect(home).toContain("OUROBOROS")
+    expect(home).toContain("___    _   _")
     expect(home).toContain("Ouro home")
-    expect(home).toContain("Around the house")
+    expect(home).toContain("Available agents")
     expect(home).toContain("Talk to slugger")
     expect(picker).toContain("Repair an agent")
     expect(picker).toContain("Choose [1-2] or type a name:")
@@ -206,7 +206,7 @@ describe("human command screens", () => {
       isTTY: false,
     })
 
-    expect(output).toContain("House status")
+    expect(output).toContain("Ouro status")
     expect(output).toContain("slugger outward — openai-codex / gpt-5.4 — ready; live check passed; vault; oauth")
     expect(output).toContain("slugger inner — minimax / MiniMax-M2.5")
     expect(output).toContain("CLI — interactive — local terminal")
@@ -248,7 +248,7 @@ describe("human command screens", () => {
       isTTY: false,
     })
 
-    expect(output).toContain("House pulse")
+    expect(output).toContain("Runtime")
     expect(output).not.toContain("Agents")
     expect(output).not.toContain("Providers")
     expect(output).not.toContain("Senses")
