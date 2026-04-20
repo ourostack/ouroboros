@@ -5,6 +5,12 @@ import {
   summarizeProvidersForConnect,
   type ConnectMenuEntry,
 } from "../../../heart/daemon/connect-bay"
+import {
+  providerCredentialMissingIssue,
+  providerLiveCheckFailedIssue,
+  vaultLockedIssue,
+  vaultUnconfiguredIssue,
+} from "../../../heart/daemon/readiness-repair"
 import type { AgentProviderVisibility, ProviderVisibilityLane } from "../../../heart/provider-visibility"
 
 function emitTestEvent(testName: string): void {
@@ -407,6 +413,47 @@ describe("connect bay", () => {
     expect(summary.nextAction).toBe("ouro auth --agent Slugger --provider openai-codex")
   })
 
+  it("derives connect status from structured readiness issues before falling back to string parsing", () => {
+    emitTestEvent("connect bay derives status from readiness issues")
+    const visibility = providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4"),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ])
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      issue: vaultUnconfiguredIssue("Slugger"),
+    }).status).toBe("needs setup")
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      issue: vaultLockedIssue("Slugger"),
+    }).status).toBe("locked")
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      issue: providerCredentialMissingIssue({
+        agentName: "Slugger",
+        lane: "outward",
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        credentialPath: "vault:Slugger:providers/*",
+      }),
+    }).status).toBe("needs credentials")
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      issue: providerLiveCheckFailedIssue({
+        agentName: "Slugger",
+        lane: "outward",
+        provider: "openai-codex",
+        model: "gpt-5.4",
+        classification: "auth-failure",
+        message: "401 invalid API key",
+      }),
+    }).status).toBe("needs credentials")
+  })
+
   it("extracts provider refresh when health guidance is generic attention work", () => {
     emitTestEvent("connect bay extracts provider refresh repair command")
     const summary = summarizeProvidersForConnect(
@@ -424,6 +471,59 @@ describe("connect bay", () => {
 
     expect(summary.status).toBe("needs attention")
     expect(summary.nextAction).toBe("ouro provider refresh --agent Slugger")
+  })
+
+  it("falls back to provider-health error text when no structured issue is available", () => {
+    emitTestEvent("connect bay falls back to provider health strings")
+    const visibility = providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4"),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ])
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      error: "outward provider openai-codex model gpt-5.4 failed live check: bad token",
+    }).status).toBe("needs attention")
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      error: "outward provider openai-codex model gpt-5.4 has no credentials in slugger's vault",
+    }).status).toBe("needs credentials")
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      error: "outward provider openai-codex model gpt-5.4 cannot read provider credentials because slugger's credential vault is locked on this machine.",
+    }).status).toBe("locked")
+  })
+
+  it("prefers switching providers over re-auth when the live check failed because the provider is busy", () => {
+    emitTestEvent("connect bay prefers provider switch on provider outage")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "openai-codex", "gpt-5.4", {
+          readiness: { status: "failed", error: "529 provider busy" },
+        }),
+        configuredLane("inner", "minimax", "MiniMax-M2.5"),
+      ]),
+      {
+        ok: false,
+        error: "outward provider openai-codex model gpt-5.4 failed live check: 529 provider busy",
+        fix: "Run 'ouro up' again in a moment. If openai-codex keeps failing, run 'ouro use --agent Slugger --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
+        issue: providerLiveCheckFailedIssue({
+          agentName: "Slugger",
+          lane: "outward",
+          provider: "openai-codex",
+          model: "gpt-5.4",
+          classification: "server-error",
+          message: "529 provider busy",
+        }),
+      },
+    )
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.nextAction).toBe("ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
+    expect(summary.nextAction).not.toContain("ouro auth")
   })
 
   it("surfaces the next lane note when a specific lane is the blocker", () => {

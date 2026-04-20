@@ -1,4 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { ProviderErrorClassification } from "../core"
 import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-state"
 import {
@@ -16,6 +17,7 @@ export type RepairActionKind =
   | "vault-replace"
   | "vault-recover"
   | "provider-auth"
+  | "provider-retry"
   | "provider-use"
 
 export type AgentReadinessIssueKind =
@@ -43,6 +45,7 @@ export type RepairAction =
   | (RepairActionBase & { kind: "vault-replace" })
   | (RepairActionBase & { kind: "vault-recover" })
   | ProviderAuthRepairAction
+  | (RepairActionBase & { kind: "provider-retry" })
   | (RepairActionBase & {
       kind: "provider-use"
       lane?: ProviderLane
@@ -165,11 +168,143 @@ export function providerCredentialMissingIssue(input: {
   }
 }
 
+function normalizeProviderLiveCheckClassification(
+  classification: ProviderErrorClassification | string,
+): ProviderErrorClassification {
+  switch (classification) {
+    case "auth-failure":
+    case "usage-limit":
+    case "rate-limit":
+    case "server-error":
+    case "network-error":
+    case "unknown":
+      return classification
+    default:
+      return "unknown"
+  }
+}
+
+function providerUseAction(input: {
+  agentName: string
+  lane: ProviderLane
+}): RepairAction {
+  return {
+    kind: "provider-use",
+    label: "Choose a different working provider/model",
+    command: `ouro use --agent ${input.agentName} --lane ${input.lane} --provider <provider> --model <model>`,
+    actor: "human-choice",
+    executable: false,
+    lane: input.lane,
+  }
+}
+
+function providerAuthAction(input: {
+  agentName: string
+  provider: AgentProvider
+}): RepairAction {
+  return {
+    kind: "provider-auth",
+    label: `Refresh ${input.provider} credentials`,
+    command: `ouro auth --agent ${input.agentName} --provider ${input.provider}`,
+    actor: "human-required",
+    provider: input.provider,
+  }
+}
+
+function providerRetryAction(input: {
+  agentName: string
+  label: string
+}): RepairAction {
+  return {
+    kind: "provider-retry",
+    label: input.label,
+    command: `ouro repair --agent ${input.agentName}`,
+    actor: "human-choice",
+    executable: false,
+  }
+}
+
+export function providerLiveCheckFix(input: {
+  agentName: string
+  lane: ProviderLane
+  provider: AgentProvider
+  classification: ProviderErrorClassification | string
+}): string {
+  const classification = normalizeProviderLiveCheckClassification(input.classification)
+  const authCommand = `ouro auth --agent ${input.agentName} --provider ${input.provider}`
+  const useCommand = `ouro use --agent ${input.agentName} --lane ${input.lane} --provider <provider> --model <model>`
+  switch (classification) {
+    case "auth-failure":
+      return `Run '${authCommand}' to refresh credentials, or run '${useCommand}' to choose another provider/model for this lane.`
+    case "usage-limit":
+      return `This usually means ${input.provider} hit a usage limit. Restore quota, then run 'ouro up' again. Or run '${useCommand}' to choose another provider/model for this lane.`
+    case "rate-limit":
+      return `Run 'ouro up' again after a short wait. Or run '${useCommand}' to choose another provider/model for this lane.`
+    case "server-error":
+      return `Run 'ouro up' again in a moment. If ${input.provider} keeps failing, run '${useCommand}' to choose another provider/model for this lane.`
+    case "network-error":
+      return `Check the network or provider availability, then run 'ouro up' again. Or run '${useCommand}' to choose another provider/model for this lane.`
+    case "unknown":
+      return `Run 'ouro up' again. If it keeps failing, run '${authCommand}' to refresh credentials or '${useCommand}' to choose another provider/model for this lane.`
+  }
+}
+
+function providerLiveCheckActions(input: {
+  agentName: string
+  lane: ProviderLane
+  provider: AgentProvider
+  classification: ProviderErrorClassification | string
+}): RepairAction[] {
+  const classification = normalizeProviderLiveCheckClassification(input.classification)
+  const useAction = providerUseAction(input)
+  const authAction = providerAuthAction(input)
+  switch (classification) {
+    case "auth-failure":
+      return [authAction, useAction]
+    case "usage-limit":
+      return [
+        providerRetryAction({ agentName: input.agentName, label: "After restoring quota, check again" }),
+        useAction,
+      ]
+    case "rate-limit":
+      return [
+        providerRetryAction({ agentName: input.agentName, label: "Give it a minute, then check again" }),
+        useAction,
+      ]
+    case "server-error":
+      return [
+        providerRetryAction({ agentName: input.agentName, label: "Check again in a moment" }),
+        useAction,
+      ]
+    case "network-error":
+      return [
+        providerRetryAction({ agentName: input.agentName, label: "Check again after the network settles" }),
+        useAction,
+        authAction,
+      ]
+    case "unknown":
+      return [
+        providerRetryAction({ agentName: input.agentName, label: "Check again" }),
+        authAction,
+        useAction,
+      ]
+  }
+}
+
+export function preferredConnectRepairAction(issue: AgentReadinessIssue | undefined): RepairAction | undefined {
+  if (!issue) return undefined
+  if (issue.kind === "provider-live-check-failed" && issue.actions[0]?.kind === "provider-retry") {
+    return issue.actions.find((action) => action.kind !== "provider-retry") ?? issue.actions[0]
+  }
+  return issue.actions[0]
+}
+
 export function providerLiveCheckFailedIssue(input: {
   agentName: string
   lane: ProviderLane
   provider: AgentProvider
   model: string
+  classification: ProviderErrorClassification | string
   message: string
 }): AgentReadinessIssue {
   return {
@@ -178,23 +313,7 @@ export function providerLiveCheckFailedIssue(input: {
     actor: "human-choice",
     summary: `${input.agentName}: ${input.lane} provider ${input.provider} / ${input.model} failed live check`,
     detail: input.message,
-    actions: [
-      {
-        kind: "provider-auth",
-        label: `Refresh ${input.provider} credentials`,
-        command: `ouro auth --agent ${input.agentName} --provider ${input.provider}`,
-        actor: "human-required",
-        provider: input.provider,
-      },
-      {
-        kind: "provider-use",
-        label: "Choose a different working provider/model for this lane",
-        command: `ouro use --agent ${input.agentName} --lane ${input.lane} --provider <provider> --model <model>`,
-        actor: "human-choice",
-        executable: false,
-        lane: input.lane,
-      },
-    ],
+    actions: providerLiveCheckActions(input),
   }
 }
 

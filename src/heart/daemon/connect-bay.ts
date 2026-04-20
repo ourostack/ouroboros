@@ -2,6 +2,7 @@ import type { ProviderLane } from "../provider-state"
 import type { AgentProviderVisibility, ProviderVisibilityLane } from "../provider-visibility"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderOuroMasthead } from "./terminal-ui"
+import { preferredConnectRepairAction, type AgentReadinessIssue } from "./readiness-repair"
 
 export type ConnectMenuStatus =
   | "ready"
@@ -130,9 +131,16 @@ function extractCommand(fixHint: string, commandPrefix: string): string | undefi
 }
 
 function resolveProviderHealthStatus(
-  providerHealth?: { ok: boolean; fix?: string; error?: string },
+  providerHealth?: ProviderHealthSummary,
 ): ConnectMenuStatus | undefined {
   if (!providerHealth || providerHealth.ok) return undefined
+  const issue = providerHealth.issue
+  if (issue?.kind === "vault-locked") return "locked"
+  if (issue?.kind === "vault-unconfigured") return "needs setup"
+  if (issue?.kind === "provider-credentials-missing") return "needs credentials"
+  if (issue?.kind === "provider-live-check-failed") {
+    return issue.actions[0]?.kind === "provider-auth" ? "needs credentials" : "needs attention"
+  }
   const error = String(providerHealth.error).toLowerCase()
   const fix = String(providerHealth.fix).toLowerCase()
   if (error.includes("failed live check")) return "needs attention"
@@ -147,9 +155,12 @@ function resolveProviderHealthStatus(
 }
 
 function resolveProviderHealthCommand(
-  fixHint: string | undefined,
+  providerHealth: ProviderHealthSummary | undefined,
   status: ConnectMenuStatus | undefined,
 ): string | undefined {
+  const issueCommand = preferredConnectRepairAction(providerHealth?.issue)?.command
+  if (issueCommand) return issueCommand
+  const fixHint = providerHealth?.fix
   if (!fixHint) return undefined
   const prefixes = status === "locked"
     ? ["ouro vault unlock", "ouro vault replace", "ouro vault recover"]
@@ -402,10 +413,10 @@ function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOpti
 export function summarizeProviderLane(
   agent: string,
   lane: ProviderVisibilityLane,
-  providerHealth?: { ok: boolean; fix?: string; error?: string },
+  providerHealth?: ProviderHealthSummary,
 ): ConnectProviderLaneSummary {
   const providerHealthStatus = resolveProviderHealthStatus(providerHealth)
-  const providerHealthCommand = resolveProviderHealthCommand(providerHealth?.fix, providerHealthStatus)
+  const providerHealthCommand = resolveProviderHealthCommand(providerHealth, providerHealthStatus)
   if (lane.status === "unconfigured") {
     return {
       lane: lane.lane,
@@ -449,7 +460,7 @@ export function summarizeProviderLane(
       status: "needs attention",
       title: `${lane.provider} / ${lane.model}`,
       detail: `failed live check: ${lane.readiness.error ?? "unknown error"}`,
-      action: providerHealth?.fix ?? `ouro auth --agent ${agent} --provider ${lane.provider}`,
+      action: providerHealthCommand ?? providerHealth?.fix ?? `ouro auth --agent ${agent} --provider ${lane.provider}`,
     }
   }
   if (lane.readiness.status === "stale") {
@@ -481,7 +492,7 @@ export function summarizeProviderLane(
 export function summarizeProvidersForConnect(
   agent: string,
   visibility: AgentProviderVisibility,
-  providerHealth?: { ok: boolean; fix?: string; error?: string },
+  providerHealth?: ProviderHealthSummary,
 ): ConnectProviderSummary {
   const laneSummaries = visibility.lanes.map((lane) => summarizeProviderLane(agent, lane, providerHealth))
   const worstLaneStatus = laneSummaries.reduce<ConnectMenuStatus>(
@@ -489,7 +500,7 @@ export function summarizeProvidersForConnect(
     "ready",
   )
   const providerHealthStatus = resolveProviderHealthStatus(providerHealth)
-  const providerHealthCommand = resolveProviderHealthCommand(providerHealth?.fix, providerHealthStatus)
+  const providerHealthCommand = resolveProviderHealthCommand(providerHealth, providerHealthStatus)
   const nextLane = laneSummaries.find((lane) => isProblemStatus(lane.status))
   return {
     status: providerHealthStatus ?? worstLaneStatus,
@@ -525,4 +536,10 @@ export function renderConnectBay(entries: ConnectMenuEntry[], options: ConnectRe
   })
   if (!options.isTTY) return renderNonTtyBay(entries, options)
   return renderTtyBay(entries, options)
+}
+interface ProviderHealthSummary {
+  ok: boolean
+  fix?: string
+  error?: string
+  issue?: AgentReadinessIssue
 }

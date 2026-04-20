@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest"
 import {
   genericReadinessIssue,
   isKnownReadinessIssue,
+  preferredConnectRepairAction,
   providerCredentialMissingIssue,
+  providerLiveCheckFix,
   providerLiveCheckFailedIssue,
   renderReadinessIssue,
   renderReadinessIssueNextSteps,
@@ -181,6 +183,7 @@ describe("readiness repair guidance", () => {
       lane: "outward",
       provider: "minimax",
       model: "MiniMax-M2.5",
+      classification: "server-error",
       message: "HTTP 500",
     })
     const genericWithFix = genericReadinessIssue({
@@ -197,7 +200,12 @@ describe("readiness repair guidance", () => {
       actor: "human-choice",
       detail: "HTTP 500",
     })
-    expect(liveCheck.actions.map((action) => action.kind)).toEqual(["provider-auth", "provider-use"])
+    expect(liveCheck.actions.map((action) => action.kind)).toEqual(["provider-retry", "provider-use"])
+    expect(liveCheck.actions[0]).toMatchObject({
+      label: "Check again in a moment",
+      command: "ouro repair --agent slugger",
+      executable: false,
+    })
     expect(genericWithFix.actions).toEqual([{
       kind: "provider-use",
       label: "Follow the printed fix",
@@ -222,6 +230,108 @@ describe("readiness repair guidance", () => {
     })
 
     expect(renderReadinessIssueNextSteps(issue)).toContain("  source: vault:slugger:providers/*")
+  })
+
+  it("writes classification-aware fixes for retryable, quota, and unknown live-check failures", () => {
+    expect(providerLiveCheckFix({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      classification: "server-error",
+    })).toBe(
+      "Run 'ouro up' again in a moment. If minimax keeps failing, run 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+
+    expect(providerLiveCheckFix({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      classification: "rate-limit",
+    })).toBe(
+      "Run 'ouro up' again after a short wait. Or run 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+
+    expect(providerLiveCheckFix({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      classification: "network-error",
+    })).toBe(
+      "Check the network or provider availability, then run 'ouro up' again. Or run 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+
+    expect(providerLiveCheckFix({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      classification: "provider-error",
+    })).toBe(
+      "Run 'ouro up' again. If it keeps failing, run 'ouro auth --agent slugger --provider minimax' to refresh credentials or 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+  })
+
+  it("orders connect-friendly actions for busy, network, and unknown live-check failures", () => {
+    const serverErrorIssue = providerLiveCheckFailedIssue({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      classification: "server-error",
+      message: "HTTP 529 busy",
+    })
+    const networkIssue = providerLiveCheckFailedIssue({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      classification: "network-error",
+      message: "fetch failed",
+    })
+    const unknownIssue = providerLiveCheckFailedIssue({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      classification: "provider-error",
+      message: "weird failure",
+    })
+
+    expect(serverErrorIssue.actions.map((action) => action.kind)).toEqual(["provider-retry", "provider-use"])
+    expect(providerLiveCheckFailedIssue({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      classification: "rate-limit",
+      message: "429 try later",
+    }).actions.map((action) => action.kind)).toEqual(["provider-retry", "provider-use"])
+    expect(networkIssue.actions.map((action) => action.kind)).toEqual(["provider-retry", "provider-use", "provider-auth"])
+    expect(unknownIssue.actions.map((action) => action.kind)).toEqual(["provider-retry", "provider-auth", "provider-use"])
+    expect(preferredConnectRepairAction(serverErrorIssue)?.command).toBe(
+      "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
+    )
+    expect(preferredConnectRepairAction(unknownIssue)?.command).toBe(
+      "ouro auth --agent slugger --provider minimax",
+    )
+  })
+
+  it("falls back to the retry action when a live-check issue has nothing else to offer connect", () => {
+    const retryOnlyIssue: AgentReadinessIssue = {
+      kind: "provider-live-check-failed",
+      severity: "blocked",
+      actor: "human-choice",
+      summary: "slugger: inner provider minimax / MiniMax-M2.5 failed live check",
+      detail: "busy",
+      actions: [{
+        kind: "provider-retry",
+        label: "Check again in a moment",
+        command: "ouro repair --agent slugger",
+        actor: "human-choice",
+        executable: false,
+      }],
+    }
+
+    expect(preferredConnectRepairAction(retryOnlyIssue)?.command).toBe("ouro repair --agent slugger")
   })
 
   it("handles ready reports, manual mode, invalid choices, manual actions, and missing runners", async () => {

@@ -69,7 +69,7 @@ function statusFromIssue(issue: AgentReadinessIssue): HumanReadinessStatus {
     case "provider-credentials-missing":
       return "needs credentials"
     case "provider-live-check-failed":
-      return "needs attention"
+      return issue.actions[0]?.kind === "provider-auth" ? "needs credentials" : "needs attention"
     case "generic":
       return "needs attention"
   }
