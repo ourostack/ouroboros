@@ -49,6 +49,43 @@ describe("terminal ui", () => {
     expect(output).not.toContain(".----------------------------.")
   })
 
+  it("renders the tty masthead without adding an implied subtitle", () => {
+    emitTestEvent("terminal ui tty masthead without subtitle")
+
+    const output = renderOuroMasthead({
+      isTTY: true,
+      columns: 80,
+    })
+
+    expect(output).toContain("___    _   _")
+    expect(output).toContain("\x1b[")
+    expect(output).not.toContain("Starting the local agent runtime.")
+  })
+
+  it("renders the compact tty masthead when the terminal is narrow", () => {
+    emitTestEvent("terminal ui compact tty masthead")
+
+    const output = renderOuroMasthead({
+      isTTY: true,
+      columns: 60,
+    })
+
+    expect(output).toContain("OUROBOROS")
+    expect(output).toContain("\x1b[")
+    expect(output).not.toContain("___    _   _")
+  })
+
+  it("falls back to the default tty width when columns are unknown", () => {
+    emitTestEvent("terminal ui default tty masthead width")
+
+    const output = renderOuroMasthead({
+      isTTY: true,
+    })
+
+    expect(output).toContain("___    _   _")
+    expect(output).toContain("\x1b[")
+  })
+
   it("renders a framed board with sections, wrapped copy, and actor-labelled actions", () => {
     emitTestEvent("terminal ui board rendering")
 
