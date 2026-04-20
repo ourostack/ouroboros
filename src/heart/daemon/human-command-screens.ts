@@ -5,6 +5,7 @@ import {
   type TerminalSection,
 } from "./terminal-ui"
 import type { HumanReadinessSnapshot } from "./human-readiness"
+import type { StatusPayload } from "./cli-render"
 
 export type HomeScreenActionKind = "chat" | "up" | "connect" | "repair" | "help" | "hatch" | "clone" | "exit"
 
@@ -69,7 +70,7 @@ export function buildOuroHomeActions(agents: string[]): HomeScreenAction[] {
 
   return [
     ...actions,
-    { key: String(actions.length + 1), label: "Bring the system online", kind: "up", command: "ouro up" },
+    { key: String(actions.length + 1), label: "Prepare the house", kind: "up", command: "ouro up" },
     { key: String(actions.length + 2), label: "Connect an agent", kind: "connect", command: "ouro connect --agent <agent>" },
     { key: String(actions.length + 3), label: "Repair an agent", kind: "repair", command: "ouro repair --agent <agent>" },
     { key: String(actions.length + 4), label: "Show help", kind: "help", command: "ouro --help" },
@@ -93,7 +94,9 @@ export function renderOuroHomeScreen(options: HomeScreenOptions): string {
   const sections: TerminalSection[] = [
     {
       title: options.agents.length === 0 ? "Start here" : "Around the house",
-      lines: actions.map((action) => `${action.key}. ${action.label}`),
+      lines: options.agents.length === 0
+        ? ["No agents are home yet. Hatch someone new or bring an existing bundle aboard."]
+        : options.agents.map((agent) => `${agent} is home and ready when called.`),
     },
   ]
   const actionRows: TerminalAction[] = actions.map((action, index) => ({
@@ -114,7 +117,7 @@ export function renderOuroHomeScreen(options: HomeScreenOptions): string {
     title: "Ouro home",
     summary: options.agents.length === 0
       ? "Hatch someone new or bring an existing bundle aboard."
-      : "Pick an agent or system action without memorizing commands.",
+      : "Choose who to wake or what to prepare without memorizing commands.",
     sections,
     actions: actionRows,
     prompt: `Choose [1-${actions.length}] or type a name: `,
@@ -174,5 +177,89 @@ export function renderHumanReadinessBoard(options: HumanReadinessBoardOptions): 
     sections,
     actions: options.snapshot.nextActions,
     prompt: options.prompt,
+  })
+}
+
+export function renderHouseStatusScreen(options: {
+  payload: StatusPayload
+  isTTY: boolean
+  columns?: number
+}): string {
+  renderScreenEvent("house-status")
+  const sections: TerminalSection[] = [
+    {
+      title: "House pulse",
+      lines: [
+        `Daemon: ${options.payload.overview.daemon}`,
+        `Health: ${options.payload.overview.health}`,
+        `Outlook: ${options.payload.overview.outlookUrl}`,
+        `Updated: ${options.payload.overview.lastUpdated}`,
+      ],
+    },
+  ]
+
+  if (options.payload.agents.length > 0) {
+    sections.push({
+      title: "Agents",
+      lines: options.payload.agents.map((agent) => `${agent.name} — ${agent.enabled ? "enabled" : "disabled"}`),
+    })
+  }
+
+  if (options.payload.providers.length > 0) {
+    sections.push({
+      title: "Providers",
+      lines: options.payload.providers.map((provider) => {
+        const detail = [provider.readiness, provider.detail, provider.source, provider.credential].filter(Boolean).join("; ")
+        return `${provider.agent} ${provider.lane} — ${provider.provider} / ${provider.model}${detail ? ` — ${detail}` : ""}`
+      }),
+    })
+  }
+
+  if (options.payload.senses.length > 0) {
+    sections.push({
+      title: "Senses",
+      lines: options.payload.senses.map((sense) => {
+        const status = sense.enabled ? sense.status : "disabled"
+        return `${sense.agent} — ${sense.label ?? sense.sense} — ${status}${sense.detail ? ` — ${sense.detail}` : ""}`
+      }),
+    })
+  }
+
+  if (options.payload.workers.length > 0) {
+    sections.push({
+      title: "Workers",
+      lines: options.payload.workers.map((worker) => {
+        const details = [`restarts: ${worker.restartCount}`]
+        if (worker.pid !== null) details.unshift(`pid ${worker.pid}`)
+        if (worker.lastExitCode !== null) details.push(`exit=${worker.lastExitCode}`)
+        if (worker.lastSignal !== null) details.push(`signal=${worker.lastSignal}`)
+        if (worker.errorReason) details.push(`error: ${worker.errorReason}`)
+        if (worker.fixHint) details.push(`fix: ${worker.fixHint}`)
+        return `${worker.agent} — ${worker.worker} — ${worker.status}${details.length > 0 ? ` — ${details.join("; ")}` : ""}`
+      }),
+    })
+  }
+
+  if (options.payload.sync.length > 0) {
+    sections.push({
+      title: "Git sync",
+      lines: options.payload.sync.map((row) => {
+        if (!row.enabled) return `${row.agent} — disabled`
+        if (row.gitInitialized === false) return `${row.agent} — needs git init`
+        if (row.remoteUrl) return `${row.agent} — ${row.remote} -> ${row.remoteUrl}`
+        return `${row.agent} — local only`
+      }),
+    })
+  }
+
+  return renderTerminalBoard({
+    isTTY: options.isTTY,
+    columns: options.columns,
+    masthead: {
+      subtitle: "The house is awake enough to answer clearly.",
+    },
+    title: "House status",
+    summary: "What is awake, resting, or asking for care.",
+    sections,
   })
 }

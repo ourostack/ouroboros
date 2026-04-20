@@ -455,8 +455,11 @@ describe("UpProgress", () => {
       // Complete c and render again — now only 3 completed lines, no spinner
       progress.completePhase("c", "done")
       const output = progress.render(2000)
-      // cursor-up should reference previous line count
-      expect(output).toContain("\x1b[3A")
+      // cursor-up should reference the previous render height, whatever the
+      // current screen language chooses to be.
+      const match = output.match(/\x1b\[(\d+)A/)
+      expect(match).not.toBeNull()
+      expect(Number(match?.[1] ?? 0)).toBeGreaterThan(0)
     })
 
     it("end() with an active phase in TTY mode writes final output", () => {

@@ -29,7 +29,7 @@ export type CommandCategory =
 export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandCategory }> = {
   up: {
     category: "Lifecycle",
-    description: "Start the ouro daemon. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
+    description: "Prepare the house: start the background runtime, refresh what this machine needs, and surface anything still asking for care. In a human TTY, bare `ouro` opens the home screen instead; noninteractive shells still route bare `ouro` to `ouro up`.",
     usage: "ouro [up] [--no-repair]",
     example: "ouro up --no-repair",
   },
@@ -47,7 +47,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   status: {
     category: "Lifecycle",
-    description: "Show daemon status",
+    description: "Show the house status",
     usage: "ouro status",
     example: "ouro status",
   },
