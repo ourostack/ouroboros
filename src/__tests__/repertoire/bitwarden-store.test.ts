@@ -526,6 +526,41 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.get("providers/openai-codex")).rejects.toThrow("bw CLI error: server unavailable")
       expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
     })
+
+    it("treats a missing structured Ouro item as missing without falling back to filtered search", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "get" && args[1] === "item") {
+          cb(new Error("Command failed: bw get item providers/azure"), "", "Not found.")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([{
+            id: "provider-item",
+            name: "providers/azure",
+            login: { username: "azure", password: "provider-token" },
+            revisionDate: "2026-04-20T05:01:00.000Z",
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const result = await store.get("providers/azure")
+
+      expect(result).toBeNull()
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/azure")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+    })
   })
 
   describe("getRawSecret", () => {

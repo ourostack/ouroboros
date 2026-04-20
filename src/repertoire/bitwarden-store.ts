@@ -122,11 +122,14 @@ function shouldPreferExactItemLookup(domain: string): boolean {
   return domain.includes("/")
 }
 
+function isBwDirectLookupMissingError(err: Error): boolean {
+  const message = err.message.toLowerCase()
+  return message.includes("bw cli error: not found") || message.includes("bw cli error: item not found")
+}
+
 function isBwDirectLookupFallbackError(err: Error): boolean {
   const message = err.message.toLowerCase()
   return (
-    message.includes("bw cli error: not found") ||
-    message.includes("bw cli error: item not found") ||
     message.includes("invalid json from bw get item") ||
     message.includes("invalid item from bw get item")
   )
@@ -755,6 +758,7 @@ export class BitwardenCredentialStore implements CredentialStore {
         if (item.name === domain) return item
       } catch (error) {
         const err = error as Error
+        if (isBwDirectLookupMissingError(err)) return null
         if (!isBwDirectLookupFallbackError(err)) throw err
       }
     }

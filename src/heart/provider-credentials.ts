@@ -133,6 +133,12 @@ function isPresentCredentialValue(value: unknown): value is string | number {
   return Number.isFinite(value) && value !== 0
 }
 
+function isMissingProviderCredentialError(message: string, itemName: string): boolean {
+  const normalized = message.toLowerCase()
+  return normalized.includes(itemName.toLowerCase())
+    && (normalized.includes("no credential found") || normalized.includes("missing") || normalized.includes("not found"))
+}
+
 function copyKnownFields(
   source: Record<string, unknown>,
   fields: string[],
@@ -277,16 +283,20 @@ export async function refreshProviderCredentialPool(
   try {
     const store = getCredentialStore(agentName)
     options.onProgress?.(`reading vault items for ${agentName}...`)
-    const items = await store.list()
     const providers: Partial<Record<AgentProvider, ProviderCredentialRecord>> = {}
     let updatedAt = new Date(0).toISOString()
 
-    for (const item of items) {
-      if (!item.domain.startsWith(VAULT_ITEM_PREFIX)) continue
-      const provider = item.domain.slice(VAULT_ITEM_PREFIX.length)
-      if (!isAgentProvider(provider)) continue
+    for (const provider of VALID_PROVIDERS) {
+      const itemName = providerCredentialItemName(provider)
       options.onProgress?.(`reading ${provider} credentials...`)
-      const raw = await store.getRawSecret(item.domain, "password")
+      let raw: string
+      try {
+        raw = await store.getRawSecret(itemName, "password")
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (isMissingProviderCredentialError(message, itemName)) continue
+        throw error
+      }
       const payload = validateProviderCredentialPayload(JSON.parse(raw) as unknown, provider)
       const record = recordFromPayload(payload)
       providers[provider] = record

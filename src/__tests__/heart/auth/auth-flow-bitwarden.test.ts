@@ -29,6 +29,9 @@ const bwHarness = vi.hoisted(() => {
     failEveryCreateWith: null as string | null,
     failEveryCreateErrorMessage: null as string | null,
     failEveryCreateStderr: null as string | null,
+    getItemCalls: 0,
+    failGetAtCall: 0,
+    failNextGetWith: null as string | null,
     reset(): void {
       items.clear()
       this.commands = []
@@ -43,6 +46,9 @@ const bwHarness = vi.hoisted(() => {
       this.failEveryCreateWith = null
       this.failEveryCreateErrorMessage = null
       this.failEveryCreateStderr = null
+      this.getItemCalls = 0
+      this.failGetAtCall = 0
+      this.failNextGetWith = null
     },
   }
 })
@@ -150,8 +156,15 @@ function installBwExecHarness(): void {
         cb(new Error("Command failed: bw get item"), "", "Session key is invalid or expired")
         return
       }
-      const id = args[2]
-      const item = [...bwHarness.items.values()].find((entry) => entry.id === id)
+      bwHarness.getItemCalls += 1
+      if (bwHarness.failNextGetWith && bwHarness.getItemCalls === bwHarness.failGetAtCall) {
+        const failure = bwHarness.failNextGetWith
+        bwHarness.failNextGetWith = null
+        cb(new Error("Command failed: bw get item"), "", failure)
+        return
+      }
+      const idOrName = args[2]
+      const item = bwHarness.items.get(idOrName) ?? [...bwHarness.items.values()].find((entry) => entry.id === idOrName)
       if (!item) {
         cb(new Error("Command failed: bw get item"), "", "Not found.")
         return
@@ -215,6 +228,13 @@ function installBwExecHarness(): void {
 describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
   const originalHome = process.env.HOME
   const tempHomes: string[] = []
+  const providerReadProgress = [
+    "reading azure credentials...",
+    "reading minimax credentials...",
+    "reading anthropic credentials...",
+    "reading openai-codex credentials...",
+    "reading github-copilot credentials...",
+  ]
 
   afterEach(() => {
     process.env.HOME = originalHome
@@ -247,12 +267,13 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultSaveBot's vault access...",
       "reading vault items for VaultSaveBot...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "opening VaultSaveBot's vault session...",
       "storing minimax credentials in VaultSaveBot's vault...",
       "refreshing local provider snapshot from VaultSaveBot's vault...",
       "reading vault items for VaultSaveBot...",
-      "reading minimax credentials...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "credentials stored at providers/minimax; local provider snapshot refreshed.",
     ])
@@ -276,8 +297,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextListAllWith = "access denied by vault policy"
-    bwHarness.failListAllAtCall = 2
+    bwHarness.failNextGetWith = "access denied by vault policy"
+    bwHarness.failGetAtCall = 8
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
@@ -297,11 +318,13 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultRefreshBot's vault access...",
       "reading vault items for VaultRefreshBot...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "opening VaultRefreshBot's vault session...",
       "storing minimax credentials in VaultRefreshBot's vault...",
       "refreshing local provider snapshot from VaultRefreshBot's vault...",
       "reading vault items for VaultRefreshBot...",
+      "reading azure credentials...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
   })
@@ -330,6 +353,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
       "reading vault items for VaultLockedBot...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "opening VaultLockedBot's vault session...",
       "storing minimax credentials in VaultLockedBot's vault...",
@@ -359,6 +383,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultServerBot's vault access...",
       "reading vault items for VaultServerBot...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "opening VaultServerBot's vault session...",
       "storing minimax credentials in VaultServerBot's vault...",
@@ -397,6 +422,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultPromptBot's vault access...",
       "reading vault items for VaultPromptBot...",
+      ...providerReadProgress,
       "parsing provider credentials...",
       "opening VaultPromptBot's vault session...",
       "storing minimax credentials in VaultPromptBot's vault...",
