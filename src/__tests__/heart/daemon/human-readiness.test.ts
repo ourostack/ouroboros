@@ -48,6 +48,7 @@ describe("human readiness", () => {
           lane: "inner",
           provider: "minimax",
           model: "MiniMax-M2.5",
+          classification: "auth-failure",
           message: "400 status code (no body)",
         }), {
           key: "providers-inner",
@@ -61,6 +62,7 @@ describe("human readiness", () => {
       command: "ouro vault unlock --agent slugger",
       actor: "human-required",
     })
+    expect(snapshot.items[2]?.status).toBe("needs credentials")
     expect(snapshot.nextActions.map((action) => action.command)).toEqual([
       "ouro vault unlock --agent slugger",
       "ouro vault replace --agent slugger",
@@ -147,6 +149,24 @@ describe("human readiness", () => {
     })
     expect(needsSetup.status).toBe("needs setup")
     expect(needsSetup.summary).toContain("needs setup before it can be used")
+  })
+
+  it("keeps provider live-check failures in needs-attention when the issue is not credential-specific", () => {
+    emitTestEvent("human readiness live check needs attention")
+
+    const item = readinessItemFromIssue(providerLiveCheckFailedIssue({
+      agentName: "slugger",
+      lane: "inner",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      classification: "server-error",
+      message: "529 provider busy",
+    }), {
+      key: "providers-inner-busy",
+      title: "Inner lane",
+    })
+
+    expect(item.status).toBe("needs attention")
   })
 
   it("maps vault setup and missing-credential issues into the right status copy", () => {

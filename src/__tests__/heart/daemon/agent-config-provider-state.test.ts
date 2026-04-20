@@ -518,7 +518,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
       if (provider === "openai-codex") {
         return {
           ok: false,
-          classification: "provider-error",
+          classification: "auth-failure",
           message: "400 status code (no body)",
           attempts: [{ attempt: 1 }, { attempt: 2 }, { attempt: 3 }],
         } as const
@@ -533,7 +533,9 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
     expect(result.error).toContain("openai-codex")
     expect(result.error).toContain("gpt-5.4")
     expect(result.error).toContain("400 status code (no body)")
-    expect(result.fix).toBe("Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials.")
+    expect(result.fix).toBe(
+      "Run 'ouro auth --agent slugger --provider openai-codex' to refresh credentials, or run 'ouro use --agent slugger --lane inner --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
     expect(result.issue).toMatchObject({
       kind: "provider-live-check-failed",
       severity: "blocked",

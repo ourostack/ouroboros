@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.438",
+      "changes": [
+        "Live provider failures now keep their real diagnosis all the way through startup, repair, and the connect bay: expired credentials still prompt re-auth, but busy providers, provider outages, rate limits, quota failures, and network trouble now point humans toward retrying later, checking usage, or switching lanes instead of being mislabeled as an auth problem.",
+        "The readiness board and connect bay now share one classification-aware repair model, so a lane only says `needs credentials` when the live ping actually came back as an auth failure; other live-check failures stay in the broader `needs attention` bucket with matching next actions.",
+        "New daemon, connect-bay, human-readiness, hermetic-runtime, and full-suite coverage lock in the truthful failure guidance, and packaged-install verification confirms the fix survives beyond the repo checkout into the shipped CLI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.437",
       "changes": [
         "Provider-credential refresh now reads the known `providers/<provider>` vault items directly instead of starting with a full `bw list items` scan, so startup, repair, and connect-bay readiness stop paying whole-vault latency just to inspect the handful of provider records Ouro already names exactly.",

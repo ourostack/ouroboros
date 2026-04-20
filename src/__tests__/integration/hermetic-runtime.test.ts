@@ -73,7 +73,7 @@ describe("hermetic Ouro runtime integration", () => {
 
     expect(connect.exitCode).toBe(0)
     expect(connect.stdout).toContain("slugger connect bay")
-    expect(connect.stdout).toContain("Providers - needs attention")
+    expect(connect.stdout).toContain("Providers - needs credentials")
     expect(connect.stdout).toContain("Outward lane: github-copilot / claude-sonnet-4.6")
     expect(connect.stdout).toContain("failed live check")
     expect(connect.stdout).toContain("run: ouro auth --agent slugger --provider github-copilot")

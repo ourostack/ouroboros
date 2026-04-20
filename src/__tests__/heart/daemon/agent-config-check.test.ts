@@ -481,7 +481,25 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toContain("outward provider anthropic")
     expect(result.error).toContain("quota exceeded")
-    expect(result.fix).toBe("Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials.")
+    expect(result.fix).toBe(
+      "This usually means anthropic hit a usage limit. Restore quota, then run 'ouro up' again. Or run 'ouro use --agent myagent --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
+  })
+
+  it("still recommends provider auth when the live ping says credentials are invalid", async () => {
+    const pingProvider = vi.fn(async () => ({
+      ok: false,
+      classification: "auth-failure",
+      message: "401 invalid API key",
+    }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("401 invalid API key")
+    expect(result.fix).toBe(
+      "Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials, or run 'ouro use --agent myagent --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
+    )
   })
 
   it("returns structural config errors before live health checks", async () => {

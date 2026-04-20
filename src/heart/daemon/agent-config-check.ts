@@ -20,6 +20,7 @@ import {
 } from "../provider-credentials"
 import { isCredentialVaultNotConfiguredError, vaultCreateRecoverFix, vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 import {
+  providerLiveCheckFix,
   providerCredentialMissingIssue,
   providerLiveCheckFailedIssue,
   vaultLockedIssue,
@@ -386,12 +387,18 @@ function failedPingResult(
   return {
     ok: false,
     error: `${lane} provider ${provider} model ${model} failed live check: ${result.message}`,
-    fix: `Run 'ouro auth --agent ${agentName} --provider ${provider}' to refresh credentials.`,
+    fix: providerLiveCheckFix({
+      agentName,
+      lane,
+      provider,
+      classification: result.classification,
+    }),
     issue: providerLiveCheckFailedIssue({
       agentName,
       lane,
       provider,
       model,
+      classification: result.classification,
       message: result.message,
     }),
   }
