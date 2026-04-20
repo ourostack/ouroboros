@@ -246,7 +246,7 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
   }
 }
 
-function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string): Promise<string> {
+function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string, bwBinaryPath = "bw"): Promise<string> {
   const env = {
     ...process.env,
     ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
@@ -255,7 +255,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
 
   const runCommand = (): Promise<string> =>
     new Promise((resolve, reject) => {
-      const child = execFileCb("bw", args, { timeout: 30_000, env }, (err, stdout, stderr) => {
+      const child = execFileCb(bwBinaryPath, args, { timeout: 30_000, env }, (err, stdout, stderr) => {
         if (err) {
           if (isBwNotInstalled(err)) {
             reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))
@@ -278,7 +278,7 @@ function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdi
 function isBwNotInstalled(err: Error): boolean {
   const msg = err.message.toLowerCase()
   const code = (err as NodeJS.ErrnoException).code
-  return code === "ENOENT" || msg.includes("enoent") || msg.includes("not found") || msg.includes("command not found")
+  return code === "ENOENT" || /\bspawn\b.*\benoent\b/.test(msg) || msg.includes("command not found")
 }
 
 /** Check if the error is transient (network/timeout) and worth retrying. */
@@ -404,6 +404,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly masterPassword: string
   private readonly appDataDir?: string
   private sessionToken: string | null = null
+  private bwBinaryPath = "bw"
 
   constructor(
     serverUrl: string,
@@ -421,6 +422,10 @@ export class BitwardenCredentialStore implements CredentialStore {
     return true
   }
 
+  private execBw(args: string[], sessionToken?: string, stdin?: string): Promise<string> {
+    return execBw(args, sessionToken, this.appDataDir, stdin, this.bwBinaryPath)
+  }
+
   /**
    * Ensure the bw CLI is authenticated and unlocked.
    * Handles three states: logged out → login, locked → unlock, already unlocked → no-op.
@@ -428,7 +433,7 @@ export class BitwardenCredentialStore implements CredentialStore {
    */
   async login(): Promise<void> {
     // Ensure bw CLI is installed before any bw commands
-    await ensureBwCli()
+    this.bwBinaryPath = await ensureBwCli()
     if (this.appDataDir) {
       fs.mkdirSync(this.appDataDir, { recursive: true, mode: 0o700 })
     }
@@ -471,7 +476,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Check current status
     let status: { status?: string; serverUrl?: string; userEmail?: string } = {}
     try {
-      const raw = await execBw(["status"], undefined, this.appDataDir)
+      const raw = await this.execBw(["status"])
       status = JSON.parse(raw)
     } catch (err) {
       // If bw CLI is not installed or a transient error, propagate it for retry
@@ -484,7 +489,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     // Configure server URL if needed (only works when logged out)
     if (status.status === "unauthenticated" || !status.serverUrl) {
       try {
-        await execBw(["config", "server", this.serverUrl], undefined, this.appDataDir)
+        await this.execBw(["config", "server", this.serverUrl])
       } catch (error) {
         const err = error as Error
         // "Logout required" means already logged in — that's fine, skip config.
@@ -496,11 +501,11 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     if (status.status === "locked") {
       // Already logged in, just needs unlock
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
       this.sessionToken = unlockOutput.trim()
     } else if (status.status === "unauthenticated" || !status.status) {
       // Not logged in — full login
-      const loginOutput = await execBw(["login", this.email, this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const loginOutput = await this.execBw(["login", this.email, this.masterPassword, "--raw"])
       try {
         const parsed = JSON.parse(loginOutput)
         this.sessionToken = parsed.access_token ?? loginOutput.trim()
@@ -509,13 +514,13 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     } else {
       // Status is "unlocked" — already good, just need the session token
-      const unlockOutput = await execBw(["unlock", this.masterPassword, "--raw"], undefined, this.appDataDir)
+      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
       this.sessionToken = unlockOutput.trim()
     }
 
     // Sync vault data after obtaining a fresh session token
     /* v8 ignore next -- defensive: loginAttempt always sets sessionToken before sync @preserve */
-    await execBw(["sync"], this.sessionToken ?? undefined, this.appDataDir)
+    await this.execBw(["sync"], this.sessionToken ?? undefined)
   }
 
   private async ensureSession(): Promise<string | undefined> {
@@ -665,11 +670,11 @@ export class BitwardenCredentialStore implements CredentialStore {
       const encoded = Buffer.from(JSON.stringify(item)).toString("base64")
       let savedItem: BwLoginItem | null
       if (existing) {
-        const stdout = await execBw(["edit", "item", existing.id], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["edit", "item", existing.id], session, encoded)
         const savedItemId = parseBwItemId(stdout) ?? existing.id
         savedItem = await this.findItemById(savedItemId, session)
       } else {
-        const stdout = await execBw(["create", "item"], session, this.appDataDir, encoded)
+        const stdout = await this.execBw(["create", "item"], session, encoded)
         const savedItemId = parseBwItemId(stdout)
         savedItem = savedItemId
           ? await this.findItemById(savedItemId, session)
@@ -695,7 +700,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     })
 
     const stdout = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => execBw(["list", "items"], session, this.appDataDir)),
+      this.withSessionRetry((session) => this.execBw(["list", "items"], session)),
     )
     const items = parseBwItems(stdout, "bw list items")
 
@@ -736,7 +741,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       return false
     }
 
-    await this.withSessionRetry((session) => execBw(["delete", "item", item.id], session, this.appDataDir))
+    await this.withSessionRetry((session) => this.execBw(["delete", "item", item.id], session))
 
     emitNervesEvent({
       event: "repertoire.bw_credential_delete_end",
@@ -753,7 +758,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
     if (shouldPreferExactItemLookup(domain)) {
       try {
-        const stdout = await execBw(["get", "item", domain], session, this.appDataDir)
+        const stdout = await this.execBw(["get", "item", domain], session)
         const item = parseBwItem(stdout, "bw get item")
         if (item.name === domain) return item
       } catch (error) {
@@ -763,7 +768,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     }
 
-    const stdout = await execBw(["list", "items", "--search", domain], session, this.appDataDir)
+    const stdout = await this.execBw(["list", "items", "--search", domain], session)
     const items = parseBwItems(stdout, "bw list items --search")
 
     // Find exact match by name
@@ -771,7 +776,7 @@ export class BitwardenCredentialStore implements CredentialStore {
   }
 
   private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
-    const stdout = await execBw(["get", "item", id], session, this.appDataDir)
+    const stdout = await this.execBw(["get", "item", id], session)
     return parseBwItem(stdout, "bw get item")
   }
 

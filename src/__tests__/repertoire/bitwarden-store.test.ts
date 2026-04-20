@@ -96,6 +96,31 @@ describe("BitwardenCredentialStore", () => {
       expect(store.isReady()).toBe(true)
     })
 
+    it("uses the resolved bw binary path for later vault commands", async () => {
+      const commands: string[] = []
+      mockExecFile.mockImplementation((cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        commands.push(cmd)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.list()
+
+      expect(commands.length).toBeGreaterThan(0)
+      expect(new Set(commands)).toEqual(new Set(["/usr/local/bin/bw"]))
+    })
+
     it("handles JSON login output without access_token field", async () => {
       mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
         cb(null, '{"some_other_field":"value"}', "")
@@ -540,7 +565,9 @@ describe("BitwardenCredentialStore", () => {
           return
         }
         if (args[0] === "get" && args[1] === "item") {
-          cb(new Error("Command failed: bw get item providers/azure"), "", "Not found.")
+          const err = new Error("Command failed: /tmp/fake-bw get item providers/azure\nitem not found") as NodeJS.ErrnoException
+          err.code = "EFAIL"
+          cb(err, "", "item not found")
           return
         }
         if (args[0] === "list") {
