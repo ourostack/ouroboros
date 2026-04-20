@@ -87,14 +87,10 @@ function canonicalizeVaultUnlockConfig(config: VaultUnlockConfig): VaultUnlockCo
 
 function vaultConfigCandidates(config: VaultUnlockConfig): VaultUnlockConfig[] {
   const canonical = canonicalizeVaultUnlockConfig(config)
-  const candidates: VaultUnlockConfig[] = []
-  for (const serverUrl of getVaultServerUrlCandidates(config.serverUrl)) {
-    const candidate = { ...canonical, serverUrl }
-    if (!candidates.some((existing) => existing.serverUrl === candidate.serverUrl && existing.email === candidate.email)) {
-      candidates.push(candidate)
-    }
-  }
-  return candidates
+  return getVaultServerUrlCandidates(config.serverUrl).map((serverUrl) => ({
+    ...canonical,
+    serverUrl,
+  }))
 }
 
 function plaintextUnlockPath(config: VaultUnlockConfig, deps: VaultUnlockDeps): string {

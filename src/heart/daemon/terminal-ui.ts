@@ -151,9 +151,8 @@ function renderPanelPlain(title: string, lines: string[]): string[] {
 function mastheadArt(columns?: number): string[] {
   if ((columns ?? 88) >= 74) {
     const rows = Array.from({ length: 5 }, () => [] as string[])
-    for (const letter of MASTHEAD_WORD) {
+    for (const letter of MASTHEAD_WORD.split("") as Array<keyof typeof CLASSIC_WORDMARK_GLYPHS>) {
       const glyph = CLASSIC_WORDMARK_GLYPHS[letter]
-      if (!glyph) continue
       for (const [index, line] of glyph.entries()) {
         rows[index].push(line)
       }

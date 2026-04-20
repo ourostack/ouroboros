@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -44,6 +45,18 @@ function tempHome(prefix = "ouro-vault-unlock-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   createdDirs.push(dir)
   return dir
+}
+
+function vaultDigest(serverUrl: string, email: string): string {
+  return crypto.createHash("sha256").update(`${serverUrl}:${email}`).digest("hex").slice(0, 24)
+}
+
+function legacyPlaintextPath(homeDir: string, serverUrl: string, email: string): string {
+  return path.join(homeDir, ".ouro-cli", "vault-unlock", `${vaultDigest(serverUrl, email)}.secret`)
+}
+
+function legacyWindowsDpapiPath(homeDir: string, serverUrl: string, email: string): string {
+  return path.join(homeDir, ".ouro-cli", "vault-unlock-dpapi", "vault-unlock", `${vaultDigest(serverUrl, email)}.dpapi`)
 }
 
 function ok(stdout = ""): ReturnType<NonNullable<VaultUnlockDeps["spawnSync"]>> {
@@ -411,6 +424,29 @@ describe("vault unlock local stores", () => {
     )
   })
 
+  it("keeps reading legacy macOS keychain accounts even if canonical self-heal write fails", () => {
+    emitTestEvent("vault unlock macos alias self-heal failure")
+    const canonicalConfig = {
+      ...config,
+      serverUrl: "https://vault.ouroboros.bot",
+    }
+    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const spawn = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("security")
+      if (args[0] === "find-generic-password") {
+        const account = String(args[4])
+        if (account === primaryAccount) return fail("The specified item could not be found in the keychain.")
+        if (account === legacyAccount) return ok("legacy-unlock-material\n")
+      }
+      if (args[0] === "add-generic-password") return fail("User interaction is not allowed.")
+      return fail("unexpected command")
+    })
+
+    expect(readVaultUnlockSecret(canonicalConfig, { platform: "darwin", spawnSync: spawn as VaultUnlockDeps["spawnSync"] }).secret)
+      .toBe("legacy-unlock-material")
+  })
+
   it("surfaces macOS keychain read failures instead of relabeling them as a locked vault", () => {
     emitTestEvent("vault unlock macos read failure")
     const deniedRead = vi.fn(() => fail("User interaction is not allowed."))
@@ -428,6 +464,55 @@ describe("vault unlock local stores", () => {
       stored: false,
       error: "failed to read vault unlock secret from macOS Keychain: User interaction is not allowed.",
     })
+  })
+
+  it("uses macOS keychain command error text when stderr is empty", () => {
+    emitTestEvent("vault unlock macos read error object")
+    const deniedRead = vi.fn(() => fail("", "keychain daemon unavailable"))
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "darwin",
+      spawnSync: deniedRead as VaultUnlockDeps["spawnSync"],
+    })).toThrow("failed to read vault unlock secret from macOS Keychain: keychain daemon unavailable")
+  })
+
+  it("treats macOS keychain failures with non-string stderr and no error detail as missing local unlock material", () => {
+    emitTestEvent("vault unlock macos read non-string stderr")
+    const deniedRead = vi.fn(() => ({
+      status: 1,
+      stdout: "",
+      stderr: Buffer.from(""),
+    }) as ReturnType<NonNullable<VaultUnlockDeps["spawnSync"]>>)
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "darwin",
+      spawnSync: deniedRead as VaultUnlockDeps["spawnSync"],
+    })).toThrow("Ouro credential vault is locked")
+  })
+
+  it("keeps reading legacy macOS keychain accounts even if self-heal throws a non-Error value", () => {
+    emitTestEvent("vault unlock macos alias self-heal non-error failure")
+    const canonicalConfig = {
+      ...config,
+      serverUrl: "https://vault.ouroboros.bot",
+    }
+    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const spawn = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("security")
+      if (args[0] === "find-generic-password") {
+        const account = String(args[4])
+        if (account === primaryAccount) return fail("The specified item could not be found in the keychain.")
+        if (account === legacyAccount) return ok("legacy-unlock-material\n")
+      }
+      if (args[0] === "add-generic-password") {
+        throw "keychain unavailable"
+      }
+      return fail("unexpected command")
+    })
+
+    expect(readVaultUnlockSecret(canonicalConfig, { platform: "darwin", spawnSync: spawn as VaultUnlockDeps["spawnSync"] }).secret)
+      .toBe("legacy-unlock-material")
   })
 
   it("uses Linux Secret Service commands for read and write", () => {
@@ -479,6 +564,107 @@ describe("vault unlock local stores", () => {
       .toThrow("failed to store vault unlock secret in Linux Secret Service")
   })
 
+  it("reuses legacy Linux Secret Service accounts and rewrites the canonical account", () => {
+    emitTestEvent("vault unlock linux alias fallback")
+    const canonicalConfig = {
+      ...config,
+      serverUrl: "https://vault.ouroboros.bot",
+    }
+    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const spawn = vi.fn((command: string, args: readonly string[], options: { input?: string } = {}) => {
+      expect(command).toBe("secret-tool")
+      if (args[0] === "--version") return ok("secret-tool 1.0\n")
+      if (args[0] === "lookup") {
+        const account = String(args[4])
+        if (account === primaryAccount) return fail("not found")
+        if (account === legacyAccount) return ok("legacy-unlock-material\n")
+      }
+      if (args[0] === "store") {
+        expect(options.input).toBe("legacy-unlock-material")
+        expect(args).toContain(primaryAccount)
+        return ok()
+      }
+      return fail("unexpected command")
+    })
+
+    expect(readVaultUnlockSecret(canonicalConfig, { platform: "linux", spawnSync: spawn as VaultUnlockDeps["spawnSync"] }).secret)
+      .toBe("legacy-unlock-material")
+  })
+
+  it("keeps reading legacy Linux Secret Service accounts even if canonical self-heal write fails", () => {
+    emitTestEvent("vault unlock linux alias self-heal failure")
+    const canonicalConfig = {
+      ...config,
+      serverUrl: "https://vault.ouroboros.bot",
+    }
+    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const spawn = vi.fn((command: string, args: readonly string[], options: { input?: string } = {}) => {
+      expect(command).toBe("secret-tool")
+      if (args[0] === "--version") return ok("secret-tool 1.0\n")
+      if (args[0] === "lookup") {
+        const account = String(args[4])
+        if (account === primaryAccount) return fail("not found")
+        if (account === legacyAccount) return ok("legacy-unlock-material\n")
+      }
+      if (args[0] === "store") {
+        expect(options.input).toBe("legacy-unlock-material")
+        return fail("collection locked")
+      }
+      return fail("unexpected command")
+    })
+
+    expect(readVaultUnlockSecret(canonicalConfig, { platform: "linux", spawnSync: spawn as VaultUnlockDeps["spawnSync"] }).secret)
+      .toBe("legacy-unlock-material")
+  })
+
+  it("surfaces Linux Secret Service read failures instead of relabeling them as a locked vault", () => {
+    emitTestEvent("vault unlock linux read failure")
+    const deniedLookup = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("secret-tool")
+      if (args[0] === "--version") return ok("secret-tool 1.0\n")
+      return fail("collection locked")
+    })
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "linux",
+      spawnSync: deniedLookup as VaultUnlockDeps["spawnSync"],
+    })).toThrow("failed to read vault unlock secret from Linux Secret Service: collection locked")
+  })
+
+  it("uses Linux Secret Service command error text when stderr is empty", () => {
+    emitTestEvent("vault unlock linux read error object")
+    const deniedLookup = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("secret-tool")
+      if (args[0] === "--version") return ok("secret-tool 1.0\n")
+      return fail("", "secret service bus unavailable")
+    })
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "linux",
+      spawnSync: deniedLookup as VaultUnlockDeps["spawnSync"],
+    })).toThrow("failed to read vault unlock secret from Linux Secret Service: secret service bus unavailable")
+  })
+
+  it("treats Linux Secret Service failures with non-string stderr and no error detail as missing local unlock material", () => {
+    emitTestEvent("vault unlock linux read non-string stderr")
+    const deniedLookup = vi.fn((command: string, args: readonly string[]) => {
+      expect(command).toBe("secret-tool")
+      if (args[0] === "--version") return ok("secret-tool 1.0\n")
+      return {
+        status: 1,
+        stdout: "",
+        stderr: Buffer.from(""),
+      } as ReturnType<NonNullable<VaultUnlockDeps["spawnSync"]>>
+    })
+
+    expect(() => readVaultUnlockSecret(config, {
+      platform: "linux",
+      spawnSync: deniedLookup as VaultUnlockDeps["spawnSync"],
+    })).toThrow("Ouro credential vault is locked")
+  })
+
   it("uses Windows DPAPI files without exposing local unlock material", () => {
     emitTestEvent("vault unlock windows dpapi")
     const homeDir = tempHome()
@@ -506,6 +692,50 @@ describe("vault unlock local stores", () => {
       spawnSync: emptyProtect as VaultUnlockDeps["spawnSync"],
     })
     expect(fs.readFileSync(emptyStore.location, "utf8")).toBe("\n")
+  })
+
+  it("reuses legacy Windows DPAPI files and rewrites the canonical file", () => {
+    emitTestEvent("vault unlock windows dpapi alias fallback")
+    const homeDir = tempHome()
+    const legacyServerUrl = "https://vault.ouro.bot"
+    const legacyPath = legacyWindowsDpapiPath(homeDir, legacyServerUrl, config.email)
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
+    fs.writeFileSync(legacyPath, "legacy-ciphertext\n", "utf8")
+
+    const spawn = vi.fn((_command: string, _args: readonly string[], options: { input?: string } = {}) => {
+      const payload = JSON.parse(options.input ?? "{}") as { mode: string }
+      if (payload.mode === "unprotect") return ok("legacy-unlock-material\n")
+      if (payload.mode === "protect") return ok("canonical-ciphertext\n")
+      return fail("bad mode")
+    })
+    const deps: VaultUnlockDeps = { platform: "win32", homeDir, spawnSync: spawn as VaultUnlockDeps["spawnSync"] }
+
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    expect(fs.readFileSync(canonicalStore.location, "utf8")).toBe("canonical-ciphertext\n")
+  })
+
+  it("keeps reading legacy Windows DPAPI files even if canonical self-heal write fails", () => {
+    emitTestEvent("vault unlock windows dpapi alias self-heal failure")
+    const homeDir = tempHome()
+    const legacyServerUrl = "https://vault.ouro.bot"
+    const legacyPath = legacyWindowsDpapiPath(homeDir, legacyServerUrl, config.email)
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
+    fs.writeFileSync(legacyPath, "legacy-ciphertext\n", "utf8")
+
+    const spawn = vi.fn((_command: string, _args: readonly string[], options: { input?: string } = {}) => {
+      const payload = JSON.parse(options.input ?? "{}") as { mode: string }
+      if (payload.mode === "unprotect") return ok("legacy-unlock-material\n")
+      if (payload.mode === "protect") return fail("cannot rewrite")
+      return fail("bad mode")
+    })
+    const deps: VaultUnlockDeps = { platform: "win32", homeDir, spawnSync: spawn as VaultUnlockDeps["spawnSync"] }
+
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    expect(fs.existsSync(canonicalStore.location)).toBe(false)
   })
 
   it("reports Windows DPAPI protect and unprotect failures", () => {
@@ -573,6 +803,41 @@ describe("vault unlock local stores", () => {
     fs.chmodSync(store.location, 0o666)
 
     expect(readVaultUnlockSecret(config, deps).secret).toBe("local-unlock-material")
+  })
+
+  it("reuses legacy plaintext unlock files and rewrites the canonical file", () => {
+    emitTestEvent("vault unlock plaintext alias fallback")
+    const homeDir = tempHome()
+    const deps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
+    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouro.bot", config.email)
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(legacyPath, "legacy-unlock-material", { encoding: "utf8", mode: 0o600 })
+    fs.chmodSync(path.dirname(legacyPath), 0o700)
+    fs.chmodSync(legacyPath, 0o600)
+
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    expect(fs.readFileSync(canonicalStore.location, "utf8")).toBe("legacy-unlock-material")
+  })
+
+  it("keeps reading legacy plaintext unlock files even if canonical self-heal write fails", () => {
+    emitTestEvent("vault unlock plaintext alias self-heal failure")
+    const homeDir = tempHome()
+    const deps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
+    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouro.bot", config.email)
+    const legacyDir = path.dirname(legacyPath)
+    fs.mkdirSync(legacyDir, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(legacyPath, "legacy-unlock-material", { encoding: "utf8", mode: 0o600 })
+    fs.chmodSync(legacyDir, 0o700)
+    fs.chmodSync(legacyPath, 0o600)
+    fs.chmodSync(legacyDir, 0o500)
+
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+    fs.chmodSync(legacyDir, 0o700)
+
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    expect(fs.existsSync(canonicalStore.location)).toBe(false)
   })
 
   it("treats empty plaintext unlock files as locked", () => {

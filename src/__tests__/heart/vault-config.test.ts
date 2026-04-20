@@ -4,7 +4,12 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-import { resolveVaultConfig, DEFAULT_VAULT_SERVER_URL } from "../../heart/identity"
+import {
+  resolveVaultConfig,
+  DEFAULT_VAULT_SERVER_URL,
+  getVaultServerUrlCandidates,
+  normalizeVaultServerUrl,
+} from "../../heart/identity"
 
 describe("resolveVaultConfig", () => {
   it("returns defaults when vault config is undefined", () => {
@@ -33,6 +38,24 @@ describe("resolveVaultConfig", () => {
       serverUrl: "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
     })
     expect(legacyAzureHost.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
+  })
+
+  it("normalizes blank vault hosts and keeps raw candidate variants for local unlock lookup", () => {
+    expect(normalizeVaultServerUrl("   ")).toBe(DEFAULT_VAULT_SERVER_URL)
+    expect(getVaultServerUrlCandidates(" https://vault.ouroboros.bot/ ")).toEqual([
+      DEFAULT_VAULT_SERVER_URL,
+      "https://vault.ouroboros.bot/",
+      "https://vault.ouro.bot",
+      "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
+    ])
+  })
+
+  it("does not duplicate legacy aliases when the incoming vault host is already one of them", () => {
+    expect(getVaultServerUrlCandidates("https://vault.ouro.bot")).toEqual([
+      DEFAULT_VAULT_SERVER_URL,
+      "https://vault.ouro.bot",
+      "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
+    ])
   })
 
   it("falls back to defaults for missing fields", () => {
