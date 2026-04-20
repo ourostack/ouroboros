@@ -240,6 +240,59 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
 
+  it("starts distinct live provider checks in parallel", async () => {
+    let releaseFirst!: () => void
+    const firstPingGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const started: string[] = []
+    mockAgentAndProviderState({
+      agentConfig: agentJson({
+        humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
+        agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
+      }),
+      providerState: providerStateJson({
+        lanes: {
+          outward: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "bootstrap",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+          inner: {
+            provider: "github-copilot",
+            model: "claude-sonnet-4.6",
+            source: "local",
+            updatedAt: "2026-04-12T22:30:00.000Z",
+          },
+        },
+      }),
+    })
+    refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({
+      anthropic: providerRecord("anthropic", { credentials: { setupToken: "tok" } }),
+      "github-copilot": providerRecord("github-copilot", {
+        credentials: { githubToken: "gh" },
+        config: { baseUrl: "https://copilot.example" },
+      }),
+    }))
+    const pingProvider = vi.fn(async (provider: string) => {
+      started.push(provider)
+      if (provider === "anthropic") {
+        await firstPingGate
+      }
+      return { ok: true } as const
+    })
+
+    const resultPromise = checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(started).toEqual(["anthropic", "github-copilot"])
+
+    releaseFirst()
+    await expect(resultPromise).resolves.toEqual({ ok: true })
+  })
+
   it("uses the default live provider ping when no ping dependency is supplied", async () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES)
 

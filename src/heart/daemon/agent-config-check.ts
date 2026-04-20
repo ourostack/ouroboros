@@ -480,10 +480,15 @@ export async function checkAgentConfigWithProviderHealth(
     }
   }
 
-  let firstFailure: ConfigCheckResult | null = null
-  for (const group of pingGroups.values()) {
+  const groups = [...pingGroups.values()]
+  const pingResults = await Promise.all(groups.map(async (group) => {
     deps.onProgress?.(`checking ${group.provider} / ${group.model}...`)
     const result = await ping(group.provider, providerCredentialConfig(group.record), { model: group.model })
+    return { group, result }
+  }))
+
+  let firstFailure: ConfigCheckResult | null = null
+  for (const { group, result } of pingResults) {
     if (!result.ok) {
       for (const lane of group.lanes) {
         writeLaneReadiness({
