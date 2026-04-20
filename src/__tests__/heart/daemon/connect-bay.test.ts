@@ -53,7 +53,7 @@ function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "e
     {
       option: "1",
       name: "Providers",
-      section: "Provider core",
+      section: "Providers",
       status: "ready",
       laneSummaries: [
         { lane: "outward", status: "ready", title: "anthropic / claude-opus-4-6", detail: "ready" },
@@ -301,7 +301,7 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("Provider core")
+    expect(output).toContain("Providers")
     expect(output).toContain("This machine")
     expect(output).toContain("Mac mini bridge online.")
     expect(output).toContain("Repair hints stay grouped with the provider core.")
@@ -451,7 +451,7 @@ describe("connect bay", () => {
         classification: "auth-failure",
         message: "401 invalid API key",
       }),
-    }).status).toBe("needs credentials")
+    }).status).toBe("needs attention")
   })
 
   it("extracts provider refresh when health guidance is generic attention work", () => {

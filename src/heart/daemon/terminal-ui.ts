@@ -159,27 +159,18 @@ function mastheadArt(columns?: number): string[] {
     }
     return rows.map((row) => row.join(" "))
   }
-  return [
-    "  O U R O B O R O S",
-    "  -----------------",
-  ]
+  return [MASTHEAD_WORD]
 }
 
 export function renderOuroMasthead(options: TerminalMastheadOptions): string {
-  const lines = mastheadArt(options.columns)
-  const subtitle = options.subtitle ?? "the house wakes when called"
-  const branded = [
-    ...lines,
-    MASTHEAD_WORD,
-    subtitle,
-  ]
+  const lines = options.isTTY ? mastheadArt(options.columns) : [MASTHEAD_WORD]
+  const branded = options.subtitle ? [...lines, options.subtitle] : lines
   if (!options.isTTY) {
     return `${branded.join("\n")}\n`
   }
   const ttyLines = [
     ...lines.map((line, index) => color(line, index < 2 ? GLOW : SCALE, true)),
-    color(MASTHEAD_WORD, BONE, true),
-    color(subtitle, MIST),
+    ...(options.subtitle ? [color(options.subtitle, MIST)] : []),
   ]
   return `${ttyLines.join("\n")}\n`
 }

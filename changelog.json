@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.442",
+      "changes": [
+        "The shared CLI masthead now lands as a clean `OUROBOROS` wordmark instead of the older circle treatment, with compact/plain render paths trimmed down so the banner feels intentional rather than doubled or noisy.",
+        "The main human-facing screens now use warmer but more concrete first-run language: `ouro up`, the home screen, status, help, hatch, vault outcomes, and the connections screen now explain what Ouro is actually doing without leaning on unexplained `house` or `bay` metaphors.",
+        "Failed live provider checks in the connections screen now stay in the honest `needs attention` bucket instead of being downgraded to `needs credentials`, and hermetic runtime plus packaged-install coverage lock the wording into the shipped CLI."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.441",
       "changes": [
         "`ouro up` now lets the shared startup TUI own the masthead render path, so the screen no longer double-prints into scrollback and the shipped banner is a clean, correctly spelled classic `OUROBOROS` wordmark.",

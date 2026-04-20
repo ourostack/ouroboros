@@ -103,7 +103,7 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("task")
     // connect should appear in the Auth section
     expect(result).toContain("connect")
-    expect(result).toContain("Connect providers, portable integrations, and local senses from one guided bay")
+    expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
   })
 
   it("includes a Usage header line", () => {
@@ -141,12 +141,12 @@ describe("getCommandHelp()", () => {
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
   })
 
-  it("describes `up` as preparing the house rather than vaguely starting the daemon", () => {
-    expect(COMMAND_REGISTRY["up"].description).toContain("Prepare the house")
+  it("describes `up` in plain language instead of leaning on house metaphor", () => {
+    expect(COMMAND_REGISTRY["up"].description).toContain("Start and check Ouro")
   })
 
   it("describes connect subcommands in terms of what travels with the agent versus this machine", () => {
-    expect(COMMAND_REGISTRY["connect"].description).toContain("guided bay")
+    expect(COMMAND_REGISTRY["connect"].description).toContain("guided screen")
     expect(getCommandHelp("connect perplexity")).toContain("portable")
     expect(getCommandHelp("connect embeddings")).toContain("portable")
     expect(getCommandHelp("connect teams")).toContain("portable")

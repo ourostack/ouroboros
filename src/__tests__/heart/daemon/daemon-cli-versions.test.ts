@@ -127,7 +127,7 @@ describe("ouro versions: execution", () => {
 
     const result = await runOuroCli(["versions"], deps)
 
-    expect(result).toContain("OUROBOROS")
+    expect(result).toContain("___    _   _")
     expect(result).toContain("Versions")
     expect(result).toContain("0.1.0-alpha.81")
     expect(result).toContain("published latest")

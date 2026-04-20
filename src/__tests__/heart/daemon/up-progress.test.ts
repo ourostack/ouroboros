@@ -194,7 +194,7 @@ describe("UpProgress", () => {
       const output = progress.render(1000)
       expect(output).toContain("\u2717")
       expect(output).toContain("saving secret")
-      expect(output).not.toContain("Preparing the house")
+      expect(output).not.toContain("Starting Ouro")
     })
 
     it("keeps command-scoped tty successes on the compact checklist renderer", () => {
@@ -206,7 +206,7 @@ describe("UpProgress", () => {
       const output = progress.render(1000)
       expect(output).toContain("\u2713")
       expect(output).toContain("saving secret")
-      expect(output).not.toContain("Preparing the house")
+      expect(output).not.toContain("Starting Ouro")
     })
 
     it("renders failed phases without detail in default event scope", () => {

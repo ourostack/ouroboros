@@ -1609,7 +1609,7 @@ async function executeVaultUnlock(
       {
         title: "Next moves",
         lines: [
-          `Run ouro up to let the house retry ${command.agent}.`,
+          `Run ouro up so Ouro can check ${command.agent} again.`,
           `If credentials are still missing, run ouro auth --agent ${command.agent} --provider <provider>.`,
         ],
       },
@@ -1695,7 +1695,7 @@ async function executeVaultCreate(
   ]
   return writeCommandOutcome(deps, {
     title: "Credential vault",
-    subtitle: `${command.agent} has a vault home now.`,
+    subtitle: `${command.agent}'s credential vault is ready.`,
     summary: `All raw credentials for ${command.agent} now live in this vault.`,
     sections: [
       {
@@ -1712,7 +1712,7 @@ async function executeVaultCreate(
         title: "Next moves",
         lines: [
           `Authenticate the providers ${command.agent} should use with ouro auth --agent ${command.agent} --provider <provider>.`,
-          `Then run ouro up so the house can bring ${command.agent} online.`,
+          `Then run ouro up so Ouro can bring ${command.agent} online.`,
         ],
       },
     ],
@@ -1917,7 +1917,7 @@ async function executeVaultRecover(
         title: "Next moves",
         lines: [
           `Run ouro auth verify --agent ${command.agent} to re-check the stored providers.`,
-          `Then run ouro up so the house can retry ${command.agent}.`,
+          `Then run ouro up so Ouro can check ${command.agent} again.`,
         ],
       },
     ],
@@ -2504,7 +2504,7 @@ async function buildConnectMenu(
     {
       option: "1",
       name: "Providers",
-      section: "Provider core",
+      section: "Providers",
       status: providerSummary.status,
       detailLines: providerSummary.detailLines,
       laneSummaries: providerSummary.laneSummaries,
@@ -2683,7 +2683,7 @@ async function executeConnectPerplexity(agent: string, deps: OuroCliDeps): Promi
     ],
     nextMoves: [
       "Ask the agent to search.",
-      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
     ],
     fallbackLines: [
       `Perplexity connected for ${agent}`,
@@ -2770,7 +2770,7 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
         ],
         nextMoves: [
           `Rerun ouro connect embeddings --agent ${agent} with a working key.`,
-          `Use ouro connect --agent ${agent} to review the rest of the capability bay.`,
+          `Use ouro connect --agent ${agent} to review the rest of the connections screen.`,
         ],
         fallbackLines: [
         `Embeddings key was saved for ${agent}, but the live check failed.`,
@@ -2804,7 +2804,7 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
     ],
     nextMoves: [
       "Ask the agent to search notes or memory.",
-      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
     ],
     fallbackLines: [
       `Embeddings connected for ${agent}`,
@@ -2902,7 +2902,7 @@ async function executeConnectTeams(agent: string, deps: OuroCliDeps): Promise<st
     ],
     nextMoves: [
       "Run ouro up so the daemon picks up the Teams sense change.",
-      `Reopen the connect bay with ouro connect --agent ${agent} whenever you want to review capabilities.`,
+      `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
     ],
     fallbackLines: [
       `Teams connected for ${agent}`,
@@ -6114,7 +6114,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (ttyBoardEnabled(deps)) {
         deps.writeStdout(renderCommandBoard(deps, {
           title: "Hatch an agent",
-          subtitle: "Let’s bring a new agent into the house.",
+          subtitle: "Let’s set up a new agent.",
           summary: "Ouro will walk through the essentials, then hand the conversation to the specialist.",
           sections: [
             {
@@ -6165,18 +6165,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
 
     return writeCommandOutcome(deps, {
-      title: "Hatch complete",
-      subtitle: `${hatchInput.agentName} just arrived.`,
-      summary: `${hatchInput.agentName} is ready for first contact.`,
-      sections: [
-        {
-          title: "What changed",
-          lines: [
-            `Bundle: ${result.bundleRoot}`,
-            `Specialist identity: ${result.selectedIdentity}`,
-            `House status: ${daemonResult.message}`,
-          ],
-        },
+          title: "Hatch complete",
+          subtitle: `${hatchInput.agentName} just arrived.`,
+          summary: `${hatchInput.agentName} is ready for first contact.`,
+          sections: [
+            {
+              title: "What changed",
+              lines: [
+                `Bundle: ${result.bundleRoot}`,
+                `Specialist identity: ${result.selectedIdentity}`,
+                `Runtime status: ${daemonResult.message}`,
+              ],
+            },
         {
           title: "Next moves",
           lines: [
