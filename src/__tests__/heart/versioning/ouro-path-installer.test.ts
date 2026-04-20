@@ -46,7 +46,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot" >&2
+  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
@@ -360,7 +360,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot" >&2
+  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
@@ -502,7 +502,7 @@ exec node "$ENTRY" "$@"
   })
 
   it("repairs old launcher AND skips modern install when modern is already current", () => {
-    const staleOldContent = '#!/bin/sh\nexec npx ouro.bot "$@"\n'
+    const staleOldContent = '#!/bin/sh\nexec npx ouro.bot@latest "$@"\n'
     const deps = makeDeps({
       existsSync: (p) =>
         p === "/home/test/.ouro-cli/bin/ouro"

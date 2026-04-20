@@ -19,7 +19,7 @@ const ENTRY_RELPATH = "node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.j
 const WRAPPER_SCRIPT = `#!/bin/sh
 ENTRY="$HOME/.ouro-cli/CurrentVersion/${ENTRY_RELPATH}"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot" >&2
+  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"

@@ -6,7 +6,7 @@ This document describes the current runtime shape of the Ouroboros harness.
 
 The harness is daemon-centered.
 
-- `npx ouro.bot` is the bootstrap entrypoint.
+- `npx ouro.bot@latest` is the supported bootstrap entrypoint.
 - `ouro` is the installed launcher used after bootstrap.
 - `ouro up` starts the daemon from the installed production version, repairs stale wrapper state, installs workflow helpers, and replaces the daemon if needed.
 - `ouro dev` starts the daemon from a local repo build (for development — skips update checker, always force-restarts).
@@ -22,7 +22,7 @@ The important design goal is one coherent runtime truth:
 
 ## Runtime Topology
 
-1. Human enters through `npx ouro.bot` or `ouro`.
+1. Human enters through `npx ouro.bot@latest` or `ouro`.
 2. CLI setup verifies launcher, bundle registration, and helper installs.
 3. `ouro up` starts the daemon from the installed version; `ouro dev` starts from a local repo build.
 4. Daemon discovers bundles under `~/AgentBundles`.

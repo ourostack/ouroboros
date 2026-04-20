@@ -4562,7 +4562,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next 2 -- unreachable after exec replaces process @preserve */
           return ""
         }
-        const message = "no installed version found. run: npx ouro.bot"
+        const message = "no installed version found. run: npx ouro.bot@latest"
         deps.writeStdout(message)
         return message
       }

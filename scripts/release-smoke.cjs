@@ -82,7 +82,8 @@ function runPublishedBinResolutionSmoke(input, deps = defaultDeps()) {
 }
 
 function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
-  const packageRef = `${input.packageName}@${input.version}`
+  const packageRef = input.packageRef ?? `${input.packageName}@${input.version}`
+  const expectedVersion = input.expectedVersion ?? input.version
   const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-release-smoke-"))
 
   try {
@@ -100,14 +101,14 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
 
     const output = runNpmExec(deps, prefixDir, packageRef, input.binName, ["--version"])
     const actualVersion = lastNonEmptyLine(output)
-    if (actualVersion !== input.version) {
+    if (actualVersion !== expectedVersion) {
       return {
         ok: false,
         packageRef,
         binName: input.binName,
         resolvedPath,
         output,
-        message: `${packageRef} ${input.binName} reported ${actualVersion || "no version"}, expected ${input.version}`,
+        message: `${packageRef} ${input.binName} reported ${actualVersion || "no version"}, expected ${expectedVersion}`,
       }
     }
 
@@ -117,7 +118,7 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
       binName: input.binName,
       resolvedPath,
       output,
-      message: `${packageRef} ${input.binName} verified at ${input.version}`,
+      message: `${packageRef} ${input.binName} verified at ${expectedVersion}`,
     }
   } finally {
     deps.rmSync(prefixDir, { recursive: true, force: true })
@@ -127,7 +128,11 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
 function runReleaseSmokeSuite(version, deps = defaultDeps()) {
   return [
     runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
-    runPublishedBinResolutionSmoke({ packageName: "ouro.bot", binName: "ouro.bot", version }, deps),
+    runPublishedBinVersionSmoke({
+      packageRef: "ouro.bot@latest",
+      binName: "ouro.bot",
+      expectedVersion: version,
+    }, deps),
   ]
 }
 
