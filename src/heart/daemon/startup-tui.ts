@@ -13,6 +13,7 @@
 import { parseStatusPayload, type StatusPayload } from "./cli-render"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { renderOverwriteFrame } from "./terminal-ui"
 
 // ── Constants ──
 
@@ -314,16 +315,7 @@ function colorStatus(status: string): string {
 }
 
 function renderStartupLines(lines: string[], prevLineCount: number, isTTY: boolean): string {
-  if (!isTTY) return lines.join("\n") + "\n"
-
-  let output = ""
-  if (prevLineCount > 0) {
-    output += `\x1b[${prevLineCount}A`
-  }
-  for (const line of lines) {
-    output += `\x1b[2K${line}\n`
-  }
-  return output
+  return renderOverwriteFrame(lines, prevLineCount, isTTY)
 }
 
 /* v8 ignore start -- process liveness check: uses real process.kill(0), tested via deployment @preserve */

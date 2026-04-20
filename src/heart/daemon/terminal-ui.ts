@@ -8,6 +8,7 @@ const SCALE = "\x1b[38;2;45;148;71m"
 const GLOW = "\x1b[38;2;74;227;108m"
 const BONE = "\x1b[38;2;237;242;238m"
 const MIST = "\x1b[38;2;154;174;159m"
+const ALERT = "\x1b[38;2;255;106;106m"
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 const MASTHEAD_WORD = "OUROBOROS"
@@ -126,6 +127,26 @@ function boardWidth(columns?: number): number {
   return Math.max(58, Math.min(requested, 96))
 }
 
+export function renderOverwriteFrame(lines: string[], prevLineCount: number, isTTY: boolean): string {
+  if (!isTTY) return `${lines.join("\n")}\n`
+
+  let output = ""
+  if (prevLineCount > 0) {
+    output += `\x1b[${prevLineCount}A`
+  }
+  for (const line of lines) {
+    output += `\x1b[2K${line}\n`
+  }
+  const extraLineCount = Math.max(0, prevLineCount - lines.length)
+  for (let i = 0; i < extraLineCount; i++) {
+    output += "\x1b[2K\n"
+  }
+  if (extraLineCount > 0) {
+    output += `\x1b[${extraLineCount}A`
+  }
+  return output
+}
+
 function renderPanelTTY(title: string, lines: string[], width: number): string[] {
   const innerWidth = Math.max(8, width - 4)
   const topPrefix = `╭─ ${title} `
@@ -151,15 +172,18 @@ function renderPanelPlain(title: string, lines: string[]): string[] {
 }
 
 function mastheadArt(columns?: number): string[] {
-  if ((columns ?? 88) >= 74) {
-    const rows = Array.from({ length: 5 }, () => [] as string[])
-    for (const letter of MASTHEAD_WORD.split("") as Array<keyof typeof CLASSIC_WORDMARK_GLYPHS>) {
-      const glyph = CLASSIC_WORDMARK_GLYPHS[letter]
-      for (const [index, line] of glyph.entries()) {
-        rows[index].push(line)
-      }
+  const rows = Array.from({ length: 5 }, () => [] as string[])
+  for (const letter of MASTHEAD_WORD.split("") as Array<keyof typeof CLASSIC_WORDMARK_GLYPHS>) {
+    const glyph = CLASSIC_WORDMARK_GLYPHS[letter]
+    for (const [index, line] of glyph.entries()) {
+      rows[index].push(line)
     }
-    return rows.map((row) => row.join(" "))
+  }
+  const classicWordmark = rows.map((row) => row.join(" "))
+  const availableColumns = columns ?? 88
+  const classicWidth = Math.max(...classicWordmark.map((line) => line.length))
+  if (availableColumns >= classicWidth) {
+    return classicWordmark
   }
   return [MASTHEAD_WORD]
 }
@@ -250,7 +274,63 @@ function formatOperationStep(step: TerminalOperationStep): string {
   return `${marker} ${step.label}${detail}`
 }
 
+function operationMarkerTone(status: TerminalOperationStep["status"]): string {
+  switch (status) {
+    case "done":
+      return GLOW
+    case "active":
+      return BONE
+    case "failed":
+      return ALERT
+    case "pending":
+    default:
+      return MIST
+  }
+}
+
+function renderOperationStepTTY(step: TerminalOperationStep): string {
+  const marker = step.status === "done"
+    ? "✓"
+    : step.status === "failed"
+      ? "✗"
+      : step.status === "active"
+        ? "→"
+        : "○"
+  const label = color(step.label, step.status === "pending" ? MIST : BONE, step.status !== "pending")
+  const detail = step.detail ? ` ${color(`— ${step.detail}`, MIST)}` : ""
+  return `${color(marker, operationMarkerTone(step.status), true)} ${label}${detail}`
+}
+
+function renderOperationSectionTTY(title: string, lines: string[], width: number): string[] {
+  const rule = "─".repeat(Math.max(8, width - title.length - 3))
+  return [
+    `${color("─ ", CANOPY)}${color(title, BONE, true)} ${color(rule, CANOPY)}`,
+    ...lines.map((line) => `  ${line}`),
+  ]
+}
+
+function renderOperationSectionPlain(title: string, lines: string[]): string[] {
+  return [
+    title,
+    ...lines.map((line) => `  ${plainLine(line)}`),
+  ]
+}
+
 export function renderTerminalOperation(options: RenderTerminalOperationOptions): string {
+  if (!options.suppressEvent) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.terminal_operation_rendered",
+      message: "rendered terminal operation surface",
+      meta: {
+        title: options.title,
+        steps: options.steps?.length ?? 0,
+        hasCurrentStep: !!options.currentStep,
+        tty: options.isTTY,
+      },
+    })
+  }
+
   const steps = options.steps ?? []
   const currentLines = options.currentStep
     ? [
@@ -259,26 +339,44 @@ export function renderTerminalOperation(options: RenderTerminalOperationOptions)
       ]
     : ["Standing by."]
   const progressLines = steps.length > 0
-    ? steps.map((step) => formatOperationStep(step))
+    ? options.isTTY
+      ? steps.map((step) => renderOperationStepTTY(step))
+      : steps.map((step) => formatOperationStep(step))
     : ["No active steps yet."]
 
-  return renderTerminalBoard({
+  const width = boardWidth(options.columns)
+  const blocks: string[] = []
+  blocks.push(renderOuroMasthead({
     isTTY: options.isTTY,
-    columns: options.columns,
-    masthead: options.masthead,
-    title: options.title,
-    summary: options.summary,
-    sections: [
-      {
-        title: options.currentTitle ?? "Right now",
-        lines: currentLines,
-      },
-      {
-        title: options.stepsTitle ?? "Progress",
-        lines: progressLines,
-      },
-    ],
-    prompt: options.prompt,
-    suppressEvent: options.suppressEvent,
-  })
+    columns: width,
+    subtitle: options.masthead?.subtitle,
+  }).trimEnd())
+
+  const introLines = [
+    options.isTTY ? color(options.title, BONE, true) : options.title,
+    ...(options.summary
+      ? wrapPlain(options.summary, Math.max(20, width - 2)).map((line) => options.isTTY ? color(line, MIST) : line)
+      : []),
+  ]
+  blocks.push(introLines.join("\n"))
+
+  const renderedSteps = options.isTTY
+    ? renderOperationSectionTTY(options.stepsTitle ?? "Checklist", progressLines, width)
+    : renderOperationSectionPlain(options.stepsTitle ?? "Checklist", progressLines)
+  const renderedCurrent = options.isTTY
+    ? renderOperationSectionTTY(
+        options.currentTitle ?? "Current work",
+        currentLines.map((line, index) => index === 0 ? color(line, BONE, true) : color(line, MIST)),
+        width,
+      )
+    : renderOperationSectionPlain(options.currentTitle ?? "Current work", currentLines)
+
+  blocks.push(renderedSteps.join("\n"))
+  blocks.push(renderedCurrent.join("\n"))
+
+  if (options.prompt) {
+    blocks.push(options.isTTY ? color(options.prompt, BONE, true) : options.prompt)
+  }
+
+  return `${blocks.join("\n\n")}\n`
 }

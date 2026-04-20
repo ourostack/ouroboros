@@ -5,7 +5,6 @@ import {
   type TerminalSection,
 } from "./terminal-ui"
 import type { HumanReadinessSnapshot } from "./human-readiness"
-import type { StatusPayload } from "./cli-render"
 
 export type HomeScreenActionKind = "chat" | "up" | "connect" | "repair" | "help" | "hatch" | "clone" | "exit"
 
@@ -202,87 +201,5 @@ export function renderHumanCommandBoard(options: HumanCommandBoardOptions): stri
     sections: options.sections,
     actions: options.actions,
     prompt: options.prompt,
-  })
-}
-
-export function renderHouseStatusScreen(options: {
-  payload: StatusPayload
-  isTTY: boolean
-  columns?: number
-}): string {
-  renderScreenEvent("house-status")
-  const sections: TerminalSection[] = [
-    {
-      title: "Runtime",
-      lines: [
-        `Daemon: ${options.payload.overview.daemon}`,
-        `Health: ${options.payload.overview.health}`,
-        `Outlook: ${options.payload.overview.outlookUrl}`,
-        `Updated: ${options.payload.overview.lastUpdated}`,
-      ],
-    },
-  ]
-
-  if (options.payload.agents.length > 0) {
-    sections.push({
-      title: "Agents",
-      lines: options.payload.agents.map((agent) => `${agent.name} — ${agent.enabled ? "enabled" : "disabled"}`),
-    })
-  }
-
-  if (options.payload.providers.length > 0) {
-    sections.push({
-      title: "Providers",
-      lines: options.payload.providers.map((provider) => {
-        const detail = [provider.readiness, provider.detail, provider.source, provider.credential].filter(Boolean).join("; ")
-        return `${provider.agent} ${provider.lane} — ${provider.provider} / ${provider.model}${detail ? ` — ${detail}` : ""}`
-      }),
-    })
-  }
-
-  if (options.payload.senses.length > 0) {
-    sections.push({
-      title: "Senses",
-      lines: options.payload.senses.map((sense) => {
-        const status = sense.enabled ? sense.status : "disabled"
-        return `${sense.agent} — ${sense.label ?? sense.sense} — ${status}${sense.detail ? ` — ${sense.detail}` : ""}`
-      }),
-    })
-  }
-
-  if (options.payload.workers.length > 0) {
-    sections.push({
-      title: "Workers",
-      lines: options.payload.workers.map((worker) => {
-        const details = [`restarts: ${worker.restartCount}`]
-        if (worker.pid !== null) details.unshift(`pid ${worker.pid}`)
-        if (worker.lastExitCode !== null) details.push(`exit=${worker.lastExitCode}`)
-        if (worker.lastSignal !== null) details.push(`signal=${worker.lastSignal}`)
-        if (worker.errorReason) details.push(`error: ${worker.errorReason}`)
-        if (worker.fixHint) details.push(`fix: ${worker.fixHint}`)
-        return `${worker.agent} — ${worker.worker} — ${worker.status} — ${details.join("; ")}`
-      }),
-    })
-  }
-
-  if (options.payload.sync.length > 0) {
-    sections.push({
-      title: "Git sync",
-      lines: options.payload.sync.map((row) => {
-        if (!row.enabled) return `${row.agent} — disabled`
-        if (row.gitInitialized === false) return `${row.agent} — needs git init`
-        if (row.remoteUrl) return `${row.agent} — ${row.remote} -> ${row.remoteUrl}`
-        return `${row.agent} — local only`
-      }),
-    })
-  }
-
-  return renderHumanCommandBoard({
-    title: "Ouro status",
-    subtitle: "Current runtime status for this machine.",
-    summary: "What is running, what is stopped, and what needs attention.",
-    isTTY: options.isTTY,
-    columns: options.columns,
-    sections,
   })
 }

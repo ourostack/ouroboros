@@ -1874,7 +1874,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("running")
   })
 
-  it("renders tty status as an Ouro status control deck", async () => {
+  it("renders tty status as a dense runtime cockpit instead of the generic board", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
       sendCommand: vi.fn(async () => ({
@@ -1916,10 +1916,13 @@ describe("ouro CLI execution", () => {
 
     const result = await runOuroCli(["status"], deps)
 
-    expect(result).toContain("Ouro status")
-    expect(result).toContain("What is running, what is stopped, and what needs attention.")
+    expect(result).toContain("ouroboros daemon")
+    expect(result).toContain("Socket")
+    expect(result).toContain("Workers")
     expect(result).toContain("inner-dialog")
-    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("Ouro status"))
+    expect(result).not.toContain("Ouro status")
+    expect(result).not.toContain("What is running, what is stopped, and what needs attention.")
+    expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("ouroboros daemon"))
   })
 
   it("surfaces the Outlook URL from daemon status and can fetch JSON from the same seam", async () => {

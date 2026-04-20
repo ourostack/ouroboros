@@ -3,6 +3,7 @@ import * as nervesRuntime from "../../../nerves/runtime"
 import {
   padAnsi,
   renderOuroMasthead,
+  renderOverwriteFrame,
   renderTerminalOperation,
   renderTerminalBoard,
   formatActionActorLabel,
@@ -72,6 +73,18 @@ describe("terminal ui", () => {
 
     expect(output).toContain("OUROBOROS")
     expect(output).toContain("\x1b[")
+    expect(output).not.toContain("___    _   _")
+  })
+
+  it("falls back to the compact tty masthead when the wide art would overflow", () => {
+    emitTestEvent("terminal ui masthead fit check")
+
+    const output = renderOuroMasthead({
+      isTTY: true,
+      columns: 70,
+    })
+
+    expect(output).toContain("OUROBOROS")
     expect(output).not.toContain("___    _   _")
   })
 
@@ -166,12 +179,12 @@ describe("terminal ui", () => {
     })
 
     expect(output).toContain("Starting Ouro")
-    expect(output).toContain("Right now")
-    expect(output).toContain("Progress")
+    expect(output).toContain("Checklist")
+    expect(output).toContain("Current work")
     expect(output).toContain("slugger: checking openai-codex")
     expect(output).toContain("vault unlock")
     expect(output).toContain("daemon handshake")
-    expect(output).toContain("╭")
+    expect(output).not.toContain("Overview")
   })
 
   it("renders operation fallbacks when nothing is active yet", () => {
@@ -332,5 +345,19 @@ describe("terminal ui", () => {
     expect(formatActionActorLabel("agent-runnable")).toBe("agent runnable")
     expect(formatActionActorLabel("human-required")).toBe("human required")
     expect(formatActionActorLabel("human-choice")).toBe("human choice")
+  })
+
+  it("moves back to the new frame bottom after clearing stale tty lines", () => {
+    emitTestEvent("terminal ui shrinking overwrite frame")
+
+    const output = renderOverwriteFrame([
+      "Ouro boot checklist",
+      "Doing now",
+      "provider checks",
+    ], 5, true)
+
+    expect(output.startsWith("\x1b[5A")).toBe(true)
+    expect((output.match(/\x1b\[2K/g) || [])).toHaveLength(5)
+    expect(output.endsWith("\x1b[2A")).toBe(true)
   })
 })

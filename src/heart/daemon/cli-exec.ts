@@ -132,7 +132,6 @@ import {
   buildOuroHomeActions,
   renderAgentPickerScreen,
   renderHumanCommandBoard,
-  renderHouseStatusScreen,
   renderHumanReadinessBoard,
   renderOuroHomeScreen,
   resolveNamedAgentSelection,
@@ -6522,17 +6521,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
   const fallbackMessage = response.summary ?? response.message ?? (response.ok ? "ok" : `error: ${response.error ?? "unknown error"}`)
   const message = command.kind === "daemon.status"
-    ? (() => {
-        const payload = parseStatusPayload(response.data)
-        if (payload && ttyBoardEnabled(deps)) {
-          return renderHouseStatusScreen({
-            payload,
-            isTTY: true,
-            columns: deps.stdoutColumns ?? process.stdout.columns,
-          }).trimEnd()
-        }
-        return formatDaemonStatusOutput(response, fallbackMessage)
-      })()
+    ? formatDaemonStatusOutput(response, fallbackMessage)
     : fallbackMessage
   deps.writeStdout(message)
   return message

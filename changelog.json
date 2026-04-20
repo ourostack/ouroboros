@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.445",
+      "changes": [
+        "`ouro up` no longer smears old lines across the screen when the live frame shrinks. The boot checklist and daemon-start polling now share one overwrite primitive, so long waits keep breathing without duplicating the masthead or leaving stale rows behind.",
+        "`ouro status` is back to being a compact runtime cockpit instead of a generic wizard board. The TTY command now routes through the dense status deck again, so operators get the fast, scannable view they actually need.",
+        "The boot surface itself is lighter and truer: the masthead only uses the wide wordmark when it really fits, the checklist stays in plan order while a middle step is active, and the current-work panel now reads like a real boot sequencer instead of a stack of `Overview` cards."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.444",
       "changes": [
         "`ouro up` now treats daemon startup as one truthful boot story across fresh starts and daemon replacement: both paths wait on the same current-boot readiness check, keep narrating real progress while the background service warms up, and stop calling startup done just because one quick socket probe answered.",

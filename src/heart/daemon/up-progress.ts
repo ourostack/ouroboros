@@ -12,7 +12,11 @@
  */
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { renderTerminalOperation, type TerminalOperationStep } from "./terminal-ui"
+import {
+  renderOverwriteFrame,
+  renderTerminalOperation,
+  type TerminalOperationStep,
+} from "./terminal-ui"
 
 // ── ANSI constants (shared with startup-tui.ts pattern) ──
 
@@ -258,20 +262,7 @@ export class UpProgress {
     }
 
     const lines = this.renderLines(now)
-
-    let output = ""
-    if (this.prevLineCount > 0) {
-      output += `\x1b[${this.prevLineCount}A`
-    }
-    for (const line of lines) {
-      output += `\x1b[2K${line}\n`
-    }
-    // Clear any leftover lines from previous render that are no longer needed
-    if (lines.length < this.prevLineCount) {
-      for (let i = 0; i < this.prevLineCount - lines.length; i++) {
-        output += `\x1b[2K\n`
-      }
-    }
+    const output = renderOverwriteFrame(lines, this.prevLineCount, true)
     this.prevLineCount = lines.length
 
     return output
@@ -354,14 +345,8 @@ export class UpProgress {
 
   private renderUpScreen(now: number): string[] {
     const seenLabels = new Set<string>()
-    const steps: TerminalOperationStep[] = this.completed.map((phase) => {
-      seenLabels.add(phase.label)
-      return {
-        label: this.renderUpStepLabel(phase.label),
-        status: phase.status === "failure" ? "failed" : "done",
-        detail: phase.detail,
-      }
-    })
+    const completedByLabel = new Map(this.completed.map((phase) => [phase.label, phase]))
+    const steps: TerminalOperationStep[] = []
 
     let currentStepLabel = this.completed.some((phase) => phase.status === "failure")
       ? "Boot paused."
@@ -376,20 +361,47 @@ export class UpProgress {
       const spinner = SPINNER_FRAMES[frameIndex]
       currentStepLabel = `${spinner} ${this.renderUpStepLabel(this.currentPhase.label)} (${elapsedSec}s)`
       currentStepDetails = splitDetailLines(this.currentPhase.detail)
+    }
+
+    for (const label of this.upPhasePlan) {
+      seenLabels.add(label)
+      const completedPhase = completedByLabel.get(label)
+      if (completedPhase) {
+        steps.push({
+          label: this.renderUpStepLabel(label),
+          status: completedPhase.status === "failure" ? "failed" : "done",
+          detail: completedPhase.detail,
+        })
+        continue
+      }
+      if (this.currentPhase?.label === label) {
+        steps.push({
+          label: this.renderUpStepLabel(label),
+          status: "active",
+        })
+        continue
+      }
+      steps.push({
+        label: this.renderUpStepLabel(label),
+        status: "pending",
+      })
+    }
+
+    for (const phase of this.completed) {
+      if (!seenLabels.has(phase.label)) {
+        steps.push({
+          label: this.renderUpStepLabel(phase.label),
+          status: phase.status === "failure" ? "failed" : "done",
+          detail: phase.detail,
+        })
+      }
+    }
+
+    if (this.currentPhase && !seenLabels.has(this.currentPhase.label)) {
       steps.push({
         label: this.renderUpStepLabel(this.currentPhase.label),
         status: "active",
       })
-      seenLabels.add(this.currentPhase.label)
-    }
-
-    for (const label of this.upPhasePlan) {
-      if (!seenLabels.has(label)) {
-        steps.push({
-          label: this.renderUpStepLabel(label),
-          status: "pending",
-        })
-      }
     }
 
     return renderTerminalOperation({
@@ -398,8 +410,8 @@ export class UpProgress {
       masthead: {
         subtitle: "Booting the local agent runtime.",
       },
-      title: "Ouro boot checklist",
-      summary: "Ouro will check for updates, prepare this machine, verify the providers your agents use right now, start the background service, and make sure it stays up.",
+      title: "Starting Ouro",
+      summary: "Ouro is bringing the local agent runtime online and will stop here if anything needs attention.",
       currentStep: {
         label: currentStepLabel,
         detailLines: currentStepDetails,
