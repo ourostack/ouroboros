@@ -5,6 +5,7 @@ import type {
   OutlookMailFolder,
   OutlookMailMessageSummary,
   OutlookMailMessageView,
+  OutlookMailOutboundRecord,
   OutlookMailView,
 } from "../../contracts"
 
@@ -16,14 +17,62 @@ function addressLine(values: string[]): string {
 
 function folderMatches(message: OutlookMailMessageSummary, folderId: MailFolderFilter): boolean {
   if (folderId === "all") return true
-  if (folderId === "imbox" || folderId === "screener") return message.placement === folderId
+  if (["imbox", "screener", "discarded", "quarantine"].includes(folderId)) return message.placement === folderId
   if (folderId === "native" || folderId === "delegated") return message.compartmentKind === folderId
   if (folderId.startsWith("source:")) return message.source === folderId.slice("source:".length)
-  return true
+  return false
 }
 
 function subjectLine(message: OutlookMailMessageSummary): string {
   return message.subject || "(no subject)"
+}
+
+function mailboxFallback(agentName: string, error: string): OutlookMailView {
+  return {
+    status: "error",
+    agentName,
+    mailboxAddress: null,
+    generatedAt: new Date().toISOString(),
+    store: null,
+    folders: [],
+    messages: [],
+    screener: [],
+    outbound: [],
+    recovery: { discardedCount: 0, quarantineCount: 0 },
+    accessLog: [],
+    error,
+  }
+}
+
+function messageFallback(agentName: string, mailboxAddress: string | null, error: string): OutlookMailMessageView {
+  return {
+    status: "error",
+    agentName,
+    mailboxAddress,
+    generatedAt: new Date().toISOString(),
+    message: null,
+    accessLog: [],
+    error,
+  }
+}
+
+function provenanceLabel(message: OutlookMailMessageSummary): string {
+  if (message.provenance.compartmentKind === "delegated") {
+    return `${message.provenance.ownerEmail ?? "delegated"} / ${message.provenance.source ?? "source"}`
+  }
+  return "native mailbox"
+}
+
+function pillClass(placement: string): string {
+  if (placement === "screener") return "bg-[#fff7d6] text-[#6f5200] ring-[#e7c85c]"
+  if (placement === "discarded" || placement === "quarantine") return "bg-[#ffe8e2] text-[#8a2f1f] ring-[#ef9a84]"
+  if (placement === "sent") return "bg-[#dff7ea] text-[#17613a] ring-[#82caa1]"
+  if (placement === "draft") return "bg-[#e7ecff] text-[#263f95] ring-[#a7b5f5]"
+  return "bg-[#e9f3ef] text-[#1e5840] ring-[#9fc7b5]"
+}
+
+function folderTotal(view: OutlookMailView | null): number {
+  return view?.messages.length ?? 0
 }
 
 export function MailboxTab({ agentName, focus, onFocusConsumed, refreshGeneration }: {
@@ -48,17 +97,7 @@ export function MailboxTab({ agentName, focus, onFocusConsumed, refreshGeneratio
     setView(null)
     fetchJson<OutlookMailView>(`/agents/${encodeURIComponent(agentName)}/mail`)
       .then(setView)
-      .catch(() => setView({
-        status: "error",
-        agentName,
-        mailboxAddress: null,
-        generatedAt: new Date().toISOString(),
-        store: null,
-        folders: [],
-        messages: [],
-        accessLog: [],
-        error: "mail unavailable",
-      }))
+      .catch(() => setView(mailboxFallback(agentName, "mail unavailable")))
   }, [agentName, refreshGeneration])
 
   useEffect(() => {
@@ -75,171 +114,274 @@ export function MailboxTab({ agentName, focus, onFocusConsumed, refreshGeneratio
     setDetailLoading(true)
     fetchJson<OutlookMailMessageView>(`/agents/${encodeURIComponent(agentName)}/mail/${encodeURIComponent(selectedId)}`)
       .then(setDetail)
-      .catch(() => setDetail({
-        status: "error",
-        agentName,
-        mailboxAddress: view?.mailboxAddress ?? null,
-        generatedAt: new Date().toISOString(),
-        message: null,
-        accessLog: [],
-        error: "message unavailable",
-      }))
+      .catch(() => setDetail(messageFallback(agentName, view?.mailboxAddress ?? null, "message unavailable")))
       .finally(() => setDetailLoading(false))
   }, [agentName, selectedId, refreshGeneration])
 
   const folders = useMemo<OutlookMailFolder[]>(() => {
     const current = view?.folders ?? []
-    const total = view?.messages.length ?? 0
-    return [{ id: "all", label: "All", count: total }, ...current]
+    return [{ id: "all", label: "All", count: folderTotal(view) }, ...current]
   }, [view])
 
   const visibleMessages = useMemo(() => {
     return (view?.messages ?? []).filter((message) => folderMatches(message, activeFolder))
   }, [activeFolder, view])
 
+  const visibleOutbound = useMemo(() => {
+    if (activeFolder !== "draft" && activeFolder !== "sent") return []
+    return (view?.outbound ?? []).filter((record) => record.status === activeFolder)
+  }, [activeFolder, view])
+
   if (!view) return <Loading label="Opening mailbox" />
 
   if (view.status !== "ready") {
     return (
-      <div className="mailbox-shell grid min-h-[58vh] place-items-center rounded-md bg-[#f7f8fb] p-8 text-[#1f2937] ring-1 ring-black/10">
+      <div className="mailbox-shell grid min-h-[58vh] place-items-center rounded-md bg-[#f2f6ef] p-8 text-[#1f2720] ring-1 ring-black/10">
         <div className="max-w-lg text-center">
-          <p className="text-sm font-semibold uppercase tracking-[0.12em] text-[#64748b]">Mailbox</p>
+          <p className="text-sm font-semibold text-[#667067]">Mailbox</p>
           <h2 className="mt-2 text-2xl font-semibold">{view.status === "auth-required" ? "Locked" : "Unavailable"}</h2>
-          <p className="mt-3 text-sm leading-6 text-[#475569]">{view.error}</p>
+          <p className="mt-3 text-sm leading-6 text-[#59645c]">{view.error}</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="mailbox-shell overflow-hidden rounded-md bg-[#f7f8fb] text-[#172033] ring-1 ring-black/10">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#d7dce6] bg-[#eef2f7] px-4 py-3">
+    <div className="mailbox-shell overflow-hidden rounded-md bg-[#f2f6ef] text-[#172018] ring-1 ring-black/10">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#cbd8c8] bg-[#e4ecdf] px-4 py-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#64748b]">Mailbox</p>
-          <p className="truncate text-sm text-[#334155]">{view.mailboxAddress}</p>
+          <p className="text-xs font-semibold text-[#687062]">Agent mailbox</p>
+          <p className="truncate text-sm text-[#2d3a30]">{view.mailboxAddress}</p>
         </div>
         <div className="flex items-center gap-2">
           <Badge color="zinc">read-only</Badge>
-          <span className="text-xs tabular-nums text-[#64748b]">{view.messages.length} visible</span>
+          <span className="text-xs tabular-nums text-[#687062]">{view.messages.length} messages</span>
+          <span className="text-xs tabular-nums text-[#687062]">{view.outbound.length} outbound</span>
         </div>
-      </div>
+      </header>
 
-      <div className="grid min-h-[64vh] grid-cols-1 lg:grid-cols-[13rem_minmax(18rem,24rem)_minmax(0,1fr)]">
-        <aside className="border-b border-[#d7dce6] bg-[#eef2f7] p-3 lg:border-b-0 lg:border-r">
-          <div className="space-y-1">
-            {folders.map((folder) => (
-              <button
-                key={folder.id}
-                type="button"
-                onClick={() => setActiveFolder(folder.id)}
-                className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm transition-colors ${
-                  activeFolder === folder.id ? "bg-white text-[#0f172a] shadow-sm" : "text-[#475569] hover:bg-white/60"
-                }`}
-              >
-                <span>{folder.label}</span>
-                <span className="text-xs tabular-nums text-[#64748b]">{folder.count}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-6 border-t border-[#d7dce6] pt-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#64748b]">Access</p>
-            <div className="mt-2 space-y-2">
-              {view.accessLog.slice(0, 4).map((entry) => (
-                <div key={entry.id} className="text-xs leading-4 text-[#64748b]">
-                  <p className="truncate font-medium text-[#475569]">{entry.tool}</p>
-                  <p className="truncate">{entry.reason}</p>
-                </div>
-              ))}
-              {view.accessLog.length === 0 && <p className="text-xs text-[#64748b]">No reads yet.</p>}
-            </div>
-          </div>
+      <div className="grid min-h-[66vh] grid-cols-1 lg:grid-cols-[14.5rem_minmax(19rem,25rem)_minmax(0,1fr)]">
+        <aside className="border-b border-[#cbd8c8] bg-[#e4ecdf] p-3 lg:border-b-0 lg:border-r">
+          <FolderRail folders={folders} activeFolder={activeFolder} setActiveFolder={setActiveFolder} />
+          <RecoveryBlock discarded={view.recovery.discardedCount} quarantine={view.recovery.quarantineCount} />
+          <ScreenerBlock
+            candidates={view.screener}
+            onOpen={(messageId) => {
+              setActiveFolder("screener")
+              setSelectedId(messageId)
+            }}
+          />
+          <AccessBlock entries={view.accessLog} />
         </aside>
 
-        <section className="border-b border-[#d7dce6] bg-white lg:border-b-0 lg:border-r">
-          <div className="border-b border-[#e2e8f0] px-4 py-3">
-            <p className="text-sm font-semibold text-[#0f172a]">{folders.find((folder) => folder.id === activeFolder)?.label ?? "All"}</p>
-            <p className="text-xs text-[#64748b]">{visibleMessages.length} messages</p>
+        <section className="border-b border-[#cbd8c8] bg-[#fbfdf8] lg:border-b-0 lg:border-r">
+          <div className="border-b border-[#d8e2d4] px-4 py-3">
+            <p className="text-sm font-semibold text-[#172018]">{folders.find((folder) => folder.id === activeFolder)?.label ?? "All"}</p>
+            <p className="text-xs text-[#687062]">
+              {visibleOutbound.length > 0 ? `${visibleOutbound.length} outbound records` : `${visibleMessages.length} messages`}
+            </p>
           </div>
-          <div className="max-h-[64vh] overflow-y-auto">
-            {visibleMessages.map((message) => (
-              <button
+          <div className="max-h-[66vh] overflow-y-auto">
+            {visibleOutbound.map((record) => <OutboundRow key={record.id} record={record} />)}
+            {visibleOutbound.length === 0 && visibleMessages.map((message) => (
+              <MessageRow
                 key={message.id}
-                type="button"
-                onClick={() => setSelectedId(message.id)}
-                className={`block w-full border-b border-[#edf2f7] px-4 py-3 text-left transition-colors ${
-                  selectedId === message.id ? "bg-[#eaf3ff]" : "hover:bg-[#f8fafc]"
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <p className="min-w-0 truncate text-sm font-semibold text-[#0f172a]">{addressLine(message.from)}</p>
-                  <span className="shrink-0 text-xs tabular-nums text-[#64748b]">{relTime(message.receivedAt)}</span>
-                </div>
-                <p className="mt-1 truncate text-sm text-[#1e293b]">{subjectLine(message)}</p>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#64748b]">{truncate(message.snippet, 150)}</p>
-                <div className="mt-2 flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-[#64748b]">
-                  <span>{message.placement}</span>
-                  <span>{message.source ?? message.compartmentKind}</span>
-                  {message.attachmentCount > 0 && <span>{message.attachmentCount} attachments</span>}
-                </div>
-              </button>
+                message={message}
+                selected={selectedId === message.id}
+                onSelect={() => setSelectedId(message.id)}
+              />
             ))}
-            {visibleMessages.length === 0 && (
-              <div className="px-4 py-10 text-center text-sm text-[#64748b]">No messages.</div>
+            {visibleOutbound.length === 0 && visibleMessages.length === 0 && (
+              <div className="px-4 py-10 text-center text-sm text-[#687062]">No records here.</div>
             )}
           </div>
         </section>
 
-        <main className="min-w-0 bg-[#fbfcfe]">
+        <main className="min-w-0 bg-[#fbfdf8]">
           {!selectedId && <EmptyReadingPane />}
           {selectedId && detailLoading && <Loading label="Opening message" />}
           {selectedId && !detailLoading && detail?.status !== "ready" && (
             <div className="grid min-h-[54vh] place-items-center p-8 text-center">
               <div>
-                <p className="text-sm font-semibold text-[#0f172a]">Message unavailable</p>
-                <p className="mt-2 text-sm text-[#64748b]">{detail?.error}</p>
+                <p className="text-sm font-semibold text-[#172018]">Message unavailable</p>
+                <p className="mt-2 text-sm text-[#687062]">{detail?.error}</p>
               </div>
             </div>
           )}
-          {detail?.status === "ready" && detail.message && (
-            <article className="min-h-[64vh]">
-              <header className="border-b border-[#d7dce6] bg-white px-6 py-5">
-                <h2 className="text-xl font-semibold leading-tight text-[#0f172a]">{subjectLine(detail.message)}</h2>
-                <div className="mt-4 grid gap-1 text-sm text-[#475569]">
-                  <p><span className="font-medium text-[#0f172a]">From:</span> {addressLine(detail.message.from)}</p>
-                  <p><span className="font-medium text-[#0f172a]">To:</span> {addressLine(detail.message.to)}</p>
-                  {detail.message.cc.length > 0 && <p><span className="font-medium text-[#0f172a]">Cc:</span> {addressLine(detail.message.cc)}</p>}
-                  <p><span className="font-medium text-[#0f172a]">Received:</span> {new Date(detail.message.receivedAt).toLocaleString()}</p>
-                </div>
-              </header>
-              <div className="border-b border-[#fee2e2] bg-[#fff7ed] px-6 py-3 text-sm text-[#9a3412]">
-                {detail.message.untrustedContentWarning}
-              </div>
-              <div className="px-6 py-6">
-                <pre className="whitespace-pre-wrap break-words font-body text-sm leading-7 text-[#1e293b]">
-                  {detail.message.text || "(no text body)"}
-                </pre>
-                {detail.message.bodyTruncated && (
-                  <p className="mt-4 text-xs text-[#64748b]">Body truncated in Outlook.</p>
-                )}
-                {detail.message.attachments.length > 0 && (
-                  <div className="mt-6 border-t border-[#d7dce6] pt-4">
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#64748b]">Attachments</p>
-                    <div className="mt-2 space-y-2">
-                      {detail.message.attachments.map((attachment) => (
-                        <div key={`${attachment.filename}-${attachment.size}`} className="rounded border border-[#d7dce6] bg-white px-3 py-2 text-sm text-[#334155]">
-                          {attachment.filename} · {attachment.contentType} · {attachment.size.toLocaleString()} bytes
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </article>
-          )}
+          {detail?.status === "ready" && detail.message && <ReadingPane detail={detail} />}
         </main>
       </div>
     </div>
+  )
+}
+
+function FolderRail({ folders, activeFolder, setActiveFolder }: {
+  folders: OutlookMailFolder[]
+  activeFolder: MailFolderFilter
+  setActiveFolder: (folder: string) => void
+}) {
+  return (
+    <div className="space-y-1">
+      {folders.map((folder) => (
+        <button
+          key={folder.id}
+          type="button"
+          onClick={() => setActiveFolder(folder.id)}
+          className={`flex h-9 w-full items-center justify-between rounded px-3 text-left text-sm transition-colors ${
+            activeFolder === folder.id ? "bg-[#fbfdf8] text-[#172018] shadow-sm" : "text-[#536157] hover:bg-[#fbfdf8]/65"
+          }`}
+        >
+          <span className="truncate">{folder.label}</span>
+          <span className="text-xs tabular-nums text-[#687062]">{folder.count}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function RecoveryBlock({ discarded, quarantine }: { discarded: number; quarantine: number }) {
+  return (
+    <div className="mt-5 border-t border-[#cbd8c8] pt-4">
+      <p className="text-[11px] font-semibold text-[#687062]">Recovery drawers</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2">
+          <p className="text-xs text-[#687062]">Discarded</p>
+          <p className="text-lg font-semibold tabular-nums text-[#172018]">{discarded}</p>
+        </div>
+        <div className="rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2">
+          <p className="text-xs text-[#687062]">Quarantine</p>
+          <p className="text-lg font-semibold tabular-nums text-[#172018]">{quarantine}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ScreenerBlock({ candidates, onOpen }: {
+  candidates: OutlookMailView["screener"]
+  onOpen: (messageId: string) => void
+}) {
+  return (
+    <div className="mt-5 border-t border-[#cbd8c8] pt-4">
+      <p className="text-[11px] font-semibold text-[#687062]">Screener</p>
+      <div className="mt-2 space-y-2">
+        {candidates.slice(0, 5).map((candidate) => (
+          <button
+            key={candidate.id}
+            type="button"
+            onClick={() => onOpen(candidate.messageId)}
+            className="block w-full rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2 text-left hover:border-[#9fb8a7]"
+          >
+            <p className="truncate text-xs font-semibold text-[#172018]">{candidate.senderEmail}</p>
+            <p className="mt-1 truncate text-xs text-[#687062]">{candidate.trustReason}</p>
+          </button>
+        ))}
+        {candidates.length === 0 && <p className="text-xs text-[#687062]">No pending senders.</p>}
+      </div>
+    </div>
+  )
+}
+
+function AccessBlock({ entries }: { entries: OutlookMailView["accessLog"] }) {
+  return (
+    <div className="mt-5 border-t border-[#cbd8c8] pt-4">
+      <p className="text-[11px] font-semibold text-[#687062]">Access audit</p>
+      <div className="mt-2 space-y-2">
+        {entries.slice(0, 4).map((entry) => (
+          <div key={entry.id} className="text-xs leading-4 text-[#687062]">
+            <p className="truncate font-medium text-[#3f4b42]">{entry.tool}</p>
+            <p className="truncate">{entry.reason}</p>
+          </div>
+        ))}
+        {entries.length === 0 && <p className="text-xs text-[#687062]">No reads yet.</p>}
+      </div>
+    </div>
+  )
+}
+
+function MessageRow({ message, selected, onSelect }: {
+  message: OutlookMailMessageSummary
+  selected: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`block w-full border-b border-[#d8e2d4] px-4 py-3 text-left transition-colors ${
+        selected ? "bg-[#eaf4ee]" : "hover:bg-[#eef4ec]"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <p className="min-w-0 truncate text-sm font-semibold text-[#172018]">{addressLine(message.from)}</p>
+        <span className="shrink-0 text-xs tabular-nums text-[#687062]">{relTime(message.receivedAt)}</span>
+      </div>
+      <p className="mt-1 truncate text-sm text-[#26352a]">{subjectLine(message)}</p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#687062]">{truncate(message.snippet, 150)}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <span className={`rounded px-2 py-0.5 text-[11px] ring-1 ${pillClass(message.placement)}`}>{message.placement}</span>
+        <span className="truncate text-[11px] text-[#687062]">{provenanceLabel(message)}</span>
+      </div>
+    </button>
+  )
+}
+
+function OutboundRow({ record }: { record: OutlookMailOutboundRecord }) {
+  return (
+    <div className="border-b border-[#d8e2d4] px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <p className="min-w-0 truncate text-sm font-semibold text-[#172018]">{record.subject || "(no subject)"}</p>
+        <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] ring-1 ${pillClass(record.status)}`}>{record.status}</span>
+      </div>
+      <p className="mt-1 truncate text-xs text-[#536157]">to {addressLine(record.to)}</p>
+      <p className="mt-1 text-xs text-[#687062]">{record.transport ?? "not sent"} · {relTime(record.sentAt ?? record.updatedAt)}</p>
+    </div>
+  )
+}
+
+function ReadingPane({ detail }: { detail: OutlookMailMessageView }) {
+  const message = detail.message!
+  return (
+    <article className="min-h-[66vh]">
+      <header className="border-b border-[#cbd8c8] bg-[#fbfdf8] px-6 py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h2 className="min-w-0 text-xl font-semibold leading-tight text-[#172018]">{subjectLine(message)}</h2>
+          <span className={`rounded px-2 py-0.5 text-xs ring-1 ${pillClass(message.placement)}`}>{message.placement}</span>
+        </div>
+        <div className="mt-4 grid gap-1 text-sm text-[#536157]">
+          <p><span className="font-medium text-[#172018]">From:</span> {addressLine(message.from)}</p>
+          <p><span className="font-medium text-[#172018]">To:</span> {addressLine(message.to)}</p>
+          {message.cc.length > 0 && <p><span className="font-medium text-[#172018]">Cc:</span> {addressLine(message.cc)}</p>}
+          <p><span className="font-medium text-[#172018]">Received:</span> {new Date(message.receivedAt).toLocaleString()}</p>
+          <p><span className="font-medium text-[#172018]">Provenance:</span> {provenanceLabel(message)}</p>
+        </div>
+      </header>
+      <div className="border-b border-[#f0d0bd] bg-[#fff4e4] px-6 py-3 text-sm text-[#8a4a18]">
+        {message.untrustedContentWarning}
+      </div>
+      <div className="px-6 py-6">
+        <pre className="whitespace-pre-wrap break-words font-body text-sm leading-7 text-[#26352a]">
+          {message.text || "(no text body)"}
+        </pre>
+        {message.bodyTruncated && <p className="mt-4 text-xs text-[#687062]">Body truncated in Outlook.</p>}
+        <div className="mt-6 grid gap-3 border-t border-[#cbd8c8] pt-4 text-xs text-[#687062] md:grid-cols-2">
+          <p><span className="font-medium text-[#172018]">Read reason:</span> {message.access.reason}</p>
+          <p><span className="font-medium text-[#172018]">Read at:</span> {new Date(message.access.accessedAt).toLocaleString()}</p>
+        </div>
+        {message.attachments.length > 0 && (
+          <div className="mt-6 border-t border-[#cbd8c8] pt-4">
+            <p className="text-xs font-semibold text-[#687062]">Attachments</p>
+            <div className="mt-2 space-y-2">
+              {message.attachments.map((attachment) => (
+                <div key={`${attachment.filename}-${attachment.size}`} className="rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2 text-sm text-[#3f4b42]">
+                  {attachment.filename} · {attachment.contentType} · {attachment.size.toLocaleString()} bytes
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </article>
   )
 }
 
@@ -247,8 +389,8 @@ function EmptyReadingPane() {
   return (
     <div className="grid min-h-[54vh] place-items-center p-8 text-center">
       <div>
-        <p className="text-sm font-semibold text-[#0f172a]">No message selected</p>
-        <p className="mt-2 text-sm text-[#64748b]">Reading pane idle.</p>
+        <p className="text-sm font-semibold text-[#172018]">No message selected</p>
+        <p className="mt-2 text-sm text-[#687062]">Reading pane idle.</p>
       </div>
     </div>
   )
@@ -257,8 +399,8 @@ function EmptyReadingPane() {
 function Loading({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 p-6">
-      <div className="h-2 w-2 animate-pulse rounded-full bg-[#2563eb]" />
-      <span className="text-xs text-[#64748b]">{label}...</span>
+      <div className="h-2 w-2 animate-pulse rounded-full bg-[#2f8f4e]" />
+      <span className="text-xs text-[#687062]">{label}...</span>
     </div>
   )
 }
