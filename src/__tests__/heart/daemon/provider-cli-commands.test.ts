@@ -5432,6 +5432,47 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("minimax-secret")
   })
 
+  it("ouro status --agent distinguishes an unloaded local provider cache from missing vault credentials", async () => {
+    emitTestEvent("provider cli status unloaded credential cache")
+    const bundlesRoot = makeTempDir("provider-cli-status-unloaded-cache-bundles")
+    const homeDir = makeTempDir("provider-cli-status-unloaded-cache-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+      lanes: {
+        outward: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "local",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {
+        outward: {
+          status: "ready",
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          checkedAt: NOW,
+          credentialRevision: "cred_minimax_1",
+          attempts: 1,
+        },
+      },
+    }))
+    writeMissingProviderCredentialPool("Slugger")
+
+    const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("readiness: ready")
+    expect(result).toContain("credentials: not loaded in this process; run `ouro provider refresh --agent Slugger` to read the vault now")
+    expect(result).not.toContain("credentials: missing")
+    expect(result).not.toContain("warning: minimax has no credential record")
+  })
+
   it("ouro status --agent renders invalid credential-pool repair guidance", async () => {
     emitTestEvent("provider cli status invalid credential pool")
     const bundlesRoot = makeTempDir("provider-cli-status-invalid-pool-bundles")

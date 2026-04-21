@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.448",
+      "changes": [
+        "`ouro status` and agent prompt provider visibility now distinguish \"the daemon has not loaded provider credentials in this process\" from \"the agent vault is missing credentials.\" A saved live check that passed stays ready instead of being downgraded to stale/missing just because status rendering is running in a fresh daemon process.",
+        "Provider visibility now carries a safe `not-loaded` credential state and renders it as `checked previously`, preserving the last live-check result without reading or printing secrets during ordinary status/prompt rendering.",
+        "Regression coverage locks the installed-product failure shape: an empty in-process provider cache plus ready provider state no longer produces misleading auth repair guidance."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.447",
       "changes": [
         "`ouro connect` now checks only the providers selected for the current agent lanes during preflight, and those live reads avoid mutating the older provider snapshot cache. That keeps the command focused on what this machine actually needs instead of paying whole-vault latency for unrelated provider records.",

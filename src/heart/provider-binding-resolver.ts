@@ -2,6 +2,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { AgentProvider } from "./identity"
 import {
   readProviderCredentialPool,
+  isProviderCredentialPoolNotLoaded,
   type ProviderCredentialPoolReadResult,
   type ProviderCredentialRecord,
   type ProviderCredentialProvenanceSource,
@@ -53,6 +54,11 @@ export type EffectiveProviderCredentialStatus =
     poolPath: string
     error: string
     repair: EffectiveProviderRepair
+  }
+  | {
+    status: "not-loaded"
+    provider: AgentProvider
+    poolPath: string
   }
 
 export interface EffectiveProviderReadiness {
@@ -192,6 +198,17 @@ function resolveCredential(
     }
   }
 
+  if (isProviderCredentialPoolNotLoaded(poolResult)) {
+    return {
+      credential: {
+        status: "not-loaded",
+        provider,
+        poolPath: poolResult.poolPath,
+      },
+      warnings: [],
+    }
+  }
+
   if (poolResult.reason === "invalid" || poolResult.reason === "unavailable") {
     return {
       credential: {
@@ -245,6 +262,9 @@ function resolveReadiness(input: {
   credential: EffectiveProviderCredentialStatus
 }): { readiness: EffectiveProviderReadiness; warnings: EffectiveProviderBindingWarning[] } {
   if (!input.readiness) {
+    if (input.credential.status === "not-loaded") {
+      return { readiness: { status: "unknown" }, warnings: [] }
+    }
     if (input.credential.status === "missing") {
       return { readiness: { status: "unknown", reason: "credential-missing" }, warnings: [] }
     }
@@ -290,6 +310,10 @@ function resolveReadiness(input: {
       readiness: staleReadiness(input.readiness, "credential-pool-invalid"),
       warnings: [],
     }
+  }
+
+  if (input.credential.status === "not-loaded") {
+    return { readiness: readinessFromState(input.readiness), warnings: [] }
   }
 
   return { readiness: readinessFromState(input.readiness), warnings: [] }
