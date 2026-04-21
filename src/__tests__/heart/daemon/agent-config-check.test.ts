@@ -19,6 +19,7 @@ import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "../../../h
 
 const mockReadFileSync = vi.mocked(fs.readFileSync)
 const mockExistsSync = vi.mocked(fs.existsSync)
+const mockWriteFileSync = vi.mocked(fs.writeFileSync)
 
 const BUNDLES = "/bundles"
 
@@ -246,6 +247,25 @@ describe("checkAgentConfigWithProviderHealth", () => {
     }))
     expect(pingProvider).toHaveBeenCalledOnce()
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
+  })
+
+  it("passes caller-specified provider ping options to the shared live check", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, {
+      pingProvider,
+      providerPingOptions: {
+        attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+        timeoutMs: 5_000,
+      },
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({
+      model: "claude-opus-4-6",
+      attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+      timeoutMs: 5_000,
+    }))
   })
 
   it("starts distinct live provider checks in parallel", async () => {
@@ -508,6 +528,24 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result.fix).toBe(
       "Run 'ouro auth --agent myagent --provider anthropic' to refresh credentials, or run 'ouro use --agent myagent --lane outward --provider <provider> --model <model>' to choose another provider/model for this lane.",
     )
+  })
+
+  it("can live-check without recording readiness for orientation-only probes", async () => {
+    const pingProvider = vi.fn(async () => ({
+      ok: false,
+      classification: "network-error",
+      message: "provider ping timed out after 5000ms",
+      attempts: [],
+    }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, {
+      pingProvider,
+      recordReadiness: false,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("provider ping timed out after 5000ms")
+    expect(mockWriteFileSync).not.toHaveBeenCalled()
   })
 
   it("returns structural config errors before live health checks", async () => {

@@ -109,7 +109,7 @@ import {
   formatMcpResponse,
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
-import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -157,6 +157,10 @@ const DEFAULT_DAEMON_STARTUP_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STARTUP_STABILITY_WINDOW_MS = 1_500
 const DEFAULT_DAEMON_STARTUP_RETRY_LIMIT = 1
 const DEFAULT_DAEMON_STARTUP_LOG_LINES = 10
+const CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS = {
+  attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
+  timeoutMs: 5_000,
+} satisfies Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
 
 function summarizeCliUpdateCheckStatus(error: string, timedOut = false): string {
   const normalized = error.trim().toLowerCase()
@@ -293,11 +297,19 @@ async function checkAgentProviderHealth(
   bundlesRoot: string,
   deps: OuroCliDeps,
   onProgress?: (message: string) => void,
+  options: Pick<LiveConfigCheckDeps, "providerPingOptions" | "recordReadiness"> = {},
 ): ReturnType<typeof checkAgentConfigWithProviderHealth> {
-  const liveDeps: import("./agent-config-check").LiveConfigCheckDeps = {}
+  const liveDeps: LiveConfigCheckDeps = {}
   if (deps.homeDir) liveDeps.homeDir = deps.homeDir
   if (onProgress) liveDeps.onProgress = onProgress
-  if (liveDeps.homeDir || liveDeps.onProgress) {
+  if (options.providerPingOptions) liveDeps.providerPingOptions = options.providerPingOptions
+  if (options.recordReadiness !== undefined) liveDeps.recordReadiness = options.recordReadiness
+  if (
+    liveDeps.homeDir ||
+    liveDeps.onProgress ||
+    liveDeps.providerPingOptions ||
+    liveDeps.recordReadiness !== undefined
+  ) {
     return checkAgentConfigWithProviderHealth(agentName, bundlesRoot, liveDeps)
   }
   return checkAgentConfigWithProviderHealth(agentName, bundlesRoot)
@@ -2554,7 +2566,10 @@ async function buildConnectMenu(
   let providerHealth: Awaited<ReturnType<typeof checkAgentProviderHealth>> | undefined
   try {
     onProgress?.("checking selected providers")
-    providerHealth = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress)
+    providerHealth = await checkAgentProviderHealth(agent, bundlesRoot, deps, onProgress, {
+      providerPingOptions: CONNECT_PROVIDER_ORIENTATION_PING_OPTIONS,
+      recordReadiness: false,
+    })
   } catch (error) {
     providerHealth = {
       ok: false,

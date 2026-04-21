@@ -33,6 +33,9 @@ describe("provider ping progress", () => {
     expect(formatProviderAttemptProgress({ provider: "anthropic" }, 2, 3)).toBe(
       "checking anthropic (attempt 2 of 3)...",
     )
+    expect(formatProviderAttemptProgress({ provider: "minimax", model: "MiniMax-M2.5" }, 1, 1)).toBe(
+      "checking minimax / MiniMax-M2.5...",
+    )
   })
 
   it.each([

@@ -45,6 +45,7 @@ export function formatProviderAttemptProgress(
   maxAttempts: number,
 ): string {
   const prefix = context.subject ? `${context.subject}: ` : ""
+  if (maxAttempts <= 1) return `${prefix}checking ${formatProviderPingLabel(context)}...`
   return `${prefix}checking ${formatProviderPingLabel(context)} (attempt ${attempt} of ${maxAttempts})...`
 }
 

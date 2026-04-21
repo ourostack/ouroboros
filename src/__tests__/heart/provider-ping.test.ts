@@ -485,6 +485,59 @@ describe("pingProvider", () => {
     }
   })
 
+  it("hard-times out a provider ping even when the SDK ignores the abort signal", async () => {
+    vi.useFakeTimers()
+    let receivedSignal: AbortSignal | undefined
+    mockAnthropicCreate.mockImplementation((_params, options?: { signal?: AbortSignal }) => {
+      receivedSignal = options?.signal
+      return new Promise(() => {})
+    })
+    mockClassifyError.mockReturnValue("network-error" as ProviderErrorClassification)
+
+    try {
+      const resultPromise = pingProvider("anthropic", {
+        model: "claude-opus-4-6",
+        setupToken: "sk-ant-oat01-valid-token-that-is-long-enough-to-pass-format-check-1234567890abcdef",
+      }, {
+        attemptPolicy: { maxAttempts: 1 },
+        timeoutMs: 5,
+      })
+
+      await vi.advanceTimersByTimeAsync(5)
+      const result = await resultPromise
+
+      expect(receivedSignal?.aborted).toBe(true)
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.classification).toBe("network-error")
+        expect(result.message).toContain("provider ping timed out after 5ms")
+        expect(result.attempts).toHaveLength(1)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("falls back to the default ping timeout when given a non-finite timeout", async () => {
+    const err = Object.assign(new Error("provider down"), { status: 503 })
+    mockAnthropicCreate.mockRejectedValue(err)
+    mockClassifyError.mockReturnValue("server-error" as ProviderErrorClassification)
+
+    const result = await pingProvider("anthropic", {
+      model: "claude-opus-4-6",
+      setupToken: "sk-ant-oat01-valid-token-that-is-long-enough-to-pass-format-check-1234567890abcdef",
+    }, {
+      attemptPolicy: { maxAttempts: 1 },
+      timeoutMs: Number.POSITIVE_INFINITY,
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.classification).toBe("server-error")
+      expect(result.message).toBe("provider down")
+    }
+  })
+
   it("falls back to unknown when classifyError throws", async () => {
     mockAnthropicCreate.mockRejectedValue(new Error("weird error"))
     mockClassifyError.mockImplementation(() => { throw new Error("classify itself broke") })

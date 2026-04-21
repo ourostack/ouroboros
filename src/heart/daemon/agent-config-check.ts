@@ -46,6 +46,8 @@ export interface LiveConfigCheckDeps {
   pingProvider?: ProviderPing
   homeDir?: string
   onProgress?: (message: string) => void
+  providerPingOptions?: Pick<ProviderPingOptions, "attemptPolicy" | "timeoutMs">
+  recordReadiness?: boolean
 }
 
 type FacingName = "humanFacing" | "agentFacing"
@@ -496,6 +498,7 @@ export async function checkAgentConfigWithProviderHealth(
   deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
+  const shouldRecordReadiness = deps.recordReadiness ?? true
   const providers = selectedProvidersForState(stateResult.state)
   const poolResult = await refreshProviderCredentialPool(
     agentName,
@@ -546,6 +549,7 @@ export async function checkAgentConfigWithProviderHealth(
   const pingResults = await Promise.all(groups.map(async (group) => {
     const result = await ping(group.provider, providerCredentialConfig(group.record), {
       model: group.model,
+      ...(deps.providerPingOptions ?? {}),
       ...(deps.onProgress
         ? createProviderPingProgressReporter(
             {
@@ -563,29 +567,33 @@ export async function checkAgentConfigWithProviderHealth(
   let firstFailure: ConfigCheckResult | null = null
   for (const { group, result } of pingResults) {
     if (!result.ok) {
+      if (shouldRecordReadiness) {
+        for (const lane of group.lanes) {
+          writeLaneReadiness({
+            agentRoot: stateResult.agentRoot,
+            state: stateResult.state,
+            lane,
+            status: "failed",
+            credentialRevision: group.record.revision,
+            error: result.message,
+            attempts: pingAttemptCount(result),
+          })
+        }
+      }
+      firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
+      continue
+    }
+    if (shouldRecordReadiness) {
       for (const lane of group.lanes) {
         writeLaneReadiness({
           agentRoot: stateResult.agentRoot,
           state: stateResult.state,
           lane,
-          status: "failed",
+          status: "ready",
           credentialRevision: group.record.revision,
-          error: result.message,
           attempts: pingAttemptCount(result),
         })
       }
-      firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
-      continue
-    }
-    for (const lane of group.lanes) {
-      writeLaneReadiness({
-        agentRoot: stateResult.agentRoot,
-        state: stateResult.state,
-        lane,
-        status: "ready",
-        credentialRevision: group.record.revision,
-        attempts: pingAttemptCount(result),
-      })
     }
   }
 

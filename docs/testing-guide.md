@@ -107,7 +107,8 @@ Expected:
 - auth, provider refresh, and guided connectors show a visible progress checklist while waiting on browser login, vault reads/writes, daemon reload, and verification
 - `ouro logs` now tails the daemon/agent logs from the installed runtime path instead of falling back to a socket help message
 - bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
-- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path, and if a provider is slow or retrying it narrates the real attempt count and retry reason before opening the shared connect wizard
+- root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path with a bounded one-attempt orientation policy, and opens the shared connect wizard without spending the full startup retry budget
+- a failed or timed-out root `ouro connect` orientation probe can mark the current menu as `needs attention`, but it must not overwrite durable provider readiness; `ouro up`, `ouro check`, `ouro auth verify`, and chat startup own lasting readiness writes
 - auth, vault, hatch, and guided connector completions land on the shared guide language with `What changed` and `Next moves` instead of raw transcript walls
 - `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
 - if the background service dies after startup work but before handoff is complete, `ouro up` fails with a daemon diagnosis instead of printing a false-ready board
@@ -209,7 +210,7 @@ What each lane proves:
 - `npm run test:coverage`: enforced 100% coverage + nerves audit
 - `npm run test:integration`: built runtime in child processes against a hermetic fake machine (temp `HOME`, temp bundles, fake vault CLI/unlock store, fake provider server)
 - `npm run test:e2e:package`: locally packed npm tarball installed into a fresh prefix, then the installed `ouro` binary is executed for both version truth and a human-facing help surface
-- `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json`: real external provider/capability smoke with sacrificial credentials, using the same live ping path as `ouro up`, `ouro auth verify`, and the connect bay
+- `npm run test:e2e:real-smoke -- --secrets-file /absolute/path/to/ouro-real-smoke.json`: real external provider/capability smoke with sacrificial credentials, using the same provider ping implementation as `ouro up`, `ouro auth verify`, and the connect bay while preserving each command's retry policy
 
 CI now mirrors that split on pull requests:
 

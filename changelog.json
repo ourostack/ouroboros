@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.449",
+      "changes": [
+        "`ouro connect` now uses a bounded live provider probe before opening the connection menu: it still checks the real selected providers, but it makes one orientation attempt with a 5-second hard timeout instead of spending the full startup retry budget before the human can choose a setup path.",
+        "Provider ping timeouts are now hard timeouts even when an SDK ignores the abort signal. The failing attempt is classified through the same shared retry machinery and reports a clear `provider ping timed out after <ms>ms` message instead of leaving the CLI stuck behind a blinking cursor.",
+        "Root connect provider checks no longer overwrite durable provider readiness. A quick menu probe can show `needs attention` for the current screen, while `ouro up`, `ouro check`, auth verification, and chat startup remain the flows that record lasting ready/failed provider state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.448",
       "changes": [
         "`ouro status` and agent prompt provider visibility now distinguish \"the daemon has not loaded provider credentials in this process\" from \"the agent vault is missing credentials.\" A saved live check that passed stays ready instead of being downgraded to stale/missing just because status rendering is running in a fresh daemon process.",

@@ -39,6 +39,7 @@ export type ProviderRuntimeConfig =
 export interface ProviderPingOptions {
   model?: string
   attemptPolicy?: Partial<ProviderAttemptPolicy>
+  timeoutMs?: number
   sleep?: (delayMs: number) => Promise<void>
   onAttemptStart?: (attempt: number, maxAttempts: number) => void | Promise<void>
   onRetry?: (record: ProviderAttemptRecord, maxAttempts: number) => void | Promise<void>
@@ -117,6 +118,37 @@ async function readGithubCopilotModelPingError(response: Response): Promise<stri
 
 function createStatusError(message: string, status: number): Error {
   return Object.assign(new Error(message), { status })
+}
+
+function normalizePingTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return PING_TIMEOUT_MS
+  if (!Number.isFinite(timeoutMs)) return PING_TIMEOUT_MS
+  return Math.max(1, Math.floor(timeoutMs))
+}
+
+function createPingTimeoutError(timeoutMs: number): Error {
+  return Object.assign(new Error(`provider ping timed out after ${timeoutMs}ms`), {
+    code: "ETIMEDOUT",
+  })
+}
+
+async function runPingWithHardTimeout(runtime: ProviderRuntime, timeoutMs: number): Promise<void> {
+  const controller = new AbortController()
+  let timeout!: ReturnType<typeof setTimeout>
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort()
+      reject(createPingTimeoutError(timeoutMs))
+    }, timeoutMs)
+  })
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => runtime.ping(controller.signal)),
+      timeoutPromise,
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export async function pingGithubCopilotModel(
@@ -239,14 +271,7 @@ export async function pingProvider(
     onAttemptStart: options.onAttemptStart,
     onRetry: options.onRetry,
     run: async () => {
-      const controller = new AbortController()
-      /* v8 ignore next -- timeout callback: only fires after 10s, tests resolve faster @preserve */
-      const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
-      try {
-        await runtime.ping(controller.signal)
-      } finally {
-        clearTimeout(timeout)
-      }
+      await runPingWithHardTimeout(runtime, normalizePingTimeoutMs(options.timeoutMs))
     },
   })
 
