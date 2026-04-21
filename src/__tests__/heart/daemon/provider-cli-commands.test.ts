@@ -3193,6 +3193,8 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     expect(output).toContain("checking openai-codex / gpt-5.4")
+    expect(output).toContain("✓ checking current connections — checked")
+    expect(output).not.toContain("✓ checking current connections — ready")
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("openai-codex / gpt-5.4")
     expect(prompt).toContain("failed live check: 400 status code (no body)")

@@ -3246,7 +3246,7 @@ async function executeConnect(
       progress,
       "checking current connections",
       () => buildConnectMenu(command.agent, deps, (message) => progress.updateDetail(message)),
-      () => "ready",
+      () => "checked",
     )
   } finally {
     progress.end()
