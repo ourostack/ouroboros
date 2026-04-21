@@ -225,6 +225,12 @@ describe("outlook http", () => {
     expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
+    await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
+      status: "auth-required",
+    }))
+    await expect(defaultHooks.readAgentMailMessage("mailless-default-hooks", "mail_1")).resolves.toEqual(expect.objectContaining({
+      status: "auth-required",
+    }))
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
@@ -294,6 +300,33 @@ describe("outlook http", () => {
     }))(createMockRequest("/api/agents/slugger"), agentResponse)
     expect(agentResponse.statusCode).toBe(200)
     expect(JSON.parse(agentResponse.body.toString("utf8"))).toEqual(expect.objectContaining({ agentName: "slugger" }))
+  })
+
+  it("returns compact JSON errors when async agent surface hooks reject", async () => {
+    const { createOutlookHttpRequestHandler } = await import("../../../heart/outlook/outlook-http-routes")
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentMail = vi.fn()
+      .mockRejectedValueOnce(new Error("mail hook exploded"))
+      .mockRejectedValueOnce("mail hook string")
+    const handler = createOutlookHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const errorResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/mail"), errorResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(errorResponse.statusCode).toBe(500)
+    expect(JSON.parse(errorResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "mail hook exploded",
+    })
+
+    const stringResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/mail"), stringResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(stringResponse.statusCode).toBe(500)
+    expect(JSON.parse(stringResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "mail hook string",
+    })
   })
 
   it("keeps desk preference mutation in the route helper seam", async () => {

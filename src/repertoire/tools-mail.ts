@@ -2,10 +2,18 @@ import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { decryptMessages, type MailAccessLogEntry } from "../mailroom/file-store"
 import { resolveMailroomReader } from "../mailroom/reader"
+import { emitNervesEvent } from "../nerves/runtime"
 
 function trustAllowsMailRead(ctx: Parameters<ToolDefinition["handler"]>[1]): boolean {
   const trustLevel = ctx?.context?.friend?.trustLevel
-  return trustLevel === undefined || isTrustedLevel(trustLevel)
+  const allowed = trustLevel === undefined || isTrustedLevel(trustLevel)
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.mail_tool_access",
+    message: "mail tool access checked",
+    meta: { allowed, trustLevel: trustLevel ?? null },
+  })
+  return allowed
 }
 
 function numberArg(value: string | undefined, fallback: number, min: number, max: number): number {
