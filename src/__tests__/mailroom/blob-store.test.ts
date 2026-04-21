@@ -125,5 +125,30 @@ describe("AzureBlobMailroomStore", () => {
       expect.objectContaining({ tool: "mail_thread", reason: "blob store proof" }),
       expect.objectContaining({ tool: "mail_recent", reason: "blob mailbox overview" }),
     ])
+
+    await store.upsertMailOutbound({
+      schemaVersion: 1,
+      id: "draft_blob",
+      agentId: "slugger",
+      status: "draft",
+      from: "slugger@ouro.bot",
+      to: ["ari@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Blob draft",
+      text: "Hello from outbound blob storage.",
+      actor: { kind: "agent", agentId: "slugger" },
+      reason: "blob outbound proof",
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+    })
+    expect(await store.getMailOutbound("draft_blob")).toEqual(expect.objectContaining({
+      id: "draft_blob",
+      status: "draft",
+    }))
+    expect(await store.getMailOutbound("missing")).toBeNull()
+    expect(await store.listMailOutbound("slugger")).toEqual([
+      expect.objectContaining({ id: "draft_blob", subject: "Blob draft" }),
+    ])
   })
 })

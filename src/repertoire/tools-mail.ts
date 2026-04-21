@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { decryptMessages, type MailAccessLogEntry } from "../mailroom/file-store"
 import { resolveMailroomReader } from "../mailroom/reader"
+import { confirmMailDraftSend, createMailDraft, resolveOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
 import type { MailPlacement } from "../mailroom/core"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -33,6 +34,11 @@ function screenerDecisionBlocked(ctx: Parameters<ToolDefinition["handler"]>[1]):
   return "mail screener decisions require family trust."
 }
 
+function outboundSendBlocked(ctx: Parameters<ToolDefinition["handler"]>[1]): string | null {
+  if (familyOrAgentSelf(ctx)) return null
+  return "outbound mail sends require family trust."
+}
+
 function numberArg(value: string | undefined, fallback: number, min: number, max: number): number {
   const parsed = value ? Number.parseInt(value, 10) : fallback
   if (!Number.isFinite(parsed)) return fallback
@@ -55,6 +61,13 @@ function parsePlacement(value: string | undefined): MailPlacement | undefined {
 
 function parseScope(value: string | undefined): "native" | "delegated" | undefined {
   return value === "native" || value === "delegated" ? value : undefined
+}
+
+function parseMailList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
 }
 
 function renderMessageSummary(message: ReturnType<typeof decryptMessages>[number]): string {
@@ -200,6 +213,115 @@ export const mailToolDefinitions: ToolDefinition[] = [
       return decryptMessages(messages, resolved.config.privateKeys).map(renderMessageSummary).join("\n\n")
     },
     summaryKeys: ["scope", "placement", "source", "limit"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "mail_compose",
+        description: "Create an outbound mail draft in the agent mailbox. This does not send mail; use mail_send with explicit confirmation for that.",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string", description: "Comma-separated recipient email addresses." },
+            cc: { type: "string", description: "Optional comma-separated CC addresses." },
+            bcc: { type: "string", description: "Optional comma-separated BCC addresses." },
+            subject: { type: "string", description: "Draft subject." },
+            text: { type: "string", description: "Plain-text draft body." },
+            reason: { type: "string", description: "Why this draft is being created. Logged for audit." },
+          },
+          required: ["to", "subject", "text", "reason"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      const resolved = resolveMailroomReader()
+      if (!resolved.ok) return resolved.error
+      try {
+        const draft = await createMailDraft({
+          store: resolved.store,
+          agentId: resolved.agentName,
+          from: resolved.config.mailboxAddress,
+          to: parseMailList(args.to),
+          cc: parseMailList(args.cc),
+          bcc: parseMailList(args.bcc),
+          subject: args.subject ?? "",
+          text: args.text ?? "",
+          actor: actorFromContext(ctx, resolved.agentName),
+          reason: args.reason ?? "compose outbound mail",
+        })
+        await resolved.store.recordAccess({
+          agentId: resolved.agentName,
+          tool: "mail_compose",
+          reason: args.reason || "compose outbound mail",
+        })
+        return [
+          `Draft created: ${draft.id}`,
+          `from: ${draft.from}`,
+          `to: ${draft.to.join(", ")}`,
+          `subject: ${draft.subject || "(no subject)"}`,
+          "send: call mail_send with draft_id and confirmation=CONFIRM_SEND after explicit approval.",
+        ].join("\n")
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    },
+    summaryKeys: ["to", "subject"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "mail_send",
+        description: "Send a draft only after explicit confirmation. Autonomous sending is refused.",
+        parameters: {
+          type: "object",
+          properties: {
+            draft_id: { type: "string", description: "Draft id from mail_compose." },
+            confirmation: { type: "string", description: "Must be exactly CONFIRM_SEND." },
+            reason: { type: "string", description: "Why this send is authorized. Logged for audit." },
+            autonomous: { type: "string", enum: ["true", "false"], description: "Must not be true; autonomous sends are refused." },
+          },
+          required: ["draft_id", "confirmation", "reason"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      const blocked = outboundSendBlocked(ctx)
+      if (blocked) return blocked
+      const draftId = (args.draft_id ?? "").trim()
+      if (!draftId) return "draft_id is required."
+      const resolved = resolveMailroomReader()
+      if (!resolved.ok) return resolved.error
+      try {
+        const sent = await confirmMailDraftSend({
+          store: resolved.store,
+          agentId: resolved.agentName,
+          draftId,
+          transport: resolveOutboundTransport(resolved.config),
+          confirmation: args.confirmation ?? "",
+          autonomous: args.autonomous === "true",
+          actor: actorFromContext(ctx, resolved.agentName),
+          reason: args.reason ?? "confirmed outbound send",
+        })
+        await resolved.store.recordAccess({
+          agentId: resolved.agentName,
+          tool: "mail_send",
+          reason: args.reason || "confirmed outbound send",
+        })
+        return [
+          `Mail sent: ${sent.id}`,
+          `transport: ${sent.transport}`,
+          `sentAt: ${sent.sentAt}`,
+          `to: ${sent.to.join(", ")}`,
+        ].join("\n")
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    },
+    summaryKeys: ["draft_id"],
   },
   {
     tool: {

@@ -188,7 +188,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 64 tools total including Mailroom, attachment, and image recovery tools
-    expect(names).toHaveLength(64);
+    // Exact count: 66 tools total including Mailroom, outbound mail, attachment, and image recovery tools
+    expect(names).toHaveLength(66);
   });
 });

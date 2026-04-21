@@ -8,6 +8,7 @@ import {
   type MailClassification,
   type MailDecisionRecord,
   type MailEnvelopeInput,
+  type MailOutboundRecord,
   type MailPlacement,
   type ResolvedMailAddress,
   type MailScreenerCandidate,
@@ -82,6 +83,10 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   private accessLogBlob(agentId: string) {
     return this.container.getBlockBlobClient(`access-log/${agentId}.jsonl`)
+  }
+
+  private outboundBlob(id: string) {
+    return this.container.getBlockBlobClient(`outbound/${id}.json`)
   }
 
   async putRawMessage(input: {
@@ -259,6 +264,49 @@ export class AzureBlobMailroomStore implements MailroomStore {
       meta: { agentId, count: safeEntries.length },
     })
     return safeEntries
+  }
+
+  async upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord> {
+    await this.ensureContainer()
+    await this.outboundBlob(record.id).uploadData(blobText(record))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_outbound_record_written",
+      message: "azure blob mail outbound record written",
+      meta: { agentId: record.agentId, id: record.id, status: record.status },
+    })
+    return record
+  }
+
+  async getMailOutbound(id: string): Promise<MailOutboundRecord | null> {
+    await this.ensureContainer()
+    const record = await downloadJson<MailOutboundRecord>(this.outboundBlob(id))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_outbound_record_read",
+      message: "azure blob mail outbound record read",
+      meta: { id, found: record !== null },
+    })
+    return record
+  }
+
+  async listMailOutbound(agentId: string): Promise<MailOutboundRecord[]> {
+    await this.ensureContainer()
+    const records: MailOutboundRecord[] = []
+    for await (const item of this.container.listBlobsFlat({ prefix: "outbound/" })) {
+      const record = await downloadJson<MailOutboundRecord>(this.container.getBlockBlobClient(item.name))
+      if (record) records.push(record)
+    }
+    const filtered = records
+      .filter((record) => record.agentId === agentId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_outbound_records_listed",
+      message: "azure blob mail outbound records listed",
+      meta: { agentId, count: filtered.length },
+    })
+    return filtered
   }
 
   async recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry> {

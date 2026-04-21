@@ -24,6 +24,7 @@ export type MailDecisionAction =
   | "quarantine"
   | "restore"
 export type MailScreenerCandidateStatus = "pending" | "allowed" | "discarded" | "quarantined" | "restored"
+export type MailOutboundStatus = "draft" | "sent" | "failed"
 
 export interface MailAuthenticationSummary {
   spf: MailAuthenticationState
@@ -94,6 +95,27 @@ export interface MailScreenerCandidate {
   lastSeenAt: string
   messageCount: number
   resolvedByDecisionId?: string
+}
+
+export interface MailOutboundRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  status: MailOutboundStatus
+  from: string
+  to: string[]
+  cc: string[]
+  bcc: string[]
+  subject: string
+  text: string
+  actor: MailDecisionActor
+  reason: string
+  createdAt: string
+  updatedAt: string
+  sentAt?: string
+  transport?: string
+  transportMessageId?: string
+  error?: string
 }
 
 export interface AgentMailboxRecord {

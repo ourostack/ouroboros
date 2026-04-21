@@ -9,6 +9,7 @@ import {
   type MailClassification,
   type MailDecisionRecord,
   type MailEnvelopeInput,
+  type MailOutboundRecord,
   type MailPlacement,
   type MailroomRegistry,
   type ResolvedMailAddress,
@@ -60,6 +61,9 @@ export interface MailroomStore {
   listScreenerCandidates(filters: MailScreenerCandidateFilters): Promise<MailScreenerCandidate[]>
   recordMailDecision(entry: Omit<MailDecisionRecord, "schemaVersion" | "id" | "createdAt"> & { id?: string; createdAt?: string }): Promise<MailDecisionRecord>
   listMailDecisions(agentId: string): Promise<MailDecisionRecord[]>
+  upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord>
+  getMailOutbound(id: string): Promise<MailOutboundRecord | null>
+  listMailOutbound(agentId: string): Promise<MailOutboundRecord[]>
   recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry>
   listAccessLog(agentId: string): Promise<MailAccessLogEntry[]>
 }
@@ -103,6 +107,7 @@ export class FileMailroomStore implements MailroomStore {
     ensureDir(this.logsDir)
     ensureDir(this.candidatesDir)
     ensureDir(this.decisionsDir)
+    ensureDir(this.outboundDir)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_file_store_init",
@@ -131,6 +136,10 @@ export class FileMailroomStore implements MailroomStore {
     return path.join(this.rootDir, "decisions")
   }
 
+  private get outboundDir(): string {
+    return path.join(this.rootDir, "outbound")
+  }
+
   private messagePath(id: string): string {
     return path.join(this.messagesDir, `${id}.json`)
   }
@@ -145,6 +154,10 @@ export class FileMailroomStore implements MailroomStore {
 
   private decisionLogPath(agentId: string): string {
     return path.join(this.decisionsDir, `${agentId}.jsonl`)
+  }
+
+  private outboundPath(id: string): string {
+    return path.join(this.outboundDir, `${id}.json`)
   }
 
   private accessLogPath(agentId: string): string {
@@ -321,6 +334,44 @@ export class FileMailroomStore implements MailroomStore {
       meta: { agentId, count: entries.length },
     })
     return entries
+  }
+
+  async upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord> {
+    writeJson(this.outboundPath(record.id), record)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_record_written",
+      message: "mail outbound record written",
+      meta: { agentId: record.agentId, id: record.id, status: record.status },
+    })
+    return record
+  }
+
+  async getMailOutbound(id: string): Promise<MailOutboundRecord | null> {
+    const record = readJson<MailOutboundRecord>(this.outboundPath(id))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_record_read",
+      message: "mail outbound record read",
+      meta: { id, found: record !== null },
+    })
+    return record
+  }
+
+  async listMailOutbound(agentId: string): Promise<MailOutboundRecord[]> {
+    const records = fs.readdirSync(this.outboundDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => readJson<MailOutboundRecord>(path.join(this.outboundDir, name)))
+      .filter((record): record is MailOutboundRecord => record !== null)
+      .filter((record) => record.agentId === agentId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_outbound_records_listed",
+      message: "mail outbound records listed",
+      meta: { agentId, count: records.length },
+    })
+    return records
   }
 
   async recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry> {

@@ -18,6 +18,7 @@ export interface MailroomRuntimeConfig {
   httpPort?: number
   host?: string
   attentionIntervalMs?: number
+  outbound?: Record<string, unknown>
   privateKeys: Record<string, string>
 }
 
@@ -73,6 +74,7 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
   const httpPort = numberField(value, "httpPort")
   const host = textField(value, "host")
   const attentionIntervalMs = numberField(value, "attentionIntervalMs")
+  const outbound = isRecord(value.outbound) ? { ...value.outbound } : undefined
   return {
     mailboxAddress,
     ...(registryPath ? { registryPath } : {}),
@@ -84,6 +86,7 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
     ...(httpPort !== undefined ? { httpPort } : {}),
     ...(host ? { host } : {}),
     ...(attentionIntervalMs !== undefined ? { attentionIntervalMs } : {}),
+    ...(outbound ? { outbound } : {}),
     privateKeys,
   }
 }
