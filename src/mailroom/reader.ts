@@ -9,10 +9,15 @@ import { FileMailroomStore, type MailroomStore } from "./file-store"
 
 export interface MailroomRuntimeConfig {
   mailboxAddress: string
+  registryPath?: string
   storePath?: string
   azureAccountUrl?: string
   azureContainer?: string
   azureManagedIdentityClientId?: string
+  smtpPort?: number
+  httpPort?: number
+  host?: string
+  attentionIntervalMs?: number
   privateKeys: Record<string, string>
 }
 
@@ -43,6 +48,11 @@ function textField(value: Record<string, unknown>, key: string): string | undefi
   return typeof raw === "string" && raw.trim() ? raw.trim() : undefined
 }
 
+function numberField(value: Record<string, unknown>, key: string): number | undefined {
+  const raw = value[key]
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined
+}
+
 export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | null {
   if (!isRecord(value)) return null
   const mailboxAddress = textField(value, "mailboxAddress")
@@ -54,16 +64,26 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
     }),
   )
   if (Object.keys(privateKeys).length === 0) return null
+  const registryPath = textField(value, "registryPath")
   const storePath = textField(value, "storePath")
   const azureAccountUrl = textField(value, "azureAccountUrl")
   const azureContainer = textField(value, "azureContainer")
   const azureManagedIdentityClientId = textField(value, "azureManagedIdentityClientId")
+  const smtpPort = numberField(value, "smtpPort")
+  const httpPort = numberField(value, "httpPort")
+  const host = textField(value, "host")
+  const attentionIntervalMs = numberField(value, "attentionIntervalMs")
   return {
     mailboxAddress,
+    ...(registryPath ? { registryPath } : {}),
     ...(storePath ? { storePath } : {}),
     ...(azureAccountUrl ? { azureAccountUrl } : {}),
     ...(azureContainer ? { azureContainer } : {}),
     ...(azureManagedIdentityClientId ? { azureManagedIdentityClientId } : {}),
+    ...(smtpPort !== undefined ? { smtpPort } : {}),
+    ...(httpPort !== undefined ? { httpPort } : {}),
+    ...(host ? { host } : {}),
+    ...(attentionIntervalMs !== undefined ? { attentionIntervalMs } : {}),
     privateKeys,
   }
 }

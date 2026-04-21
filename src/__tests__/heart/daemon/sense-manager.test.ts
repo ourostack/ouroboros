@@ -582,6 +582,7 @@ describe("daemon sense manager", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -601,6 +602,12 @@ describe("daemon sense manager", () => {
         clientId: "cid",
         clientSecret: "secret",
         tenantId: "tenant",
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {
+          mail_slugger_primary: "secret",
+        },
       },
     })
     await cacheMachineRuntimeConfig("slugger", {
