@@ -222,7 +222,13 @@ function policyMatchForDecision(input: {
     if (!domain) return null
     return { match: { kind: "domain", value: domain }, scope: policyScopeForMessage(input.message) }
   }
-  if (input.action === "allow-sender" || input.action === "link-friend" || input.action === "create-friend") {
+  if (
+    input.action === "allow-sender" ||
+    input.action === "link-friend" ||
+    input.action === "create-friend" ||
+    input.action === "discard" ||
+    input.action === "quarantine"
+  ) {
     return { match: { kind: "email", value: input.sender }, scope: policyScopeForMessage(input.message) }
   }
   return null
@@ -255,7 +261,9 @@ function persistSenderPolicyForDecision(input: {
     input.action !== "allow-domain" &&
     input.action !== "allow-source" &&
     input.action !== "link-friend" &&
-    input.action !== "create-friend"
+    input.action !== "create-friend" &&
+    input.action !== "discard" &&
+    input.action !== "quarantine"
   ) {
     return null
   }
@@ -269,7 +277,7 @@ function persistSenderPolicyForDecision(input: {
     agentId: input.agentId,
     scope: match.scope,
     match: match.match,
-    action: "allow",
+    action: input.action === "discard" || input.action === "quarantine" ? input.action : "allow",
     actor: input.actor,
     reason: input.reason,
   })

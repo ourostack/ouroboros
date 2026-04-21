@@ -258,6 +258,57 @@ describe("Agent Mail local proof", () => {
       trustReason: "sender policy allow email new.sender@example.com",
     })
 
+    const noisy = await ingestRawMailToStore({
+      registry: updatedRegistry,
+      store,
+      envelope: { mailFrom: "sales@noise.example", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: rawMail({
+        from: "Noise Sender <sales@noise.example>",
+        to: "slugger@ouro.bot",
+        subject: "Discard proof",
+        body: "This body should not interrupt Slugger again after family discards the sender.",
+      }),
+    })
+    expect(noisy.accepted[0]).toMatchObject({ placement: "screener" })
+    const noisyScreener = await tool("mail_screener").handler({ reason: "check discard candidate" }, familyContext())
+    expect(noisyScreener).toContain("sales@noise.example")
+    const noisyCandidateId = /candidate_mail_[a-f0-9]+/.exec(String(noisyScreener))?.[0]
+    expect(noisyCandidateId).toBeTruthy()
+
+    const discardDecision = await tool("mail_decide").handler({
+      candidate_id: noisyCandidateId!,
+      action: "discard",
+      reason: "family says this sender belongs in the recovery drawer",
+    }, familyContext())
+    expect(discardDecision).toContain("Mail decision recorded: discard")
+    expect(discardDecision).toContain("sender policy: discard email sales@noise.example")
+    expect(discardDecision).toContain("recovery drawer")
+
+    const discardRegistry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
+    expect(discardRegistry.senderPolicies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        agentId: "slugger",
+        scope: "native",
+        match: { kind: "email", value: "sales@noise.example" },
+        action: "discard",
+      }),
+    ]))
+    const noisyFollowup = await ingestRawMailToStore({
+      registry: discardRegistry,
+      store,
+      envelope: { mailFrom: "sales@noise.example", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: rawMail({
+        from: "Noise Sender <sales@noise.example>",
+        to: "slugger@ouro.bot",
+        subject: "Discard follow-up proof",
+        body: "This should land in retained discarded mail without returning to Screener.",
+      }),
+    })
+    expect(noisyFollowup.accepted[0]).toMatchObject({
+      placement: "discarded",
+      trustReason: "sender policy discard email sales@noise.example",
+    })
+
     await expect(tool("mail_search").handler({
       query: "LHR",
       scope: "delegated",
