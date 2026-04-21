@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.447",
+      "changes": [
+        "`ouro connect` now checks only the providers selected for the current agent lanes during preflight, and those live reads avoid mutating the older provider snapshot cache. That keeps the command focused on what this machine actually needs instead of paying whole-vault latency for unrelated provider records.",
+        "Structured vault reads for `providers/*` and `runtime/config` now reuse one short-lived Bitwarden item listing per store instance and skip redundant `bw sync` calls while the local Bitwarden cache is fresh, cutting repeated vault startup work without adding any disk credential cache.",
+        "The connections screen now lets the fresh live provider check outrank stale local credential visibility, so a provider that just passed appears ready and a provider that just failed shows the real live-check failure instead of falling back to misleading `credentials missing` guidance. `@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the connect preflight latency release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.446",
       "changes": [
         "`ouro connect`, the home deck, readiness repair prompts, and the interactive repair queue now render through one shared wizard language instead of a mix of framed panels and transcript walls. Humans can choose by number or name, see one recommended next step, and keep the same visual footing across setup and repair.",

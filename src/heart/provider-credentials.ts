@@ -67,6 +67,8 @@ export interface ProviderCredentialPoolSummary {
 export interface RefreshProviderCredentialPoolOptions {
   preserveCachedOnFailure?: boolean
   onProgress?: (message: string) => void
+  providers?: AgentProvider[]
+  skipCache?: boolean
 }
 
 interface ProviderCredentialVaultPayload {
@@ -255,6 +257,11 @@ function cacheResult(agentName: string, result: ProviderCredentialPoolReadResult
   return result
 }
 
+function selectedProviders(providers?: AgentProvider[]): AgentProvider[] {
+  if (!providers || providers.length === 0) return [...VALID_PROVIDERS]
+  return [...new Set(providers)]
+}
+
 function resultForProvider(
   poolResult: ProviderCredentialPoolReadResult,
   provider: AgentProvider,
@@ -280,13 +287,14 @@ export async function refreshProviderCredentialPool(
   agentName: string,
   options: RefreshProviderCredentialPoolOptions = {},
 ): Promise<ProviderCredentialPoolReadResult> {
+  const providersToRead = selectedProviders(options.providers)
   try {
     const store = getCredentialStore(agentName)
     options.onProgress?.(`reading vault items for ${agentName}...`)
     const providers: Partial<Record<AgentProvider, ProviderCredentialRecord>> = {}
     let updatedAt = new Date(0).toISOString()
 
-    for (const provider of VALID_PROVIDERS) {
+    for (const provider of providersToRead) {
       const itemName = providerCredentialItemName(provider)
       options.onProgress?.(`reading ${provider} credentials...`)
       let raw: string
@@ -313,9 +321,19 @@ export async function refreshProviderCredentialPool(
       component: "config/identity",
       event: "config.provider_credentials_loaded",
       message: "loaded provider credentials from vault",
-      meta: { agentName, providerCount: Object.keys(providers).length },
+      meta: {
+        agentName,
+        providerCount: Object.keys(providers).length,
+        requestedProviderCount: providersToRead.length,
+        cacheSkipped: options.skipCache === true,
+      },
     })
-    return cacheResult(agentName, { ok: true, poolPath: providerCredentialsVaultPath(agentName), pool })
+    const result: ProviderCredentialPoolReadResult = {
+      ok: true,
+      poolPath: providerCredentialsVaultPath(agentName),
+      pool,
+    }
+    return options.skipCache ? result : cacheResult(agentName, result)
   } catch (error) {
     const cached = cachedPools.get(agentName)
     const result: ProviderCredentialPoolReadResult = {
@@ -332,7 +350,7 @@ export async function refreshProviderCredentialPool(
       meta: { agentName, reason: result.reason, poolPath: result.poolPath },
     })
     if (options.preserveCachedOnFailure && cached?.ok) return cached
-    return cacheResult(agentName, result)
+    return options.skipCache ? result : cacheResult(agentName, result)
   }
 }
 

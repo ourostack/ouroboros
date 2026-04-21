@@ -296,6 +296,43 @@ describe("provider credentials vault store", () => {
     expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("azure"), "password")
   })
 
+  it("can refresh only selected providers without replacing the cached pool", async () => {
+    emitTestEvent("provider credential targeted refresh without cache write")
+    mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+      username: "minimax",
+      password: validPayload("minimax"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+    mockCredentialStore.items.set(providerCredentialItemName("azure"), {
+      username: "azure",
+      password: validPayload("azure"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+
+    const result = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax", "openai-codex", "minimax"],
+      skipCache: true,
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      pool: {
+        providers: {
+          minimax: { provider: "minimax" },
+        },
+      },
+    })
+    expect(result.ok && result.pool.providers.azure).toBeUndefined()
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(2)
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("minimax"), "password")
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("openai-codex"), "password")
+    expect(readProviderCredentialPool("slugger")).toMatchObject({
+      ok: false,
+      reason: "missing",
+      poolPath: "vault:slugger:providers/*",
+    })
+  })
+
   it("treats direct item 'not found' errors as missing provider credentials during refresh", async () => {
     emitTestEvent("provider credential refresh not-found direct reads")
     mockCredentialStore.store.getRawSecret.mockImplementation(async (domain: string, field: string) => {
@@ -374,6 +411,31 @@ describe("provider credentials vault store", () => {
       reason: "unavailable",
       error: "vault string failure",
     })
+  })
+
+  it("does not cache a targeted skip-cache refresh failure", async () => {
+    emitTestEvent("provider credential skip-cache failure stays local")
+    const minimax = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+    const cached = cacheProviderCredentialRecords("slugger", [minimax])
+    mockCredentialStore.store.getRawSecret.mockRejectedValueOnce(new Error("vault unavailable during targeted check"))
+
+    const result = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax"],
+      skipCache: true,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "unavailable",
+      error: "vault unavailable during targeted check",
+    })
+    expect(readProviderCredentialPool("slugger")).toBe(cached)
   })
 
   it("reports vault payload parse errors as an unavailable credential pool", async () => {

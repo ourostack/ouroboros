@@ -2574,11 +2574,32 @@ async function buildConnectMenu(
   onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
   const { teamsEnabled, blueBubblesEnabled } = readConnectBaySenseFlags(agent, deps)
-  let perplexityStatus: ConnectMenuEntry["status"]
-  let perplexityDetailLines: string[]
   const perplexityApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
     : null
+  const embeddingsApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  const shouldVerifyPerplexity = runtimeConfig.ok && !!perplexityApiKey
+  const shouldVerifyEmbeddings = runtimeConfig.ok && !!embeddingsApiKey
+  let perplexityVerification: Awaited<ReturnType<typeof verifyPerplexityCapability>> | undefined
+  let embeddingsVerification: Awaited<ReturnType<typeof verifyEmbeddingsCapability>> | undefined
+  if (shouldVerifyPerplexity && shouldVerifyEmbeddings) {
+    onProgress?.("verifying Perplexity search and memory embeddings")
+    ;[perplexityVerification, embeddingsVerification] = await Promise.all([
+      verifyPerplexityCapability(perplexityApiKey!),
+      verifyEmbeddingsCapability(embeddingsApiKey!),
+    ])
+  } else if (shouldVerifyPerplexity) {
+    onProgress?.("verifying Perplexity search")
+    perplexityVerification = await verifyPerplexityCapability(perplexityApiKey!)
+  } else if (shouldVerifyEmbeddings) {
+    onProgress?.("verifying memory embeddings")
+    embeddingsVerification = await verifyEmbeddingsCapability(embeddingsApiKey!)
+  }
+
+  let perplexityStatus: ConnectMenuEntry["status"]
+  let perplexityDetailLines: string[]
   if (!runtimeConfig.ok) {
     perplexityStatus = runtimeConfigReadStatus(runtimeConfig)
     perplexityDetailLines = []
@@ -2586,17 +2607,16 @@ async function buildConnectMenu(
     perplexityStatus = "missing"
     perplexityDetailLines = ["no API key saved yet"]
   } else {
-    onProgress?.("verifying Perplexity search")
-    const verification = await verifyPerplexityCapability(perplexityApiKey)
-    perplexityStatus = verification.ok ? "ready" : "needs attention"
-    perplexityDetailLines = [verification.ok ? "verified live just now" : `live check failed: ${verification.summary}`]
+    perplexityStatus = perplexityVerification?.ok ? "ready" : "needs attention"
+    perplexityDetailLines = [
+      perplexityVerification?.ok
+        ? "verified live just now"
+        : `live check failed: ${perplexityVerification!.summary}`,
+    ]
   }
 
   let embeddingsStatus: ConnectMenuEntry["status"]
   let embeddingsDetailLines: string[]
-  const embeddingsApiKey = runtimeConfig.ok
-    ? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
-    : null
   if (!runtimeConfig.ok) {
     embeddingsStatus = runtimeConfigReadStatus(runtimeConfig)
     embeddingsDetailLines = []
@@ -2604,10 +2624,12 @@ async function buildConnectMenu(
     embeddingsStatus = "missing"
     embeddingsDetailLines = ["no API key saved yet"]
   } else {
-    onProgress?.("verifying memory embeddings")
-    const verification = await verifyEmbeddingsCapability(embeddingsApiKey)
-    embeddingsStatus = verification.ok ? "ready" : "needs attention"
-    embeddingsDetailLines = [verification.ok ? "verified live just now" : `live check failed: ${verification.summary}`]
+    embeddingsStatus = embeddingsVerification?.ok ? "ready" : "needs attention"
+    embeddingsDetailLines = [
+      embeddingsVerification?.ok
+        ? "verified live just now"
+        : `live check failed: ${embeddingsVerification!.summary}`,
+    ]
   }
 
   const teamsStatus = runtimeConfig.ok

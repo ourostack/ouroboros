@@ -427,6 +427,10 @@ function selectedProviderPlan(agentName: string, state: ProviderState): string {
   ].join("\n")
 }
 
+function selectedProvidersForState(state: ProviderState): AgentProvider[] {
+  return [...new Set((["outward", "inner"] as ProviderLane[]).map((lane) => state.lanes[lane].provider))]
+}
+
 function mapVaultRefreshProgress(
   agentName: string,
   onProgress: (message: string) => void,
@@ -434,6 +438,11 @@ function mapVaultRefreshProgress(
   return (message: string) => {
     if (message.startsWith("reading vault items for ")) {
       onProgress(`${agentName}: opening saved provider credentials in the vault`)
+      return
+    }
+    const providerRead = message.match(/^reading ([a-z0-9-]+) credentials\.\.\.$/i)
+    if (providerRead) {
+      onProgress(`${agentName}: reading saved ${providerRead[1]} credentials`)
       return
     }
     if (message === "parsing provider credentials...") {
@@ -487,9 +496,14 @@ export async function checkAgentConfigWithProviderHealth(
   deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
+  const providers = selectedProvidersForState(stateResult.state)
   const poolResult = await refreshProviderCredentialPool(
     agentName,
-    deps.onProgress ? { onProgress: mapVaultRefreshProgress(agentName, deps.onProgress) } : undefined,
+    {
+      ...(deps.onProgress ? { onProgress: mapVaultRefreshProgress(agentName, deps.onProgress) } : {}),
+      providers,
+      skipCache: true,
+    },
   )
 
   const pingGroups = new Map<string, {

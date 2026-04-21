@@ -358,6 +358,131 @@ describe("BitwardenCredentialStore", () => {
       const syncIdx = calls.findIndex((c) => c[0] === "sync")
       expect(syncIdx).toBeGreaterThan(unlockIdx)
     })
+
+    it("skips bw sync after unlock when the local vault cache is fresh", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-fresh-"))
+      const cachePath = path.join(appDataDir, ".ouro-last-sync")
+      fs.writeFileSync(cachePath, `${Date.now()}\n`, "utf8")
+      const now = new Date()
+      fs.utimesSync(cachePath, now, now)
+
+      const isolatedStore = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { appDataDir },
+      )
+
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      try {
+        await isolatedStore.login()
+        expect(calls.find((c) => c[0] === "sync")).toBeUndefined()
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
+    })
+
+    it("uses the newest Bitwarden cache timestamp when both freshness files exist", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-multi-fresh-"))
+      const markerPath = path.join(appDataDir, ".ouro-last-sync")
+      const dataPath = path.join(appDataDir, "data.json")
+      fs.writeFileSync(markerPath, "stale\n", "utf8")
+      fs.writeFileSync(dataPath, "{}", "utf8")
+      const stale = new Date(Date.now() - (2 * 60 * 1000))
+      const fresh = new Date()
+      fs.utimesSync(markerPath, stale, stale)
+      fs.utimesSync(dataPath, fresh, fresh)
+
+      const isolatedStore = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { appDataDir },
+      )
+
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      try {
+        await isolatedStore.login()
+        expect(calls.find((c) => c[0] === "sync")).toBeUndefined()
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
+    })
+
+    it("calls bw sync after unlock when the local vault cache is stale", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-stale-"))
+      const cachePath = path.join(appDataDir, ".ouro-last-sync")
+      fs.writeFileSync(cachePath, "stale\n", "utf8")
+      const stale = new Date(Date.now() - (2 * 60 * 1000))
+      fs.utimesSync(cachePath, stale, stale)
+
+      const isolatedStore = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { appDataDir },
+      )
+
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      try {
+        await isolatedStore.login()
+        expect(calls.find((c) => c[0] === "sync")).toBeDefined()
+        expect(fs.readFileSync(cachePath, "utf8")).toMatch(/^\d+\n$/)
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe("get", () => {
@@ -450,7 +575,7 @@ describe("BitwardenCredentialStore", () => {
       expect(result!.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}/)
     })
 
-    it("uses direct bw get item lookup for structured Ouro item names", async () => {
+    it("uses a full vault list lookup for structured Ouro item names", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -460,50 +585,6 @@ describe("BitwardenCredentialStore", () => {
         }
         if (args[0] === "unlock") {
           cb(null, "session-token", "")
-          return
-        }
-        if (args[0] === "get" && args[1] === "item") {
-          cb(null, JSON.stringify({
-            id: "provider-item",
-            name: "providers/openai-codex",
-            login: { username: "openai-codex", password: "provider-token" },
-            revisionDate: "2026-04-20T05:00:00.000Z",
-          }), "")
-          return
-        }
-        if (args[0] === "list") {
-          cb(null, "[]", "")
-          return
-        }
-        cb(null, "", "")
-      })
-
-      const result = await store.get("providers/openai-codex")
-
-      expect(result?.domain).toBe("providers/openai-codex")
-      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeDefined()
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
-    })
-
-    it("falls back to filtered search when direct bw get item returns a fuzzy mismatch", async () => {
-      const calls: string[][] = []
-      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
-        calls.push(args)
-        if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked" }), "")
-          return
-        }
-        if (args[0] === "unlock") {
-          cb(null, "session-token", "")
-          return
-        }
-        if (args[0] === "get" && args[1] === "item") {
-          cb(null, JSON.stringify({
-            id: "stale-provider-item",
-            name: "providers/openai-codex-stale",
-            login: { username: "openai-codex", password: "provider-token" },
-            revisionDate: "2026-04-20T05:00:00.000Z",
-          }), "")
           return
         }
         if (args[0] === "list") {
@@ -511,7 +592,7 @@ describe("BitwardenCredentialStore", () => {
             id: "provider-item",
             name: "providers/openai-codex",
             login: { username: "openai-codex", password: "provider-token" },
-            revisionDate: "2026-04-20T05:01:00.000Z",
+            revisionDate: "2026-04-20T05:00:00.000Z",
           }]), "")
           return
         }
@@ -521,11 +602,11 @@ describe("BitwardenCredentialStore", () => {
       const result = await store.get("providers/openai-codex")
 
       expect(result?.domain).toBe("providers/openai-codex")
-      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/openai-codex")).toBeDefined()
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call[3] === "providers/openai-codex")).toBeDefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items" && call.length === 2)).toBeDefined()
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
 
-    it("rethrows non-fallback direct lookup errors for structured Ouro item names", async () => {
+    it("reuses the cached full vault list for later structured reads", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -537,22 +618,58 @@ describe("BitwardenCredentialStore", () => {
           cb(null, "session-token", "")
           return
         }
-        if (args[0] === "get" && args[1] === "item") {
-          cb(new Error("Command failed: bw get item providers/openai-codex"), "", "server unavailable")
+        if (args[0] === "list") {
+          cb(null, JSON.stringify([
+            {
+              id: "provider-item",
+              name: "providers/openai-codex",
+              login: { username: "openai-codex", password: "provider-token" },
+              revisionDate: "2026-04-20T05:01:00.000Z",
+            },
+            {
+              id: "azure-item",
+              name: "providers/azure",
+              login: { username: "azure", password: "azure-token" },
+              revisionDate: "2026-04-20T05:01:30.000Z",
+            },
+          ]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      const first = await store.get("providers/openai-codex")
+      const second = await store.get("providers/azure")
+
+      expect(first?.domain).toBe("providers/openai-codex")
+      expect(second?.domain).toBe("providers/azure")
+      expect(calls.filter((call) => call[0] === "list" && call[1] === "items" && call.length === 2)).toHaveLength(1)
+    })
+
+    it("rethrows full vault list errors for structured Ouro item names", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
           return
         }
         if (args[0] === "list") {
-          cb(null, "[]", "")
+          cb(new Error("Command failed: bw list items"), "", "server unavailable")
           return
         }
         cb(null, "", "")
       })
 
       await expect(store.get("providers/openai-codex")).rejects.toThrow("bw CLI error: server unavailable")
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeDefined()
     })
 
-    it("treats a missing structured Ouro item as missing without falling back to filtered search", async () => {
+    it("treats a missing structured Ouro item as missing when the vault list has only fuzzy matches", async () => {
       const calls: string[][] = []
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
@@ -564,16 +681,10 @@ describe("BitwardenCredentialStore", () => {
           cb(null, "session-token", "")
           return
         }
-        if (args[0] === "get" && args[1] === "item") {
-          const err = new Error("Command failed: /tmp/fake-bw get item providers/azure\nitem not found") as NodeJS.ErrnoException
-          err.code = "EFAIL"
-          cb(err, "", "item not found")
-          return
-        }
         if (args[0] === "list") {
           cb(null, JSON.stringify([{
             id: "provider-item",
-            name: "providers/azure",
+            name: "providers/azure-stale",
             login: { username: "azure", password: "provider-token" },
             revisionDate: "2026-04-20T05:01:00.000Z",
           }]), "")
@@ -585,8 +696,8 @@ describe("BitwardenCredentialStore", () => {
       const result = await store.get("providers/azure")
 
       expect(result).toBeNull()
-      expect(calls.find((call) => call[0] === "get" && call[1] === "item" && call[2] === "providers/azure")).toBeDefined()
-      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeUndefined()
+      expect(calls.find((call) => call[0] === "list" && call[1] === "items")).toBeDefined()
+      expect(calls.find((call) => call[0] === "get" && call[1] === "item")).toBeUndefined()
     })
   })
 
@@ -1489,7 +1600,7 @@ describe("BitwardenCredentialStore", () => {
       })
 
       expect(unlockCount).toBe(2)
-      expect(searchCount).toBe(0)
+      expect(searchCount).toBe(2)
       expect(editCount).toBe(2)
       expect(stdinWrites).toHaveLength(2)
     })
@@ -1586,10 +1697,10 @@ describe("BitwardenCredentialStore", () => {
       })
 
       expect(unlockCount).toBe(2)
-      expect(listCount).toBe(1)
+      expect(listCount).toBe(2)
       expect(createCount).toBe(1)
       expect(editCount).toBe(1)
-      expect(getCount).toBe(4)
+      expect(getCount).toBe(2)
     })
 
     it("stops before create when the pre-create lookup fails for a non-session reason", async () => {
@@ -1695,7 +1806,7 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.store("providers/anthropic", {
         username: "anthropic",
         password: "anthropic-token",
-      })).rejects.toThrow("bw CLI error: invalid item from bw list items --search")
+      })).rejects.toThrow("bw CLI error: invalid item from bw list items")
     })
 
     it("gives up after one fresh-session retry when create still needs re-auth", async () => {
