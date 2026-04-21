@@ -99,7 +99,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.
 - Provider and runtime credentials are loaded into process memory at startup/auth/unlock/refresh and reused. The remote vault is not queried for every model or sense request.
-- Human TTY commands share one CLI surface family: bare `ouro` opens the home deck, `ouro up`/`ouro connect`/`ouro auth verify`/`ouro repair` reuse the same readiness truth, and `ouro help`/`ouro whoami`/`ouro versions`/`ouro hatch` render from the same Ouro-branded board layer.
+- Human TTY commands share one CLI surface family: bare `ouro` opens the home deck, `ouro up` uses the boot checklist, `ouro connect`/`ouro auth verify`/`ouro repair` reuse the same readiness truth, and `ouro help`/`ouro whoami`/`ouro versions`/`ouro hatch` render through the same Ouro-branded wizard/guide language instead of raw transcript walls.
 - Human-facing CLI commands that can wait on browser auth, vault IO, daemon startup, daemon restart, provider checks, or connector setup use a shared progress checklist. If a cursor may blink for more than a few seconds, the command should print or animate the current step instead of going quiet.
 - CLI commands that mutate bundle config, such as vault setup or `ouro connect bluebubbles`, run bundle sync after the change when `sync.enabled` is true and report a compact `bundle sync:` line.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.

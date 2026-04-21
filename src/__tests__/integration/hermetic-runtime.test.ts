@@ -58,11 +58,12 @@ describe("hermetic Ouro runtime integration", () => {
     const connect = await harness.runCli(["connect", "--agent", "slugger"])
 
     expect(connect.exitCode).toBe(0)
-    expect(connect.stdout).toContain("slugger connections")
+    expect(connect.stdout).toContain("checking current connections")
+    expect(connect.stdout).toContain("Connect slugger")
     expect(connect.stdout).toContain("Providers")
-    expect(connect.stdout).toContain("Providers [ready]")
-    expect(connect.stdout).toContain("Perplexity search [missing]")
-    expect(connect.stdout).toContain("Memory embeddings [missing]")
+    expect(connect.stdout).toContain("1. Providers  ● ready")
+    expect(connect.stdout).toContain("2. Perplexity search  ◆ missing")
+    expect(connect.stdout).toContain("3. Memory embeddings  ◆ missing")
     expect(connect.stdout).toContain("run: ouro connect perplexity --agent slugger")
   })
 
@@ -72,8 +73,9 @@ describe("hermetic Ouro runtime integration", () => {
     const connect = await harness.runCli(["connect", "--agent", "slugger"])
 
     expect(connect.exitCode).toBe(0)
-    expect(connect.stdout).toContain("slugger connections")
-    expect(connect.stdout).toContain("Providers - needs attention")
+    expect(connect.stdout).toContain("checking current connections")
+    expect(connect.stdout).toContain("Connect slugger")
+    expect(connect.stdout).toContain("1. Providers  ◆ needs attention")
     expect(connect.stdout).toContain("Outward lane: github-copilot / claude-sonnet-4.6")
     expect(connect.stdout).toContain("failed live check")
     expect(connect.stdout).toContain("run: ouro auth --agent slugger --provider github-copilot")

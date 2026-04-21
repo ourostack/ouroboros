@@ -5009,6 +5009,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               await executeVaultUnlock({ kind: "vault.unlock", agent }, deps)
             },
             skipQueueSummary: true,
+            isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+            stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
           })
           if (repairResult.repairsAttempted) {
             repairsAttempted = true

@@ -51,6 +51,10 @@ export interface AgenticRepairDeps {
   runVaultUnlock?: (agent: string) => Promise<void>
   /** Skip repair queue summary when it would duplicate the status block */
   skipQueueSummary?: boolean
+  /** Whether stdout is a tty-capable interactive surface */
+  isTTY?: boolean
+  /** Current stdout width for tty rendering */
+  stdoutColumns?: number
 }
 
 export interface AgenticRepairResult {
@@ -101,6 +105,8 @@ function makeInteractiveRepairDeps(deps: AgenticRepairDeps): InteractiveRepairDe
     runAuthFlow: deps.runAuthFlow ?? (async () => undefined),
     runVaultUnlock: deps.runVaultUnlock,
     skipQueueSummary: deps.skipQueueSummary,
+    isTTY: deps.isTTY,
+    stdoutColumns: deps.stdoutColumns,
   }
 }
 

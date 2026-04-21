@@ -1,7 +1,7 @@
 import type { ProviderLane } from "../provider-state"
 import type { AgentProviderVisibility, ProviderVisibilityLane } from "../provider-visibility"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { renderOuroMasthead } from "./terminal-ui"
+import { renderTerminalWizard, type TerminalWizardItem, type TerminalWizardSection } from "./terminal-ui"
 import { preferredConnectRepairAction, type AgentReadinessIssue } from "./readiness-repair"
 
 export type ConnectMenuStatus =
@@ -60,57 +60,6 @@ const CONNECT_STATUS_PRIORITY: Record<ConnectMenuStatus, number> = {
   "not attached": 5,
   ready: 6,
   attached: 6,
-}
-
-const RESET = "\x1b[0m"
-const BOLD = "\x1b[1m"
-const TEAL = "\x1b[38;2;78;201;176m"
-const GREEN = "\x1b[38;2;46;204;64m"
-const GOLD = "\x1b[38;2;230;190;50m"
-const BONE = "\x1b[38;2;238;242;234m"
-const MIST = "\x1b[38;2;165;184;168m"
-
-const ANSI_RE = /\x1b\[[0-9;]*m/g
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_RE, "")
-}
-
-function visibleLength(text: string): number {
-  return stripAnsi(text).length
-}
-
-function padAnsi(text: string, width: number): string {
-  const missing = Math.max(0, width - visibleLength(text))
-  return `${text}${" ".repeat(missing)}`
-}
-
-function wrapPlain(text: string, width: number): string[] {
-  const normalized = text.trim()
-  if (!normalized) return [""]
-  const words = normalized.split(/\s+/)
-  const lines: string[] = []
-  let current = ""
-  for (const word of words) {
-    if (!current) {
-      current = word
-      continue
-    }
-    const candidate = `${current} ${word}`
-    if (candidate.length <= width) {
-      current = candidate
-      continue
-    }
-    lines.push(current)
-    current = word
-  }
-  lines.push(current)
-  return lines
-}
-
-function tty(text: string, color: string, bold = false): string {
-  if (bold) return `${color}${BOLD}${text}${RESET}`
-  return `${color}${text}${RESET}`
 }
 
 function escapeRegExp(value: string): string {
@@ -178,234 +127,70 @@ function isProblemStatus(status: ConnectMenuStatus): boolean {
   return status !== "ready" && status !== "attached"
 }
 
-function statusChip(status: ConnectMenuStatus): string {
-  const symbol = status === "ready" || status === "attached"
-    ? "●"
-    : status === "not attached"
-      ? "◌"
-      : "◆"
-  const label = `${symbol} ${status}`
-  if (status === "ready" || status === "attached") return tty(label, GREEN, true)
-  if (status === "not attached") return tty(label, MIST)
-  return tty(label, GOLD, true)
+function providerEntrySummary(entry: ConnectMenuEntry): string {
+  return entry.description ?? "Selected provider lanes for this machine."
 }
 
-function sectionTitle(title: string, width: number): string {
-  const plain = `╭─ ${title} `
-  const rule = "─".repeat(Math.max(0, width - plain.length - 1))
-  return `${tty("╭─ ", TEAL)}${tty(title, BONE, true)}${tty(` ${rule}╮`, TEAL)}`
-}
-
-function bottomRule(width: number): string {
-  const line = `╰${"─".repeat(Math.max(0, width - 2))}╯`
-  return tty(line, TEAL)
-}
-
-function bodyLine(text: string, width: number): string {
-  const padded = padAnsi(text, Math.max(0, width - 4))
-  return `${tty("│ ", TEAL)}${padded}${tty(" │", TEAL)}`
-}
-
-function panel(title: string, body: string[], width: number): string[] {
-  const lines = [sectionTitle(title, width)]
-  for (const line of body) {
-    lines.push(bodyLine(line, width))
+function providerEntryDetailLines(entry: ConnectMenuEntry): string[] {
+  const lines: string[] = []
+  if (entry.nextNote && !/^(Outward|Inner) lane: /.test(entry.nextNote)) {
+    lines.push(entry.nextNote)
   }
-  lines.push(bottomRule(width))
-  return lines
-}
-
-function renderHeader(agent: string, width: number): string[] {
-  return panel(
-    `${agent} connections`,
-    [
-      tty("Set up or review one capability at a time.", BONE, true),
-      tty("Everything on this screen was checked live just now.", MIST),
-    ],
-    width,
-  )
-}
-
-function nextMoveBody(entry: ConnectMenuEntry | undefined): string[] {
-  if (!entry) {
-    return [
-      tty("Everything here is ready.", BONE, true),
-      tty("Pick what you want to review or refresh.", MIST),
-    ]
+  if (entry.laneSummaries && entry.laneSummaries.length > 0) {
+    for (const lane of entry.laneSummaries) {
+      const laneLabel = lane.lane === "outward" ? "Outward lane" : "Inner lane"
+      lines.push(`${laneLabel}: ${lane.title} — ${lane.detail}`)
+    }
+    return lines
   }
-  const lines: string[] = [
-    `${entry.name}  ${statusChip(entry.status)}`,
+  return [...lines, ...(entry.detailLines ?? [])]
+}
+
+function capabilityEntryDetailLines(entry: ConnectMenuEntry): string[] {
+  return [
+    ...(entry.detailLines ?? []),
+    ...(entry.nextNote ? [entry.nextNote] : []),
   ]
-  if (entry.nextNote) lines.push(entry.nextNote)
-  if (entry.nextAction) lines.push(tty(entry.nextAction, MIST))
-  return lines
 }
 
-function renderProviderBody(entry: ConnectMenuEntry, width: number): string[] {
-  const lines: string[] = [
-    `${entry.option}  ${entry.name}  ${statusChip(entry.status)}`,
-  ]
-  const lanes = entry.laneSummaries ?? []
-  for (const [index, lane] of lanes.entries()) {
-    if (index > 0) lines.push("")
-    const laneLabel = lane.lane === "outward" ? "Outward lane" : "Inner lane"
-    lines.push(tty(laneLabel, BONE, true))
-    lines.push(lane.title)
-    lines.push(isProblemStatus(lane.status) ? lane.detail : tty(lane.detail, MIST))
+function entryToWizardItem(entry: ConnectMenuEntry): TerminalWizardItem {
+  return {
+    key: entry.option,
+    label: entry.name,
+    status: entry.status,
+    ...(entry.section === "Providers"
+      ? { summary: providerEntrySummary(entry) }
+      : entry.description
+        ? { summary: entry.description }
+        : {}),
+    detailLines: entry.section === "Providers"
+      ? providerEntryDetailLines(entry)
+      : capabilityEntryDetailLines(entry),
+    ...(entry.nextAction ? { command: entry.nextAction } : {}),
   }
-  if (lanes.length === 0) {
-    for (const detail of entry.detailLines ?? []) lines.push(detail)
-  }
-  return normalizeWrappedBody(lines, width)
 }
 
-function renderCapabilityBody(entries: ConnectMenuEntry[], width: number): string[] {
-  const lines: string[] = []
-  for (const [index, entry] of entries.entries()) {
-    if (index > 0) lines.push("")
-    lines.push(`${entry.option}  ${entry.name}  ${statusChip(entry.status)}`)
-    if (entry.description) {
-      lines.push(isProblemStatus(entry.status) ? entry.description : tty(entry.description, MIST))
-    }
-    for (const detail of entry.detailLines ?? []) {
-      lines.push(detail)
-    }
-  }
-  return normalizeWrappedBody(lines, width)
-}
-
-function normalizeWrappedBody(lines: string[], width: number): string[] {
-  const wrapped: string[] = []
-  for (const line of lines) {
-    if (!line) {
-      wrapped.push("")
-      continue
-    }
-    const plain = stripAnsi(line)
-    if (plain.length <= width - 4) {
-      wrapped.push(line)
-      continue
-    }
-    const segments = wrapPlain(plain, width - 4)
-    wrapped.push(...segments)
-  }
-  return wrapped
-}
-
-function stackPanels(panels: string[][]): string[] {
-  const lines: string[] = []
-  for (const [index, panelLines] of panels.entries()) {
-    if (index > 0) lines.push("")
-    lines.push(...panelLines)
-  }
-  return lines
-}
-
-function combineColumns(left: string[], right: string[], leftWidth: number, rightWidth: number, gap = 2): string[] {
-  const total = Math.max(left.length, right.length)
-  const lines: string[] = []
-  for (let index = 0; index < total; index += 1) {
-    const leftLine = left[index] ?? " ".repeat(leftWidth)
-    const rightLine = right[index] ?? " ".repeat(rightWidth)
-    lines.push(`${padAnsi(leftLine, leftWidth)}${" ".repeat(gap)}${padAnsi(rightLine, rightWidth)}`)
-  }
-  return lines
-}
-
-function renderTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions): string {
-  const columns = Math.max(options.columns ?? 108, 72)
-  const fullWidth = Math.max(56, columns - 2)
-  const masthead = renderOuroMasthead({
-    isTTY: true,
-    columns,
-    subtitle: "Set up connections one step at a time.",
-  }).trimEnd()
-  const header = renderHeader(options.agent, fullWidth)
+function nextStepFor(entries: ConnectMenuEntry[]): { label: string; detail?: string; command?: string } {
   const nextEntry = entries.find((entry) => isProblemStatus(entry.status))
-  const providerEntry = entries.find((entry) => entry.section === "Providers")!
-  const portableEntries = entries.filter((entry) => entry.section === "Portable")
-  const machineEntries = entries.filter((entry) => entry.section === "This machine")
-
-  const wide = columns >= 118
-  const footer = [
-    tty("Choose a number, or type the capability name.", MIST),
-    options.prompt,
-  ]
-
-  if (!wide) {
-    const panels = [
-      header,
-      panel("Recommended next step", nextMoveBody(nextEntry), fullWidth),
-      panel("Providers", renderProviderBody(providerEntry, fullWidth), fullWidth),
-      panel("Portable", renderCapabilityBody(portableEntries, fullWidth), fullWidth),
-      panel("This machine", renderCapabilityBody(machineEntries, fullWidth), fullWidth),
-    ]
-    return [masthead, "", ...stackPanels(panels), "", ...footer].join("\n")
-  }
-
-  const gap = 2
-  const leftWidth = Math.max(52, Math.floor((fullWidth - gap) / 2))
-  const rightWidth = Math.max(40, fullWidth - gap - leftWidth)
-
-  const topRow = combineColumns(
-    panel("Recommended next step", nextMoveBody(nextEntry), leftWidth),
-    panel("This machine", renderCapabilityBody(machineEntries, rightWidth), rightWidth),
-    leftWidth,
-    rightWidth,
-    gap,
-  )
-  const bottomRow = combineColumns(
-    panel("Providers", renderProviderBody(providerEntry, leftWidth), leftWidth),
-    panel("Portable", renderCapabilityBody(portableEntries, rightWidth), rightWidth),
-    leftWidth,
-    rightWidth,
-    gap,
-  )
-  return [masthead, "", ...header, "", ...topRow, "", ...bottomRow, "", ...footer].join("\n")
-}
-
-function renderNonTtyBay(entries: ConnectMenuEntry[], options: ConnectRenderOptions): string {
-  const nextEntry = entries.find((entry) => isProblemStatus(entry.status))
-  const lines = [
-    `${options.agent} connections`,
-    "Set up or review one capability at a time. Provider status was checked live just now.",
-    "",
-    "Recommended next step",
-    "---------------------",
-  ]
   if (!nextEntry) {
-    lines.push("Everything here is ready. Pick what you want to review or refresh.")
-  } else {
-    lines.push(`${nextEntry.name} - ${nextEntry.status}`)
-    if (nextEntry.nextNote) lines.push(nextEntry.nextNote)
-    if (nextEntry.nextAction) lines.push(`run: ${nextEntry.nextAction}`)
-  }
-  lines.push("")
-
-  for (const section of ["Providers", "Portable", "This machine"] as ConnectMenuSection[]) {
-    lines.push(section)
-    lines.push("-".repeat(Math.max(6, section.length + 4)))
-    for (const entry of entries.filter((candidate) => candidate.section === section)) {
-      lines.push(`${entry.option}. ${entry.name} [${entry.status}]`)
-      if (entry.laneSummaries && entry.laneSummaries.length > 0) {
-        for (const lane of entry.laneSummaries) {
-          const laneLabel = lane.lane === "outward" ? "Outward lane" : "Inner lane"
-          lines.push(`   ${laneLabel}: ${lane.title}`)
-          lines.push(`     ${lane.detail}`)
-        }
-      } else {
-        for (const detail of entry.detailLines ?? []) lines.push(`   ${detail}`)
-      }
-      if (entry.description) lines.push(`   ${entry.description}`)
-      lines.push("")
+    return {
+      label: "Everything here is already connected.",
+      detail: "Pick any capability if you want to review it, refresh it, or change its setup.",
     }
   }
+  return {
+    label: `Start with ${nextEntry.name}.`,
+    detail: nextEntry.nextNote ?? nextEntry.description ?? `Status: ${nextEntry.status}.`,
+    command: nextEntry.nextAction,
+  }
+}
 
-  lines.push("6. Not now")
-  lines.push("")
-  lines.push("Choose a number, or type the capability name.")
-  lines.push(options.prompt)
-  return lines.join("\n")
+function sectionToWizard(entries: ConnectMenuEntry[], section: ConnectMenuSection, summary?: string): TerminalWizardSection {
+  return {
+    title: section,
+    summary,
+    items: entries.filter((entry) => entry.section === section).map((entry) => entryToWizardItem(entry)),
+  }
 }
 
 export function summarizeProviderLane(
@@ -532,8 +317,27 @@ export function renderConnectBay(entries: ConnectMenuEntry[], options: ConnectRe
       columns: options.columns ?? null,
     },
   })
-  if (!options.isTTY) return renderNonTtyBay(entries, options)
-  return renderTtyBay(entries, options)
+  return renderTerminalWizard({
+    isTTY: options.isTTY,
+    columns: options.columns,
+    masthead: {
+      subtitle: "Set up connections one step at a time.",
+    },
+    title: `Connect ${options.agent}`,
+    summary: "Choose one capability to bring online. Each row tells you whether Ouro checked it live just now or is showing saved setup on this machine.",
+    nextStep: nextStepFor(entries),
+    sections: [
+      sectionToWizard(entries, "Providers", "Selected outward and inner lanes for this machine."),
+      sectionToWizard(entries, "Portable", "These travel with the agent bundle when their secrets are portable."),
+      sectionToWizard(entries, "This machine", "These depend on local attachments or machine-specific setup."),
+    ],
+    footerLines: [
+      "6. Not now",
+      "Choose a number, or type the capability name.",
+    ],
+    prompt: options.prompt,
+    suppressEvent: true,
+  })
 }
 interface ProviderHealthSummary {
   ok: boolean
