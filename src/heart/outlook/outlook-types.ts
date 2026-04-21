@@ -394,7 +394,7 @@ export interface OutlookMailMessageSummary {
   date: string | null
   receivedAt: string
   snippet: string
-  placement: "imbox" | "screener"
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
   compartmentKind: "native" | "delegated"
   ownerEmail: string | null
   source: string | null
