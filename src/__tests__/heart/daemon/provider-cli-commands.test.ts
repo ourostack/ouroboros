@@ -854,12 +854,18 @@ describe("provider CLI command parsing", () => {
       kind: "mail.import-mbox",
       filePath: "/tmp/hey.mbox",
     })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+    })
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -988,6 +994,77 @@ describe("provider CLI command execution", () => {
     expect(registry.sourceGrants[0]).toMatchObject({
       source: "hey",
       ownerEmail: "ari@mendelow.me",
+    })
+  })
+
+  it("keeps Mail setup idempotent across reruns and source-grant additions", async () => {
+    emitTestEvent("provider cli connect mail idempotent")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-idempotent-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-idempotent-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const firstAnswers = ["", ""]
+    await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => firstAnswers.shift() ?? "",
+    }))
+    const firstStored = readRuntimeSecret("Slugger")
+    const firstMailroom = firstStored.config.mailroom as Record<string, unknown>
+    const firstPrivateKeys = firstMailroom.privateKeys as Record<string, string>
+    const firstRegistryPath = firstMailroom.registryPath as string
+    const firstRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(firstRegistry.sourceGrants).toHaveLength(0)
+
+    const secondAnswers = ["ari@mendelow.me", "hey"]
+    const second = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => secondAnswers.shift() ?? "",
+    }))
+    expect(second).toContain("Agent Mail connected for Slugger")
+    expect(second).toContain("mailbox: slugger@ouro.bot")
+    expect(second).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const secondStored = readRuntimeSecret("Slugger")
+    const secondMailroom = secondStored.config.mailroom as Record<string, unknown>
+    expect(secondMailroom.registryPath).toBe(firstRegistryPath)
+    expect(secondMailroom.privateKeys).toEqual(expect.objectContaining(firstPrivateKeys))
+    const secondRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(secondRegistry.mailboxes).toEqual(firstRegistry.mailboxes)
+    expect(secondRegistry.sourceGrants).toHaveLength(1)
+
+    const thirdAnswers = ["ari@mendelow.me", "hey"]
+    await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => thirdAnswers.shift() ?? "",
+    }))
+    const thirdStored = readRuntimeSecret("Slugger")
+    const thirdMailroom = thirdStored.config.mailroom as Record<string, unknown>
+    const thirdRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
+    expect(thirdMailroom.privateKeys).toEqual(secondMailroom.privateKeys)
+    expect(thirdRegistry.sourceGrants).toHaveLength(1)
+  })
+
+  it("ensures the agent work substrate account through one command", async () => {
+    emitTestEvent("provider cli account ensure")
+    const bundlesRoot = makeTempDir("provider-cli-account-ensure-bundles")
+    const homeDir = makeTempDir("provider-cli-account-ensure-home")
+    writeAgentConfig(bundlesRoot, "Nova")
+    const answers = ["owner@example.com", "hey"]
+
+    const result = await runOuroCli(["account", "ensure", "--agent", "Nova"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Ouro work substrate ready for Nova")
+    expect(result).toContain("vault: runtime/config")
+    expect(result).toContain("mailbox: nova@ouro.bot")
+    expect(result).toContain("delegated alias: com.example.owner.nova@ouro.bot")
+    const stored = readRuntimeSecret("Nova")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "nova@ouro.bot",
+    }))
+    expect(readAgentConfig(bundlesRoot, "Nova").senses).toMatchObject({
+      mail: { enabled: true },
     })
   })
 
