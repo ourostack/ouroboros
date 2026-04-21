@@ -41,7 +41,7 @@ function sessionRecipients(session: SMTPServerSession): string[] {
 export function createMailroomSmtpServer(options: MailroomSmtpIngressOptions): SMTPServer {
   const maxMessageBytes = options.maxMessageBytes ?? 25 * 1024 * 1024
   const server = new SMTPServer({
-    disabledCommands: ["AUTH"],
+    disabledCommands: ["AUTH", "STARTTLS"],
     logger: false,
     onRcptTo(address, _session, callback) {
       const normalized = normalizeMailAddress(address.address)

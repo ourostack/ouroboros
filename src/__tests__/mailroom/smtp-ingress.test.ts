@@ -141,6 +141,22 @@ describe("mailroom smtp ingress", () => {
     await close(server)
   })
 
+  it("does not advertise STARTTLS until a real certificate path exists", async () => {
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const server = createMailroomSmtpServer({
+      registry,
+      store: new FileMailroomStore({ rootDir: tempDir() }),
+    })
+    const port = await listen(server)
+    const transcript = await smtpSession(port, [
+      "EHLO localhost\r\n",
+      "QUIT\r\n",
+    ])
+    expect(transcript).toContain("250")
+    expect(transcript).not.toContain("STARTTLS")
+    await close(server)
+  })
+
   it("surfaces data handling failures", async () => {
     const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
