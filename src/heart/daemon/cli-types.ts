@@ -22,7 +22,7 @@ import type { AgentReadinessIssue } from "./readiness-repair"
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
-export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles"
+export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
@@ -44,6 +44,7 @@ export type OuroCliCommand =
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
   | { kind: "connect"; agent?: string; target?: ConnectTarget }
+  | { kind: "mail.import-mbox"; agent?: string; filePath: string; ownerEmail?: string; source?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.switch"; agent?: string; provider: AgentProvider; facing?: Facing }

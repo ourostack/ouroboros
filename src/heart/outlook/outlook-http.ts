@@ -21,6 +21,8 @@ import type {
   OutlookFriendView,
   OutlookHabitView,
   OutlookLogView,
+  OutlookMailMessageView,
+  OutlookMailView,
   OutlookMachineState,
   OutlookMachineView,
   OutlookNotesView,
@@ -52,6 +54,8 @@ export interface StartOutlookHttpServerOptions {
   readAgentSelfFix?: (agentName: string) => OutlookSelfFixView
   readAgentNoteDecisions?: (agentName: string) => OutlookNoteDecisionView
   readAgentHabits?: (agentName: string) => OutlookHabitView
+  readAgentMail?: (agentName: string) => Promise<OutlookMailView> | OutlookMailView
+  readAgentMailMessage?: (agentName: string, messageId: string) => Promise<OutlookMailMessageView> | OutlookMailMessageView
   readDaemonHealth?: () => OutlookDaemonHealthDeep | null
   readLogs?: () => OutlookLogView
 }

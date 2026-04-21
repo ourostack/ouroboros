@@ -10,6 +10,10 @@ export default defineConfig({
     port: 6876,
     strictPort: true,
     proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${API_PORT}`,
+        changeOrigin: true,
+      },
       "/outlook/api": {
         target: `http://127.0.0.1:${API_PORT}`,
         changeOrigin: true,

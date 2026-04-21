@@ -5,7 +5,7 @@ import { getProviderDisplayLabel } from "../heart/core";
 import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager";
 import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
-import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type SenseName } from "../heart/identity";
+import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "../heart/identity";
 import { loadConfig } from "../heart/config";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
@@ -331,6 +331,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   inner: "inner session",
   teams: "teams handler",
   bluebubbles: "bluebubbles handler",
+  mail: "mail handler",
   mcp: "mcp bridge",
 }
 
@@ -422,18 +423,24 @@ function localSenseStatusLines(): string[] {
     return [..._senseStatusLinesCache]
   }
   const config = loadAgentConfig()
-  const senses = config.senses ?? {
-    cli: { enabled: true },
-    teams: { enabled: false },
-    bluebubbles: { enabled: false },
+  const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
+  const senses: AgentSensesConfig = {
+    ...configuredSenses,
+    cli: configuredSenses.cli ?? { enabled: true },
+    teams: configuredSenses.teams ?? { enabled: false },
+    bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
+    mail: configuredSenses.mail ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const teams = payload.teams as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
+  const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
+    mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -445,6 +452,10 @@ function localSenseStatusLines(): string[] {
     {
       label: "BlueBubbles",
       status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
+    },
+    {
+      label: "Mail",
+      status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
     },
   ]
 
@@ -466,6 +477,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
+  lines.push("mail setup truth: run `ouro connect mail --agent <agent>` from the connect bay; it provisions Mailroom coordinates, stores private mail keys in the agent vault runtime/config item, and enables `senses.mail.enabled`. For HEY bootstrap, ask the human for the browser-exported MBOX path and run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>`; HEY forwarding/DNS/MX remain human-confirmed steps.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }

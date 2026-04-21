@@ -633,6 +633,7 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: true },
         bluebubbles: { enabled: false },
+        mail: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -654,6 +655,7 @@ describe("buildSystem", () => {
     resetConfigCache()
     patchRuntimeConfig({
       teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
+      mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
       providers: { minimax: { apiKey: "test-key" } },
     })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
@@ -666,6 +668,7 @@ describe("buildSystem", () => {
     expect(result).toContain("CLI: interactive")
     expect(result).toContain("Teams: ready")
     expect(result).toContain("BlueBubbles: disabled")
+    expect(result).toContain("Mail: ready")
   })
 
   it("includes sense-state meanings and truthful setup guidance", async () => {
@@ -680,6 +683,7 @@ describe("buildSystem", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -711,7 +715,9 @@ describe("buildSystem", () => {
     expect(result).toContain("disabled = turned off in agent.json")
     expect(result).toContain("needs_config = enabled but missing required vault runtime/config values")
     expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
+    expect(result).toContain("Mail: needs_config")
     expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
+    expect(result).toContain("mail setup truth: run `ouro connect mail --agent <agent>`")
     expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 

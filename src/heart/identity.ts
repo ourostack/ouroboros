@@ -18,7 +18,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -30,6 +30,7 @@ export interface AgentSensesConfig {
   cli: AgentSenseConfig
   teams: AgentSenseConfig
   bluebubbles: AgentSenseConfig
+  mail: AgentSenseConfig
 }
 
 export interface McpServerConfig {
@@ -154,6 +155,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   cli: { enabled: true },
   teams: { enabled: false },
   bluebubbles: { enabled: false },
+  mail: { enabled: false },
 }
 
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
@@ -161,6 +163,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: { ...DEFAULT_AGENT_SENSES.mail },
   }
 
   if (value === undefined) {
@@ -178,7 +181,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -222,6 +225,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
       teams: { ...DEFAULT_AGENT_SENSES.teams },
       bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+      mail: { ...DEFAULT_AGENT_SENSES.mail },
     },
     phrases: {
       thinking: [...DEFAULT_AGENT_PHRASES.thinking],

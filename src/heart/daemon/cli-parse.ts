@@ -85,7 +85,8 @@ export function usage(): string {
     "  ouro config model [--agent <name>] <model-name>",
     "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
+    "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro auth switch [--agent <name>] --provider <provider>",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
@@ -607,21 +608,59 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
-function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | undefined {
+function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | undefined {
   if (!value) return undefined
   if (value === "providers" || value === "provider" || value === "auth") return "providers"
   if (value === "perplexity" || value === "perplexity-search") return "perplexity"
   if (value === "embeddings" || value === "embedding" || value === "memory" || value === "note-search" || value === "notes") return "embeddings"
   if (value === "teams" || value === "msteams" || value === "microsoft-teams") return "teams"
   if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
-  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
+  if (value === "mail" || value === "email" || value === "mailroom") return "mail"
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
   const { agent, rest } = extractAgentFlag(args)
-  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]")
+  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
   const target = normalizeConnectTarget(rest[0])
   return { kind: "connect", ...(agent ? { agent } : {}), ...(target ? { target } : {}) }
+}
+
+function parseMailCommand(args: string[]): OuroCliCommand {
+  const [sub, ...subArgs] = args
+  if (sub !== "import-mbox") {
+    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+  }
+  const { agent, rest } = extractAgentFlag(subArgs)
+  let filePath: string | undefined
+  let ownerEmail: string | undefined
+  let source: string | undefined
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--file" && rest[i + 1]) {
+      filePath = rest[++i]
+      continue
+    }
+    if (token === "--owner-email" && rest[i + 1]) {
+      ownerEmail = rest[++i]
+      continue
+    }
+    if (token === "--source" && rest[i + 1]) {
+      source = rest[++i]
+      continue
+    }
+    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+  }
+  if (!filePath) {
+    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+  }
+  return {
+    kind: "mail.import-mbox",
+    ...(agent ? { agent } : {}),
+    filePath,
+    ...(ownerEmail ? { ownerEmail } : {}),
+    ...(source ? { source } : {}),
+  }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
@@ -1072,6 +1111,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     return agent ? { kind: "repair", agent } : { kind: "repair" }
   }
   if (head === "provider") return parseProviderCommand(args.slice(1))
+  if (head === "mail") return parseMailCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }

@@ -12,12 +12,13 @@ export function useKeyboardShortcuts(nav: NavigateFn | null) {
 
       switch (e.key) {
         case "1": navigate({ tab: "overview" }); break
-        case "2": navigate({ tab: "sessions" }); break
-        case "3": navigate({ tab: "work" }); break
-        case "4": navigate({ tab: "connections" }); break
-        case "5": navigate({ tab: "inner" }); break
-        case "6": navigate({ tab: "notes" }); break
-        case "7": navigate({ tab: "runtime" }); break
+        case "2": navigate({ tab: "mail" }); break
+        case "3": navigate({ tab: "sessions" }); break
+        case "4": navigate({ tab: "work" }); break
+        case "5": navigate({ tab: "connections" }); break
+        case "6": navigate({ tab: "inner" }); break
+        case "7": navigate({ tab: "notes" }); break
+        case "8": navigate({ tab: "runtime" }); break
         case "Escape": {
           // Collapse expanded panels by blurring the active element.
           if (document.activeElement instanceof HTMLElement) document.activeElement.blur()

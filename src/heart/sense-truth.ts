@@ -22,13 +22,17 @@ const SENSES: Array<{ sense: SenseName; label: string; daemonManaged: boolean }>
   { sense: "cli", label: "CLI", daemonManaged: false },
   { sense: "teams", label: "Teams", daemonManaged: true },
   { sense: "bluebubbles", label: "BlueBubbles", daemonManaged: true },
+  { sense: "mail", label: "Mail", daemonManaged: true },
 ]
 
 function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
-  return senses ?? {
-    cli: { ...DEFAULT_AGENT_SENSES.cli },
-    teams: { ...DEFAULT_AGENT_SENSES.teams },
-    bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+  const configured = senses ?? {} as Partial<AgentSensesConfig>
+  return {
+    ...configured,
+    cli: configured.cli ?? { ...DEFAULT_AGENT_SENSES.cli },
+    teams: configured.teams ?? { ...DEFAULT_AGENT_SENSES.teams },
+    bluebubbles: configured.bluebubbles ?? { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: configured.mail ?? { ...DEFAULT_AGENT_SENSES.mail },
   }
 }
 

@@ -6,9 +6,9 @@ import { emitNervesEvent } from "../../nerves/runtime"
 // -- Identity Provider --
 // Closed union: "aad" (Azure AD / Teams), "local" (CLI / OS),
 // "teams-conversation" (fallback), "imessage-handle" (BlueBubbles/iMessage)
-export type IdentityProvider = "aad" | "local" | "teams-conversation" | "imessage-handle"
+export type IdentityProvider = "aad" | "local" | "teams-conversation" | "imessage-handle" | "email-address"
 
-const IDENTITY_PROVIDERS: ReadonlySet<string> = new Set<IdentityProvider>(["aad", "local", "teams-conversation", "imessage-handle"])
+const IDENTITY_PROVIDERS: ReadonlySet<string> = new Set<IdentityProvider>(["aad", "local", "teams-conversation", "imessage-handle", "email-address"])
 
 export function isIdentityProvider(value: unknown): value is IdentityProvider {
   emitNervesEvent({
@@ -22,7 +22,7 @@ export function isIdentityProvider(value: unknown): value is IdentityProvider {
 
 // -- Channel --
 // Closed union: which sense/channel a session belongs to
-export type Channel = "cli" | "teams" | "bluebubbles" | "inner" | "mcp"
+export type Channel = "cli" | "teams" | "bluebubbles" | "mail" | "inner" | "mcp"
 
 // -- Integration --
 // Closed union: which external service an action targets

@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.450",
+  "version": "0.1.0-alpha.451",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -42,6 +42,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
+    "@azure/storage-blob": "^12.31.0",
     "@microsoft/teams.api": "2.0.5",
     "@microsoft/teams.apps": "^2.0.5",
     "@microsoft/teams.cards": "2.0.5",
@@ -51,9 +52,11 @@
     "@types/react": "^17.0.91",
     "fast-glob": "^3.3.3",
     "ink": "^3.2.0",
+    "mailparser": "^3.9.8",
     "openai": "^6.27.0",
     "react": "^17.0.2",
     "semver": "^7.7.4",
+    "smtp-server": "^3.18.4",
     "stripe": "^22.0.0"
   },
   "repository": {
@@ -62,7 +65,9 @@
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
+    "@types/mailparser": "^3.4.6",
     "@types/semver": "^7.7.1",
+    "@types/smtp-server": "^3.5.13",
     "@vitest/coverage-v8": "^4.0.18",
     "eslint": "^10.0.2",
     "jsdom": "^29.0.2",

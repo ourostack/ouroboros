@@ -51,6 +51,8 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentSelfFix: vi.fn(() => ({ active: false, currentStep: null, steps: [] })),
     readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
+    readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
+    readAgentMailMessage: vi.fn(() => ({ status: "not-found", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: null, accessLog: [], error: "missing" })),
     readDaemonHealth: vi.fn(() => null),
     readLogs: vi.fn(() => ({ logPath: null, totalLines: 0, entries: [] })),
     readDeskPrefs: vi.fn(() => ({ carrying: null, statusLine: null, tabOrder: null, starredFriends: [], pinnedConstellations: [], dismissedObligations: [] })),
@@ -223,6 +225,12 @@ describe("outlook http", () => {
     expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
+    await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
+      status: "auth-required",
+    }))
+    await expect(defaultHooks.readAgentMailMessage("mailless-default-hooks", "mail_1")).resolves.toEqual(expect.objectContaining({
+      status: "auth-required",
+    }))
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
@@ -292,6 +300,33 @@ describe("outlook http", () => {
     }))(createMockRequest("/api/agents/slugger"), agentResponse)
     expect(agentResponse.statusCode).toBe(200)
     expect(JSON.parse(agentResponse.body.toString("utf8"))).toEqual(expect.objectContaining({ agentName: "slugger" }))
+  })
+
+  it("returns compact JSON errors when async agent surface hooks reject", async () => {
+    const { createOutlookHttpRequestHandler } = await import("../../../heart/outlook/outlook-http-routes")
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentMail = vi.fn()
+      .mockRejectedValueOnce(new Error("mail hook exploded"))
+      .mockRejectedValueOnce("mail hook string")
+    const handler = createOutlookHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const errorResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/mail"), errorResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(errorResponse.statusCode).toBe(500)
+    expect(JSON.parse(errorResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "mail hook exploded",
+    })
+
+    const stringResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/mail"), stringResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(stringResponse.statusCode).toBe(500)
+    expect(JSON.parse(stringResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "mail hook string",
+    })
   })
 
   it("keeps desk preference mutation in the route helper seam", async () => {
@@ -547,6 +582,8 @@ describe("outlook http", () => {
       readAgentNotes: () => ({ diaryEntryCount: 5, recentDiaryEntries: [], journalEntryCount: 2, recentJournalEntries: [] }),
       readAgentFriends: () => ({ totalFriends: 3, friends: [] }),
       readAgentHabits: () => ({ totalCount: 2, activeCount: 1, pausedCount: 1, degradedCount: 0, overdueCount: 0, items: [] }),
+      readAgentMail: () => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [{ id: "imbox", label: "Imbox", count: 1 }], messages: [], accessLog: [], error: null }),
+      readAgentMailMessage: (_agent, messageId) => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", message: { id: messageId, subject: "Hello", from: [], to: [], cc: [], date: null, receivedAt: "2026-04-21T00:00:00.000Z", snippet: "Hello", placement: "imbox", compartmentKind: "native", ownerEmail: null, source: null, recipient: "slugger@ouro.bot", attachmentCount: 0, untrustedContentWarning: "untrusted", text: "Hello", htmlAvailable: false, bodyTruncated: false, attachments: [], access: { tool: "outlook_mail_message", reason: "test", accessedAt: "2026-04-21T00:00:00.000Z" } }, accessLog: [], error: null }),
       readDaemonHealth: () => ({ status: "ok", mode: "dev", pid: 1, startedAt: "", uptimeSeconds: 0, safeMode: null, degradedComponents: [], agentHealth: {}, habitHealth: {} }),
       readLogs: () => ({ logPath: null, totalLines: 0, entries: [] }),
     })
@@ -586,6 +623,14 @@ describe("outlook http", () => {
     // Habits
     const habits = await fetch(`${server.origin}/outlook/api/agents/slugger/habits`).then((r) => r.json())
     expect(habits).toEqual(expect.objectContaining({ totalCount: 2 }))
+
+    // Mailbox
+    const mail = await fetch(`${server.origin}/outlook/api/agents/slugger/mail`).then((r) => r.json())
+    expect(mail).toEqual(expect.objectContaining({ mailboxAddress: "slugger@ouro.bot" }))
+
+    // Mail message body
+    const mailMessage = await fetch(`${server.origin}/outlook/api/agents/slugger/mail/mail_1`).then((r) => r.json())
+    expect(mailMessage).toEqual(expect.objectContaining({ message: expect.objectContaining({ id: "mail_1" }) }))
 
     // Daemon health
     const health = await fetch(`${server.origin}/outlook/api/machine/health`).then((r) => r.json())
