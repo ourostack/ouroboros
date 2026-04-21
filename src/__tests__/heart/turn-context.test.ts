@@ -426,11 +426,12 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
       bluebubbles: { serverUrl: "http://bb", password: "pass" },
+      mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
     })
 
     const ctx = await buildTurnContext(makeInput())
@@ -438,13 +439,13 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: ready",
       "- BlueBubbles: ready",
-      "- Mail: disabled",
+      "- Mail: ready",
     ])
   })
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
 
@@ -453,7 +454,7 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: needs_config",
       "- BlueBubbles: not_attached",
-      "- Mail: disabled",
+      "- Mail: needs_config",
     ])
   })
 

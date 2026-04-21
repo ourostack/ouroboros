@@ -139,6 +139,8 @@ export function runMailroomEntry(args: string[] = process.argv.slice(2)): Mailro
   return servers
 }
 
+/* v8 ignore start -- exercised by packaged/container entrypoint smoke rather than in-process unit tests. @preserve */
 if (require.main === module) {
   runMailroomEntry()
 }
+/* v8 ignore stop */

@@ -39,8 +39,8 @@ export function splitMboxMessages(rawMbox: Buffer): Buffer[] {
 
   const messages = separators
     .map((match, index) => {
-      const start = (match.index ?? 0) + match[0].length
-      const end = index + 1 < separators.length ? separators[index + 1].index ?? text.length : text.length
+      const start = (match.index as number) + match[0].length
+      const end = index + 1 < separators.length ? separators[index + 1].index as number : text.length
       return text.slice(start, end).replace(/\r?\n$/, "")
     })
     .filter((message) => message.trim().length > 0)
@@ -97,9 +97,11 @@ export async function importMboxToStore(input: MboxImportInput): Promise<MboxImp
     source: input.source,
   })
   const resolved = resolveMailAddress(input.registry, sourceGrant.aliasAddress)
+  /* v8 ignore start -- findSourceGrant and resolveMailAddress share the same registry; this is a corruption guard. @preserve */
   if (!resolved) {
     throw new Error(`Source grant alias ${sourceGrant.aliasAddress} is not resolvable`)
   }
+  /* v8 ignore stop */
 
   let imported = 0
   let duplicates = 0

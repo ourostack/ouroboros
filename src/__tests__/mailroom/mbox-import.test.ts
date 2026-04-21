@@ -44,6 +44,8 @@ describe("mailroom mbox import", () => {
     expect(messages).toHaveLength(2)
     expect(messages[0].toString("utf-8")).toContain("First exported message")
     expect(messages[1].toString("utf-8")).toContain("Second exported message")
+    expect(splitMboxMessages(Buffer.from("Subject: Single\r\n\r\nBody"))).toHaveLength(1)
+    expect(splitMboxMessages(Buffer.from("   \n"))).toHaveLength(0)
   })
 
   it("imports MBOX messages into a delegated source grant and dedupes repeats", async () => {
@@ -87,6 +89,23 @@ describe("mailroom mbox import", () => {
     })
     expect(second.imported).toBe(0)
     expect(second.duplicates).toBe(2)
+
+    const withoutFrom = await importMboxToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      rawMbox: Buffer.from([
+        "From no-header@example.com Wed Jan 03 00:00:00 2024",
+        "To: Ari <ari@mendelow.me>",
+        "Subject: No From header",
+        "",
+        "Exported message without an RFC From header.",
+      ].join("\n")),
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(withoutFrom.imported).toBe(1)
+    expect(withoutFrom.messages[0].envelope.mailFrom).toBe("")
   })
 
   it("requires an unambiguous enabled source grant", async () => {
@@ -99,5 +118,55 @@ describe("mailroom mbox import", () => {
       rawMbox: sampleMbox(),
       source: "hey",
     })).rejects.toThrow("No enabled Mailroom source grant")
+    await expect(importMboxToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      rawMbox: sampleMbox(),
+    })).rejects.toThrow("No enabled Mailroom source grant")
+
+    const provisioned = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    provisioned.registry.sourceGrants.push({
+      ...provisioned.registry.sourceGrants[0],
+      grantId: "grant_disabled",
+      enabled: false,
+    })
+    provisioned.registry.sourceGrants.push({
+      ...provisioned.registry.sourceGrants[0],
+      grantId: "grant_other_agent",
+      agentId: "other",
+    })
+    await expect(importMboxToStore({
+      registry: provisioned.registry,
+      store,
+      agentId: "slugger",
+      ownerEmail: "someone@example.com",
+      rawMbox: sampleMbox(),
+    })).rejects.toThrow("No enabled Mailroom source grant")
+    await expect(importMboxToStore({
+      registry: provisioned.registry,
+      store,
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "other",
+      rawMbox: sampleMbox(),
+    })).rejects.toThrow("No enabled Mailroom source grant")
+
+    provisioned.registry.sourceGrants.push({
+      ...provisioned.registry.sourceGrants[0],
+      grantId: "grant_slugger_fastmail",
+      source: "fastmail",
+      aliasAddress: "me.mendelow.ari.fastmail.slugger@ouro.bot",
+    })
+    await expect(importMboxToStore({
+      registry: provisioned.registry,
+      store,
+      agentId: "slugger",
+      rawMbox: sampleMbox(),
+    })).rejects.toThrow("Multiple source grants")
   })
 })

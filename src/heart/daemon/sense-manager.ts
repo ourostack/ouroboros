@@ -238,7 +238,7 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail") return null
   return { agent, sense }
 }
 

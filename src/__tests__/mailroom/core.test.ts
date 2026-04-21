@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  buildStoredMailMessage,
   decryptMailPayload,
   decryptStoredMailMessage,
   encryptForMailKey,
@@ -53,6 +54,18 @@ describe("mailroom core", () => {
       sourceTag: "hey",
     })
     expect(long).toMatch(/^h-[a-f0-9]{16}\.slugger@ouro\.bot$/)
+    expect(sourceAliasForOwner({ ownerEmail: "ari@mendelow.me", agentId: "!!!" }))
+      .toBe("me.mendelow.ari.agent@ouro.bot")
+
+    const fallback = provisionMailboxRegistry({ agentId: "!!!" })
+    expect(fallback.registry.mailboxes[0].canonicalAddress).toBe("agent@ouro.bot")
+    const defaultGrant = provisionMailboxRegistry({ agentId: "slugger", ownerEmail: "ari@mendelow.me" })
+    expect(defaultGrant.registry.sourceGrants[0]).toEqual(expect.objectContaining({
+      grantId: "grant_slugger_source",
+      source: "delegated",
+    }))
+    const oddGrant = provisionMailboxRegistry({ agentId: "slugger", ownerEmail: "ari@mendelow.me", source: "!!!" })
+    expect(oddGrant.registry.sourceGrants[0].grantId).toBe("grant_slugger_source")
   })
 
   it("rejects malformed email addresses before routing", () => {
@@ -64,6 +77,7 @@ describe("mailroom core", () => {
     const encrypted = encryptForMailKey(Buffer.from("hello mail"), key.publicKeyPem, key.keyId)
     expect(encrypted.ciphertext).not.toContain("hello mail")
     expect(decryptMailPayload(encrypted, key.privateKeyPem).toString("utf-8")).toBe("hello mail")
+    expect(generateMailKeyPair("!!!").keyId).toMatch(/^mail_key_[a-f0-9]{16}$/)
   })
 
   it("provisions native and delegated compartments and stores mail encrypted", async () => {
@@ -122,5 +136,131 @@ describe("mailroom core", () => {
     })
     expect(await store.listAccessLog("slugger")).toHaveLength(1)
     expect(await store.listAccessLog("nobody")).toEqual([])
+  })
+
+  it("covers defensive registry, attachment, and native imbox paths", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const brokenRegistry = {
+      ...registry,
+      mailboxes: [],
+    }
+    expect(() => resolveMailAddress(brokenRegistry, "me.mendelow.ari.slugger@ouro.bot"))
+      .toThrow("has no owning mailbox")
+
+    const native = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!native) throw new Error("expected native mailbox")
+    const imboxNative = { ...native, defaultPlacement: "imbox" as const }
+    const withAttachment = Buffer.from([
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <slugger@ouro.bot>",
+      "Subject: Attached",
+      "Content-Type: multipart/mixed; boundary=abc",
+      "",
+      "--abc",
+      "Content-Type: text/plain",
+      "",
+      "See attached.",
+      "--abc",
+      "Content-Type: text/plain",
+      "Content-Disposition: attachment",
+      "",
+      "attachment body",
+      "--abc--",
+      "",
+    ].join("\r\n"))
+    const { message } = await buildStoredMailMessage({
+      resolved: imboxNative,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: withAttachment,
+      receivedAt: new Date("2026-04-21T15:00:00.000Z"),
+    })
+    const decrypted = decryptStoredMailMessage(message, keys)
+    expect(decrypted.trustReason).toBe("screened-in native agent mailbox")
+    expect(decrypted.private.attachments[0]).toEqual(expect.objectContaining({
+      filename: "(unnamed attachment)",
+      contentType: "text/plain",
+    }))
+
+    const grouped = await buildStoredMailMessage({
+      resolved: imboxNative,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Ari <ari@mendelow.me>",
+        "To: One <one@example.com>",
+        "To: Two <two@example.com>",
+        "Cc: Team: three@example.com, Four <four@example.com>;",
+        "Subject: Rich",
+        "Content-Type: text/html",
+        "",
+        "<p>Hello from HTML.</p>",
+      ].join("\r\n")),
+    })
+    const groupedPrivate = decryptStoredMailMessage(grouped.message, keys).private
+    expect(groupedPrivate.to).toEqual(["one@example.com", "two@example.com"])
+    expect(groupedPrivate.cc).toEqual(["three@example.com", "four@example.com"])
+    expect(groupedPrivate.html).toContain("Hello from HTML")
+
+    const longBody = "launch ".repeat(80)
+    const longMessage = await buildStoredMailMessage({
+      resolved: imboxNative,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Ari <ari@mendelow.me>",
+        "To: Slugger <slugger@ouro.bot>",
+        "",
+        longBody,
+      ].join("\r\n")),
+    })
+    expect(decryptStoredMailMessage(longMessage.message, keys).private.snippet).toHaveLength(240)
+
+    const subjectOnly = await buildStoredMailMessage({
+      resolved: imboxNative,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: Slugger <slugger@ouro.bot>\r\nSubject: Subject only\r\n\r\n"),
+    })
+    expect(decryptStoredMailMessage(subjectOnly.message, keys).private.snippet).toBe("Subject only")
+
+    const empty = await buildStoredMailMessage({
+      resolved: imboxNative,
+      envelope: {
+        mailFrom: "",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("\r\n"),
+    })
+    const emptyPrivate = decryptStoredMailMessage(empty.message, keys).private
+    expect(emptyPrivate.subject).toBe("")
+    expect(emptyPrivate.from).toEqual([])
+    expect(emptyPrivate.snippet).toBe("(no text body)")
+
+    const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")
+    if (!delegated) throw new Error("expected delegated mailbox")
+    const fallbackTrust = await buildStoredMailMessage({
+      resolved: { ...delegated, source: undefined },
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+      },
+      rawMime: sampleRawMail("Fallback source"),
+    })
+    expect(fallbackTrust.message.trustReason).toBe(`delegated source grant ${delegated.compartmentId}`)
+
+    expect(() => decryptStoredMailMessage(message, {})).toThrow("Missing private mail key")
   })
 })

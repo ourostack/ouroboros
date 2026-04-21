@@ -120,6 +120,7 @@ import {
   type ProviderState,
 } from "../../../heart/provider-state"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
+import { provisionMailboxRegistry } from "../../../mailroom/core"
 
 const NOW = "2026-04-12T20:10:00.000Z"
 const mockPingProvider = vi.mocked(pingProvider)
@@ -849,8 +850,16 @@ describe("provider CLI command parsing", () => {
       ownerEmail: "ari@mendelow.me",
       source: "hey",
     })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox"])).toEqual({
+      kind: "mail.import-mbox",
+      filePath: "/tmp/hey.mbox",
+    })
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
+    expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -874,6 +883,210 @@ describe("provider CLI command parsing", () => {
 })
 
 describe("provider CLI command execution", () => {
+  it("connects Mail as a vault-coupled portable agent sense", async () => {
+    emitTestEvent("provider cli connect mail")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["ari@mendelow.me", "hey"]
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain("PRIVATE KEY")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+      registryPath: path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom", "registry.json"),
+      storePath: path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom"),
+    }))
+    const privateKeys = (stored.config.mailroom as Record<string, unknown>).privateKeys as Record<string, string>
+    expect(Object.keys(privateKeys)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^mail_slugger-/),
+      expect.stringMatching(/^mail_slugger-native_/),
+    ]))
+    expect(Object.values(privateKeys).every((value) => value.includes("BEGIN PRIVATE KEY"))).toBe(true)
+    const registryPath = (stored.config.mailroom as Record<string, unknown>).registryPath as string
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
+    expect(registry.sourceGrants[0]).toMatchObject({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+    })
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      mail: { enabled: true },
+    })
+  })
+
+  it("connects Mail without a delegated source alias and preserves SerpentGuide as vaultless", async () => {
+    emitTestEvent("provider cli connect mail no delegated source")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-no-source-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-no-source-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => "",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    expect(result).toContain("bundle sync: could not push bundle changes")
+    await expect(runOuroCli(["connect", "mail", "--agent", "SerpentGuide"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "",
+    }))).rejects.toThrow("SerpentGuide has no persistent runtime credentials")
+  })
+
+  it("routes Mail setup from the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu mail")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-mail-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-mail-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const answers = ["mail", ""]
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+  })
+
+  it("preserves existing runtime config and defaults the delegated source label", async () => {
+    emitTestEvent("provider cli connect mail preserves runtime")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-preserve-runtime-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-preserve-runtime-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      integrations: {
+        perplexityApiKey: "pplx-secret",
+      },
+    })
+    const answers = ["ari@mendelow.me", ""]
+
+    const result = await runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => answers.shift() ?? "",
+    }))
+
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.integrations).toEqual({ perplexityApiKey: "pplx-secret" })
+    const registryPath = (stored.config.mailroom as Record<string, unknown>).registryPath as string
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as { sourceGrants: Array<Record<string, unknown>> }
+    expect(registry.sourceGrants[0]).toMatchObject({
+      source: "hey",
+      ownerEmail: "ari@mendelow.me",
+    })
+  })
+
+  it("stops Mail setup before overwriting unreadable runtime credentials", async () => {
+    emitTestEvent("provider cli connect mail unreadable runtime")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-unreadable-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-unreadable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.rawSecrets.set("Slugger:runtime/config", "{")
+    const answers = ["ari@mendelow.me", "hey"]
+
+    await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => answers.shift() ?? "",
+    }))).rejects.toThrow("cannot read existing runtime credentials")
+  })
+
+  it("imports delegated HEY mail from an MBOX into the Mailroom store", async () => {
+    emitTestEvent("provider cli mail import mbox")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Shadow imbox hello",
+      "Message-ID: <hello@example.com>",
+      "Date: Mon, 20 Apr 2026 12:00:00 -0700",
+      "",
+      "This is the first delegated thread.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(result).toContain("grant:")
+    expect(result).toContain("scanned: 1")
+    expect(result).toContain("imported: 1")
+    expect(result).toContain("body reads remain explicit")
+    expect(fs.readdirSync(path.join(mailStateDir, "messages")).some((name) => name.endsWith(".json"))).toBe(true)
+  })
+
+  it("explains Mail MBOX import setup failures before touching the store", async () => {
+    emitTestEvent("provider cli mail import setup failures")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-failures-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-failures-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const deps = makeCliDeps(homeDir, bundlesRoot)
+    const command = ["mail", "import-mbox", "--agent", "Slugger", "--file", mboxPath]
+
+    await expect(runOuroCli(command, deps)).rejects.toThrow("cannot read Mailroom config")
+
+    writeRuntimeConfig("Slugger", { mailroom: null })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing mailroom config for Slugger")
+
+    writeRuntimeConfig("Slugger", { mailroom: { mailboxAddress: "slugger@ouro.bot" } })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing registryPath/storePath")
+
+    writeRuntimeConfig("Slugger", { mailroom: { registryPath: path.join(mailStateDir, "missing.json"), storePath: mailStateDir } })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("no such file")
+  })
+
   it("ouro use writes local provider state after a successful live check", async () => {
     emitTestEvent("provider cli use writes provider state")
     const bundlesRoot = makeTempDir("provider-cli-bundles")

@@ -4,7 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
-import { FileMailroomStore } from "../../mailroom/file-store"
+import { FileMailroomStore, type MailroomStore } from "../../mailroom/file-store"
 import { createMailroomHealthServer, createMailroomSmtpServer, startMailroomIngress } from "../../mailroom/smtp-ingress"
 
 const tempRoots: string[] = []
@@ -125,6 +125,19 @@ describe("mailroom smtp ingress", () => {
     ])
     expect(accepted).toContain("250")
     expect(await store.listMessages({ agentId: "slugger" })).toHaveLength(1)
+
+    const nullSender = await smtpSession(port, [
+      "HELO localhost\r\n",
+      "MAIL FROM:<>\r\n",
+      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "DATA\r\n",
+      "From: Mailer Daemon <postmaster@example.com>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: Null sender\r\n\r\nDelivery status.\r\n.\r\n",
+      "QUIT\r\n",
+    ])
+    expect(nullSender).toContain("250")
+    const stored = await store.listMessages({ agentId: "slugger" })
+    expect(stored).toHaveLength(2)
+    expect(stored.find((message) => message.privateEnvelope && message.envelope.mailFrom === "")).toBeTruthy()
     await close(server)
   })
 
@@ -146,6 +159,46 @@ describe("mailroom smtp ingress", () => {
       "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
       "DATA\r\n",
       "From: Ari <ari@mendelow.me>\r\n\r\nToo large.\r\n.\r\n",
+      "QUIT\r\n",
+    ])
+    expect(transcript).toMatch(/4\d\d|5\d\d/)
+    await close(server)
+  })
+
+  it("wraps non-Error store failures from SMTP DATA handling", async () => {
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const throwingStore = {
+      async putRawMessage() {
+        throw "string failure"
+      },
+      async getMessage() {
+        return null
+      },
+      async listMessages() {
+        return []
+      },
+      async readRawPayload() {
+        return null
+      },
+      async recordAccess(entry) {
+        return { ...entry, id: "access", accessedAt: new Date(0).toISOString() }
+      },
+      async listAccessLog() {
+        return []
+      },
+    } satisfies MailroomStore
+    const server = createMailroomSmtpServer({ registry, store: throwingStore })
+    const port = await listen(server)
+    const transcript = await smtpSession(port, [
+      "HELO localhost\r\n",
+      "MAIL FROM:<ari@mendelow.me>\r\n",
+      "RCPT TO:<me.mendelow.ari.slugger@ouro.bot>\r\n",
+      "DATA\r\n",
+      "From: Ari <ari@mendelow.me>\r\n\r\nStore fails.\r\n.\r\n",
       "QUIT\r\n",
     ])
     expect(transcript).toMatch(/4\d\d|5\d\d/)

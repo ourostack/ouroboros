@@ -51,6 +51,7 @@ describe("mailroom entry", () => {
     expect(parseMailroomEntryArgs([
       `registry-base64=${Buffer.from(JSON.stringify({ schemaVersion: 1 })).toString("base64")}`,
       "azure-account-url=https://mail.blob.core.windows.net",
+      "unknown-key=left-alone",
       "azure-container=proof",
       "azure-managed-identity-client-id=client-id",
       "smtp-port=2525",
@@ -67,6 +68,10 @@ describe("mailroom entry", () => {
     }))
     expect(() => parseMailroomEntryArgs(["--store", "/tmp/store"])).toThrow("Missing --registry or --registry-base64")
     expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json"])).toThrow("Missing --store or --azure-account-url")
+    expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json", "--store", "/tmp/store", "--smtp-port", "nope"]))
+      .toThrow("--smtp-port must be a TCP port")
+    expect(() => parseMailroomEntryArgs(["--registry", "/tmp/registry.json", "--store", "/tmp/store", "--smtp-port"]))
+      .toThrow("--smtp-port must be a TCP port")
   })
 
   it("starts ingress from a registry file", async () => {

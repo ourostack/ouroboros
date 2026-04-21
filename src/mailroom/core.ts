@@ -320,13 +320,14 @@ export function resolveMailAddress(registry: MailroomRegistry, address: string):
   }
 }
 
-function addressList(values: Array<{ address?: string; name?: string }> | undefined): string[] {
+function addressList(values: Array<{ address?: string; name?: string; group?: Array<{ address?: string; name?: string }> }> | undefined): string[] {
+  /* v8 ignore next -- parsedAddressList filters undefined top-level values; this guards malformed address-group entries. @preserve */
   return (values ?? [])
-    .map((entry) => entry.address ? normalizeMailAddress(entry.address) : "")
+    .flatMap((entry) => entry.address ? [normalizeMailAddress(entry.address)] : addressList(entry.group))
     .filter(Boolean)
 }
 
-function parsedAddressList(value: { value?: Array<{ address?: string; name?: string }> } | Array<{ value?: Array<{ address?: string; name?: string }> }> | undefined): string[] {
+function parsedAddressList(value: { value?: Array<{ address?: string; name?: string; group?: Array<{ address?: string; name?: string }> }> } | Array<{ value?: Array<{ address?: string; name?: string; group?: Array<{ address?: string; name?: string }> }> }> | undefined): string[] {
   if (!value) return []
   if (Array.isArray(value)) {
     return value.flatMap((entry) => addressList(entry.value))

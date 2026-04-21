@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { BlobServiceClient } from "@azure/storage-blob"
 import { provisionMailboxRegistry, resolveMailAddress } from "../../mailroom/core"
-import { AzureBlobMailroomStore } from "../../mailroom/blob-store"
+import { AzureBlobMailroomStore, decryptBlobMessages } from "../../mailroom/blob-store"
 import { decryptMessages } from "../../mailroom/file-store"
 
 class FakeBlockBlobClient {
@@ -85,20 +85,45 @@ describe("AzureBlobMailroomStore", () => {
     })
     expect(duplicate.created).toBe(false)
 
-    const listed = await store.listMessages({ agentId: "slugger" })
-    expect(decryptMessages(listed, keys)[0].private.subject).toBe("Blob proof")
+    const second = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "later@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Later <later@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Later blob\r\n\r\nHello later.\r\n"),
+      receivedAt: new Date("2024-01-02T00:00:00Z"),
+    })
+
+    serviceClient.container.blobs.set("messages/null.json", Buffer.from("null\n"))
+    const listed = await store.listMessages({ agentId: "slugger", placement: "screener", compartmentKind: "native", limit: 10 })
+    expect(listed.map((message) => message.id)).toEqual([second.message.id, created.message.id])
+    expect(await store.listMessages({ agentId: "slugger", source: "hey" })).toEqual([])
+    expect(decryptMessages(listed, keys).map((message) => message.private.subject)).toEqual(["Later blob", "Blob proof"])
+    expect(decryptBlobMessages(listed, keys)).toHaveLength(2)
+    expect(await store.getMessage(created.message.id)).toEqual(expect.objectContaining({ id: created.message.id }))
+    expect(await store.getMessage("missing")).toBeNull()
     expect(await store.readRawPayload(created.message.rawObject)).toEqual(expect.objectContaining({
       algorithm: "RSA-OAEP-SHA256+A256GCM",
     }))
+    expect(await store.readRawPayload("raw/missing.json")).toBeNull()
+    expect(await store.listAccessLog("nobody")).toEqual([])
 
+    serviceClient.container.blobs.set("access-log/slugger.jsonl", Buffer.from("{not json"))
     await store.recordAccess({
       agentId: "slugger",
       messageId: created.message.id,
       tool: "mail_thread",
       reason: "blob store proof",
     })
+    await store.recordAccess({
+      agentId: "slugger",
+      tool: "mail_recent",
+      reason: "blob mailbox overview",
+    })
     expect(await store.listAccessLog("slugger")).toEqual([
       expect.objectContaining({ tool: "mail_thread", reason: "blob store proof" }),
+      expect.objectContaining({ tool: "mail_recent", reason: "blob mailbox overview" }),
     ])
   })
 })

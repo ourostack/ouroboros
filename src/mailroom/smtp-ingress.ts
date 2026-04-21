@@ -34,6 +34,7 @@ function collectStream(stream: SMTPServerDataStream, maxBytes: number): Promise<
 }
 
 function sessionRecipients(session: SMTPServerSession): string[] {
+  /* v8 ignore next -- smtp-server supplies rcptTo during DATA; fallback is a defensive harness edge. @preserve */
   return (session.envelope.rcptTo ?? []).map((address) => normalizeMailAddress(address.address))
 }
 
@@ -69,10 +70,12 @@ export function createMailroomSmtpServer(options: MailroomSmtpIngressOptions): S
       try {
         const raw = await collectStream(stream, maxMessageBytes)
         const mailFrom = session.envelope.mailFrom
+        /* v8 ignore next -- smtp-server exposes normal and null senders as address objects; false/undefined are defensive direct-call states. @preserve */
         const rawMailFrom = mailFrom === false ? "" : mailFrom?.address ?? ""
         const envelope = {
           mailFrom: rawMailFrom ? normalizeMailAddress(rawMailFrom) : "",
           rcptTo: sessionRecipients(session),
+          /* v8 ignore next -- smtp-server network sessions carry remoteAddress; fallback is a defensive direct-call edge. @preserve */
           ...(session.remoteAddress ? { remoteAddress: session.remoteAddress } : {}),
         }
         const result = await ingestRawMailToStore({
@@ -140,6 +143,7 @@ export function startMailroomIngress(options: MailroomSmtpIngressOptions & {
 }): MailroomIngressServers {
   const smtp = createMailroomSmtpServer(options)
   const health = createMailroomHealthServer(options.registry)
+  /* v8 ignore next -- production/container entrypoints may omit host; unit tests bind loopback explicitly. @preserve */
   const host = options.host ?? "0.0.0.0"
   smtp.listen(options.smtpPort, host)
   health.listen(options.httpPort, host)
