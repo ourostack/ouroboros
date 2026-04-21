@@ -717,7 +717,10 @@ describe("buildSystem", () => {
     expect(result).toContain("not_attached = enabled globally but no local-machine attachment is configured here")
     expect(result).toContain("Mail: needs_config")
     expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
-    expect(result).toContain("mail setup truth: run `ouro connect mail --agent <agent>`")
+    expect(result).toContain("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP.")
+    expect(result).toContain("ouro connect mail --agent <agent>")
+    expect(result).toContain("ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP")
     expect(result).toContain("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   })
 
