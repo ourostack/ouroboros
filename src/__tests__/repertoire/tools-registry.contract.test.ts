@@ -128,6 +128,8 @@ describe("tool registry contract", () => {
     expect(names).toContain("mail_thread");
     expect(names).toContain("mail_screener");
     expect(names).toContain("mail_decide");
+    expect(names).toContain("mail_compose");
+    expect(names).toContain("mail_send");
     expect(names).toContain("mail_access_log");
     expect(names).toContain("claude");
     expect(names).toContain("coding_spawn");

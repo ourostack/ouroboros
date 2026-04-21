@@ -12,6 +12,8 @@ describe("mail tool registration and trust boundaries", () => {
       "mail_access_log",
       "mail_screener",
       "mail_decide",
+      "mail_compose",
+      "mail_send",
     ]))
   })
 
@@ -50,6 +52,26 @@ describe("mail tool registration and trust boundaries", () => {
       candidate_id: "candidate_mail_1",
       action: "discard",
       reason: "unknown sender",
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    }).allowed).toBe(true)
+
+    const send = guardInvocation("mail_send", {
+      draft_id: "draft_1",
+      confirmation: "CONFIRM_SEND",
+      reason: "friend send attempt",
+    }, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    expect(send.allowed).toBe(false)
+    expect(send.reason).toContain("family")
+
+    expect(guardInvocation("mail_send", {
+      draft_id: "draft_1",
+      confirmation: "CONFIRM_SEND",
+      reason: "family confirmed",
     }, {
       readPaths: new Set(),
       trustLevel: "family",

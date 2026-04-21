@@ -308,6 +308,83 @@ describe("mail tools", () => {
     }))
   })
 
+  it("drafts mail, refuses unconfirmed send, and writes confirmed local-sink sends", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const sinkPath = path.join(storePath, "outbound-sink.jsonl")
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+        outbound: {
+          transport: "local-sink",
+          sinkPath,
+        },
+      },
+    })
+
+    const draft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      subject: "Travel check",
+      text: "Can you confirm the train time?",
+      reason: "ask about upcoming travel",
+    }, trustedContext())
+    expect(draft).toContain("Draft created")
+    const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+    expect(draftId).toBeTruthy()
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      reason: "oops",
+    }, trustedContext())).resolves.toContain("CONFIRM_SEND")
+    expect(fs.existsSync(sinkPath)).toBe(false)
+
+    const sent = await tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "family confirmed send",
+    }, trustedContext())
+    expect(sent).toContain("Mail sent")
+    expect(sent).toContain(draftId!)
+    expect(fs.readFileSync(sinkPath, "utf-8")).toContain("Can you confirm the train time?")
+  })
+
+  it("keeps outbound sends family/self-only and reports missing transport setup", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const draft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      subject: "Transport missing",
+      text: "This draft should not send yet.",
+      reason: "prove missing transport",
+    }, trustedContext())
+    const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+    expect(draftId).toBeTruthy()
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "friend should not send",
+    }, friendContext())).resolves.toContain("outbound mail sends require family trust")
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "transport missing",
+    }, trustedContext())).resolves.toContain("outbound mail transport is not configured")
+  })
+
   it("handles empty mailboxes and the default bundle-backed store path", async () => {
     const agentName = `mailtool-${Date.now()}`
     const fakeHome = tempDir()
