@@ -224,6 +224,10 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
     expect(result).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
+      providers: ["anthropic", "github-copilot"],
+      skipCache: true,
+    }))
     expect(pingProvider).toHaveBeenCalledTimes(2)
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
     expect(pingProvider).toHaveBeenCalledWith("github-copilot", { githubToken: "gh", baseUrl: "https://copilot.example" }, expect.objectContaining({ model: "claude-sonnet-4.6" }))
@@ -236,6 +240,10 @@ describe("checkAgentConfigWithProviderHealth", () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
     expect(result).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
+      providers: ["anthropic"],
+      skipCache: true,
+    }))
     expect(pingProvider).toHaveBeenCalledOnce()
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
@@ -524,17 +532,19 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(callArgs?.[0]).toBe("myagent")
     expect(callArgs?.[1]).toEqual(expect.objectContaining({
       onProgress: expect.any(Function),
+      providers: ["anthropic"],
+      skipCache: true,
     }))
 
     const refreshProgress = callArgs?.[1]?.onProgress as ((message: string) => void) | undefined
     expect(refreshProgress).toBeDefined()
     refreshProgress?.("reading vault items for myagent...")
+    refreshProgress?.("reading anthropic credentials...")
     refreshProgress?.("parsing provider credentials...")
-    refreshProgress?.("reading azure credentials...")
 
     expect(onProgress).toHaveBeenCalledWith("myagent: opening saved provider credentials in the vault")
+    expect(onProgress).toHaveBeenCalledWith("myagent: reading saved anthropic credentials")
     expect(onProgress).toHaveBeenCalledWith("myagent: organizing saved provider credentials")
-    expect(onProgress).not.toHaveBeenCalledWith("reading azure credentials...")
   })
 
   it("does not pass onProgress when not provided in deps (backward compat)", async () => {
