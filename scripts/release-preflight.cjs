@@ -41,6 +41,20 @@ function wrapperPackageChanged(changedFiles) {
   return changedFiles.some((file) => file.startsWith("packages/ouro.bot/"))
 }
 
+function collectChangedFiles(baseRef, execSyncImpl) {
+  const committedFiles = splitLines(
+    execSyncImpl(`git diff --name-only "${baseRef}...HEAD"`, { encoding: "utf-8" }),
+  )
+  const workingTreeFiles = splitLines(
+    execSyncImpl("git diff --name-only HEAD", { encoding: "utf-8" }),
+  )
+  const untrackedFiles = splitLines(
+    execSyncImpl("git ls-files --others --exclude-standard", { encoding: "utf-8" }),
+  )
+
+  return Array.from(new Set([...committedFiles, ...workingTreeFiles, ...untrackedFiles])).sort()
+}
+
 function assessWrapperPublishSync(input) {
   if (input.localVersion !== input.cliVersion) {
     return {
@@ -93,9 +107,7 @@ function runReleasePreflight(options = {}, deps = {}) {
     deps.wrapperPackageJsonPath ?? path.resolve(__dirname, "../packages/ouro.bot/package.json")
   const changelogPath = deps.changelogPath ?? path.resolve(__dirname, "../changelog.json")
 
-  const changedFiles = splitLines(
-    execSyncImpl(`git diff --name-only "${baseRef}...HEAD"`, { encoding: "utf-8" }),
-  )
+  const changedFiles = collectChangedFiles(baseRef, execSyncImpl)
   const releasableChanged = versionBumpRequired(changedFiles)
   const packageJson = readJson(packageJsonPath, readFileSyncImpl)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath, readFileSyncImpl)
@@ -177,6 +189,7 @@ if (require.main === module) {
 
 module.exports = {
   assessWrapperPublishSync,
+  collectChangedFiles,
   parseArgs,
   runReleasePreflight,
   splitLines,
