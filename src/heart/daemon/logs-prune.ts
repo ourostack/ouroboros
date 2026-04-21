@@ -11,8 +11,8 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentDaemonLogsDir } from "../identity"
 
 /**
- * Apply the current rotation policy to every `.ndjson` file in the daemon
- * logs directory, compacting any file that's over the threshold.
+ * Apply the current rotation policy to every active `.ndjson` and `.log` file
+ * in the daemon logs directory, compacting any file that's over the threshold.
  *
  * Concurrent-writer safety
  * ------------------------
@@ -40,6 +40,16 @@ export interface PruneDaemonLogsOptions {
 export interface PruneDaemonLogsResult {
   filesCompacted: number
   bytesFreed: number
+}
+
+function isActiveLogStream(name: string): boolean {
+  if (name.endsWith(".ndjson")) {
+    return !/\.\d+\.ndjson$/.test(name)
+  }
+  if (name.endsWith(".log")) {
+    return !/\.\d+\.log$/.test(name)
+  }
+  return false
 }
 
 export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaemonLogsResult {
@@ -74,16 +84,13 @@ export function pruneDaemonLogs(options: PruneDaemonLogsOptions = {}): PruneDaem
     let filesCompacted = 0
     let bytesFreed = 0
 
-    // Enumerate and rotate each active .ndjson stream. We explicitly skip
-    // .gz and other files — only the active stream can be a rotation
-    // candidate. Legacy .N.ndjson uncompressed files are handled inside
-    // rotateIfNeeded's generation-shift step, so we skip them here to
+    // Enumerate and rotate each active structured stream plus legacy launchd
+    // .log streams. We explicitly skip .gz and other files — only the active
+    // stream can be a rotation candidate. Legacy generation files are handled
+    // inside rotateIfNeeded's generation-shift step, so we skip them here to
     // avoid double-rotating.
     for (const name of readdirSync(logsDir)) {
-      if (!name.endsWith(".ndjson")) continue
-      // Skip legacy generation files like daemon.1.ndjson; rotateIfNeeded
-      // will migrate them on the next rotation of their parent stream.
-      if (/\.\d+\.ndjson$/.test(name)) continue
+      if (!isActiveLogStream(name)) continue
 
       const filePath = join(logsDir, name)
       let sizeBefore: number
