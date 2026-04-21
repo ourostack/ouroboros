@@ -13,7 +13,7 @@ import type {
 export type ProviderVisibilityStatus = "configured" | "unconfigured"
 
 export interface ProviderVisibilityCredential {
-  status: "present" | "missing" | "invalid-pool"
+  status: "present" | "missing" | "invalid-pool" | "not-loaded"
   source?: string
   revision?: string
   repairCommand?: string
@@ -89,7 +89,7 @@ function credentialVisibility(binding: EffectiveProviderBinding): ProviderVisibi
 
   return {
     status: credential.status,
-    repairCommand: credential.repair.command,
+    ...("repair" in credential ? { repairCommand: credential.repair.command } : {}),
   }
 }
 
@@ -160,6 +160,7 @@ export function buildAgentProviderVisibility(input: BuildAgentProviderVisibility
 function credentialLabel(credential: ProviderVisibilityCredential): string {
   if (credential.status === "present") return credential.source ?? "vault"
   if (credential.status === "invalid-pool") return "vault unavailable"
+  if (credential.status === "not-loaded") return "checked previously"
   return "missing"
 }
 
@@ -177,7 +178,7 @@ function readinessLabel(readiness: ProviderVisibilityReadiness): string {
 }
 
 function providerStatusDetail(lane: ProviderVisibilityConfiguredLane): string | undefined {
-  if (lane.credential.status !== "present") return undefined
+  if (lane.credential.status === "missing" || lane.credential.status === "invalid-pool") return undefined
   return lane.readiness.error
 }
 

@@ -87,6 +87,7 @@ interface ProviderCredentialVaultPayload {
 const VALID_PROVIDERS: AgentProvider[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
 const VALID_PROVENANCE_SOURCES: ProviderCredentialProvenanceSource[] = ["auth-flow", "manual"]
 const VAULT_ITEM_PREFIX = "providers/"
+export const PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR = "provider credentials have not been loaded from vault"
 
 const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; config: string[] }> = {
   anthropic: {
@@ -243,13 +244,19 @@ function recordFromPayload(payload: ProviderCredentialVaultPayload): ProviderCre
   }
 }
 
-function missingPool(agentName: string, error = "provider credentials have not been loaded from vault"): ProviderCredentialPoolReadResult {
+function missingPool(agentName: string, error = PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR): ProviderCredentialPoolReadResult {
   return {
     ok: false,
     reason: "missing",
     poolPath: providerCredentialsVaultPath(agentName),
     error,
   }
+}
+
+export function isProviderCredentialPoolNotLoaded(result: ProviderCredentialPoolReadResult): boolean {
+  return !result.ok
+    && result.reason === "missing"
+    && result.error === PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR
 }
 
 function cacheResult(agentName: string, result: ProviderCredentialPoolReadResult): ProviderCredentialPoolReadResult {

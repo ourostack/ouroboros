@@ -200,6 +200,25 @@ describe("connect bay", () => {
     expect(summary.nextAction).toBeUndefined()
   })
 
+  it("falls back to credential repair when no fresh provider health is available", () => {
+    emitTestEvent("connect bay missing credential fallback")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4", {
+        credential: { status: "missing", repairCommand: "ouro auth --agent Slugger --provider openai-codex" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]))
+
+    expect(summary.status).toBe("needs credentials")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "needs credentials",
+      detail: "credentials missing",
+      action: "ouro auth --agent Slugger --provider openai-codex",
+    })
+    expect(summary.nextAction).toBe("ouro auth --agent Slugger --provider openai-codex")
+  })
+
   it("shows a fresh live-check failure instead of stale missing-credential guidance", () => {
     emitTestEvent("connect bay live failure beats stale credential cache")
     const summary = summarizeProvidersForConnect("Slugger", providerVisibility([

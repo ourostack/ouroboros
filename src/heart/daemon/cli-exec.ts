@@ -3546,7 +3546,7 @@ async function executeProviderCheck(
   }
 }
 
-function renderProviderCredentialLine(credential: EffectiveProviderCredentialStatus): string {
+function renderProviderCredentialLine(agentName: string, credential: EffectiveProviderCredentialStatus): string {
   if (credential.status === "present") {
     const credentialFields = credential.credentialFields.length > 0 ? ` credentials: ${credential.credentialFields.join(", ")}` : " credentials: none"
     const configFields = credential.configFields.length > 0 ? ` config: ${credential.configFields.join(", ")}` : " config: none"
@@ -3554,6 +3554,9 @@ function renderProviderCredentialLine(credential: EffectiveProviderCredentialSta
   }
   if (credential.status === "invalid-pool") {
     return `credentials: vault unavailable (${credential.error}); repair: ${credential.repair.command}`
+  }
+  if (credential.status === "not-loaded") {
+    return `credentials: not loaded in this process; run \`ouro provider refresh --agent ${agentName}\` to read the vault now`
   }
   return `credentials: missing; repair: ${credential.repair.command}`
 }
@@ -3597,7 +3600,7 @@ async function executeProviderStatus(
     const binding = resolved.binding
     lines.push(`  ${lane}: ${binding.provider} / ${binding.model} (${binding.source})`)
     lines.push(`    readiness: ${binding.readiness.status}${binding.readiness.error ? ` (${binding.readiness.error})` : ""}`)
-    lines.push(`    ${renderProviderCredentialLine(binding.credential)}`)
+    lines.push(`    ${renderProviderCredentialLine(command.agent, binding.credential)}`)
     for (const warning of binding.warnings) {
       lines.push(`    warning: ${warning.message}`)
     }
