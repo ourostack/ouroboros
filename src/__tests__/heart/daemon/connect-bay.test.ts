@@ -183,6 +183,58 @@ describe("connect bay", () => {
     expect(summary.nextAction).toBeUndefined()
   })
 
+  it("trusts a fresh live provider check over a stale missing-credential cache", () => {
+    emitTestEvent("connect bay live truth beats stale credential cache")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "github-copilot", "claude-sonnet-4.6", {
+        credential: { status: "missing", repairCommand: "ouro auth --agent Slugger --provider github-copilot" },
+      }),
+    ]), { ok: true })
+
+    expect(summary.status).toBe("ready")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "ready",
+      detail: "ready",
+    })
+    expect(summary.nextAction).toBeUndefined()
+  })
+
+  it("shows a fresh live-check failure instead of stale missing-credential guidance", () => {
+    emitTestEvent("connect bay live failure beats stale credential cache")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "github-copilot", "claude-sonnet-4.6", {
+        credential: { status: "missing", repairCommand: "ouro auth --agent Slugger --provider github-copilot" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]), {
+      ok: false,
+      error: "outward provider github-copilot model claude-sonnet-4.6 failed live check: 400 status code (no body)",
+      fix: "Run 'ouro auth --agent Slugger --provider github-copilot' to refresh credentials.",
+      issue: providerLiveCheckFailedIssue({
+        agentName: "Slugger",
+        lane: "outward",
+        provider: "github-copilot",
+        model: "claude-sonnet-4.6",
+        classification: "auth-failure",
+        message: "400 status code (no body)",
+      }),
+    })
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "needs attention",
+      detail: "failed live check: 400 status code (no body)",
+    })
+    expect(summary.laneSummaries[1]).toMatchObject({
+      lane: "inner",
+      status: "ready",
+      detail: "ready",
+    })
+    expect(summary.nextAction).toBe("ouro auth --agent Slugger --provider github-copilot")
+  })
+
   it("shows the calm ready-state next move on TTY when nothing needs repair", () => {
     emitTestEvent("connect bay tty everything ready")
     const output = renderConnectBay(connectEntries({

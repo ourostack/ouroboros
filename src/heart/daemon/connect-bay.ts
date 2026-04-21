@@ -123,6 +123,44 @@ function resolveProviderHealthCommand(
   return undefined
 }
 
+function providerHealthTargetLane(providerHealth: ProviderHealthSummary | undefined): ProviderLane | undefined {
+  const issue = providerHealth?.issue
+  const actionLane = issue?.actions
+    .map((action) => "lane" in action && action.lane ? action.lane : undefined)
+    .find((lane): lane is ProviderLane => lane === "outward" || lane === "inner")
+  if (actionLane) return actionLane
+
+  const text = [issue?.summary, issue?.detail, providerHealth?.error]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+  if (/\boutward provider\b/.test(text) || /\boutward lane\b/.test(text)) return "outward"
+  if (/\binner provider\b/.test(text) || /\binner lane\b/.test(text)) return "inner"
+  return undefined
+}
+
+function providerHealthAppliesToLane(
+  providerHealth: ProviderHealthSummary | undefined,
+  lane: ProviderVisibilityLane,
+): boolean {
+  const targetLane = providerHealthTargetLane(providerHealth)
+  return !targetLane || targetLane === lane.lane
+}
+
+function providerHealthDetail(
+  providerHealth: ProviderHealthSummary | undefined,
+  status: ConnectMenuStatus,
+): string {
+  if (status === "locked") return "vault locked on this machine"
+  if (status === "needs credentials") return "credentials missing"
+  if (status === "needs setup") {
+    return providerHealth?.issue?.detail ?? providerHealth?.error ?? "needs setup"
+  }
+  const detail = providerHealth?.issue?.detail ?? providerHealth?.error
+  if (!detail) return "live check needs attention"
+  return /failed live check/i.test(detail) ? detail : `failed live check: ${detail}`
+}
+
 function isProblemStatus(status: ConnectMenuStatus): boolean {
   return status !== "ready" && status !== "attached"
 }
@@ -211,6 +249,23 @@ export function summarizeProviderLane(
   }
 
   const fallbackAction = providerHealthCommand ?? lane.credential.repairCommand
+  if (providerHealth?.ok) {
+    return {
+      lane: lane.lane,
+      status: "ready",
+      title: `${lane.provider} / ${lane.model}`,
+      detail: "ready",
+    }
+  }
+  if (providerHealthStatus && providerHealthAppliesToLane(providerHealth, lane)) {
+    return {
+      lane: lane.lane,
+      status: providerHealthStatus,
+      title: `${lane.provider} / ${lane.model}`,
+      detail: providerHealthDetail(providerHealth, providerHealthStatus),
+      action: fallbackAction,
+    }
+  }
   if (lane.credential.status === "missing") {
     return {
       lane: lane.lane,
@@ -227,14 +282,6 @@ export function summarizeProviderLane(
       title: `${lane.provider} / ${lane.model}`,
       detail: providerHealthStatus === "locked" ? "vault locked on this machine" : "vault unavailable",
       action: fallbackAction,
-    }
-  }
-  if (providerHealth?.ok) {
-    return {
-      lane: lane.lane,
-      status: "ready",
-      title: `${lane.provider} / ${lane.model}`,
-      detail: "ready",
     }
   }
   if (lane.readiness.status === "failed") {
