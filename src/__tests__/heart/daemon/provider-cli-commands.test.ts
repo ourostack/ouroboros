@@ -837,8 +837,20 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "bluebubbles",
     })
-    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
-    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles")
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+    })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--owner-email", "ari@mendelow.me", "--source", "hey", "--agent", "Slugger"])).toEqual({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+      filePath: "/tmp/hey.mbox",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -3301,6 +3313,7 @@ describe("provider CLI command execution", () => {
         ...(config.senses ?? {}),
         teams: { enabled: true },
         bluebubbles: { enabled: true },
+        mail: { enabled: true },
       }
     })
     writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
@@ -3345,6 +3358,14 @@ describe("provider CLI command execution", () => {
         clientId: "teams-client-id",
         clientSecret: "teams-secret",
         tenantId: "tenant-id",
+      },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath: "/tmp/ouro-mailroom/registry.json",
+        storePath: "/tmp/ouro-mailroom",
+        privateKeys: {
+          mail_slugger_test: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+        },
       },
     })
     writeMachineIdentity(homeDir, "machine_everything_ready")
@@ -4113,6 +4134,7 @@ describe("provider CLI command execution", () => {
     expect(noninteractive).toContain("ouro connect embeddings --agent Slugger")
     expect(noninteractive).toContain("ouro connect teams --agent Slugger")
     expect(noninteractive).toContain("ouro connect bluebubbles --agent Slugger")
+    expect(noninteractive).toContain("ouro connect mail --agent Slugger")
 
     const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", ""]
     const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
@@ -4125,7 +4147,7 @@ describe("provider CLI command execution", () => {
     expect(blueBubbles).not.toContain("bb-password")
 
     const providerAuth = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async () => "6",
+      promptInput: async () => "unknown",
     }))
     expect(providerAuth).toBe("connect cancelled.")
 

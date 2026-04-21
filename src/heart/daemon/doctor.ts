@@ -195,7 +195,7 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
     }
 
     const senses = config.senses as Record<string, unknown>
-    const senseNames = ["cli", "teams", "bluebubbles"]
+    const senseNames = ["cli", "teams", "bluebubbles", "mail"]
     for (const sense of senseNames) {
       if (!(sense in senses)) continue
       const entry = senses[sense]

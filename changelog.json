@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.451",
+      "changes": [
+        "Agent Mail is now a first-class sense: agent identity, prompt truth, status/doctor surfaces, friend channel capabilities, and the base tool registry all understand `mail` alongside CLI, Teams, and BlueBubbles.",
+        "`ouro connect mail --agent <agent>` provisions a vault-coupled Mailroom identity with private mail keys stored in the agent vault, a non-secret bundle registry, a canonical `@ouro.bot` mailbox, and delegated source aliases such as HEY shadow imbox addresses.",
+        "The Mailroom substrate can accept SMTP, screen unknown recipients, import MBOX exports, store encrypted message/raw payloads in file or Azure Blob backends, and expose bounded read/audit tools for agents to read mail as mail."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.450",
       "changes": [
         "`ouro connect` now finishes its connection-check progress with neutral `checked` language instead of saying the whole check is `ready` when one selected provider just reported trouble.",

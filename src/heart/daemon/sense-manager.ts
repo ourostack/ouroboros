@@ -66,6 +66,7 @@ function defaultSenses(): AgentSensesConfig {
     cli: { ...DEFAULT_AGENT_SENSES.cli },
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
+    mail: { ...DEFAULT_AGENT_SENSES.mail },
   }
 }
 
@@ -94,7 +95,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -146,6 +147,7 @@ function senseFactsFromRuntimeConfig(
     cli: { configured: true, detail: "local interactive terminal" },
     teams: { configured: false, detail: "not enabled in agent.json" },
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
+    mail: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -155,6 +157,7 @@ function senseFactsFromRuntimeConfig(
   const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
   const bluebubbles = machinePayload.bluebubbles as Record<string, unknown> | undefined
   const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+  const mailroom = payload.mailroom as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -196,12 +199,33 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
+  if (senses.mail.enabled) {
+    const privateKeys = mailroom?.privateKeys
+    const hasPrivateKeys = !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys) && Object.values(privateKeys).some((value) => typeof value === "string" && value.trim().length > 0)
+    const mailboxAddress = textField(mailroom, "mailboxAddress")
+    const missing: string[] = []
+    if (!mailboxAddress) missing.push("mailroom.mailboxAddress")
+    if (!hasPrivateKeys) missing.push("mailroom.privateKeys")
+
+    base.mail = missing.length === 0
+      ? { configured: true, detail: mailboxAddress }
+      : {
+          configured: false,
+          detail: runtimeConfig.ok
+            ? `missing ${missing.join("/")}`
+            : unavailableDetail,
+        }
+  }
+
   return base
 }
 
 function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "teams") {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
+  }
+  if (sense === "mail") {
+    return `Run 'ouro connect mail --agent ${agent}' to provision Mailroom access; then run 'ouro up' again.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -403,6 +427,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           configured: context.facts.bluebubbles.configured,
           optional: context.facts.bluebubbles.optional,
           ...blueBubblesRuntimeFacts,
+        },
+        mail: {
+          configured: context.facts.mail.configured,
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

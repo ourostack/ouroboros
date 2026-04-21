@@ -184,6 +184,7 @@ describe("buildDefaultAgentTemplate", () => {
         cli: { enabled: true },
         teams: { enabled: false },
         bluebubbles: { enabled: false },
+        mail: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -333,6 +334,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 
@@ -355,6 +357,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: false },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 
@@ -380,6 +383,7 @@ describe("loadAgentConfig", () => {
       cli: { enabled: true },
       teams: { enabled: true },
       bluebubbles: { enabled: false },
+      mail: { enabled: false },
     })
   })
 

@@ -17,7 +17,7 @@ export type ConnectMenuStatus =
 export type ConnectMenuSection = "Providers" | "Portable" | "This machine"
 
 export interface ConnectMenuEntry {
-  option: "1" | "2" | "3" | "4" | "5"
+  option: "1" | "2" | "3" | "4" | "5" | "6"
   name: string
   section: ConnectMenuSection
   status: ConnectMenuStatus

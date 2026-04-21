@@ -181,9 +181,16 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   connect: {
     category: "Auth",
     description: "Set up providers, portable integrations, and local senses from one guided screen",
-    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles] [--agent <name>]",
+    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
     example: "ouro connect",
-    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles"],
+    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail"],
+  },
+  mail: {
+    category: "Auth",
+    description: "Import delegated mail into the agent Mailroom substrate",
+    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
+    example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
+    subcommands: ["import-mbox"],
   },
   use: {
     category: "Auth",
@@ -312,6 +319,16 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Attach BlueBubbles iMessage to this machine only; it does not travel with the agent",
     usage: "ouro connect bluebubbles [--agent <name>]",
     example: "ouro connect bluebubbles",
+  },
+  "connect mail": {
+    description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
+    usage: "ouro connect mail [--agent <name>]",
+    example: "ouro connect mail",
+  },
+  "mail import-mbox": {
+    description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
+    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
+    example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into daemon memory",

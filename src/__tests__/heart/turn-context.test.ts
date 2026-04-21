@@ -438,6 +438,7 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: ready",
       "- BlueBubbles: ready",
+      "- Mail: disabled",
     ])
   })
 
@@ -452,6 +453,7 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: needs_config",
       "- BlueBubbles: not_attached",
+      "- Mail: disabled",
     ])
   })
 
@@ -463,6 +465,7 @@ describe("buildTurnContext", () => {
       "- CLI: interactive",
       "- Teams: disabled",
       "- BlueBubbles: disabled",
+      "- Mail: disabled",
     ])
   })
 

@@ -24,7 +24,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
-import { getAgentName, getAgentRoot, loadAgentConfig, type SenseName } from "./identity"
+import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
 import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
@@ -195,19 +195,25 @@ function hasTextField(record: Record<string, unknown> | undefined, key: string):
 
 function readSenseStatusLines(): string[] {
   const config = loadAgentConfig()
-  const senses = config.senses ?? {
-    cli: { enabled: true },
-    teams: { enabled: false },
-    bluebubbles: { enabled: false },
+  const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
+  const senses: AgentSensesConfig = {
+    ...configuredSenses,
+    cli: configuredSenses.cli ?? { enabled: true },
+    teams: configuredSenses.teams ?? { enabled: false },
+    bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
+    mail: configuredSenses.mail ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
 
   const teams = payload.teams as Record<string, unknown> | undefined
   const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
+  const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
+    mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -219,6 +225,10 @@ function readSenseStatusLines(): string[] {
     {
       label: "BlueBubbles",
       status: !senses.bluebubbles.enabled ? "disabled" : configured.bluebubbles ? "ready" : "not_attached",
+    },
+    {
+      label: "Mail",
+      status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
     },
   ]
 
