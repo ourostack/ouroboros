@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.455",
+      "changes": [
+        "Agent Mail now has a complete all-agent onboarding runbook around `ouro account ensure --agent <agent>`, including native `@ouro.bot` mailbox setup, optional delegated human-mail aliases, vault-coupled private keys, bundle-local encrypted Mailroom state, HEY MBOX import, live forwarding boundaries, and golden-path verification.",
+        "Screener decisions now persist family-authorized sender policies for discard and quarantine as well as allow decisions, so future mail from a discarded sender goes directly to the retained recovery drawer instead of repeatedly interrupting the agent.",
+        "The system prompt now points agents at `docs/agent-mail-setup.md` and distinguishes full work-substrate account setup from mail-only repair/provisioning, while docs contract coverage locks the native-vs-delegated trust model, recovery semantics, human-only DNS/HEY/MX gates, confirmed outbound sends, and Ouro Outlook audit expectations."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.454",
       "changes": [
         "The agent system prompt now carries an explicit Agent Mail setup runbook: Mailroom provisioning uses `ouro connect mail`, HEY archive bootstrap uses human-exported MBOX plus `ouro mail import-mbox`, and verification uses status, doctor, bounded mail tools, and the read-only Outlook mailbox.",
