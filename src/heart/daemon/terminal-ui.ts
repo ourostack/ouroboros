@@ -39,7 +39,65 @@ export interface TerminalAction {
   recommended?: boolean
 }
 
+export type TerminalWizardStatus =
+  | "ready"
+  | "needs attention"
+  | "needs credentials"
+  | "needs setup"
+  | "missing"
+  | "locked"
+  | "attached"
+  | "not attached"
+
+export interface TerminalWizardItem {
+  key?: string
+  label: string
+  status?: TerminalWizardStatus
+  actor?: RepairActor
+  summary?: string
+  detailLines?: string[]
+  command?: string
+  recommended?: boolean
+}
+
+export interface TerminalWizardSection {
+  title: string
+  summary?: string
+  items: TerminalWizardItem[]
+}
+
+export interface TerminalWizardNextStep {
+  label: string
+  detail?: string
+  command?: string
+}
+
+export interface RenderTerminalWizardOptions {
+  isTTY: boolean
+  columns?: number
+  masthead?: Omit<TerminalMastheadOptions, "isTTY" | "columns">
+  title: string
+  summary?: string
+  nextStep?: TerminalWizardNextStep
+  sections?: TerminalWizardSection[]
+  footerLines?: string[]
+  prompt?: string
+  suppressEvent?: boolean
+}
+
 export interface RenderTerminalBoardOptions {
+  isTTY: boolean
+  columns?: number
+  masthead?: Omit<TerminalMastheadOptions, "isTTY" | "columns">
+  title: string
+  summary?: string
+  sections?: TerminalSection[]
+  actions?: TerminalAction[]
+  prompt?: string
+  suppressEvent?: boolean
+}
+
+export interface RenderTerminalGuideOptions {
   isTTY: boolean
   columns?: number
   masthead?: Omit<TerminalMastheadOptions, "isTTY" | "columns">
@@ -205,6 +263,171 @@ export function formatActionActorLabel(actor: RepairActor): string {
   return actor.replace(/-/g, " ")
 }
 
+function formatWizardStatusLabel(status: TerminalWizardStatus): string {
+  return status
+}
+
+function isQuietWizardStatus(status: TerminalWizardStatus): boolean {
+  return status === "ready" || status === "attached" || status === "not attached"
+}
+
+function renderWizardStatusBadge(status: TerminalWizardStatus, isTTY: boolean): string {
+  const symbol = status === "ready" || status === "attached"
+    ? "●"
+    : status === "not attached"
+      ? "◌"
+      : "◆"
+  const label = `${symbol} ${formatWizardStatusLabel(status)}`
+  if (!isTTY) return label
+  if (status === "ready" || status === "attached") return color(label, GLOW, true)
+  if (status === "not attached") return color(label, MIST)
+  return color(label, ALERT, true)
+}
+
+function renderWizardActorBadge(actor: RepairActor, isTTY: boolean): string {
+  const label = `[${formatActionActorLabel(actor)}]`
+  if (!isTTY) return label
+  if (actor === "human-required") return color(label, ALERT, true)
+  if (actor === "human-choice") return color(label, SCALE, true)
+  return color(label, MIST)
+}
+
+function renderWizardRecommendedBadge(isTTY: boolean): string {
+  if (!isTTY) return "[recommended]"
+  return color("[recommended]", GLOW, true)
+}
+
+function wrapWizardDetailLines(
+  lines: string[],
+  width: number,
+  isTTY: boolean,
+  tone: string,
+): string[] {
+  const rendered: string[] = []
+  for (const line of lines) {
+    const wrapped = wrapPlain(line, width)
+    for (const segment of wrapped) {
+      rendered.push(isTTY ? color(segment, tone) : segment)
+    }
+  }
+  return rendered
+}
+
+function renderWizardItem(item: TerminalWizardItem, width: number, isTTY: boolean): string[] {
+  const badges = [
+    ...(item.status ? [renderWizardStatusBadge(item.status, isTTY)] : []),
+    ...(item.actor ? [renderWizardActorBadge(item.actor, isTTY)] : []),
+    ...(item.recommended ? [renderWizardRecommendedBadge(isTTY)] : []),
+  ]
+  const keyPrefix = item.key ? `${item.key}. ` : ""
+  const header = `${keyPrefix}${item.label}${badges.length > 0 ? `  ${badges.join("  ")}` : ""}`
+  const detailWidth = Math.max(18, width - 6)
+  const detailTone = item.status && !isQuietWizardStatus(item.status) ? BONE : MIST
+  const lines = [isTTY ? color(header, BONE, true) : header]
+  if (item.summary) {
+    lines.push(...wrapWizardDetailLines([item.summary], detailWidth, isTTY, detailTone))
+  }
+  if (item.detailLines && item.detailLines.length > 0) {
+    lines.push(...wrapWizardDetailLines(item.detailLines, detailWidth, isTTY, detailTone))
+  }
+  if (item.command) {
+    lines.push(...wrapWizardDetailLines([`run: ${item.command}`], detailWidth, isTTY, MIST))
+  }
+  return lines.flatMap((line, index) => index === 0 ? [line] : [`   ${line}`])
+}
+
+function renderWizardSectionTTY(section: TerminalWizardSection, width: number): string[] {
+  const lines: string[] = []
+  if (section.summary) {
+    lines.push(...wrapWizardDetailLines([section.summary], Math.max(18, width - 4), true, MIST))
+  }
+  for (const [index, item] of section.items.entries()) {
+    if (index > 0) lines.push("")
+    lines.push(...renderWizardItem(item, width, true))
+  }
+  return renderOperationSectionTTY(section.title, lines, width)
+}
+
+function renderWizardSectionPlain(section: TerminalWizardSection, width: number): string[] {
+  const lines: string[] = []
+  if (section.summary) {
+    lines.push(...wrapWizardDetailLines([section.summary], Math.max(18, width - 4), false, MIST))
+  }
+  for (const [index, item] of section.items.entries()) {
+    if (index > 0) lines.push("")
+    lines.push(...renderWizardItem(item, width, false))
+  }
+  return renderOperationSectionPlain(section.title, lines)
+}
+
+export function renderTerminalWizard(options: RenderTerminalWizardOptions): string {
+  if (!options.suppressEvent) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.terminal_wizard_rendered",
+      message: "rendered shared terminal wizard",
+      meta: {
+        title: options.title,
+        sections: options.sections?.length ?? 0,
+        items: options.sections?.reduce((count, section) => count + section.items.length, 0) ?? 0,
+        hasNextStep: !!options.nextStep,
+        tty: options.isTTY,
+      },
+    })
+  }
+
+  const width = boardWidth(options.columns)
+  const blocks: string[] = []
+  blocks.push(renderOuroMasthead({
+    isTTY: options.isTTY,
+    columns: width,
+    subtitle: options.masthead?.subtitle,
+  }).trimEnd())
+
+  const introLines = [
+    options.isTTY ? color(options.title, BONE, true) : options.title,
+    ...(options.summary
+      ? wrapPlain(options.summary, Math.max(20, width - 2)).map((line) => options.isTTY ? color(line, MIST) : line)
+      : []),
+  ]
+  blocks.push(introLines.join("\n"))
+
+  if (options.nextStep) {
+    const nextStepLines = [
+      options.isTTY ? color(options.nextStep.label, BONE, true) : options.nextStep.label,
+      ...(options.nextStep.detail
+        ? wrapPlain(options.nextStep.detail, Math.max(18, width - 4)).map((line) => options.isTTY ? color(line, MIST) : line)
+        : []),
+      ...(options.nextStep.command
+        ? wrapPlain(`run: ${options.nextStep.command}`, Math.max(18, width - 4)).map((line) => options.isTTY ? color(line, MIST) : line)
+        : []),
+    ]
+    blocks.push(
+      (options.isTTY
+        ? renderOperationSectionTTY("Recommended next step", nextStepLines, width)
+        : renderOperationSectionPlain("Recommended next step", nextStepLines)).join("\n"),
+    )
+  }
+
+  for (const section of options.sections ?? []) {
+    blocks.push(
+      (options.isTTY
+        ? renderWizardSectionTTY(section, width)
+        : renderWizardSectionPlain(section, width)).join("\n"),
+    )
+  }
+
+  if (options.footerLines && options.footerLines.length > 0) {
+    blocks.push(options.footerLines.map((line) => options.isTTY ? color(line, MIST) : line).join("\n"))
+  }
+
+  if (options.prompt) {
+    blocks.push(options.isTTY ? color(options.prompt, BONE, true) : options.prompt)
+  }
+
+  return `${blocks.join("\n\n")}\n`
+}
+
 function renderActionLine(action: TerminalAction): string {
   const chips = [`[${formatActionActorLabel(action.actor)}]`]
   if (action.recommended) chips.push("[recommended]")
@@ -253,6 +476,63 @@ export function renderTerminalBoard(options: RenderTerminalBoardOptions): string
       lines.push(`   ${action.command}`)
     }
     blocks.push((options.isTTY ? renderPanelTTY("Actions", lines, width) : renderPanelPlain("Actions", lines)).join("\n"))
+  }
+
+  if (options.prompt) {
+    blocks.push(options.isTTY ? color(options.prompt, BONE, true) : options.prompt)
+  }
+
+  return `${blocks.join("\n\n")}\n`
+}
+
+export function renderTerminalGuide(options: RenderTerminalGuideOptions): string {
+  if (!options.suppressEvent) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.terminal_guide_rendered",
+      message: "rendered shared terminal guide",
+      meta: {
+        title: options.title,
+        sections: options.sections?.length ?? 0,
+        actions: options.actions?.length ?? 0,
+        tty: options.isTTY,
+      },
+    })
+  }
+
+  const width = boardWidth(options.columns)
+  const blocks: string[] = []
+  blocks.push(renderOuroMasthead({
+    isTTY: options.isTTY,
+    columns: width,
+    subtitle: options.masthead?.subtitle,
+  }).trimEnd())
+
+  const introLines = [
+    options.isTTY ? color(options.title, BONE, true) : options.title,
+    ...(options.summary
+      ? wrapPlain(options.summary, Math.max(20, width - 2)).map((line) => options.isTTY ? color(line, MIST) : line)
+      : []),
+  ]
+  blocks.push(introLines.join("\n"))
+
+  for (const section of options.sections ?? []) {
+    const lines = section.lines.map((line) => options.isTTY ? color(line, BONE) : line)
+    blocks.push((options.isTTY
+      ? renderOperationSectionTTY(section.title, lines, width)
+      : renderOperationSectionPlain(section.title, lines)).join("\n"))
+  }
+
+  const actionList = options.actions ?? []
+  if (actionList.length > 0) {
+    const lines: string[] = []
+    for (const [index, action] of actionList.entries()) {
+      lines.push(options.isTTY ? color(`${index + 1}. ${renderActionLine(action)}`, BONE, true) : `${index + 1}. ${renderActionLine(action)}`)
+      lines.push(options.isTTY ? color(`run: ${action.command}`, MIST) : `run: ${action.command}`)
+    }
+    blocks.push((options.isTTY
+      ? renderOperationSectionTTY("Next moves", lines, width)
+      : renderOperationSectionPlain("Next moves", lines)).join("\n"))
   }
 
   if (options.prompt) {

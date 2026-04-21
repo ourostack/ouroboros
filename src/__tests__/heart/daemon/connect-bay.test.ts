@@ -97,7 +97,7 @@ function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "e
 }
 
 describe("connect bay", () => {
-  it("wraps long capability detail lines inside framed TTY panels", () => {
+  it("wraps long capability detail lines inside the shared wizard surface", () => {
     emitTestEvent("connect bay wraps long capability detail lines")
     const longDetail = "Portable notes should wrap cleanly across the framed panel without turning into a jagged wall of text for the human staring at the terminal."
     const output = renderConnectBay(connectEntries({
@@ -111,10 +111,11 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("╭")
+    expect(output).toContain("Recommended next step")
     expect(output).toContain("Portable notes should wrap cleanly across the framed panel")
     expect(output).toContain("turning into a jagged wall of text for the human staring at the")
     expect(output).toContain("terminal.")
+    expect(output).not.toContain("╭")
   })
 
   it("renders non-TTY detail lines without dropping them on the floor", () => {
@@ -130,8 +131,9 @@ describe("connect bay", () => {
     })
 
     expect(output).toContain("Stored in the portable runtime vault item.")
-    expect(output).toContain("2. Perplexity search [ready]")
-    expect(output).not.toContain("OUROBOROS")
+    expect(output).toContain("2. Perplexity search  ● ready")
+    expect(output).toContain("OUROBOROS")
+    expect(output).toContain("Connect Slugger")
   })
 
   it("handles whitespace-only wrapped detail lines without breaking the panel layout", () => {
@@ -147,8 +149,8 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("2  Perplexity search")
-    expect(output).toContain("3  Memory embeddings")
+    expect(output).toContain("2. Perplexity search")
+    expect(output).toContain("3. Memory embeddings")
   })
 
   it("keeps ready provider summaries quiet when no repair hint is needed", () => {
@@ -195,8 +197,9 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("Everything here is ready.")
-    expect(output).toContain("Pick what you want to review or refresh.")
+    expect(output).toContain("Everything here is already connected.")
+    expect(output).toContain("Pick any capability if you want to review it, refresh it, or")
+    expect(output).toContain("its setup.")
   })
 
   it("renders provider-core fallback detail lines when lane summaries are absent", () => {
@@ -234,7 +237,7 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("1  Providers")
+    expect(output).toContain("1. Providers")
     expect(output).not.toContain("undefined")
   })
 
@@ -255,7 +258,8 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("failed live check: bad token")
+    expect(output).toContain("failed live check: bad")
+    expect(output).toContain("token")
     expect(output).toContain("Inner lane")
   })
 
@@ -350,7 +354,7 @@ describe("connect bay", () => {
       prompt: "Choose [1-6] or type a name: ",
     })
 
-    expect(output).toContain("4  Teams")
+    expect(output).toContain("4. Teams")
     expect(output).not.toContain("undefined")
   })
 
@@ -371,6 +375,22 @@ describe("connect bay", () => {
 
     expect(output).toContain("Unlock this agent's credential vault on this machine.")
     expect(output).toContain("ouro vault unlock --agent Slugger")
+  })
+
+  it("keeps capability-level next notes with the capability they belong to", () => {
+    emitTestEvent("connect bay capability next note")
+    const output = renderConnectBay(connectEntries({
+      teams: {
+        status: "needs attention",
+        nextNote: "Sense is enabled, but this machine still needs the Teams runtime fields.",
+      },
+    }), {
+      agent: "Slugger",
+      isTTY: false,
+      prompt: "Choose [1-6] or type a name: ",
+    })
+
+    expect(output).toContain("Sense is enabled, but this machine still needs the Teams runtime fields.")
   })
 
   it("extracts ouro use as the next move when provider setup is missing", () => {

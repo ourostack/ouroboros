@@ -271,8 +271,19 @@ function joinedPrompt(prompts: string[]): string {
   return prompts.join("\n")
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "")
+}
+
 function expectConnectStatus(prompt: string, option: number, name: string, status: string): void {
-  expect(prompt).toContain(`${option}. ${name} [${status}]`)
+  const symbol = status === "ready" || status === "attached"
+    ? "●"
+    : status === "not attached"
+      ? "◌"
+      : "◆"
+  const plain = stripAnsi(prompt)
+  expect(plain).toContain(`${option}. ${name}`)
+  expect(plain).toContain(`${symbol} ${status}`)
 }
 
 function writeAgentConfig(bundlesRoot: string, agentName: string): void {
@@ -3030,7 +3041,7 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
     const prompt = joinedPrompt(prompts)
 
-    expect(prompt).toContain("Slugger connections")
+    expect(prompt).toContain("Connect Slugger")
     expect(prompt).toContain("Recommended next step")
     expect(prompt).toContain("Providers")
     expect(prompt).toContain("Portable")
@@ -3257,7 +3268,7 @@ describe("provider CLI command execution", () => {
     }))
 
     expect(result).toBe("connect cancelled.")
-    expect(joinedPrompt(prompts)).toContain("Everything here is ready. Pick what you want to review or refresh.")
+    expect(joinedPrompt(prompts)).toContain("Everything here is already connected.")
   })
 
   it("renders transient provider-read trouble as attention in the root connect bay", async () => {
@@ -3445,14 +3456,14 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("\x1b[38;2;78;201;176m╭─ \x1b[0m")
-    expect(prompt).toContain("\x1b[38;2;238;242;234m\x1b[1mSlugger connections\x1b[0m")
+    expect(prompt).toContain("\x1b[38;2;30;61;40m─ \x1b[0m")
+    expect(stripAnsi(prompt)).toContain("Connect Slugger")
   })
 
-  it("renders the TTY connect bay as framed panels with humane provider lane labels", async () => {
-    emitTestEvent("provider cli connect menu framed panels")
-    const bundlesRoot = makeTempDir("provider-cli-connect-menu-framed-panels-bundles")
-    const homeDir = makeTempDir("provider-cli-connect-menu-framed-panels-home")
+  it("renders the TTY connect bay as the shared wizard surface with humane provider lane labels", async () => {
+    emitTestEvent("provider cli connect menu shared wizard")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-shared-wizard-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-shared-wizard-home")
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderCredentialPool(homeDir, credentialPool())
 
@@ -3467,17 +3478,16 @@ describe("provider CLI command execution", () => {
 
     const prompt = joinedPrompt(prompts)
     expect(result).toBe("connect cancelled.")
-    expect(prompt).toContain("╭")
-    expect(prompt).toContain("╰")
+    expect(prompt).toContain("Recommended next step")
     expect(prompt).toContain("Outward lane")
     expect(prompt).toContain("Inner lane")
     expect(prompt).toContain("Choose a number, or type the capability name.")
   })
 
-  it("uses a side-by-side layout on wide TTY terminals", async () => {
-    emitTestEvent("provider cli connect menu wide tty layout")
-    const bundlesRoot = makeTempDir("provider-cli-connect-menu-wide-tty-bundles")
-    const homeDir = makeTempDir("provider-cli-connect-menu-wide-tty-home")
+  it("keeps the shared wizard stable on wide TTY terminals", async () => {
+    emitTestEvent("provider cli connect menu wide tty wizard")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-wide-tty-wizard-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-wide-tty-wizard-home")
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderCredentialPool(homeDir, credentialPool())
 
@@ -3496,8 +3506,10 @@ describe("provider CLI command execution", () => {
 
     const promptLines = joinedPrompt(prompts).split("\n")
     expect(result).toBe("connect cancelled.")
-    expect(promptLines.some((line) => line.includes("Providers") && line.includes("Portable"))).toBe(true)
-    expect(promptLines.some((line) => line.includes("Recommended next step") && line.includes("This machine"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Recommended next step"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Providers"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("Portable"))).toBe(true)
+    expect(promptLines.some((line) => line.includes("This machine"))).toBe(true)
   })
 
   it("shows setup guidance when a provider lane is not configured on this machine", async () => {
@@ -3800,7 +3812,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("1. Providers [ready]")
+    expectConnectStatus(prompt, 1, "Providers", "ready")
     expect(prompt).toContain("Outward lane: openai-codex / gpt-5.4")
     expect(prompt).toContain("ready")
     expect(prompt).not.toContain("failed live check: unknown error")
@@ -3864,7 +3876,7 @@ describe("provider CLI command execution", () => {
     healthSpy.mockRestore()
 
     expect(result).toBe("connect cancelled.")
-    expect(joinedPrompt(prompts)).toContain("1. Providers [ready]")
+    expectConnectStatus(joinedPrompt(prompts), 1, "Providers", "ready")
     expect(joinedPrompt(prompts)).not.toContain("live check is stale")
   })
 
@@ -4000,7 +4012,7 @@ describe("provider CLI command execution", () => {
     writeMachineIdentity(homeDir, "machine_menu")
 
     const noninteractive = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
-    expect(noninteractive).toContain("Slugger connections")
+    expect(noninteractive).toContain("Connect Slugger")
     expect(noninteractive).toContain("Recommended next step")
     expect(noninteractive).toContain("ouro connect providers --agent Slugger")
     expect(noninteractive).toContain("ouro connect perplexity --agent Slugger")
