@@ -1056,34 +1056,39 @@ describe("checkSecurity", () => {
 
 describe("checkDisk", () => {
   it("passes when logs dir exists with reasonable size", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["daemon.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["daemon.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/daemon.log": { mode: 0o644, size: 5000 },
+        [`${logsDir}/daemon.log`]: { mode: 0o644, size: 5000 },
       }),
     })
     const cat = checkDisk(deps)
     expect(cat.name).toBe("Disk")
     expect(cat.checks.find((c) => c.label.includes("log size"))?.status).toBe("pass")
+    expect(cat.checks.find((c) => c.label.includes("log size"))?.label).toBe("test.ouro daemon log size")
     expect(cat.checks.find((c) => c.label.includes("bundles root"))?.status).toBe("pass")
   })
 
   it("warns when log directory is missing", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("logs dir"))?.status).toBe("warn")
+    expect(cat.checks.find((c) => c.label.includes("logs dir"))?.detail).toContain("/tmp/bundles/test.ouro/state/daemon/logs")
   })
 
   it("warns when log files are over 100MB", () => {
     const bigSize = 150 * 1024 * 1024 // 150MB
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["big.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["big.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/big.log": { mode: 0o644, size: bigSize },
+        [`${logsDir}/big.log`]: { mode: 0o644, size: bigSize },
       }),
     })
     const cat = checkDisk(deps)
@@ -1093,11 +1098,12 @@ describe("checkDisk", () => {
 
   it("fails when log files are over 500MB", () => {
     const hugeSize = 600 * 1024 * 1024 // 600MB
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["huge.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["huge.log"] }),
       statSync: statFor({
-        "/tmp/home/.ouro-cli/logs/huge.log": { mode: 0o644, size: hugeSize },
+        [`${logsDir}/huge.log`]: { mode: 0o644, size: hugeSize },
       }),
     })
     const cat = checkDisk(deps)
@@ -1107,17 +1113,18 @@ describe("checkDisk", () => {
 
   it("warns when bundles root missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": [] }),
+      existsSync: existsFor([]),
+      readdirSync: readdirFor({}),
     })
     const cat = checkDisk(deps)
     expect(cat.checks.find((c) => c.label.includes("bundles root"))?.status).toBe("warn")
   })
 
   it("handles statSync failure on individual log files gracefully", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: readdirFor({ "/tmp/home/.ouro-cli/logs": ["bad.log"] }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"], [logsDir]: ["bad.log"] }),
       statSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
     })
     const cat = checkDisk(deps)
@@ -1126,9 +1133,13 @@ describe("checkDisk", () => {
   })
 
   it("handles readdirSync failure on logs dir gracefully", () => {
+    const logsDir = "/tmp/bundles/test.ouro/state/daemon/logs"
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/home/.ouro-cli/logs", "/tmp/bundles"]),
-      readdirSync: vi.fn().mockImplementation(() => { throw new Error("EACCES") }),
+      existsSync: existsFor(["/tmp/bundles", logsDir]),
+      readdirSync: vi.fn().mockImplementation((path: string) => {
+        if (path === "/tmp/bundles") return ["test.ouro"]
+        throw new Error("EACCES")
+      }),
     })
     const cat = checkDisk(deps)
     // Should still produce a result with 0 bytes (catch absorbs error)

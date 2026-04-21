@@ -358,11 +358,7 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
-  // Check daemon logs directory
-  const logsDir = `${deps.homedir}/.ouro-cli/logs`
-  if (!deps.existsSync(logsDir)) {
-    checks.push({ label: "daemon logs dir", status: "warn", detail: `${logsDir} not found` })
-  } else {
+  const addLogSizeCheck = (labelPrefix: string, logsDir: string): void => {
     let totalSize = 0
     try {
       const files = deps.readdirSync(logsDir)
@@ -380,11 +376,25 @@ export function checkDisk(deps: DoctorDeps): DoctorCategory {
 
     const sizeMB = totalSize / (1024 * 1024)
     if (sizeMB > 500) {
-      checks.push({ label: "daemon log size", status: "fail", detail: `${sizeMB.toFixed(1)}MB — exceeds 500MB limit` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "fail", detail: `${sizeMB.toFixed(1)}MB — exceeds 500MB limit` })
     } else if (sizeMB > 100) {
-      checks.push({ label: "daemon log size", status: "warn", detail: `${sizeMB.toFixed(1)}MB — consider pruning with \`ouro logs prune\`` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "warn", detail: `${sizeMB.toFixed(1)}MB — consider pruning with \`ouro logs prune\`` })
     } else {
-      checks.push({ label: "daemon log size", status: "pass", detail: `${sizeMB.toFixed(1)}MB` })
+      checks.push({ label: `${labelPrefix} daemon log size`, status: "pass", detail: `${sizeMB.toFixed(1)}MB` })
+    }
+  }
+
+  const agents = discoverAgents(deps)
+  if (agents.length === 0) {
+    checks.push({ label: "daemon logs dir", status: "warn", detail: "no agent bundles found for bundle-local logs" })
+  }
+
+  for (const agentDir of agents) {
+    const logsDir = `${deps.bundlesRoot}/${agentDir}/state/daemon/logs`
+    if (!deps.existsSync(logsDir)) {
+      checks.push({ label: `${agentDir} daemon logs dir`, status: "warn", detail: `${logsDir} not found` })
+    } else {
+      addLogSizeCheck(agentDir, logsDir)
     }
   }
 
