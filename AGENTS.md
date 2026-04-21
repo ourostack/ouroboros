@@ -42,6 +42,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 ### Harness Purpose
 
 - Ouroboros is not primarily a coding agent. It is a general-purpose way to build executive-assistant and purpose-oriented agents that can execute real-world work.
+- Model the default agent-human relationship as a person and their executive assistant. For private systems like email, calendars, documents, payments, and accounts, prefer delegated, revocable live access over bulk export or shadow ownership. Exports are appropriate for migration, archive bootstrap, recovery, legal/discovery-style review, or explicit human handoff; they are not the default shape of day-to-day assistance.
 - Optimize for orientation and capability: agents should stay grounded, act instead of narrate, answer ad-hoc questions well, and return cleanly to unfinished work.
 - Build tooling and harness behavior that you, as a current or future inhabitant of this harness, would genuinely enjoy using and trust to keep you sharp for hours.
 - Prefer durable orientation primitives over brittle prompt theater. If an agent keeps getting confused, add truth-bearing state, clearer return loops, and better execution discipline.
