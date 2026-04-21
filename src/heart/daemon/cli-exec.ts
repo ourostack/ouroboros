@@ -62,7 +62,7 @@ import { getDefaultModelForProvider } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
-import { provisionMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
+import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { FileMailroomStore } from "../../mailroom/file-store"
 import { importMboxToStore } from "../../mailroom/mbox-import"
 
@@ -357,6 +357,7 @@ type MissingAgentResolvableKind =
   | "vault.config.set"
   | "vault.config.status"
   | "connect"
+  | "account.ensure"
   | "mail.import-mbox"
   | "auth.run"
   | "auth.verify"
@@ -464,6 +465,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "vault.config.set":
     case "vault.config.status":
     case "connect":
+    case "account.ensure":
     case "mail.import-mbox":
     case "auth.run":
     case "auth.verify":
@@ -1396,7 +1398,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "mail.import-mbox" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" }>): DaemonCommand {
   return command
 }
 
@@ -3222,11 +3224,108 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   })
 }
 
-async function executeConnectMail(agent: string, deps: OuroCliDeps): Promise<string> {
+interface MailroomSetupOutcome {
+  mailboxAddress: string
+  sourceAlias: string | null
+  registryPath: string
+  storePath: string
+  stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>>
+  syncSummary: string | null
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function readMailroomRegistryFromDisk(registryPath: string): MailroomRegistry | undefined {
+  if (!fs.existsSync(registryPath)) return undefined
+  const parsed = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as unknown
+  if (!isPlainRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.mailboxes) || !Array.isArray(parsed.sourceGrants)) {
+    throw new Error(`mailroom registry at ${registryPath} is not a valid Mailroom registry`)
+  }
+  return parsed as unknown as MailroomRegistry
+}
+
+function mailroomPrivateKeys(mailroom: Record<string, unknown> | undefined): Record<string, string> {
+  const keys = isPlainRecord(mailroom?.privateKeys) ? mailroom.privateKeys : {}
+  return Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+}
+
+async function promptDelegatedMailSource(deps: OuroCliDeps): Promise<{ ownerEmail: string; source: string }> {
+  const promptInput = requirePromptInput(deps, "Agent Mail setup")
+  const ownerEmail = (await promptInput("Delegated owner email for first source alias [blank to skip]: ")).trim()
+  const source = ownerEmail
+    ? ((await promptInput("Delegated source label [hey]: ")).trim() || "hey")
+    : ""
+  return { ownerEmail, source }
+}
+
+async function ensureAgentMailroom(
+  agent: string,
+  input: { ownerEmail: string; source: string },
+  deps: OuroCliDeps,
+  progressLabel: string,
+): Promise<MailroomSetupOutcome> {
   if (agent === "SerpentGuide") {
     throw new Error("SerpentGuide has no persistent runtime credentials. Connect mail on the hatchling agent instead.")
   }
-  const promptInput = requirePromptInput(deps, "Agent Mail setup")
+  const agentRoot = providerCliAgentRoot({ agent }, deps)
+  const mailStateDir = path.join(agentRoot, "state", "mailroom")
+  const progress = createHumanCommandProgress(deps, progressLabel)
+  let stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>> | undefined
+  let mailboxAddress = `${agent.toLowerCase()}@ouro.bot`
+  let sourceAlias: string | null = null
+  let registryPath = path.join(mailStateDir, "registry.json")
+  let storePath = mailStateDir
+  try {
+    progress.startPhase("checking Mailroom runtime config")
+    const current = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+    if (!current.ok && current.reason !== "missing") {
+      throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+    }
+    const currentConfig = current.ok ? current.config : {}
+    const existingMailroom = isPlainRecord(currentConfig.mailroom) ? currentConfig.mailroom : undefined
+    registryPath = stringField(existingMailroom ?? {}, "registryPath") || registryPath
+    storePath = stringField(existingMailroom ?? {}, "storePath") || storePath
+    progress.updateDetail("ensuring Mailroom identity")
+    const ensured = ensureMailboxRegistry({
+      agentId: agent,
+      registry: readMailroomRegistryFromDisk(registryPath),
+      keys: mailroomPrivateKeys(existingMailroom),
+      ownerEmail: input.ownerEmail || undefined,
+      source: input.source || undefined,
+    })
+    mailboxAddress = ensured.mailboxAddress
+    sourceAlias = ensured.sourceAlias
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    fs.mkdirSync(storePath, { recursive: true })
+    fs.writeFileSync(registryPath, `${JSON.stringify(ensured.registry, null, 2)}\n`, "utf-8")
+    const nextConfig: RuntimeCredentialConfig = {
+      ...currentConfig,
+      mailroom: {
+        ...(existingMailroom ?? {}),
+        mailboxAddress,
+        registryPath,
+        storePath,
+        privateKeys: ensured.keys,
+      },
+    }
+    progress.updateDetail("storing private mail keys in vault")
+    stored = await upsertRuntimeCredentialConfig(agent, nextConfig, providerCliNow(deps))
+    progress.updateDetail("enabling Mail sense in agent.json")
+    enableAgentSense(agent, "mail", deps)
+    progress.completePhase("checking Mailroom runtime config", "mail ready")
+    progress.end()
+  } catch (error) {
+    progress.end()
+    throw error
+  }
+  if (!stored) throw new Error("Mailroom setup did not store runtime credentials")
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return { mailboxAddress, sourceAlias, registryPath, storePath, stored, syncSummary }
+}
+
+async function executeConnectMail(agent: string, deps: OuroCliDeps): Promise<string> {
   writeConnectorIntro(deps, {
     title: "Connect Agent Mail",
     subtitle: `${agent} gets a private Mailroom identity and delegated source lane.`,
@@ -3261,87 +3360,100 @@ async function executeConnectMail(agent: string, deps: OuroCliDeps): Promise<str
       "The registry and encrypted local store live under the agent bundle state.",
     ],
   })
-  const ownerEmail = (await promptInput("Delegated owner email for first source alias [blank to skip]: ")).trim()
-  const source = ownerEmail
-    ? ((await promptInput("Delegated source label [hey]: ")).trim() || "hey")
-    : ""
-
-  const agentRoot = providerCliAgentRoot({ agent }, deps)
-  const mailStateDir = path.join(agentRoot, "state", "mailroom")
-  const registryPath = path.join(mailStateDir, "registry.json")
-  const storePath = mailStateDir
-  const progress = createHumanCommandProgress(deps, "connect mail")
-  let stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>>
-  let mailboxAddress = `${agent.toLowerCase()}@ouro.bot`
-  let sourceAlias: string | null = null
-  try {
-    progress.startPhase("provisioning Mailroom identity")
-    const provisioned = provisionMailboxRegistry({
-      agentId: agent,
-      ownerEmail: ownerEmail || undefined,
-      source: source || undefined,
-    })
-    mailboxAddress = provisioned.registry.mailboxes[0].canonicalAddress
-    sourceAlias = provisioned.registry.sourceGrants[0]?.aliasAddress ?? null
-    fs.mkdirSync(mailStateDir, { recursive: true })
-    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
-    progress.updateDetail("checking existing runtime config")
-    const current = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
-    if (!current.ok && current.reason !== "missing") {
-      progress.end()
-      throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
-    }
-    const nextConfig: RuntimeCredentialConfig = {
-      ...(current.ok ? current.config : {}),
-      mailroom: {
-        mailboxAddress,
-        registryPath,
-        storePath,
-        privateKeys: provisioned.keys,
-      },
-    }
-    progress.updateDetail("storing private mail keys in vault")
-    stored = await upsertRuntimeCredentialConfig(agent, nextConfig, providerCliNow(deps))
-    progress.updateDetail("enabling Mail sense in agent.json")
-    enableAgentSense(agent, "mail", deps)
-    progress.completePhase("provisioning Mailroom identity", "mail ready")
-    progress.end()
-  } catch (error) {
-    progress.end()
-    throw error
-  }
-  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const setup = await promptDelegatedMailSource(deps)
+  const outcome = await ensureAgentMailroom(agent, setup, deps, "connect mail")
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s Mail sense is configured.`,
     summary: `Agent Mail is ready for ${agent}.`,
     whatChanged: [
-      `Mailbox: ${mailboxAddress}`,
-      ...(sourceAlias ? [`Delegated alias: ${sourceAlias}`] : []),
-      `Registry: ${registryPath}`,
-      `Encrypted store: ${storePath}`,
-      `Stored: ${stored.itemPath}`,
+      `Mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
+      `Registry: ${outcome.registryPath}`,
+      `Encrypted store: ${outcome.storePath}`,
+      `Stored: ${outcome.stored.itemPath}`,
       "agent.json: senses.mail.enabled = true",
       "private mail keys were not printed",
-      ...(syncSummary ? [syncSummary] : []),
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
     ],
     nextMoves: [
       "Run ouro up so the daemon picks up the Mail sense.",
-      sourceAlias
-        ? `Use ${sourceAlias} for HEY forwarding or Extensions after the SMTP ingress proof is accepted.`
+      outcome.sourceAlias
+        ? `Use ${outcome.sourceAlias} for HEY forwarding or Extensions after the SMTP ingress proof is accepted.`
         : "Add delegated source aliases when you are ready to mirror human mail.",
     ],
     fallbackLines: [
       `Agent Mail connected for ${agent}`,
-      `mailbox: ${mailboxAddress}`,
-      ...(sourceAlias ? [`delegated alias: ${sourceAlias}`] : []),
-      `registry: ${registryPath}`,
-      `encrypted store: ${storePath}`,
-      `stored: ${stored.itemPath}`,
+      `mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
+      `registry: ${outcome.registryPath}`,
+      `encrypted store: ${outcome.storePath}`,
+      `stored: ${outcome.stored.itemPath}`,
       "agent.json: senses.mail.enabled = true",
       "private mail keys were not printed",
       "",
       "Next: run `ouro up` so the daemon picks up the Mail sense.",
-      ...(syncSummary ? [syncSummary] : []),
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+  })
+}
+
+async function executeAccountEnsure(
+  command: Extract<ResolvedOuroCliCommand, { kind: "account.ensure" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  writeConnectorIntro(deps, {
+    title: "Ensure Agent Account",
+    subtitle: `${command.agent}'s Ouro work substrate gets its vault-backed coordinates.`,
+    summary: "Prepare the portable runtime account shape that couples vault, Mailroom, and enabled senses.",
+    sections: [
+      {
+        title: "Account substrate",
+        lines: [
+          "runtime/config remains the private vault item for portable integration secrets.",
+          "Mailroom gets a private native mailbox and optional delegated source alias.",
+          "agent.json records that the Mail sense is enabled.",
+        ],
+      },
+      {
+        title: "Human-only edges",
+        lines: [
+          "This command does not perform browser auth, HEY forwarding, DNS edits, MX cutover, or autonomous sending enablement.",
+        ],
+      },
+    ],
+    fallbackLines: [
+      `Ensure Ouro work substrate for ${command.agent}`,
+      "This creates or preserves runtime/config Mailroom coordinates and enables the Mail sense.",
+    ],
+  })
+  const setup = await promptDelegatedMailSource(deps)
+  const outcome = await ensureAgentMailroom(command.agent, setup, deps, "account ensure")
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${command.agent}'s work substrate account is configured.`,
+    summary: `Ouro work substrate is ready for ${command.agent}.`,
+    whatChanged: [
+      "Vault item: runtime/config",
+      `Mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
+      `Registry: ${outcome.registryPath}`,
+      `Encrypted store: ${outcome.storePath}`,
+      "agent.json: senses.mail.enabled = true",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
+    ],
+    nextMoves: [
+      "Run ouro up so the daemon picks up the Mail sense.",
+      "Import HEY MBOX mail only after the human has exported the file.",
+      "Keep production MX and autonomous send disabled until the final explicit confirmation.",
+    ],
+    fallbackLines: [
+      `Ouro work substrate ready for ${command.agent}`,
+      "vault: runtime/config",
+      `mailbox: ${outcome.mailboxAddress}`,
+      ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
+      `registry: ${outcome.registryPath}`,
+      `encrypted store: ${outcome.storePath}`,
+      "agent.json: senses.mail.enabled = true",
+      ...(outcome.syncSummary ? [outcome.syncSummary] : []),
     ],
   })
 }
@@ -4945,6 +5057,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "connect") {
     return executeConnect(command, deps)
+  }
+
+  if (command.kind === "account.ensure") {
+    return executeAccountEnsure(command, deps)
   }
 
   if (command.kind === "mail.import-mbox") {

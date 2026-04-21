@@ -205,6 +205,15 @@ export interface MailroomIngestResult {
   rejectedRecipients: string[]
 }
 
+export interface MailroomEnsureResult {
+  registry: MailroomRegistry
+  keys: Record<string, string>
+  mailboxAddress: string
+  sourceAlias: string | null
+  addedMailbox: boolean
+  addedSourceGrant: boolean
+}
+
 const LOCAL_PART_LIMIT = 64
 const SNIPPET_LIMIT = 240
 const RAW_OBJECT_PREFIX = "raw"
@@ -615,5 +624,130 @@ export function provisionMailboxRegistry(input: {
       sourceGrants,
     },
     keys,
+  }
+}
+
+function cloneMailroomRegistry(registry: MailroomRegistry, domain: string): MailroomRegistry {
+  return {
+    schemaVersion: 1,
+    domain,
+    mailboxes: registry.mailboxes.map((mailbox) => ({ ...mailbox })),
+    sourceGrants: registry.sourceGrants.map((grant) => ({ ...grant })),
+    ...(registry.senderPolicies ? { senderPolicies: registry.senderPolicies.map((policy) => ({ ...policy })) } : {}),
+  }
+}
+
+function requireExistingPrivateKey(keys: Record<string, string>, keyId: string, label: string): void {
+  if (keys[keyId]) return
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_private_key_missing",
+    message: "mail registry references a missing private key",
+    meta: { keyId, label },
+  })
+  throw new Error(`Mailroom registry references ${keyId} for ${label}, but runtime/config is missing its private key`)
+}
+
+function sourceGrantId(input: { agentId: string; ownerEmail: string; source: string }): string {
+  const sourcePart = safeAddressPart(input.source) || "source"
+  const ownerHash = crypto.createHash("sha256").update(normalizeMailAddress(input.ownerEmail)).digest("hex").slice(0, 8)
+  return `grant_${input.agentId}_${sourcePart}_${ownerHash}`
+}
+
+export function ensureMailboxRegistry(input: {
+  agentId: string
+  domain?: string
+  registry?: MailroomRegistry
+  keys?: Record<string, string>
+  ownerEmail?: string
+  source?: string
+  sourceTag?: string
+}): MailroomEnsureResult {
+  const domain = (input.registry?.domain ?? input.domain ?? "ouro.bot").toLowerCase()
+  const agentId = safeAddressPart(input.agentId) || "agent"
+  const keys: Record<string, string> = { ...(input.keys ?? {}) }
+  const registry: MailroomRegistry = input.registry
+    ? cloneMailroomRegistry(input.registry, domain)
+    : {
+        schemaVersion: 1,
+        domain,
+        mailboxes: [] as AgentMailboxRecord[],
+        sourceGrants: [] as SourceGrantRecord[],
+      }
+
+  let addedMailbox = false
+  let mailbox = registry.mailboxes.find((entry) => entry.agentId === agentId)
+  if (mailbox) {
+    requireExistingPrivateKey(keys, mailbox.keyId, `mailbox ${mailbox.canonicalAddress}`)
+  } else {
+    const mailboxKey = generateMailKeyPair(`${agentId}-native`)
+    mailbox = {
+      agentId,
+      mailboxId: `mailbox_${agentId}`,
+      canonicalAddress: `${agentId}@${domain}`,
+      keyId: mailboxKey.keyId,
+      publicKeyPem: mailboxKey.publicKeyPem,
+      defaultPlacement: "screener",
+    }
+    registry.mailboxes.push(mailbox)
+    keys[mailboxKey.keyId] = mailboxKey.privateKeyPem
+    addedMailbox = true
+  }
+
+  let sourceAlias: string | null = null
+  let addedSourceGrant = false
+  if (input.ownerEmail) {
+    const ownerEmail = normalizeMailAddress(input.ownerEmail)
+    const source = (input.source?.trim() || "hey").toLowerCase()
+    const existing = registry.sourceGrants.find((grant) =>
+      grant.agentId === agentId &&
+      normalizeMailAddress(grant.ownerEmail) === ownerEmail &&
+      grant.source.toLowerCase() === source)
+    if (existing) {
+      requireExistingPrivateKey(keys, existing.keyId, `source grant ${existing.aliasAddress}`)
+      sourceAlias = existing.aliasAddress
+    } else {
+      const grantKey = generateMailKeyPair(`${agentId}-${source}`)
+      sourceAlias = sourceAliasForOwner({
+        ownerEmail,
+        agentId,
+        domain,
+        sourceTag: input.sourceTag ?? (source === "hey" ? undefined : source),
+      })
+      registry.sourceGrants.push({
+        grantId: sourceGrantId({ agentId, ownerEmail, source }),
+        agentId,
+        ownerEmail,
+        source,
+        aliasAddress: sourceAlias,
+        keyId: grantKey.keyId,
+        publicKeyPem: grantKey.publicKeyPem,
+        defaultPlacement: "imbox",
+        enabled: true,
+      })
+      keys[grantKey.keyId] = grantKey.privateKeyPem
+      addedSourceGrant = true
+    }
+  }
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_registry_ensured",
+    message: "mail registry ensured",
+    meta: {
+      agentId,
+      addedMailbox,
+      addedSourceGrant,
+      mailboxes: registry.mailboxes.length,
+      sourceGrants: registry.sourceGrants.length,
+    },
+  })
+  return {
+    registry,
+    keys,
+    mailboxAddress: mailbox.canonicalAddress,
+    sourceAlias,
+    addedMailbox,
+    addedSourceGrant,
   }
 }
