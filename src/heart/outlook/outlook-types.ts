@@ -368,6 +368,88 @@ export interface OutlookSessionTranscript {
 }
 
 // ---------------------------------------------------------------------------
+// Mail sense surface: read-only mailbox inspection
+// ---------------------------------------------------------------------------
+
+export type OutlookMailStatus = "ready" | "auth-required" | "misconfigured" | "not-found" | "error"
+
+export interface OutlookMailFolder {
+  id: string
+  label: string
+  count: number
+}
+
+export interface OutlookMailAttachmentSummary {
+  filename: string
+  contentType: string
+  size: number
+}
+
+export interface OutlookMailMessageSummary {
+  id: string
+  subject: string
+  from: string[]
+  to: string[]
+  cc: string[]
+  date: string | null
+  receivedAt: string
+  snippet: string
+  placement: "imbox" | "screener"
+  compartmentKind: "native" | "delegated"
+  ownerEmail: string | null
+  source: string | null
+  recipient: string
+  attachmentCount: number
+  untrustedContentWarning: string
+}
+
+export interface OutlookMailMessageDetail extends OutlookMailMessageSummary {
+  text: string
+  htmlAvailable: boolean
+  bodyTruncated: boolean
+  attachments: OutlookMailAttachmentSummary[]
+  access: {
+    tool: string
+    reason: string
+    accessedAt: string
+  }
+}
+
+export interface OutlookMailAccessEntry {
+  id: string
+  messageId: string | null
+  threadId: string | null
+  tool: string
+  reason: string
+  accessedAt: string
+}
+
+export interface OutlookMailView {
+  status: OutlookMailStatus
+  agentName: string
+  mailboxAddress: string | null
+  generatedAt: string
+  store: {
+    kind: "file" | "azure-blob"
+    label: string
+  } | null
+  folders: OutlookMailFolder[]
+  messages: OutlookMailMessageSummary[]
+  accessLog: OutlookMailAccessEntry[]
+  error: string | null
+}
+
+export interface OutlookMailMessageView {
+  status: OutlookMailStatus
+  agentName: string
+  mailboxAddress: string | null
+  generatedAt: string
+  message: OutlookMailMessageDetail | null
+  accessLog: OutlookMailAccessEntry[]
+  error: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Coding deep inspection
 // ---------------------------------------------------------------------------
 

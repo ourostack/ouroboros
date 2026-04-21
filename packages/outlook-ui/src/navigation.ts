@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react"
 
-export type TabId = "overview" | "sessions" | "work" | "connections" | "inner" | "notes" | "runtime"
+export type TabId = "overview" | "mail" | "sessions" | "work" | "connections" | "inner" | "notes" | "runtime"
 
 export interface NavigateTarget {
   tab: TabId
@@ -34,7 +34,7 @@ export interface RouteState {
   focus: string | undefined
 }
 
-const VALID_TABS = new Set<string>(["overview", "sessions", "work", "connections", "inner", "notes", "runtime"])
+const VALID_TABS = new Set<string>(["overview", "mail", "sessions", "work", "connections", "inner", "notes", "runtime"])
 
 export function parseHash(hash: string): RouteState | null {
   const path = hash.replace(/^#\/?/, "")

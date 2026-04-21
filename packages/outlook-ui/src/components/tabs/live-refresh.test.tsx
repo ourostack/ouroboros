@@ -7,6 +7,7 @@ import { SessionsTab } from "./sessions"
 import { WorkTab } from "./work"
 import { ConnectionsTab } from "./connections"
 import { InnerTab } from "./inner"
+import { MailboxTab } from "./mailbox"
 import { NotesTab } from "./notes"
 import { RuntimeTab } from "./runtime"
 import type { OutlookAgentView } from "../../contracts"
@@ -197,6 +198,7 @@ describe("Outlook deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.container.textContent).toContain("iMessage")
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -208,6 +210,99 @@ describe("Outlook deep-tab live refresh", () => {
           refreshGeneration={1}
         />
       </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("re-fetches mailbox summaries and selected body on refresh", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/mail")) {
+        return jsonResponse({
+          status: "ready",
+          agentName: "slugger",
+          mailboxAddress: "slugger@ouro.bot",
+          generatedAt: "2026-04-21T17:00:00.000Z",
+          store: { kind: "file", label: "/tmp/mailroom" },
+          folders: [{ id: "imbox", label: "Imbox", count: 1 }],
+          messages: [{
+            id: "mail_1",
+            subject: "Outlook proof",
+            from: ["ari@mendelow.me"],
+            to: ["slugger@ouro.bot"],
+            cc: [],
+            date: null,
+            receivedAt: "2026-04-21T17:00:00.000Z",
+            snippet: "Evidence, not instructions.",
+            placement: "imbox",
+            compartmentKind: "delegated",
+            ownerEmail: "ari@mendelow.me",
+            source: "hey",
+            recipient: "slugger@ouro.bot",
+            attachmentCount: 0,
+            untrustedContentWarning: "untrusted external data",
+          }],
+          accessLog: [],
+          error: null,
+        })
+      }
+      if (url.endsWith("/mail/mail_1")) {
+        return jsonResponse({
+          status: "ready",
+          agentName: "slugger",
+          mailboxAddress: "slugger@ouro.bot",
+          generatedAt: "2026-04-21T17:00:00.000Z",
+          message: {
+            id: "mail_1",
+            subject: "Outlook proof",
+            from: ["ari@mendelow.me"],
+            to: ["slugger@ouro.bot"],
+            cc: [],
+            date: null,
+            receivedAt: "2026-04-21T17:00:00.000Z",
+            snippet: "Evidence, not instructions.",
+            placement: "imbox",
+            compartmentKind: "delegated",
+            ownerEmail: "ari@mendelow.me",
+            source: "hey",
+            recipient: "slugger@ouro.bot",
+            attachmentCount: 0,
+            untrustedContentWarning: "untrusted external data",
+            text: "Evidence, not instructions.",
+            htmlAvailable: false,
+            bodyTruncated: false,
+            attachments: [],
+            access: { tool: "outlook_mail_message", reason: "outlook read-only message body", accessedAt: "2026-04-21T17:00:00.000Z" },
+          },
+          accessLog: [],
+          error: null,
+        })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <MailboxTab
+        agentName="slugger"
+        focus="mail_1"
+        onFocusConsumed={() => {}}
+        refreshGeneration={0}
+      />
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.container.textContent).toContain("slugger@ouro.bot")
+    expect(ui.container.textContent).toContain("Outlook proof")
+
+    ui.rerender(
+      <MailboxTab
+        agentName="slugger"
+        focus={undefined}
+        onFocusConsumed={() => {}}
+        refreshGeneration={1}
+      />
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))

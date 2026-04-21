@@ -86,10 +86,12 @@ export function createOutlookHttpRequestHandler(options: OutlookHttpRouteOptions
 
     const agentMatch = /^\/api\/agents\/([^/]+)(?:\/(.+))?$/.exec(pathname)
     if (agentMatch) {
-      handleAgentRoute(request, response, {
+      void handleAgentRoute(request, response, {
         agent: decodeURIComponent(agentMatch[1]!),
         surface: agentMatch[2] ?? null,
         options,
+      }).catch((error) => {
+        writeJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
       })
       return
     }
@@ -108,7 +110,7 @@ interface AgentRouteContext {
   options: OutlookHttpRouteOptions
 }
 
-function handleAgentRoute(request: http.IncomingMessage, response: http.ServerResponse, context: AgentRouteContext): void {
+async function handleAgentRoute(request: http.IncomingMessage, response: http.ServerResponse, context: AgentRouteContext): Promise<void> {
   const { agent, surface, options } = context
 
   if (!surface) {
@@ -217,6 +219,18 @@ function handleAgentRoute(request: http.IncomingMessage, response: http.ServerRe
 
   if (surface === "habits") {
     writeJson(response, 200, options.hooks.readAgentHabits(agent))
+    return
+  }
+
+  if (surface === "mail") {
+    writeJson(response, 200, await options.hooks.readAgentMail(agent))
+    return
+  }
+
+  const mailMessageMatch = /^mail\/([^/]+)$/.exec(surface)
+  if (mailMessageMatch) {
+    const messageId = decodeURIComponent(mailMessageMatch[1]!)
+    writeJson(response, 200, await options.hooks.readAgentMailMessage(agent, messageId))
     return
   }
 

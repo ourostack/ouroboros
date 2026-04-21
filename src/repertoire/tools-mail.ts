@@ -1,85 +1,7 @@
-import * as path from "node:path"
 import type { ToolDefinition } from "./tools-base"
-import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { getAgentName, getAgentRoot } from "../heart/identity"
 import { isTrustedLevel } from "../mind/friends/types"
-import { emitNervesEvent } from "../nerves/runtime"
-import { decryptMessages, FileMailroomStore } from "../mailroom/file-store"
-
-interface MailroomRuntimeConfig {
-  mailboxAddress: string
-  storePath?: string
-  privateKeys: Record<string, string>
-}
-
-type MailroomConfigResult =
-  | { ok: true; agentName: string; config: MailroomRuntimeConfig; store: FileMailroomStore }
-  | { ok: false; error: string }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
-function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | null {
-  if (!isRecord(value)) return null
-  const mailboxAddress = typeof value.mailboxAddress === "string" ? value.mailboxAddress.trim() : ""
-  if (!mailboxAddress) return null
-  if (!isRecord(value.privateKeys)) return null
-  const privateKeys = Object.fromEntries(
-    Object.entries(value.privateKeys).filter((entry): entry is [string, string] => {
-      return typeof entry[0] === "string" && typeof entry[1] === "string" && entry[1].trim().length > 0
-    }),
-  )
-  if (Object.keys(privateKeys).length === 0) return null
-  return {
-    mailboxAddress,
-    ...(typeof value.storePath === "string" && value.storePath.trim() ? { storePath: value.storePath.trim() } : {}),
-    privateKeys,
-  }
-}
-
-function resolveMailroomConfig(): MailroomConfigResult {
-  const agentName = getAgentName()
-  const runtime = readRuntimeCredentialConfig(agentName)
-  if (!runtime.ok) {
-    emitNervesEvent({
-      component: "tools",
-      event: "tool.mail_config_missing",
-      message: "mailroom runtime config unavailable",
-      meta: { agentName, reason: runtime.reason },
-    })
-    return {
-      ok: false,
-      error: `AUTH_REQUIRED:mailroom -- Mail is not available because ${runtime.itemPath} is ${runtime.reason}. Run 'ouro connect mail --agent ${agentName}' after the vault is unlocked.`,
-    }
-  }
-  const config = parseMailroomConfig(runtime.config.mailroom)
-  if (!config) {
-    emitNervesEvent({
-      component: "tools",
-      event: "tool.mail_config_missing",
-      message: "mailroom config missing required fields",
-      meta: { agentName },
-    })
-    return {
-      ok: false,
-      error: `AUTH_REQUIRED:mailroom -- Missing mailroom mailbox/private key config in vault runtime/config for ${agentName}.`,
-    }
-  }
-  const storePath = config.storePath ?? path.join(getAgentRoot(agentName), "state", "mailroom")
-  emitNervesEvent({
-    component: "tools",
-    event: "tool.mail_config_loaded",
-    message: "mailroom tool config loaded",
-    meta: { agentName, mailboxAddress: config.mailboxAddress },
-  })
-  return {
-    ok: true,
-    agentName,
-    config,
-    store: new FileMailroomStore({ rootDir: storePath }),
-  }
-}
+import { decryptMessages, type MailAccessLogEntry } from "../mailroom/file-store"
+import { resolveMailroomReader } from "../mailroom/reader"
 
 function trustAllowsMailRead(ctx: Parameters<ToolDefinition["handler"]>[1]): boolean {
   const trustLevel = ctx?.context?.friend?.trustLevel
@@ -107,7 +29,7 @@ function renderMessageSummary(message: ReturnType<typeof decryptMessages>[number
   ].join("\n")
 }
 
-function renderAccessLog(entries: Awaited<ReturnType<FileMailroomStore["listAccessLog"]>>): string {
+function renderAccessLog(entries: MailAccessLogEntry[]): string {
   if (entries.length === 0) return "No mail access records yet."
   return entries
     .slice(-20)
@@ -140,7 +62,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
-      const resolved = resolveMailroomConfig()
+      const resolved = resolveMailroomReader()
       if (!resolved.ok) return resolved.error
       const scope = args.scope === "native" || args.scope === "delegated" ? args.scope : undefined
       const messages = await resolved.store.listMessages({
@@ -181,7 +103,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const query = (args.query ?? "").trim().toLowerCase()
       if (!query) return "query is required."
-      const resolved = resolveMailroomConfig()
+      const resolved = resolveMailroomReader()
       if (!resolved.ok) return resolved.error
       const all = await resolved.store.listMessages({ agentId: resolved.agentName, limit: 200 })
       const matching = decryptMessages(all, resolved.config.privateKeys)
@@ -223,7 +145,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const messageId = (args.message_id ?? "").trim()
       if (!messageId) return "message_id is required."
-      const resolved = resolveMailroomConfig()
+      const resolved = resolveMailroomReader()
       if (!resolved.ok) return resolved.error
       const message = await resolved.store.getMessage(messageId)
       if (!message || message.agentId !== resolved.agentName) return `No visible mail message found for ${messageId}.`
@@ -258,7 +180,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
-      const resolved = resolveMailroomConfig()
+      const resolved = resolveMailroomReader()
       if (!resolved.ok) return resolved.error
       return renderAccessLog(await resolved.store.listAccessLog(resolved.agentName))
     },
