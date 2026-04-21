@@ -2611,7 +2611,7 @@ async function buildConnectMenu(
     perplexityDetailLines = [
       perplexityVerification?.ok
         ? "verified live just now"
-        : `live check failed: ${perplexityVerification?.summary ?? "verification did not complete"}`,
+        : `live check failed: ${perplexityVerification!.summary}`,
     ]
   }
 
@@ -2628,7 +2628,7 @@ async function buildConnectMenu(
     embeddingsDetailLines = [
       embeddingsVerification?.ok
         ? "verified live just now"
-        : `live check failed: ${embeddingsVerification?.summary ?? "verification did not complete"}`,
+        : `live check failed: ${embeddingsVerification!.summary}`,
     ]
   }
 

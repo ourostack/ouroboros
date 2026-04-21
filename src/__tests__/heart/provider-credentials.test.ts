@@ -413,6 +413,31 @@ describe("provider credentials vault store", () => {
     })
   })
 
+  it("does not cache a targeted skip-cache refresh failure", async () => {
+    emitTestEvent("provider credential skip-cache failure stays local")
+    const minimax = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date("2026-04-13T12:00:00.000Z"),
+    })
+    const cached = cacheProviderCredentialRecords("slugger", [minimax])
+    mockCredentialStore.store.getRawSecret.mockRejectedValueOnce(new Error("vault unavailable during targeted check"))
+
+    const result = await refreshProviderCredentialPool("slugger", {
+      providers: ["minimax"],
+      skipCache: true,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "unavailable",
+      error: "vault unavailable during targeted check",
+    })
+    expect(readProviderCredentialPool("slugger")).toBe(cached)
+  })
+
   it("reports vault payload parse errors as an unavailable credential pool", async () => {
     emitTestEvent("provider credential invalid payload")
     mockCredentialStore.items.set(providerCredentialItemName("minimax"), {

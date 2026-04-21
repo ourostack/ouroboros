@@ -399,6 +399,50 @@ describe("BitwardenCredentialStore", () => {
       }
     })
 
+    it("uses the newest Bitwarden cache timestamp when both freshness files exist", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-multi-fresh-"))
+      const markerPath = path.join(appDataDir, ".ouro-last-sync")
+      const dataPath = path.join(appDataDir, "data.json")
+      fs.writeFileSync(markerPath, "stale\n", "utf8")
+      fs.writeFileSync(dataPath, "{}", "utf8")
+      const stale = new Date(Date.now() - (2 * 60 * 1000))
+      const fresh = new Date()
+      fs.utimesSync(markerPath, stale, stale)
+      fs.utimesSync(dataPath, fresh, fresh)
+
+      const isolatedStore = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { appDataDir },
+      )
+
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      try {
+        await isolatedStore.login()
+        expect(calls.find((c) => c[0] === "sync")).toBeUndefined()
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
+    })
+
     it("calls bw sync after unlock when the local vault cache is stale", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-sync-stale-"))
       const cachePath = path.join(appDataDir, ".ouro-last-sync")

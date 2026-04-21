@@ -545,6 +545,80 @@ describe("connect bay", () => {
     expect(summary.nextAction).toBe("ouro provider refresh --agent Slugger")
   })
 
+  it("targets string-only live provider health at the inner lane when the error says inner provider", () => {
+    emitTestEvent("connect bay string health targets inner lane")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "openai-codex", "gpt-5.4"),
+        configuredLane("inner", "minimax", "MiniMax-M2.5", {
+          credential: { status: "missing", repairCommand: "ouro auth --agent Slugger --provider minimax" },
+        }),
+      ]),
+      {
+        ok: false,
+        error: "inner provider minimax model MiniMax-M2.5 failed live check: provider offline",
+        fix: "Run 'ouro use --agent Slugger --lane inner --provider <provider> --model <model>' to choose another provider/model.",
+      },
+    )
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "ready",
+      detail: "ready",
+    })
+    expect(summary.laneSummaries[1]).toMatchObject({
+      lane: "inner",
+      status: "needs attention",
+      detail: "inner provider minimax model MiniMax-M2.5 failed live check: provider offline",
+    })
+  })
+
+  it("uses provider-health error text for setup guidance when there is no structured issue detail", () => {
+    emitTestEvent("connect bay provider setup error fallback")
+    const summary = summarizeProvidersForConnect(
+      "Slugger",
+      providerVisibility([
+        configuredLane("outward", "openai-codex", "gpt-5.4"),
+      ]),
+      {
+        ok: false,
+        error: "missing provider binding for outward lane",
+        fix: "Run 'ouro use --agent Slugger --lane outward --provider <provider> --model <model>' to configure this machine's provider binding.",
+      },
+    )
+
+    expect(summary.status).toBe("needs setup")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      status: "needs setup",
+      detail: "missing provider binding for outward lane",
+    })
+  })
+
+  it("uses calm fallback copy when setup or attention health lacks detail text", () => {
+    emitTestEvent("connect bay provider health detail fallbacks")
+    const visibility = providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4"),
+    ])
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      fix: "Run 'ouro use --agent Slugger --lane outward --provider <provider> --model <model>' to configure this machine's provider binding.",
+    }).laneSummaries[0]).toMatchObject({
+      status: "needs setup",
+      detail: "needs setup",
+    })
+
+    expect(summarizeProvidersForConnect("Slugger", visibility, {
+      ok: false,
+      fix: "Run 'ouro provider refresh --agent Slugger' to reload cached credentials.",
+    }).laneSummaries[0]).toMatchObject({
+      status: "needs attention",
+      detail: "live check needs attention",
+    })
+  })
+
   it("falls back to provider-health error text when no structured issue is available", () => {
     emitTestEvent("connect bay falls back to provider health strings")
     const visibility = providerVisibility([
