@@ -54,6 +54,12 @@ function trustedContext(): ToolContext {
   }
 }
 
+function friendContext(): ToolContext {
+  const ctx = trustedContext()
+  ctx.context!.friend.trustLevel = "friend"
+  return ctx
+}
+
 function contextWithoutFriend(): ToolContext {
   return {
     signin: async () => undefined,
@@ -220,6 +226,86 @@ describe("mail tools", () => {
     expect(accessLog).toContain("mail_recent")
     expect(accessLog).toContain("mail_search")
     expect(accessLog).toContain("mail_thread")
+  })
+
+  it("keeps delegated human mail family-only while still treating native mail as the agent's sense", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    await seedMail(storePath)
+
+    await expect(tool("mail_recent").handler({ scope: "delegated", reason: "curious" }, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+    await expect(tool("mail_search").handler({ query: "pancakes", reason: "curious" }, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+
+    const familySearch = await tool("mail_search").handler({ query: "pancakes", reason: "family travel prep" }, trustedContext())
+    expect(familySearch).toContain("Breakfast logistics")
+  })
+
+  it("lists screener candidates without body text and records family decisions", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "Unknown Sender <unknown@example.com>",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Unknown Sender <unknown@example.com>",
+        "To: Slugger <slugger@ouro.bot>",
+        "Subject: Screen this",
+        "",
+        "BODY SHOULD NOT LEAK INTO THE SCREENER LIST.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T17:00:00.000Z"),
+    })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const screener = await tool("mail_screener").handler({ status: "pending" }, trustedContext())
+    expect(screener).toContain("candidate_mail_")
+    expect(screener).toContain("unknown@example.com")
+    expect(screener).toContain("slugger@ouro.bot")
+    expect(screener).not.toContain("BODY SHOULD NOT LEAK")
+    const candidateId = /candidate_mail_[a-f0-9]+/.exec(screener)?.[0]
+    expect(candidateId).toBeTruthy()
+
+    await expect(tool("mail_decide").handler({
+      candidate_id: candidateId!,
+      action: "discard",
+      reason: "unknown sender; retain in recovery drawer",
+    }, friendContext())).resolves.toContain("mail screener decisions require family trust")
+
+    const decision = await tool("mail_decide").handler({
+      candidate_id: candidateId!,
+      action: "discard",
+      reason: "unknown sender; retain in recovery drawer",
+    }, trustedContext())
+    expect(decision).toContain("discarded")
+    expect(decision).toContain("recovery drawer")
+
+    const discarded = await tool("mail_recent").handler({ placement: "discarded", reason: "debug recovery" }, trustedContext())
+    expect(discarded).toContain("Screen this")
+    const decisions = await store.listMailDecisions("slugger")
+    expect(decisions[0]).toEqual(expect.objectContaining({
+      action: "discard",
+      actor: expect.objectContaining({
+        kind: "human",
+        friendId: "ari",
+        trustLevel: "family",
+        channel: "cli",
+      }),
+      reason: "unknown sender; retain in recovery drawer",
+    }))
   })
 
   it("handles empty mailboxes and the default bundle-backed store path", async () => {
