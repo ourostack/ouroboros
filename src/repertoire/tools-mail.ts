@@ -1,10 +1,20 @@
+import * as fs from "node:fs"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { decryptMessages, type MailAccessLogEntry } from "../mailroom/file-store"
 import { resolveMailroomReader } from "../mailroom/reader"
 import { confirmMailDraftSend, createMailDraft, resolveOutboundTransport } from "../mailroom/outbound"
-import { applyMailDecision, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
-import type { MailPlacement } from "../mailroom/core"
+import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
+import {
+  normalizeMailAddress,
+  type MailPlacement,
+  type MailroomRegistry,
+  type MailScreenerCandidate,
+  type MailSenderPolicyMatch,
+  type MailSenderPolicyRecord,
+  type MailSenderPolicyScope,
+  type StoredMailMessage,
+} from "../mailroom/core"
 import { emitNervesEvent } from "../nerves/runtime"
 
 function trustAllowsMailRead(ctx: Parameters<ToolDefinition["handler"]>[1]): boolean {
@@ -164,6 +174,117 @@ function parseCandidateStatus(value: string | undefined): MailScreenerCandidateS
     return value
   }
   return undefined
+}
+
+function readRegistry(registryPath: string): MailroomRegistry {
+  return JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
+}
+
+function writeRegistry(registryPath: string, registry: MailroomRegistry): void {
+  fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+}
+
+function policyScopeForMessage(message: StoredMailMessage): MailSenderPolicyScope {
+  return message.source ? `source:${message.source.toLowerCase()}` : message.compartmentKind
+}
+
+function normalizePolicySender(candidate: MailScreenerCandidate | undefined, message: StoredMailMessage, privateKeys: Record<string, string>): string | null {
+  const candidates = [
+    candidate?.senderEmail,
+    ...decryptMessages([message], privateKeys)[0].private.from,
+    message.envelope.mailFrom,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0 && value !== "(unknown)")
+  for (const candidateValue of candidates) {
+    try {
+      return normalizeMailAddress(candidateValue)
+    } catch {
+      // Try the next source of sender truth.
+    }
+  }
+  return null
+}
+
+function policyMatchForDecision(input: {
+  action: MailDecisionAction
+  sender: string | null
+  message: StoredMailMessage
+}): { match: MailSenderPolicyMatch; scope: MailSenderPolicyScope } | null {
+  if (input.action === "allow-source") {
+    if (!input.message.source) return null
+    return {
+      match: { kind: "source", value: input.message.source.toLowerCase() },
+      scope: `source:${input.message.source.toLowerCase()}`,
+    }
+  }
+  if (!input.sender) return null
+  if (input.action === "allow-domain") {
+    const domain = input.sender.split("@")[1]
+    if (!domain) return null
+    return { match: { kind: "domain", value: domain }, scope: policyScopeForMessage(input.message) }
+  }
+  if (input.action === "allow-sender" || input.action === "link-friend" || input.action === "create-friend") {
+    return { match: { kind: "email", value: input.sender }, scope: policyScopeForMessage(input.message) }
+  }
+  return null
+}
+
+function samePolicy(left: MailSenderPolicyRecord, right: MailSenderPolicyRecord): boolean {
+  return left.agentId === right.agentId &&
+    left.action === right.action &&
+    left.scope === right.scope &&
+    left.match.kind === right.match.kind &&
+    left.match.value === right.match.value
+}
+
+function policyLine(policy: MailSenderPolicyRecord, existing: boolean): string {
+  return `sender policy: ${existing ? "already " : ""}${policy.action} ${policy.match.kind} ${policy.match.value}`
+}
+
+function persistSenderPolicyForDecision(input: {
+  registryPath?: string
+  agentId: string
+  action: MailDecisionAction
+  reason: string
+  actor: MailDecisionActor
+  candidate?: MailScreenerCandidate
+  message: StoredMailMessage
+  privateKeys: Record<string, string>
+}): string | null {
+  if (
+    input.action !== "allow-sender" &&
+    input.action !== "allow-domain" &&
+    input.action !== "allow-source" &&
+    input.action !== "link-friend" &&
+    input.action !== "create-friend"
+  ) {
+    return null
+  }
+  if (!input.registryPath) return "sender policy: skipped (registryPath missing)"
+  const sender = input.action === "allow-source"
+    ? null
+    : normalizePolicySender(input.candidate, input.message, input.privateKeys)
+  const match = policyMatchForDecision({ action: input.action, sender, message: input.message })
+  if (!match) return "sender policy: skipped (sender/source unavailable)"
+  const policy = buildSenderPolicy({
+    agentId: input.agentId,
+    scope: match.scope,
+    match: match.match,
+    action: "allow",
+    actor: input.actor,
+    reason: input.reason,
+  })
+  const registry = readRegistry(input.registryPath)
+  const existing = (registry.senderPolicies ?? []).find((candidatePolicy) => samePolicy(candidatePolicy, policy))
+  if (existing) return policyLine(existing, true)
+  registry.senderPolicies = [...(registry.senderPolicies ?? []), policy]
+  writeRegistry(input.registryPath, registry)
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.mail_sender_policy_persisted",
+    message: "mail sender policy persisted from screener decision",
+    meta: { agentId: input.agentId, action: policy.action, scope: policy.scope, matchKind: policy.match.kind },
+  })
+  return policyLine(policy, false)
 }
 
 export const mailToolDefinitions: ToolDefinition[] = [
@@ -500,13 +621,16 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!resolved.ok) return resolved.error
       let messageId = (args.message_id ?? "").trim()
       const candidateId = (args.candidate_id ?? "").trim()
+      let candidate: MailScreenerCandidate | undefined
       if (candidateId) {
         const candidates = await resolved.store.listScreenerCandidates({ agentId: resolved.agentName, limit: 200 })
-        const candidate = candidates.find((entry) => entry.id === candidateId)
+        candidate = candidates.find((entry) => entry.id === candidateId)
         if (!candidate) return `No Screener candidate found for ${candidateId}.`
         messageId = candidate.messageId
       }
       if (!messageId) return "candidate_id or message_id is required."
+      const message = await resolved.store.getMessage(messageId)
+      if (!message || message.agentId !== resolved.agentName) return `No visible mail message found for ${messageId}.`
       const decision = await applyMailDecision({
         store: resolved.store,
         agentId: resolved.agentName,
@@ -522,10 +646,21 @@ export const mailToolDefinitions: ToolDefinition[] = [
         tool: "mail_decide",
         reason,
       })
+      const senderPolicyLine = persistSenderPolicyForDecision({
+        registryPath: resolved.config.registryPath,
+        agentId: resolved.agentName,
+        action,
+        reason,
+        actor: actorFromContext(ctx, resolved.agentName),
+        ...(candidate ? { candidate } : {}),
+        message,
+        privateKeys: resolved.config.privateKeys,
+      })
       return [
         `Mail decision recorded: ${decision.action}`,
         `message: ${decision.messageId}`,
         `placement: ${decision.previousPlacement} -> ${decision.nextPlacement}`,
+        ...(senderPolicyLine ? [senderPolicyLine] : []),
         decision.nextPlacement === "discarded" ? "discarded mail remains retained in the recovery drawer." : `decision: ${decision.id}`,
       ].join("\n")
     },
