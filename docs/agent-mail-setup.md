@@ -10,6 +10,7 @@ This is the runbook to use when a human says something like: "Slugger, please se
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, and verifying the Mail sense.
 - **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the domain registrar, and any final production MX cutover.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and production MX cutover.
+- **Not the implementation:** HEY OAuth, HEY IMAP, `ouro auth verify --provider mail`, `ouro mcp call mail ...`, and ad hoc policy flags. Do not invent those steps.
 
 ## Agent-Run Setup
 

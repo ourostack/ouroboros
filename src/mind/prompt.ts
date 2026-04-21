@@ -477,7 +477,10 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
-  lines.push("mail setup truth: run `ouro connect mail --agent <agent>` from the connect bay; it provisions Mailroom coordinates, stores private mail keys in the agent vault runtime/config item, and enables `senses.mail.enabled`. For HEY bootstrap, ask the human for the browser-exported MBOX path and run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>`; HEY forwarding/DNS/MX remain human-confirmed steps.")
+  lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. To provision, run `ouro connect mail --agent <agent>`; use the human's owner email when asked so Mailroom creates the delegated source alias.")
+  lines.push("mail setup truth: HEY archive bootstrap is human-exported MBOX only. Ask for the browser-downloaded MBOX path, then run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>`.")
+  lines.push("mail setup truth: verify with `ouro status`, `ouro doctor --agent <agent>`, bounded mail tools (`mail_recent`, `mail_search`, `mail_thread`, `mail_access_log`), and the read-only Outlook Mailbox tab.")
+  lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }

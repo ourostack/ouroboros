@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.454",
+      "changes": [
+        "The agent system prompt now carries an explicit Agent Mail setup runbook: Mailroom provisioning uses `ouro connect mail`, HEY archive bootstrap uses human-exported MBOX plus `ouro mail import-mbox`, and verification uses status, doctor, bounded mail tools, and the read-only Outlook mailbox.",
+        "Mail setup guidance now forbids invented paths such as HEY OAuth/IMAP, `ouro auth verify --provider mail`, `ouro mcp call mail ...`, ad hoc policy flags, autonomous sending, destructive mail actions, and production MX/DNS/forwarding changes without explicit human confirmation.",
+        "`docs/agent-mail-setup.md` now names the non-implementation paths directly so future agents can distinguish the shipped Mailroom flow from plausible-but-false mail-provider guesses."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.453",
       "changes": [
         "`ouro logs prune` now rotates oversized active launchd `.log` streams alongside `.ndjson` daemon streams, so doctor's bundle-local log-size remediation can compact the legacy stderr/stdout files it counts.",
