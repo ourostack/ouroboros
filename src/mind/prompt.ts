@@ -477,7 +477,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
-  lines.push("mail setup truth: run `ouro connect mail --agent <agent>` from the connect bay; it provisions Mailroom coordinates, stores private mail keys in the agent vault runtime/config item, and enables `senses.mail.enabled`.")
+  lines.push("mail setup truth: run `ouro connect mail --agent <agent>` from the connect bay; it provisions Mailroom coordinates, stores private mail keys in the agent vault runtime/config item, and enables `senses.mail.enabled`. For HEY bootstrap, ask the human for the browser-exported MBOX path and run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>`; HEY forwarding/DNS/MX remain human-confirmed steps.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
