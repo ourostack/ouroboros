@@ -48,8 +48,11 @@ Then restart or refresh the daemon:
 
 ```sh
 ouro up
-ouro doctor --agent <agent>
+ouro status
+ouro doctor
 ```
+
+Use `ouro status` to confirm the named agent shows Mail as ready/running. `ouro doctor` is installation-wide today; do not invent an agent-scoped doctor flag.
 
 Use `ouro connect mail --agent <agent>` when you are repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`.
 
@@ -207,8 +210,10 @@ Agent-runnable checks:
 
 ```sh
 ouro status
-ouro doctor --agent <agent>
+ouro doctor
 ```
+
+`ouro status` is the agent-specific readiness check: confirm the target agent's Mail row is ready/running and shows the expected mailbox address. `ouro doctor` checks the local installation as a whole.
 
 Mail tools to exercise:
 

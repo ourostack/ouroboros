@@ -12,6 +12,10 @@ describe("agent mail setup documentation contract", () => {
 
     expect(guide).toContain("ouro account ensure --agent <agent>")
     expect(guide).toContain("ouro connect mail --agent <agent>")
+    expect(guide).toContain("ouro status")
+    expect(guide).toContain("ouro doctor")
+    expect(guide).not.toContain("ouro doctor --agent")
+    expect(guide).toContain("Mail row is ready/running")
     expect(guide).toContain("<agent>@ouro.bot")
     expect(guide).toContain("runtime/config")
     expect(guide).toContain("~/AgentBundles/<agent>.ouro/state/mailroom/")
