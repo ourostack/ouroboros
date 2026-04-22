@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.462",
+      "changes": [
+        "Agent Mail prompt guidance now explicitly separates golden paths from supporting diagnostics, so agents do not answer a golden-path question with `ouro status`, `ouro doctor`, or mail tool names.",
+        "The golden-path contract now appears before diagnostic checks in the sense guidance, making HEY-to-work-object, native Screener mail, cross-sense reaction, and Outlook audit the dominant validation story.",
+        "Empty Mailroom tool output now says diagnostics help verify the four golden paths but are not substitutes for them."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.461",
       "changes": [
         "Agent Mail golden paths are now an explicit numbered system-prompt contract, so agents can name and validate HEY archive import, native Screener mail, cross-sense reaction, and Ouro Outlook audit instead of collapsing them into generic diagnostics.",

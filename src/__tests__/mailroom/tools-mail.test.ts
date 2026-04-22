@@ -836,6 +836,8 @@ describe("mail tools", () => {
     expect(search).toContain("2. Native mail and Screener")
     expect(search).toContain("3. Cross-sense reaction")
     expect(search).toContain("4. Ouro Outlook audit")
+    expect(search).toContain("supporting diagnostics are separate")
+    expect(search).toContain("are not substitutes for them")
     const recent = await tool("mail_recent").handler({
       source: "hey",
       reason: "source setup check",
