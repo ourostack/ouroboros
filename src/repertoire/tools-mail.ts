@@ -168,7 +168,11 @@ async function renderEmptyMailResult(input: {
       ...renderSourceGrantStatus(input.config, input.agentId),
       "interpretation: this is not evidence that the human's HEY inbox is empty; Agent Mail has not yet received or imported mail visible to this agent.",
       `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, ask the human for the exported MBOX file path, run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>, then verify with mail_recent/mail_search/Ouro Outlook.`,
-      "validation golden paths: HEY import updates a real work object; native send/receive goes through Screener; email can trigger another sense such as iMessage; Ouro Outlook audits the full story.",
+      "validation golden paths before claiming setup works:",
+      "1. HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.",
+      "2. Native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.",
+      "3. Cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available.",
+      "4. Ouro Outlook audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.",
     ].join("\n")
   }
 

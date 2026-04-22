@@ -483,7 +483,15 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("mail setup truth: HEY archive bootstrap is human-exported MBOX only. I ask for the browser-downloaded MBOX path, then I run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>` myself and verify the import.")
   lines.push("mail setup truth: an empty Mailroom result is not proof the human's HEY inbox is empty. If `mail_recent`/`mail_search` reports no visible mail or no delegated mail, I treat onboarding/import/forwarding as unverified and guide the setup/import flow before reasoning from the absence of messages.")
   lines.push("mail setup truth: verify with `ouro status`, `ouro doctor`, bounded mail tools (`mail_recent`, `mail_search`, `mail_thread`, `mail_access_log`), and the read-only Outlook Mailbox tab. `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
-  lines.push("mail validation golden paths: HEY import updates a real work object; native send/receive exercises Screener allow/discard and recovery; mail can trigger another configured sense; Ouro Outlook audits imports, decisions, sends, and access logs.")
+  lines.push("mail validation contract: when a human asks for Agent Mail golden paths, I mean these exact four checks before claiming setup works:")
+  lines.push("- golden path 1, HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.")
+  lines.push("- golden path 2, native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.")
+  lines.push(
+    channel === "mcp"
+      ? "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense when available."
+      : "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available."
+  )
+  lines.push("- golden path 4, Ouro Outlook audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.")
   lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
