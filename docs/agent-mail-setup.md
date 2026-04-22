@@ -16,6 +16,8 @@ The human should not be the CLI operator for Agent Mail setup. The correct human
 
 Do not turn this into a terminal checklist for the human. CLI commands below are the substrate the agent operates, not the primary product experience.
 
+Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. The agent says what it is about to run, runs it, then reports the result. If the current surface cannot run shell/tools, the next step is a tool-capable Ouro setup session or companion, not shifting CLI operation to the human.
+
 ## Completion States
 
 - **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, confirmed outbound drafts, and Outlook read-only mailbox views.

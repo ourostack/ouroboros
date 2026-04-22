@@ -31,6 +31,8 @@ describe("agent mail setup documentation contract", () => {
 
     expect(guide).toContain("The human should not be the CLI operator for Agent Mail setup")
     expect(guide).toContain("Do not turn this into a terminal checklist for the human")
+    expect(guide).toContain("the agent must not tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup")
+    expect(guide).toContain("the next step is a tool-capable Ouro setup session or companion, not shifting CLI operation to the human")
     expect(guide).toContain("The agent runs agent-runnable commands itself")
     expect(guide).toContain("The agent verifies each step before asking for the next one")
     expect(guide).toContain("Agent command after the human provides the file path")

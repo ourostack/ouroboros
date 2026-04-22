@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.458",
+      "changes": [
+        "Agent Mail setup guidance now explicitly forbids telling the human to run setup CLI commands; the agent must run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, and `ouro doctor` itself when doing setup.",
+        "If the agent's current surface cannot run shell/tools, the setup contract now says to move to a tool-capable Ouro setup session or companion instead of offloading CLI operation to the human.",
+        "Prompt and runbook contract tests now cover the live failure mode where the agent says it owns setup but still asks Ari to run `ouro connect mail`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.457",
       "changes": [
         "Agent Mail setup is now explicitly agent-guided in the system prompt and runbook: when a human asks an agent to set up email, the agent should lead the flow, run agent-runnable commands itself, ask only for human-required browser/file/confirmation steps, and verify each step before continuing.",

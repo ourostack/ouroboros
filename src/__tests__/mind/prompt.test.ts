@@ -719,6 +719,8 @@ describe("buildSystem", () => {
     expect(result).toContain("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>`")
     expect(result).toContain("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist.")
     expect(result).toContain("I guide the flow end-to-end")
+    expect(result).toContain("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup.")
+    expect(result).toContain("If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue")
     expect(result).toContain("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP.")
     expect(result).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
     expect(result).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
