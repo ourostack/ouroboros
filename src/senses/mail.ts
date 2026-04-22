@@ -117,7 +117,7 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
     throw new Error(resolved.error)
   }
   if (!resolved.config.registryPath) {
-    throw new Error(`missing mailroom.registryPath for ${options.agentName}; run 'ouro connect mail --agent ${options.agentName}' again`)
+    throw new Error(`missing mailroom.registryPath for ${options.agentName}; agent-runnable repair: 'ouro connect mail --agent ${options.agentName}'`)
   }
 
   const registry = readRegistry(resolved.config.registryPath)

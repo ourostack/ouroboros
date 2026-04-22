@@ -43,8 +43,8 @@ export type OuroCliCommand =
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
-  | { kind: "connect"; agent?: string; target?: ConnectTarget }
-  | { kind: "account.ensure"; agent?: string }
+  | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
+  | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath: string; ownerEmail?: string; source?: string }
   | { kind: "auth.run"; agent?: string; provider?: AgentProvider }
   | { kind: "auth.verify"; agent?: string; provider?: AgentProvider }

@@ -329,13 +329,13 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "connect mail": {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
-    usage: "ouro connect mail [--agent <name>]",
-    example: "ouro connect mail",
+    usage: "ouro connect mail [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
+    example: "ouro connect mail --agent slugger --owner-email ari@mendelow.me --source hey",
   },
   "account ensure": {
     description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
-    usage: "ouro account ensure [--agent <name>]",
-    example: "ouro account ensure --agent slugger",
+    usage: "ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
+    example: "ouro account ensure --agent slugger --owner-email ari@mendelow.me --source hey",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",

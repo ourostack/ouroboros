@@ -85,8 +85,8 @@ export function usage(): string {
     "  ouro config model [--agent <name>] <model-name>",
     "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
-    "  ouro account ensure [--agent <name>]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
+    "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro auth switch [--agent <name>] --provider <provider>",
@@ -620,11 +620,75 @@ function normalizeConnectTarget(value: string | undefined): "providers" | "perpl
   throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
 }
 
+interface MailSourceFlagParse {
+  rest: string[]
+  ownerEmail?: string
+  source?: string
+  noDelegatedSource?: boolean
+  hasMailSourceFlags: boolean
+}
+
+function extractMailSourceFlags(args: string[], usageText: string): MailSourceFlagParse {
+  const rest: string[] = []
+  let ownerEmail: string | undefined
+  let source: string | undefined
+  let noDelegatedSource = false
+  let hasMailSourceFlags = false
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]
+    if (token === "--owner-email") {
+      if (args[i + 1] === undefined) throw new Error(usageText)
+      ownerEmail = args[++i]
+      hasMailSourceFlags = true
+      continue
+    }
+    if (token === "--source") {
+      if (args[i + 1] === undefined) throw new Error(usageText)
+      source = args[++i]
+      hasMailSourceFlags = true
+      continue
+    }
+    if (token === "--no-delegated-source") {
+      noDelegatedSource = true
+      hasMailSourceFlags = true
+      continue
+    }
+    rest.push(token)
+  }
+
+  if (noDelegatedSource && (ownerEmail !== undefined || source !== undefined)) {
+    throw new Error("--no-delegated-source cannot be combined with --owner-email or --source")
+  }
+  if (source !== undefined && ownerEmail === undefined) {
+    throw new Error("--source requires --owner-email")
+  }
+  return {
+    rest,
+    ...(ownerEmail !== undefined ? { ownerEmail } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(noDelegatedSource ? { noDelegatedSource: true } : {}),
+    hasMailSourceFlags,
+  }
+}
+
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const { agent, rest } = extractAgentFlag(args)
-  if (rest.length > 1) throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
-  const target = normalizeConnectTarget(rest[0])
-  return { kind: "connect", ...(agent ? { agent } : {}), ...(target ? { target } : {}) }
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]"
+  const { agent, rest: afterAgent } = extractAgentFlag(args)
+  const mailFlags = extractMailSourceFlags(afterAgent, usageText)
+  if (mailFlags.rest.length > 1) throw new Error(usageText)
+  const target = normalizeConnectTarget(mailFlags.rest[0])
+  if (mailFlags.hasMailSourceFlags && target !== "mail") {
+    throw new Error("Mail source flags require `ouro connect mail`.")
+  }
+  return {
+    kind: "connect",
+    ...(agent ? { agent } : {}),
+    ...(target ? { target } : {}),
+    ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
+    ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
+    ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+  }
 }
 
 function parseMailCommand(args: string[]): OuroCliCommand {
@@ -666,12 +730,20 @@ function parseMailCommand(args: string[]): OuroCliCommand {
 
 function parseAccountCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
+  const usageText = "Usage: ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]"
   if (sub !== "ensure") {
-    throw new Error("Usage: ouro account ensure [--agent <name>]")
+    throw new Error(usageText)
   }
-  const { agent, rest } = extractAgentFlag(subArgs)
-  if (rest.length > 0) throw new Error("Usage: ouro account ensure [--agent <name>]")
-  return { kind: "account.ensure", ...(agent ? { agent } : {}) }
+  const { agent, rest: afterAgent } = extractAgentFlag(subArgs)
+  const mailFlags = extractMailSourceFlags(afterAgent, usageText)
+  if (mailFlags.rest.length > 0) throw new Error(usageText)
+  return {
+    kind: "account.ensure",
+    ...(agent ? { agent } : {}),
+    ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
+    ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
+    ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+  }
 }
 
 function parseProviderUseCommand(args: string[]): OuroCliCommand {

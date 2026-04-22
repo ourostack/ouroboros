@@ -3251,7 +3251,21 @@ function mailroomPrivateKeys(mailroom: Record<string, unknown> | undefined): Rec
   return Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
 }
 
-async function promptDelegatedMailSource(deps: OuroCliDeps): Promise<{ ownerEmail: string; source: string }> {
+interface MailSourceSetupInput {
+  ownerEmail?: string
+  source?: string
+  noDelegatedSource?: boolean
+}
+
+async function promptDelegatedMailSource(deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<{ ownerEmail: string; source: string }> {
+  if (input.noDelegatedSource) return { ownerEmail: "", source: "" }
+  if (input.ownerEmail !== undefined) {
+    const ownerEmail = input.ownerEmail.trim()
+    return {
+      ownerEmail,
+      source: ownerEmail ? (input.source?.trim() || "hey") : "",
+    }
+  }
   const promptInput = requirePromptInput(deps, "Agent Mail setup")
   const ownerEmail = (await promptInput("Delegated owner email for first source alias [blank to skip]: ")).trim()
   const source = ownerEmail
@@ -3326,7 +3340,7 @@ async function ensureAgentMailroom(
   return { mailboxAddress, sourceAlias, registryPath, storePath, stored, syncSummary }
 }
 
-async function executeConnectMail(agent: string, deps: OuroCliDeps): Promise<string> {
+async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<string> {
   writeConnectorIntro(deps, {
     title: "Connect Agent Mail",
     subtitle: `${agent} gets a private Mailroom identity and delegated source lane.`,
@@ -3361,7 +3375,7 @@ async function executeConnectMail(agent: string, deps: OuroCliDeps): Promise<str
       "The registry and encrypted local store live under the agent bundle state.",
     ],
   })
-  const setup = await promptDelegatedMailSource(deps)
+  const setup = await promptDelegatedMailSource(deps, input)
   const outcome = await ensureAgentMailroom(agent, setup, deps, "connect mail")
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s Mail sense is configured.`,
@@ -3427,7 +3441,7 @@ async function executeAccountEnsure(
       "This creates or preserves runtime/config Mailroom coordinates and enables the Mail sense.",
     ],
   })
-  const setup = await promptDelegatedMailSource(deps)
+  const setup = await promptDelegatedMailSource(deps, command)
   const outcome = await ensureAgentMailroom(command.agent, setup, deps, "account ensure")
   return writeCapabilityOutcome(deps, {
     subtitle: `${command.agent}'s work substrate account is configured.`,
@@ -3479,13 +3493,13 @@ async function executeMailImportMbox(
     const mailroom = runtime.config.mailroom
     if (!mailroom || typeof mailroom !== "object" || Array.isArray(mailroom)) {
       progress.end()
-      throw new Error(`missing mailroom config for ${command.agent}; run 'ouro connect mail --agent ${command.agent}' first`)
+      throw new Error(`missing mailroom config for ${command.agent}; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
     }
     const registryPath = stringField(mailroom as Record<string, unknown>, "registryPath")
     const storePath = stringField(mailroom as Record<string, unknown>, "storePath")
     if (!registryPath || !storePath) {
       progress.end()
-      throw new Error(`mailroom config for ${command.agent} is missing registryPath/storePath; run 'ouro connect mail --agent ${command.agent}' again`)
+      throw new Error(`mailroom config for ${command.agent} is missing registryPath/storePath; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
     }
 
     progress.updateDetail("reading registry and MBOX")
@@ -3571,7 +3585,7 @@ async function executeConnect(
   if (command.target === "embeddings") return executeConnectEmbeddings(command.agent, deps)
   if (command.target === "teams") return executeConnectTeams(command.agent, deps)
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
-  if (command.target === "mail") return executeConnectMail(command.agent, deps)
+  if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
 
   const progress = createHumanCommandProgress(deps, "connect")
   let menu: string

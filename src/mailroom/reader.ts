@@ -126,7 +126,7 @@ export function resolveMailroomReader(agentName: string = getAgentName()): Mailr
       ok: false,
       agentName,
       reason: "auth-required",
-      error: `AUTH_REQUIRED:mailroom -- Mail is not available because ${runtime.itemPath} is ${runtime.reason}. Run 'ouro connect mail --agent ${agentName}' after the vault is unlocked.`,
+      error: `AUTH_REQUIRED:mailroom -- Mail is not available because ${runtime.itemPath} is ${runtime.reason}. Agent-runnable repair after vault unlock: 'ouro connect mail --agent ${agentName}'.`,
     }
     emitNervesEvent({
       component: "senses",

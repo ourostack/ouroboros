@@ -11,7 +11,10 @@ describe("agent mail setup documentation contract", () => {
     const guide = readGuide()
 
     expect(guide).toContain("ouro account ensure --agent <agent>")
+    expect(guide).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(guide).toContain("ouro account ensure --agent <agent> --no-delegated-source")
     expect(guide).toContain("ouro connect mail --agent <agent>")
+    expect(guide).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
     expect(guide).toContain("ouro status")
     expect(guide).toContain("ouro doctor")
     expect(guide).not.toContain("ouro doctor --agent")
@@ -21,6 +24,16 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("~/AgentBundles/<agent>.ouro/state/mailroom/")
     expect(guide).toContain("Vault coupling")
     expect(guide).toContain("Bundle state")
+  })
+
+  it("locks setup as an agent-guided workflow instead of a human CLI checklist", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("The human should not be the CLI operator for Agent Mail setup")
+    expect(guide).toContain("Do not turn this into a terminal checklist for the human")
+    expect(guide).toContain("The agent runs agent-runnable commands itself")
+    expect(guide).toContain("The agent verifies each step before asking for the next one")
+    expect(guide).toContain("Agent command after the human provides the file path")
   })
 
   it("keeps native agent mail, delegated human mail, and trust provenance distinct", () => {

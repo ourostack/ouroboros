@@ -225,7 +225,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
     return `Run 'ouro vault config set --agent ${agent} --key teams.clientId', teams.clientSecret, and teams.tenantId; then run 'ouro up' again.`
   }
   if (sense === "mail") {
-    return `Run 'ouro connect mail --agent ${agent}' to provision Mailroom access; then run 'ouro up' again.`
+    return `Agent-runnable: provision Mailroom access with 'ouro connect mail --agent ${agent}', then restart with 'ouro up'.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }

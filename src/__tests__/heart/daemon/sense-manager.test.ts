@@ -784,7 +784,7 @@ describe("daemon sense manager", () => {
     expect(missingMail).toEqual({
       ok: false,
       error: "mail is enabled for slugger but runtime credentials are not ready: missing mailroom.mailboxAddress/mailroom.privateKeys",
-      fix: "Run 'ouro connect mail --agent slugger' to provision Mailroom access; then run 'ouro up' again.",
+      fix: "Agent-runnable: provision Mailroom access with 'ouro connect mail --agent slugger', then restart with 'ouro up'.",
     })
 
     runtimeConfig = {

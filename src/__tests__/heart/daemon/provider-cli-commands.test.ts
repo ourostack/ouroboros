@@ -843,6 +843,19 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "mail",
     })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      noDelegatedSource: true,
+    })
     expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--owner-email", "ari@mendelow.me", "--source", "hey", "--agent", "Slugger"])).toEqual({
       kind: "mail.import-mbox",
       agent: "Slugger",
@@ -858,11 +871,27 @@ describe("provider CLI command parsing", () => {
       kind: "account.ensure",
       agent: "Slugger",
     })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      noDelegatedSource: true,
+    })
     expect(parseOuroCommand(["account", "ensure"])).toEqual({
       kind: "account.ensure",
     })
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
+    expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "ari@mendelow.me"])).toThrow("Mail source flags require")
+    expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email"])).toThrow("ouro connect")
+    expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--source", "hey"])).toThrow("--source requires --owner-email")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source", "--owner-email", "ari@mendelow.me"])).toThrow("--no-delegated-source")
     expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
@@ -971,6 +1000,101 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Agent Mail connected for Slugger")
     expect(result).toContain("mailbox: slugger@ouro.bot")
+  })
+
+  it("lets agents run Mail setup non-interactively after collecting owner/source details", async () => {
+    emitTestEvent("provider cli connect mail noninteractive flags")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-flags-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-flags-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).toContain("delegated alias: me.mendelow.ari.slugger@ouro.bot")
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+    }))
+  })
+
+  it("supports non-interactive Mail setup defaults for native-only and HEY source aliases", async () => {
+    emitTestEvent("provider cli connect mail noninteractive defaults")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-defaults-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-defaults-home")
+    writeAgentConfig(bundlesRoot, "NativeOnly")
+    writeAgentConfig(bundlesRoot, "DefaultSource")
+    writeAgentConfig(bundlesRoot, "BlankSource")
+    writeAgentConfig(bundlesRoot, "BlankOwner")
+
+    const nativeOnly = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "NativeOnly",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(nativeOnly).toContain("mailbox: nativeonly@ouro.bot")
+    expect(nativeOnly).not.toContain("delegated alias:")
+
+    const defaultSource = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "DefaultSource",
+      "--owner-email",
+      "ari@mendelow.me",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(defaultSource).toContain("mailbox: defaultsource@ouro.bot")
+    expect(defaultSource).toContain("delegated alias: me.mendelow.ari.defaultsource@ouro.bot")
+
+    const blankSource = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "BlankSource",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "   ",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(blankSource).toContain("mailbox: blanksource@ouro.bot")
+    expect(blankSource).toContain("delegated alias: me.mendelow.ari.blanksource@ouro.bot")
+
+    const blankOwner = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "BlankOwner",
+      "--owner-email",
+      "   ",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+    }))
+
+    expect(blankOwner).toContain("mailbox: blankowner@ouro.bot")
+    expect(blankOwner).not.toContain("delegated alias:")
   })
 
   it("preserves existing runtime config and defaults the delegated source label", async () => {

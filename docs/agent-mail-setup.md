@@ -4,6 +4,18 @@ Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro w
 
 Use this runbook when a human says something like: "Slugger, please set up email."
 
+## AX Contract
+
+The human should not be the CLI operator for Agent Mail setup. The correct human experience is a guided conversation with the agent:
+
+1. The human asks the agent to set up email.
+2. The agent explains the current setup phase and what it needs next.
+3. The agent runs agent-runnable commands itself when it has shell/tool access.
+4. The human only performs human-required actions: browser auth, HEY export, HEY forwarding, DNS/MX edits, secret entry, and final confirmations.
+5. The agent verifies each step before asking for the next one.
+
+Do not turn this into a terminal checklist for the human. CLI commands below are the substrate the agent operates, not the primary product experience.
+
 ## Completion States
 
 - **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, confirmed outbound drafts, and Outlook read-only mailbox views.
@@ -22,18 +34,21 @@ The work substrate account is agent-owned. Mail, vault, and enabled senses belon
 - **Bundle state:** the non-secret registry and encrypted mail cache live under the owning agent bundle, typically `~/AgentBundles/<agent>.ouro/state/mailroom/`.
 - **Provenance, not a second trust system:** family/friend/stranger remains the trust model. Mail records add provenance: native vs delegated, source, owner email, sender policy, import, forwarding, and access log.
 
-## All-Agent Signup
+## Agent-Guided Signup
 
-For a new or existing agent, start with the work substrate command:
+For a new or existing agent, the agent starts by asking whether this is native-only mail or includes a delegated human source. If the human grants a source, the agent asks for the owner email and source label. For HEY, use source label `hey`.
+
+Then the agent runs the work substrate command itself:
 
 ```sh
-ouro account ensure --agent <agent>
+ouro account ensure --agent <agent> --owner-email <email> --source hey
 ```
 
-When prompted:
+For native-only mail:
 
-- If the agent should only have its native mailbox for now, leave the delegated owner email blank.
-- If a family member is granting an initial human-mail source, enter the owner email and source label. For HEY, use source label `hey`.
+```sh
+ouro account ensure --agent <agent> --no-delegated-source
+```
 
 The command should:
 
@@ -44,7 +59,7 @@ The command should:
 - Enable `senses.mail.enabled` in `agent.json`.
 - Sync the agent bundle when bundle sync is enabled.
 
-Then restart or refresh the daemon:
+Then the agent restarts or refreshes the daemon and verifies status:
 
 ```sh
 ouro up
@@ -54,20 +69,15 @@ ouro doctor
 
 Use `ouro status` to confirm the named agent shows Mail as ready/running. `ouro doctor` is installation-wide today; do not invent an agent-scoped doctor flag.
 
-Use `ouro connect mail --agent <agent>` when you are repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`.
+Use `ouro connect mail --agent <agent> --owner-email <email> --source hey` when repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`. Use `--no-delegated-source` when repairing native-only mail.
 
 ## Slugger Signup
 
 For Slugger:
 
 ```sh
-ouro account ensure --agent slugger
+ouro account ensure --agent slugger --owner-email ari@mendelow.me --source hey
 ```
-
-Prompt answers:
-
-- Delegated owner email: `ari@mendelow.me`
-- Delegated source label: `hey`
 
 Expected addresses:
 
@@ -112,14 +122,15 @@ Do not send canned responses to strangers or discarded senders. Silence is norma
 
 HEY's official export path is browser-only. A human must export the archive, then give the agent the downloaded MBOX path.
 
-Human step:
+Agent-guided flow:
 
-1. Open [HEY account settings](https://app.hey.com/accounts) in a desktop browser.
-2. Use **Export Your Data**.
-3. Wait for HEY's download email.
-4. Download the email archive MBOX.
+1. The agent asks the human to open [HEY account settings](https://app.hey.com/accounts) in a desktop browser.
+2. The human uses **Export Your Data**.
+3. The human waits for HEY's download email.
+4. The human downloads the email archive MBOX and tells the agent the local file path.
+5. The agent imports and verifies the archive.
 
-Agent step after the human provides the file path:
+Agent command after the human provides the file path:
 
 ```sh
 ouro mail import-mbox --file <path-to-hey.mbox> --owner-email <human-email> --source hey --agent <agent>
@@ -160,9 +171,9 @@ Human-only DNS/MX later:
 
 Do this only after SMTP ingress and production MX are explicitly accepted by the human.
 
-Human step:
+Human-required step, agent-guided:
 
-- In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias printed by `ouro account ensure` or `ouro connect mail`.
+- In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias verified by the agent.
 - Prefer a HEY setup that still leaves critical mail accessible in HEY itself. HEY notes that forwarding can miss spam-classified mail and can be affected by mail-authentication forwarding behavior.
 
 Agent step:
@@ -204,9 +215,9 @@ Before calling an Agent Mail rollout complete for an agent, verify these paths:
 3. React to mail through another sense, for example text the family member on iMessage after an email decision or travel update.
 4. Audit the whole story in Ouro Outlook: imported mail, native inbound, Screener decisions, outbound draft/send records, and access logs.
 
-## Verification Commands
+## Agent-Run Verification
 
-Agent-runnable checks:
+The agent should run these checks itself when it has shell/tool access:
 
 ```sh
 ouro status
@@ -223,7 +234,7 @@ Mail tools to exercise:
 - `mail_screener` for waiting senders.
 - `mail_access_log` for audit records.
 
-Human/UI check:
+Human/UI check, guided by the agent:
 
 - Open Ouro Outlook.
 - Select the agent.
@@ -232,8 +243,8 @@ Human/UI check:
 
 ## Troubleshooting
 
-- `AUTH_REQUIRED:mailroom`: unlock or repair the agent vault, then run `ouro account ensure --agent <agent>` or `ouro connect mail --agent <agent>`.
-- Missing `registryPath` or `storePath`: rerun `ouro connect mail --agent <agent>` after vault unlock.
+- `AUTH_REQUIRED:mailroom`: unlock or repair the agent vault if prompted, then the agent should run `ouro account ensure --agent <agent> --owner-email <email> --source hey` or `ouro connect mail --agent <agent> --owner-email <email> --source hey`.
+- Missing `registryPath` or `storePath`: the agent should rerun `ouro connect mail --agent <agent> --owner-email <email> --source hey` after vault unlock.
 - No Mail sense: confirm `senses.mail.enabled = true` in `agent.json`, then `ouro up`.
 - Screener body leakage: stop and fix; Screener lists must show sender/context, not message bodies.
 - Expected mail missing: check Outlook Discarded/Quarantine, then `mail_screener`, then source-forwarding/DNS status.
