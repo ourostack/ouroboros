@@ -3,6 +3,7 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall, type ClassifiedToolCall } from "../../tools"
 import { useNavigate } from "../../navigation"
+import { useStickyScroll } from "../../hooks/use-sticky-scroll"
 import type {
   OutlookDeskPrefs,
   OutlookSessionInventory as SessionInventory,
@@ -264,14 +265,17 @@ export function SessionsTab({ agentName, focus, onFocusConsumed, deskPrefs, refr
 }
 
 function TranscriptPanel({ loading, transcript }: { loading: boolean; transcript: Transcript | null }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (transcript && ref.current) ref.current.scrollTop = ref.current.scrollHeight
-  }, [transcript])
+  const latestMessageId = transcript?.messages[transcript.messages.length - 1]?.id ?? null
+  const { ref, onScroll } = useStickyScroll<HTMLDivElement>(latestMessageId)
 
   return (
-    <div ref={ref} className="mt-1 max-h-[70vh] overflow-y-auto rounded-lg">
-      {loading && <Loading label="Loading transcript" />}
+    <div
+      ref={ref}
+      data-testid="session-transcript-scroll"
+      onScroll={onScroll}
+      className="mt-1 max-h-[70vh] overflow-y-auto rounded-lg"
+    >
+      {loading && !transcript && <Loading label="Loading transcript" />}
       {transcript && <TranscriptView transcript={transcript} />}
     </div>
   )

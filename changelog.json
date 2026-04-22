@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.456",
+      "changes": [
+        "Ouro Outlook session transcripts now respect the reader's scroll position during live refresh: if a human has scrolled up to inspect older iMessage/Teams/CLI history, background transcript updates no longer yank the pane back to the bottom.",
+        "Open transcripts no longer insert a transient loading row over already-rendered messages during refresh, removing the visible stutter that made long iMessage transcripts feel unstable.",
+        "Inner-dialog transcript panes now use the same bottom-stickiness behavior, so loading earlier messages or jumping to landmarks does not immediately undo the user's navigation."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.455",
       "changes": [
         "Agent Mail now has a complete all-agent onboarding runbook around `ouro account ensure --agent <agent>`, including native `@ouro.bot` mailbox setup, optional delegated human-mail aliases, vault-coupled private keys, bundle-local encrypted Mailroom state, HEY MBOX import, live forwarding boundaries, and golden-path verification.",

@@ -1,5 +1,5 @@
 import { act } from "react"
-import { render, waitFor, cleanup } from "@testing-library/react"
+import { fireEvent, render, waitFor, cleanup } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { NavigationContext } from "../../navigation"
 import { OverviewTab } from "./overview"
@@ -10,7 +10,7 @@ import { InnerTab } from "./inner"
 import { MailboxTab } from "./mailbox"
 import { NotesTab } from "./notes"
 import { RuntimeTab } from "./runtime"
-import type { OutlookAgentView } from "../../contracts"
+import type { OutlookAgentView, OutlookTranscriptMessage } from "../../contracts"
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -101,6 +101,55 @@ function makeAgentView(overrides: AgentViewOverrides = {}): OutlookAgentView {
     },
     inner: overrides.inner ?? base.inner,
     activity: { ...base.activity, ...overrides.activity },
+  }
+}
+
+function transcriptMessage(sequence: number, role: "user" | "assistant", content: string): OutlookTranscriptMessage {
+  const recordedAt = `2026-04-09T17:${String(sequence).padStart(2, "0")}:00.000Z`
+  return {
+    id: `msg_${sequence}`,
+    sequence,
+    role,
+    content,
+    name: null,
+    toolCallId: null,
+    toolCalls: [],
+    attachments: [],
+    time: {
+      authoredAt: recordedAt,
+      authoredAtSource: "local",
+      observedAt: null,
+      observedAtSource: "unknown",
+      recordedAt,
+      recordedAtSource: "local",
+    },
+    relations: {
+      replyToEventId: null,
+      threadRootEventId: null,
+      references: [],
+      toolCallId: null,
+      supersedesEventId: null,
+      redactsEventId: null,
+    },
+    provenance: {
+      captureKind: "synthetic",
+      legacyVersion: null,
+      sourceMessageIndex: null,
+    },
+  }
+}
+
+function transcriptPayload(messages: OutlookTranscriptMessage[]) {
+  return {
+    friendId: "ari",
+    friendName: "Ari",
+    channel: "bluebubbles",
+    key: "main",
+    sessionPath: "/tmp/session.json",
+    messageCount: messages.length,
+    lastUsage: null,
+    continuity: null,
+    messages,
   }
 }
 
@@ -213,6 +262,173 @@ describe("Outlook deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {
+    let transcriptFetches = 0
+    let resolveSecondTranscript: ((response: Response) => void) | null = null
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/sessions")) {
+        return jsonResponse({
+          totalCount: 1,
+          activeCount: 1,
+          staleCount: 0,
+          items: [{
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "main",
+            sessionPath: "/tmp/session.json",
+            lastActivityAt: "2026-04-09T17:00:00.000Z",
+            activitySource: "event-timeline",
+            replyState: "monitoring",
+            messageCount: 3,
+            lastUsage: null,
+            continuity: null,
+            latestUserExcerpt: "scrolling",
+            latestAssistantExcerpt: "reading",
+            latestToolCallNames: [],
+            estimatedTokens: 12,
+          }],
+        })
+      }
+      if (url.endsWith("/sessions/ari/bluebubbles/main")) {
+        transcriptFetches += 1
+        if (transcriptFetches === 2) {
+          return new Promise<Response>((resolve) => {
+            resolveSecondTranscript = resolve
+          })
+        }
+        return jsonResponse(transcriptPayload([
+          transcriptMessage(1, "user", "first"),
+          transcriptMessage(2, "assistant", "second"),
+        ]))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus="ari/bluebubbles/main"
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={0}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(transcriptFetches).toBe(1))
+    const panel = ui.getByTestId("session-transcript-scroll")
+    Object.defineProperty(panel, "scrollHeight", { configurable: true, value: 1000 })
+    Object.defineProperty(panel, "clientHeight", { configurable: true, value: 200 })
+    panel.scrollTop = 250
+    fireEvent.scroll(panel)
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus={undefined}
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={1}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(transcriptFetches).toBe(2))
+    expect(ui.queryByText(/Loading transcript/)).toBeNull()
+    expect(panel.scrollTop).toBe(250)
+
+    await act(async () => {
+      resolveSecondTranscript?.(jsonResponse(transcriptPayload([
+        transcriptMessage(1, "user", "first"),
+        transcriptMessage(2, "assistant", "second"),
+        transcriptMessage(3, "assistant", "new heartbeat"),
+      ])))
+    })
+
+    await waitFor(() => expect(ui.container.textContent).toContain("new heartbeat"))
+    expect(panel.scrollTop).toBe(250)
+  })
+
+  it("keeps an open session transcript pinned to the bottom when the reader is already there", async () => {
+    let transcriptFetches = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/sessions")) {
+        return jsonResponse({
+          totalCount: 1,
+          activeCount: 1,
+          staleCount: 0,
+          items: [{
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "main",
+            sessionPath: "/tmp/session.json",
+            lastActivityAt: "2026-04-09T17:00:00.000Z",
+            activitySource: "event-timeline",
+            replyState: "monitoring",
+            messageCount: 3,
+            lastUsage: null,
+            continuity: null,
+            latestUserExcerpt: "scrolling",
+            latestAssistantExcerpt: "reading",
+            latestToolCallNames: [],
+            estimatedTokens: 12,
+          }],
+        })
+      }
+      if (url.endsWith("/sessions/ari/bluebubbles/main")) {
+        transcriptFetches += 1
+        const messages = transcriptFetches === 1
+          ? [transcriptMessage(1, "user", "first"), transcriptMessage(2, "assistant", "second")]
+          : [transcriptMessage(1, "user", "first"), transcriptMessage(2, "assistant", "second"), transcriptMessage(3, "assistant", "new bottom")]
+        return jsonResponse(transcriptPayload(messages))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus="ari/bluebubbles/main"
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={0}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(transcriptFetches).toBe(1))
+    const panel = ui.getByTestId("session-transcript-scroll")
+    Object.defineProperty(panel, "scrollHeight", { configurable: true, value: 1000 })
+    Object.defineProperty(panel, "clientHeight", { configurable: true, value: 200 })
+    panel.scrollTop = 800
+    fireEvent.scroll(panel)
+    Object.defineProperty(panel, "scrollHeight", { configurable: true, value: 1200 })
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus={undefined}
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={1}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.container.textContent).toContain("new bottom"))
+    expect(panel.scrollTop).toBe(1200)
   })
 
   it("re-fetches mailbox summaries and selected body on refresh", async () => {
