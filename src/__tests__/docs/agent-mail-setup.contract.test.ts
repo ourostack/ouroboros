@@ -24,6 +24,8 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("~/AgentBundles/<agent>.ouro/state/mailroom/")
     expect(guide).toContain("Vault coupling")
     expect(guide).toContain("Bundle state")
+    expect(guide).toContain("ouroborosbot/ouro-work-substrate")
+    expect(guide).toContain("Hosted service source")
   })
 
   it("locks setup as an agent-guided workflow instead of a human CLI checklist", () => {

@@ -21,6 +21,7 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 ## Completion States
 
 - **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, confirmed outbound drafts, and Outlook read-only mailbox views.
+- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and Outlook.
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, verifying the Mail sense, and managing Screener decisions after family authorization.
 - **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the registrar, provider/browser auth, secret entry, final production MX cutover, and final autonomous-send enablement.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and production MX cutover.
@@ -150,6 +151,13 @@ The import stores delegated HEY mail under the agent's encrypted Mailroom store.
 
 Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`; external delivery still needs a production ingress host and human-confirmed DNS/MX.
 
+Hosted service code now lives in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate):
+
+- `packages/work-protocol` owns shared registry, route, encryption, and Screener records.
+- `apps/mail-ingress` owns SMTP ingress and encrypted Azure Blob/file storage.
+- `apps/vault-control` owns authenticated programmatic Vaultwarden account creation.
+- `infra/azure` owns the Container Apps/Blob Storage deployment shape.
+
 Current proof state as of April 21, 2026:
 
 - Azure Container Apps proved SMTP ingress, Azure Blob storage, and Slugger decryption on external TCP port `2525`.
@@ -270,3 +278,4 @@ Human/UI check, guided by the agent:
 - Azure Container Apps TCP ingress: [Ingress in Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/ingress-how-to)
 - Azure Communication Services custom domains: [Add custom verified domains](https://learn.microsoft.com/en-us/azure/communication-services/quickstarts/email/add-custom-verified-domains)
 - Azure Communication Services DNS troubleshooting: [Email domain configuration troubleshooting](https://learn.microsoft.com/en-us/azure/communication-services/concepts/email/email-domain-configuration-troubleshooting)
+- Ouro Work hosted service source: [ouroborosbot/ouro-work-substrate](https://github.com/ouroborosbot/ouro-work-substrate)
