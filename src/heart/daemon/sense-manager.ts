@@ -247,6 +247,12 @@ function runtimeInfoFor(status: string): SenseRuntimeInfo {
   return { runtime: "error" }
 }
 
+function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
+  if (sense === "teams") return "senses/teams-entry.js"
+  if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
+  return "senses/mail-entry.js"
+}
+
 function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()): boolean {
   if (!lastCheckedAt) {
     return false
@@ -337,12 +343,12 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles"] as SenseName[])
+      return (["teams", "bluebubbles", "mail"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
           agentArg: agent,
-          entry: sense === "teams" ? "senses/teams-entry.js" : "senses/bluebubbles/entry.js",
+          entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
         }))
@@ -430,6 +436,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         },
         mail: {
           configured: context.facts.mail.configured,
+          ...(runtime.get(agent)?.mail ?? {}),
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

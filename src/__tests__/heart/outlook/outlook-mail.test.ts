@@ -6,6 +6,8 @@ import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from 
 import { resetIdentity } from "../../../heart/identity"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../../mailroom/file-store"
+import { createMailDraft, confirmMailDraftSend } from "../../../mailroom/outbound"
+import { applyMailDecision } from "../../../mailroom/policy"
 import { readMailMessageView, readMailView } from "../../../heart/outlook/readers/mail"
 
 const tempRoots: string[] = []
@@ -236,6 +238,133 @@ describe("Outlook mail reader", () => {
     expect(mailbox.status).toBe("ready")
     expect(mailbox.folders.map((folder) => folder.id).filter((id) => id.startsWith("source:")))
       .toEqual(["source:alpha", "source:zulu"])
+  })
+
+  it("exposes the full read-only mailbox workbench: Screener, recovery drawers, provenance, drafts, and sent mail", async () => {
+    const storePath = tempDir()
+    const sinkPath = path.join(storePath, "outbound-sink.jsonl")
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    const screener = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "screen-me@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Screen Me <screen-me@example.com>",
+        "To: Slugger <slugger@ouro.bot>",
+        "Subject: Waiting in Screener",
+        "",
+        "SCREENER BODY SHOULD NOT APPEAR IN CANDIDATE LISTS.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T20:00:00.000Z"),
+    })
+    const discarded = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "discard-me@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Discard Me <discard-me@example.com>",
+        "To: Slugger <slugger@ouro.bot>",
+        "Subject: Recovery drawer proof",
+        "",
+        "Retained for debugging.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T20:05:00.000Z"),
+    })
+    await applyMailDecision({
+      store,
+      agentId: "slugger",
+      messageId: discarded.accepted[0].id,
+      action: "discard",
+      actor: { kind: "human", friendId: "ari", trustLevel: "family", channel: "cli" },
+      reason: "screened out but retained for recovery",
+    })
+    const draft = await createMailDraft({
+      store,
+      agentId: "slugger",
+      from: "slugger@ouro.bot",
+      to: ["ari@example.com"],
+      subject: "Draft from Outlook proof",
+      text: "Not sent yet.",
+      actor: { kind: "agent", agentId: "slugger" },
+      reason: "outlook draft proof",
+    })
+    const sendDraft = await createMailDraft({
+      store,
+      agentId: "slugger",
+      from: "slugger@ouro.bot",
+      to: ["ari@example.com"],
+      subject: "Sent from Outlook proof",
+      text: "Confirmed local sink send.",
+      actor: { kind: "agent", agentId: "slugger" },
+      reason: "outlook sent proof",
+    })
+    await confirmMailDraftSend({
+      store,
+      agentId: "slugger",
+      draftId: sendDraft.id,
+      transport: { kind: "local-sink", sinkPath },
+      confirmation: "CONFIRM_SEND",
+      actor: { kind: "human", friendId: "ari", trustLevel: "family", channel: "cli" },
+      reason: "confirmed for Outlook proof",
+    })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const mailbox = await readMailView("slugger")
+    expect(mailbox.status).toBe("ready")
+    expect(mailbox.folders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "screener", count: 1 }),
+      expect.objectContaining({ id: "discarded", count: 1 }),
+      expect.objectContaining({ id: "quarantine", count: 0 }),
+      expect.objectContaining({ id: "draft", count: 1 }),
+      expect.objectContaining({ id: "sent", count: 1 }),
+    ]))
+    expect(mailbox.screener).toEqual([
+      expect.objectContaining({
+        messageId: screener.accepted[0].id,
+        senderEmail: "screen-me@example.com",
+        status: "pending",
+        placement: "screener",
+      }),
+    ])
+    expect(JSON.stringify(mailbox.screener)).not.toContain("SCREENER BODY")
+    expect(mailbox.recovery).toEqual(expect.objectContaining({
+      discardedCount: 1,
+      quarantineCount: 0,
+    }))
+    expect(mailbox.outbound).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: draft.id, status: "draft", subject: "Draft from Outlook proof" }),
+      expect.objectContaining({ id: sendDraft.id, status: "sent", subject: "Sent from Outlook proof", transport: "local-sink" }),
+    ]))
+    expect(mailbox.messages.find((message) => message.id === screener.accepted[0].id)?.provenance)
+      .toEqual(expect.objectContaining({
+        compartmentKind: "native",
+        ownerEmail: null,
+        source: null,
+        recipient: "slugger@ouro.bot",
+      }))
+
+    const detail = await readMailMessageView("slugger", discarded.accepted[0].id)
+    expect(detail.message?.provenance).toEqual(expect.objectContaining({
+      placement: "discarded",
+      compartmentKind: "native",
+    }))
+    expect(detail.message?.access).toEqual(expect.objectContaining({
+      tool: "outlook_mail_message",
+      reason: "outlook read-only message body",
+    }))
   })
 
   it("returns error views when mailbox reads or decryption fail", async () => {

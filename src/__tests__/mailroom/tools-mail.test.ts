@@ -54,6 +54,12 @@ function trustedContext(): ToolContext {
   }
 }
 
+function friendContext(): ToolContext {
+  const ctx = trustedContext()
+  ctx.context!.friend.trustLevel = "friend"
+  return ctx
+}
+
 function contextWithoutFriend(): ToolContext {
   return {
     signin: async () => undefined,
@@ -196,6 +202,32 @@ describe("mail tools", () => {
     await expect(tool("mail_search").handler({ query: "pancakes" }, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_thread").handler({ message_id: "mail_1", reason: "test" }, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_access_log").handler({}, ctx)).resolves.toContain("mail is private")
+    await expect(tool("mail_compose").handler({ to: "ari@example.com" }, ctx)).resolves.toContain("mail is private")
+    await expect(tool("mail_send").handler({ draft_id: "draft_1", confirmation: "CONFIRM_SEND" }, ctx)).resolves.toContain("mail is private")
+    await expect(tool("mail_screener").handler({}, ctx)).resolves.toContain("mail is private")
+    await expect(tool("mail_decide").handler({ action: "restore", reason: "test" }, ctx)).resolves.toContain("mail is private")
+  })
+
+  it("reports setup and trust failures consistently across write-side mail tools", async () => {
+    setAgentName("slugger")
+    await expect(tool("mail_compose").handler({ to: "ari@example.com", subject: "Hi", text: "Hi" }, trustedContext()))
+      .resolves.toContain("AUTH_REQUIRED:mailroom")
+    await expect(tool("mail_send").handler({ draft_id: "draft_missing", confirmation: "CONFIRM_SEND" }, trustedContext()))
+      .resolves.toContain("AUTH_REQUIRED:mailroom")
+    await expect(tool("mail_send").handler({}, trustedContext()))
+      .resolves.toBe("draft_id is required.")
+    await expect(tool("mail_screener").handler({}, trustedContext()))
+      .resolves.toContain("AUTH_REQUIRED:mailroom")
+    await expect(tool("mail_decide").handler({ action: "restore" }, trustedContext()))
+      .resolves.toBe("reason is required.")
+    await expect(tool("mail_decide").handler({ action: "restore", reason: "family action" }, trustedContext()))
+      .resolves.toContain("AUTH_REQUIRED:mailroom")
+    await expect(tool("mail_screener").handler({}, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+    await expect(tool("mail_decide").handler({ action: "restore", reason: "friend action" }, friendContext()))
+      .resolves.toContain("mail screener decisions require family trust")
+    await expect(tool("mail_access_log").handler({}, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
   })
 
   it("lists, searches, opens, and audits bounded mail reads", async () => {
@@ -222,6 +254,484 @@ describe("mail tools", () => {
     expect(accessLog).toContain("mail_thread")
   })
 
+  it("keeps delegated human mail family-only while still treating native mail as the agent's sense", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    await seedMail(storePath)
+
+    await expect(tool("mail_recent").handler({ scope: "delegated", reason: "curious" }, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+    await expect(tool("mail_search").handler({ query: "pancakes", scope: "delegated", reason: "curious" }, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+
+    const familySearch = await tool("mail_search").handler({ query: "pancakes", reason: "family travel prep" }, trustedContext())
+    expect(familySearch).toContain("Breakfast logistics")
+    const messageId = /mail_[a-f0-9]+/.exec(String(familySearch))?.[0]
+    expect(messageId).toBeTruthy()
+    await expect(tool("mail_thread").handler({ message_id: messageId!, reason: "friend curiosity" }, friendContext()))
+      .resolves.toContain("delegated human mail requires family trust")
+  })
+
+  it("lists screener candidates without body text and records family decisions", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "Unknown Sender <unknown@example.com>",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Unknown Sender <unknown@example.com>",
+        "To: Slugger <slugger@ouro.bot>",
+        "Subject: Screen this",
+        "",
+        "BODY SHOULD NOT LEAK INTO THE SCREENER LIST.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T17:00:00.000Z"),
+    })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const screener = await tool("mail_screener").handler({ status: "pending" }, trustedContext())
+    expect(screener).toContain("candidate_mail_")
+    expect(screener).toContain("unknown@example.com")
+    expect(screener).toContain("slugger@ouro.bot")
+    expect(screener).not.toContain("BODY SHOULD NOT LEAK")
+    const candidateId = /candidate_mail_[a-f0-9]+/.exec(screener)?.[0]
+    expect(candidateId).toBeTruthy()
+
+    await expect(tool("mail_decide").handler({
+      candidate_id: candidateId!,
+      action: "discard",
+      reason: "unknown sender; retain in recovery drawer",
+    }, friendContext())).resolves.toContain("mail screener decisions require family trust")
+
+    const decision = await tool("mail_decide").handler({
+      candidate_id: candidateId!,
+      action: "discard",
+      reason: "unknown sender; retain in recovery drawer",
+    }, trustedContext())
+    expect(decision).toContain("discarded")
+    expect(decision).toContain("recovery drawer")
+
+    const discarded = await tool("mail_recent").handler({ placement: "discarded", reason: "debug recovery" }, trustedContext())
+    expect(discarded).toContain("Screen this")
+    const decisions = await store.listMailDecisions("slugger")
+    expect(decisions[0]).toEqual(expect.objectContaining({
+      action: "discard",
+      actor: expect.objectContaining({
+        kind: "human",
+        friendId: "ari",
+        trustLevel: "family",
+        channel: "cli",
+      }),
+      reason: "unknown sender; retain in recovery drawer",
+    }))
+  })
+
+  it("reports sender-policy edge cases from Screener decisions and compose validation", async () => {
+    setAgentName("slugger")
+    const root = tempDir()
+    const storePath = path.join(root, "mailroom")
+    const registryPath = path.join(root, "registry.json")
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    const store = new FileMailroomStore({ rootDir: storePath })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from("\r\n"),
+    })
+    const missingSenderScreener = await tool("mail_screener").handler({ reason: "missing sender" }, trustedContext())
+    const missingSenderCandidate = /candidate_mail_[a-f0-9]+/.exec(String(missingSenderScreener))?.[0]
+    expect(missingSenderCandidate).toBeTruthy()
+    await expect(tool("mail_decide").handler({
+      candidate_id: missingSenderCandidate!,
+      action: "allow-domain",
+      reason: "domain unavailable proof",
+    }, trustedContext())).resolves.toContain("sender policy: skipped (sender/source unavailable)")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "thread@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Thread Sender <thread@example.com>",
+        "To: slugger@ouro.bot",
+        "Subject: Thread decision",
+        "",
+        "thread body",
+      ].join("\r\n")),
+    })
+    const threadScreener = await tool("mail_screener").handler({ reason: "thread sender" }, trustedContext())
+    const threadCandidate = /candidate_mail_[a-f0-9]+/.exec(String(threadScreener))?.[0]
+    expect(threadCandidate).toBeTruthy()
+    const threadDecision = await tool("mail_decide").handler({
+      candidate_id: threadCandidate!,
+      action: "allow-thread",
+      reason: "thread policy is current-message only for now",
+    }, trustedContext())
+    expect(threadDecision).toContain("Mail decision recorded: allow-thread")
+    expect(threadDecision).not.toContain("sender policy:")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "person@domain.example", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Domain Person <person@domain.example>",
+        "To: slugger@ouro.bot",
+        "Subject: Domain decision",
+        "",
+        "domain body",
+      ].join("\r\n")),
+    })
+    const domainScreener = await tool("mail_screener").handler({ reason: "domain sender" }, trustedContext())
+    const domainCandidate = /candidate_mail_[a-f0-9]+/.exec(String(domainScreener))?.[0]
+    const domainMessage = /-> (mail_[a-f0-9]+)/.exec(String(domainScreener))?.[1]
+    expect(domainCandidate).toBeTruthy()
+    expect(domainMessage).toBeTruthy()
+    await expect(tool("mail_decide").handler({
+      candidate_id: domainCandidate!,
+      action: "allow-domain",
+      reason: "family recognized this domain",
+    }, trustedContext())).resolves.toContain("sender policy: allow domain domain.example")
+    await expect(tool("mail_decide").handler({
+      message_id: domainMessage!,
+      action: "allow-domain",
+      reason: "same domain policy already exists",
+    }, trustedContext())).resolves.toContain("sender policy: already allow domain domain.example")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "source@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Source <source@example.com>",
+        "To: slugger@ouro.bot",
+        "Subject: Native source decision",
+        "",
+        "native body",
+      ].join("\r\n")),
+    })
+    const sourceScreener = await tool("mail_screener").handler({ status: "bogus", placement: "bogus", limit: "bad", reason: "source sender" }, trustedContext())
+    const sourceCandidate = /candidate_mail_[a-f0-9]+/.exec(String(sourceScreener))?.[0]
+    expect(sourceCandidate).toBeTruthy()
+    await expect(tool("mail_decide").handler({
+      candidate_id: sourceCandidate!,
+      action: "allow-source",
+      reason: "native messages have no source lane",
+    }, trustedContext())).resolves.toContain("sender policy: skipped (sender/source unavailable)")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "agent-context@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Agent Context <agent-context@example.com>",
+        "To: slugger@ouro.bot",
+        "Subject: Agent actor",
+        "",
+        "agent actor body",
+      ].join("\r\n")),
+    })
+    const agentScreener = await tool("mail_screener").handler({ reason: "agent actor sender" }, trustedContext())
+    const agentCandidate = /candidate_mail_[a-f0-9]+/.exec(String(agentScreener))?.[0]
+    expect(agentCandidate).toBeTruthy()
+    await expect(tool("mail_decide").handler({
+      candidate_id: agentCandidate!,
+      action: "allow-sender",
+      reason: "self-maintained native sender",
+    }, contextWithoutFriend())).resolves.toContain("sender policy: allow email agent-context@example.com")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "fallback@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Fallback Sender <fallback@example.com>",
+        "To: slugger@ouro.bot",
+        "Subject: Sender fallback",
+        "",
+        "fallback body",
+      ].join("\r\n")),
+    })
+    const [fallbackCandidate] = await store.listScreenerCandidates({ agentId: "slugger", status: "pending" })
+    expect(fallbackCandidate).toBeTruthy()
+    await store.updateScreenerCandidate({
+      ...fallbackCandidate!,
+      senderEmail: "not-an-email",
+      senderDisplay: "",
+    })
+    const fallbackScreener = await tool("mail_screener").handler({ reason: "sender fallback render" }, trustedContext())
+    expect(fallbackScreener).toContain("sender: not-an-email <not-an-email>")
+    await expect(tool("mail_decide").handler({
+      candidate_id: fallbackCandidate!.id,
+      action: "allow-sender",
+      reason: "candidate sender fell back to decrypted From",
+    }, trustedContext())).resolves.toContain("sender policy: allow email fallback@example.com")
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "link@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from([
+        "From: Link Friend <link@example.com>",
+        "To: slugger@ouro.bot",
+        "Subject: Link friend",
+        "",
+        "link body",
+      ].join("\r\n")),
+    })
+    const [linkCandidate] = await store.listScreenerCandidates({ agentId: "slugger", status: "pending" })
+    expect(linkCandidate).toBeTruthy()
+    await expect(tool("mail_decide").handler({
+      candidate_id: linkCandidate!.id,
+      action: "link-friend",
+      friend_id: "friend_link",
+      reason: "family linked sender to friend",
+    }, trustedContext())).resolves.toContain("sender policy: allow email link@example.com")
+
+    await expect(tool("mail_decide").handler({
+      candidate_id: "candidate_missing",
+      action: "allow-sender",
+      reason: "missing candidate proof",
+    }, trustedContext())).resolves.toContain("No Screener candidate found")
+    await expect(tool("mail_decide").handler({
+      action: "allow-sender",
+      reason: "missing target proof",
+    }, trustedContext())).resolves.toBe("candidate_id or message_id is required.")
+    await expect(tool("mail_decide").handler({
+      message_id: "mail_missing",
+      action: "allow-sender",
+      reason: "missing message proof",
+    }, trustedContext())).resolves.toContain("No visible mail message found")
+    await expect(tool("mail_decide").handler({
+      candidate_id: sourceCandidate!,
+      action: "not-real",
+      reason: "invalid action proof",
+    }, trustedContext())).resolves.toBe("action is required and must be a supported mail decision.")
+    await expect(tool("mail_decide").handler({
+      candidate_id: sourceCandidate!,
+      action: "allow-sender",
+      reason: " ",
+    }, trustedContext())).resolves.toBe("reason is required.")
+
+    await expect(tool("mail_compose").handler({
+      to: " ",
+      subject: "No recipient",
+      text: "Nope",
+      reason: "recipient validation",
+    }, trustedContext())).resolves.toContain("at least one recipient")
+    const blankDraft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      cc: "team@example.com, ",
+      bcc: "audit@example.com",
+    }, trustedContext())
+    expect(blankDraft).toContain("subject: (no subject)")
+  })
+
+  it("persists source-level decisions for delegated lanes and renders delegated Screener labels", async () => {
+    setAgentName("slugger")
+    const root = tempDir()
+    const storePath = path.join(root, "mailroom")
+    const registryPath = path.join(root, "registry.json")
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    registry.sourceGrants[0].defaultPlacement = "screener"
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    const store = new FileMailroomStore({ rootDir: storePath })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "travel@example.com",
+        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: Travel Desk <travel@example.com>",
+        "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+        "Subject: Delegated source decision",
+        "",
+        "delegated body",
+      ].join("\r\n")),
+    })
+    const [candidate] = await store.listScreenerCandidates({ agentId: "slugger", status: "pending" })
+    expect(candidate).toBeTruthy()
+    await store.putScreenerCandidate({
+      ...candidate!,
+      id: "candidate_owner_only",
+      messageId: "mail_owner_only",
+      senderEmail: "owner-only@example.com",
+      senderDisplay: "",
+      source: undefined,
+    })
+    await store.putScreenerCandidate({
+      ...candidate!,
+      id: "candidate_source_only",
+      messageId: "mail_source_only",
+      senderEmail: "source-only@example.com",
+      senderDisplay: "Source Only",
+      ownerEmail: undefined,
+    })
+
+    const screener = await tool("mail_screener").handler({ reason: "delegated label proof" }, trustedContext())
+    expect(screener).toContain("delegated:ari@mendelow.me:hey")
+    expect(screener).toContain("delegated:ari@mendelow.me:source")
+    expect(screener).toContain("delegated:unknown:hey")
+    expect(screener).toContain("sender: owner-only@example.com <owner-only@example.com>")
+
+    const decision = await tool("mail_decide").handler({
+      message_id: candidate!.messageId,
+      action: "allow-source",
+      reason: "family trusts this delegated source",
+    }, trustedContext())
+    expect(decision).toContain("sender policy: allow source hey")
+    const senderDecision = await tool("mail_decide").handler({
+      message_id: candidate!.messageId,
+      action: "allow-sender",
+      reason: "family trusts this delegated sender",
+    }, trustedContext())
+    expect(senderDecision).toContain("sender policy: allow email travel@example.com")
+  })
+
+  it("drafts mail, refuses unconfirmed send, and writes confirmed local-sink sends", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const sinkPath = path.join(storePath, "outbound-sink.jsonl")
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+        outbound: {
+          transport: "local-sink",
+          sinkPath,
+        },
+      },
+    })
+
+    const draft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      cc: "travel@example.com",
+      bcc: "archive@example.com",
+      subject: "Travel check",
+      text: "Can you confirm the train time?",
+      reason: "ask about upcoming travel",
+    }, trustedContext())
+    expect(draft).toContain("Draft created")
+    const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+    expect(draftId).toBeTruthy()
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      reason: "oops",
+    }, trustedContext())).resolves.toContain("CONFIRM_SEND")
+    expect(fs.existsSync(sinkPath)).toBe(false)
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      autonomous: "true",
+      reason: "autonomous proof",
+    }, trustedContext())).resolves.toContain("Autonomous mail sending is disabled")
+    expect(fs.existsSync(sinkPath)).toBe(false)
+
+    const sent = await tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "family confirmed send",
+    }, trustedContext())
+    expect(sent).toContain("Mail sent")
+    expect(sent).toContain(draftId!)
+    expect(fs.readFileSync(sinkPath, "utf-8")).toContain("Can you confirm the train time?")
+
+    const noReasonDraft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      subject: "No reason send",
+      text: "Default send reason",
+      reason: "make a second draft",
+    }, trustedContext())
+    const noReasonDraftId = /draft_[a-f0-9]+/.exec(String(noReasonDraft))?.[0]
+    expect(noReasonDraftId).toBeTruthy()
+    await expect(tool("mail_send").handler({
+      draft_id: noReasonDraftId!,
+      confirmation: "CONFIRM_SEND",
+    }, trustedContext())).resolves.toContain("Mail sent")
+  })
+
+  it("keeps outbound sends family/self-only and reports missing transport setup", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const draft = await tool("mail_compose").handler({
+      to: "ari@example.com",
+      subject: "Transport missing",
+      text: "This draft should not send yet.",
+      reason: "prove missing transport",
+    }, trustedContext())
+    const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+    expect(draftId).toBeTruthy()
+
+    await expect(tool("mail_send").handler({
+      draft_id: " ",
+      confirmation: "CONFIRM_SEND",
+      reason: "missing draft id",
+    }, trustedContext())).resolves.toBe("draft_id is required.")
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "friend should not send",
+    }, friendContext())).resolves.toContain("outbound mail sends require family trust")
+
+    await expect(tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "transport missing",
+    }, trustedContext())).resolves.toContain("outbound mail transport is not configured")
+  })
+
   it("handles empty mailboxes and the default bundle-backed store path", async () => {
     const agentName = `mailtool-${Date.now()}`
     const fakeHome = tempDir()
@@ -239,6 +749,8 @@ describe("mail tools", () => {
     expect(accessLog).toBe("No mail access records yet.")
     const recent = await tool("mail_recent").handler({ limit: "nope" }, contextWithoutFriend())
     expect(recent).toBe("No matching mail.")
+    const screener = await tool("mail_screener").handler({ status: "restored" }, contextWithoutFriend())
+    expect(screener).toBe("No Screener candidates.")
   })
 
   it("handles native mail fallbacks, validation paths, truncation, and access-log targets", async () => {
@@ -250,11 +762,17 @@ describe("mail tools", () => {
     expect(recent).toContain("[screener; native]")
     expect(recent).toContain("(unknown sender)")
     expect(recent).toContain("(no subject)")
+    const friendRecent = await tool("mail_recent").handler({ reason: "native friend scan" }, friendContext())
+    expect(friendRecent).toContain(seeded.longId)
 
     await expect(tool("mail_search").handler({}, trustedContext())).resolves.toBe("query is required.")
     await expect(tool("mail_search").handler({ query: "absent" }, trustedContext())).resolves.toBe("No matching mail.")
     const search = await tool("mail_search").handler({ query: "long body", limit: "bad" }, trustedContext())
     expect(search).toContain(seeded.longId)
+    const allScopeSearch = await tool("mail_search").handler({ query: "long body", scope: "all" }, trustedContext())
+    expect(allScopeSearch).toContain(seeded.longId)
+    const friendNativeSearch = await tool("mail_search").handler({ query: "long body" }, friendContext())
+    expect(friendNativeSearch).toContain(seeded.longId)
 
     await expect(tool("mail_thread").handler({ message_id: "", reason: "test" }, trustedContext()))
       .resolves.toBe("message_id is required.")

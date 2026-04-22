@@ -7,6 +7,7 @@ import {
   decryptMailPayload,
   decryptStoredMailMessage,
   encryptForMailKey,
+  ensureMailboxRegistry,
   generateMailKeyPair,
   normalizeMailAddress,
   provisionMailboxRegistry,
@@ -15,6 +16,7 @@ import {
   sourceAliasForOwner,
 } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
+import { buildSenderPolicy } from "../../mailroom/policy"
 
 const tempRoots: string[] = []
 
@@ -136,6 +138,8 @@ describe("mailroom core", () => {
     })
     expect(await store.listAccessLog("slugger")).toHaveLength(1)
     expect(await store.listAccessLog("nobody")).toEqual([])
+    expect(await store.updateMessagePlacement("mail_missing", "discarded")).toBeNull()
+    expect(await store.listMailDecisions("nobody")).toEqual([])
   })
 
   it("covers defensive registry, attachment, and native imbox paths", async () => {
@@ -249,6 +253,19 @@ describe("mailroom core", () => {
     expect(emptyPrivate.from).toEqual([])
     expect(emptyPrivate.snippet).toBe("(no text body)")
 
+    const malformedSender = await buildStoredMailMessage({
+      resolved: native,
+      envelope: {
+        mailFrom: "not-an-email",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("To: Slugger <slugger@ouro.bot>\r\nSubject: Bad sender\r\n\r\n"),
+    })
+    expect(malformedSender.candidate).toEqual(expect.objectContaining({
+      senderEmail: "(unknown)",
+      senderDisplay: "not-an-email",
+    }))
+
     const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")
     if (!delegated) throw new Error("expected delegated mailbox")
     const fallbackTrust = await buildStoredMailMessage({
@@ -261,6 +278,99 @@ describe("mailroom core", () => {
     })
     expect(fallbackTrust.message.trustReason).toBe(`delegated source grant ${delegated.compartmentId}`)
 
+    const delegatedCandidate = await buildStoredMailMessage({
+      resolved: delegated,
+      envelope: {
+        mailFrom: "sender@example.com",
+        rcptTo: ["me.mendelow.ari.slugger@ouro.bot"],
+      },
+      rawMime: sampleRawMail("Delegated screener"),
+      classification: {
+        placement: "screener",
+        candidate: true,
+        trustReason: "delegated test screener",
+        authentication: { spf: "pass", dkim: "pass", dmarc: "pass", arc: "none" },
+      },
+    })
+    expect(delegatedCandidate.message.authentication).toEqual({ spf: "pass", dkim: "pass", dmarc: "pass", arc: "none" })
+    expect(delegatedCandidate.candidate).toEqual(expect.objectContaining({
+      source: "hey",
+      ownerEmail: "ari@mendelow.me",
+    }))
+
     expect(() => decryptStoredMailMessage(message, {})).toThrow("Missing private mail key")
+  })
+
+  it("preserves sender policies during ensure and fails fast when stored keys are missing", () => {
+    const provisioned = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    provisioned.registry.senderPolicies = [
+      buildSenderPolicy({
+        agentId: "slugger",
+        scope: "native",
+        match: { kind: "email", value: "known@example.com" },
+        action: "allow",
+        actor: { kind: "human", friendId: "ari", trustLevel: "family", channel: "cli" },
+        reason: "family recognized sender",
+        now: new Date("2026-04-21T00:00:00.000Z"),
+      }),
+    ]
+
+    const ensured = ensureMailboxRegistry({
+      agentId: "slugger",
+      registry: provisioned.registry,
+      keys: provisioned.keys,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(ensured.addedMailbox).toBe(false)
+    expect(ensured.addedSourceGrant).toBe(false)
+    expect(ensured.sourceAlias).toBe("me.mendelow.ari.slugger@ouro.bot")
+    expect(ensured.registry.senderPolicies).toEqual(provisioned.registry.senderPolicies)
+    expect(ensured.registry.senderPolicies).not.toBe(provisioned.registry.senderPolicies)
+
+    const missingMailboxKey = provisioned.registry.mailboxes[0].keyId
+    const keysWithoutMailbox = { ...provisioned.keys }
+    delete keysWithoutMailbox[missingMailboxKey]
+    expect(() => ensureMailboxRegistry({
+      agentId: "slugger",
+      registry: provisioned.registry,
+      keys: keysWithoutMailbox,
+    })).toThrow("runtime/config is missing its private key")
+
+    const missingSourceKey = provisioned.registry.sourceGrants[0].keyId
+    const keysWithoutSource = { ...provisioned.keys }
+    delete keysWithoutSource[missingSourceKey]
+    expect(() => ensureMailboxRegistry({
+      agentId: "slugger",
+      registry: provisioned.registry,
+      keys: keysWithoutSource,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })).toThrow("runtime/config is missing its private key")
+
+    const fresh = ensureMailboxRegistry({
+      agentId: "!!!",
+      ownerEmail: "ari@mendelow.me",
+    })
+    expect(fresh.mailboxAddress).toBe("agent@ouro.bot")
+    expect(fresh.sourceAlias).toBe("me.mendelow.ari.agent@ouro.bot")
+
+    const calendar = ensureMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "calendar",
+    })
+    expect(calendar.sourceAlias).toBe("me.mendelow.ari.calendar.slugger@ouro.bot")
+
+    const fallbackSource = ensureMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "!!!",
+    })
+    expect(fallbackSource.registry.sourceGrants[0].grantId).toContain("_source_")
   })
 })

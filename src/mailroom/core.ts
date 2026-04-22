@@ -1,9 +1,122 @@
 import * as crypto from "node:crypto"
 import { simpleParser } from "mailparser"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { TrustLevel } from "../mind/friends/types"
 
-export type MailPlacement = "imbox" | "screener"
+export type MailPlacement = "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
 export type MailCompartmentKind = "native" | "delegated"
+export type MailAuthenticationState = "pass" | "fail" | "softfail" | "neutral" | "none" | "unknown"
+export type MailSenderPolicyAction = "allow" | "discard" | "quarantine"
+export type MailSenderPolicyScope = "all" | MailCompartmentKind | `source:${string}`
+export type MailSenderPolicyMatch =
+  | { kind: "email"; value: string }
+  | { kind: "domain"; value: string }
+  | { kind: "source"; value: string }
+  | { kind: "thread"; value: string }
+export type MailDecisionAction =
+  | "link-friend"
+  | "create-friend"
+  | "allow-sender"
+  | "allow-source"
+  | "allow-domain"
+  | "allow-thread"
+  | "discard"
+  | "quarantine"
+  | "restore"
+export type MailScreenerCandidateStatus = "pending" | "allowed" | "discarded" | "quarantined" | "restored"
+export type MailOutboundStatus = "draft" | "sent" | "failed"
+
+export interface MailAuthenticationSummary {
+  spf: MailAuthenticationState
+  dkim: MailAuthenticationState
+  dmarc: MailAuthenticationState
+  arc: MailAuthenticationState
+}
+
+export interface MailDecisionActor {
+  kind: "agent" | "human" | "system"
+  agentId?: string
+  friendId?: string
+  trustLevel?: TrustLevel
+  channel?: string
+  sessionId?: string
+}
+
+export interface MailSenderPolicyRecord {
+  schemaVersion: 1
+  policyId: string
+  agentId: string
+  scope: MailSenderPolicyScope
+  match: MailSenderPolicyMatch
+  action: MailSenderPolicyAction
+  actor: MailDecisionActor
+  reason: string
+  createdAt: string
+}
+
+export interface MailClassification {
+  placement: MailPlacement
+  trustReason: string
+  candidate: boolean
+  authentication?: MailAuthenticationSummary
+}
+
+export interface MailDecisionRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  messageId: string
+  candidateId?: string
+  action: MailDecisionAction
+  actor: MailDecisionActor
+  reason: string
+  previousPlacement: MailPlacement
+  nextPlacement: MailPlacement
+  senderEmail?: string
+  friendId?: string
+  createdAt: string
+}
+
+export interface MailScreenerCandidate {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  mailboxId: string
+  messageId: string
+  senderEmail: string
+  senderDisplay: string
+  recipient: string
+  source?: string
+  ownerEmail?: string
+  placement: MailPlacement
+  status: MailScreenerCandidateStatus
+  trustReason: string
+  firstSeenAt: string
+  lastSeenAt: string
+  messageCount: number
+  resolvedByDecisionId?: string
+}
+
+export interface MailOutboundRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  status: MailOutboundStatus
+  from: string
+  to: string[]
+  cc: string[]
+  bcc: string[]
+  subject: string
+  text: string
+  actor: MailDecisionActor
+  reason: string
+  createdAt: string
+  updatedAt: string
+  sentAt?: string
+  transport?: string
+  transportMessageId?: string
+  error?: string
+}
 
 export interface AgentMailboxRecord {
   agentId: string
@@ -31,6 +144,7 @@ export interface MailroomRegistry {
   domain: string
   mailboxes: AgentMailboxRecord[]
   sourceGrants: SourceGrantRecord[]
+  senderPolicies?: MailSenderPolicyRecord[]
 }
 
 export interface ResolvedMailAddress {
@@ -90,6 +204,7 @@ export interface StoredMailMessage {
   envelope: MailEnvelopeInput
   placement: MailPlacement
   trustReason: string
+  authentication?: MailAuthenticationSummary
   rawObject: string
   rawSha256: string
   rawSize: number
@@ -110,6 +225,15 @@ export interface MailKeyPair {
 export interface MailroomIngestResult {
   accepted: StoredMailMessage[]
   rejectedRecipients: string[]
+}
+
+export interface MailroomEnsureResult {
+  registry: MailroomRegistry
+  keys: Record<string, string>
+  mailboxAddress: string
+  sourceAlias: string | null
+  addedMailbox: boolean
+  addedSourceGrant: boolean
 }
 
 const LOCAL_PART_LIMIT = 64
@@ -350,12 +474,25 @@ function messageStorageId(envelope: MailEnvelopeInput, raw: Buffer): string {
   return `mail_${digest.slice(0, 32)}`
 }
 
+function candidateSender(input: { parsedFrom: string[]; envelope: MailEnvelopeInput }): { email: string; display: string } {
+  const parsed = input.parsedFrom[0]
+  if (parsed) return { email: parsed, display: parsed }
+  if (!input.envelope.mailFrom.trim()) return { email: "(unknown)", display: "(unknown)" }
+  try {
+    const email = normalizeMailAddress(input.envelope.mailFrom)
+    return { email, display: email }
+  } catch {
+    return { email: "(unknown)", display: input.envelope.mailFrom.trim() }
+  }
+}
+
 export async function buildStoredMailMessage(input: {
   resolved: ResolvedMailAddress
   envelope: MailEnvelopeInput
   rawMime: Buffer
   receivedAt?: Date
-}): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload }> {
+  classification?: MailClassification
+}): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload; candidate?: MailScreenerCandidate }> {
   const parsed = await simpleParser(input.rawMime)
   const id = messageStorageId(input.envelope, input.rawMime)
   const text = parsed.text ?? ""
@@ -379,7 +516,13 @@ export async function buildStoredMailMessage(input: {
   const rawPayload = encryptForMailKey(input.rawMime, input.resolved.publicKeyPem, input.resolved.keyId)
   const privatePayload = encryptJsonForMailKey(privateEnvelope, input.resolved.publicKeyPem, input.resolved.keyId)
   const rawSha256 = crypto.createHash("sha256").update(input.rawMime).digest("hex")
-  const placement = input.resolved.defaultPlacement
+  const placement = input.classification?.placement ?? input.resolved.defaultPlacement
+  const trustReason = input.classification?.trustReason ?? (input.resolved.compartmentKind === "delegated"
+    ? `delegated source grant ${input.resolved.source ?? input.resolved.compartmentId}`
+    : placement === "imbox"
+      ? "screened-in native agent mailbox"
+      : "native agent mailbox default screener")
+  const receivedAt = (input.receivedAt ?? new Date()).toISOString()
   const message: StoredMailMessage = {
     schemaVersion: 1,
     id,
@@ -393,24 +536,42 @@ export async function buildStoredMailMessage(input: {
     recipient: input.resolved.address,
     envelope: input.envelope,
     placement,
-    trustReason: input.resolved.compartmentKind === "delegated"
-      ? `delegated source grant ${input.resolved.source ?? input.resolved.compartmentId}`
-      : placement === "imbox"
-        ? "screened-in native agent mailbox"
-        : "native agent mailbox default screener",
+    trustReason,
+    ...(input.classification?.authentication ? { authentication: input.classification.authentication } : {}),
     rawObject: `${RAW_OBJECT_PREFIX}/${id}.json`,
     rawSha256,
     rawSize: input.rawMime.byteLength,
     privateEnvelope: privatePayload,
-    receivedAt: (input.receivedAt ?? new Date()).toISOString(),
+    receivedAt,
   }
+  const sender = candidateSender({ parsedFrom: privateEnvelope.from, envelope: input.envelope })
+  const candidate: MailScreenerCandidate | undefined = input.classification?.candidate || placement === "screener"
+    ? {
+        schemaVersion: 1,
+        id: `candidate_${id}`,
+        agentId: message.agentId,
+        mailboxId: message.mailboxId,
+        messageId: id,
+        senderEmail: sender.email,
+        senderDisplay: sender.display,
+        recipient: message.recipient,
+        ...(message.source ? { source: message.source } : {}),
+        ...(message.ownerEmail ? { ownerEmail: message.ownerEmail } : {}),
+        placement,
+        status: "pending",
+        trustReason,
+        firstSeenAt: receivedAt,
+        lastSeenAt: receivedAt,
+        messageCount: 1,
+      }
+    : undefined
   emitNervesEvent({
     component: "senses",
     event: "senses.mail_message_built",
     message: "stored mail message envelope built",
-    meta: { id, agentId: message.agentId, placement, compartmentKind: message.compartmentKind },
+    meta: { id, agentId: message.agentId, placement, compartmentKind: message.compartmentKind, candidate: candidate !== undefined },
   })
-  return { message, rawPayload }
+  return { message, rawPayload, ...(candidate ? { candidate } : {}) }
 }
 
 export function decryptStoredMailMessage(message: StoredMailMessage, privateKeys: Record<string, string>): DecryptedMailMessage {
@@ -485,5 +646,130 @@ export function provisionMailboxRegistry(input: {
       sourceGrants,
     },
     keys,
+  }
+}
+
+function cloneMailroomRegistry(registry: MailroomRegistry, domain: string): MailroomRegistry {
+  return {
+    schemaVersion: 1,
+    domain,
+    mailboxes: registry.mailboxes.map((mailbox) => ({ ...mailbox })),
+    sourceGrants: registry.sourceGrants.map((grant) => ({ ...grant })),
+    ...(registry.senderPolicies ? { senderPolicies: registry.senderPolicies.map((policy) => ({ ...policy })) } : {}),
+  }
+}
+
+function requireExistingPrivateKey(keys: Record<string, string>, keyId: string, label: string): void {
+  if (keys[keyId]) return
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_private_key_missing",
+    message: "mail registry references a missing private key",
+    meta: { keyId, label },
+  })
+  throw new Error(`Mailroom registry references ${keyId} for ${label}, but runtime/config is missing its private key`)
+}
+
+function sourceGrantId(input: { agentId: string; ownerEmail: string; source: string }): string {
+  const sourcePart = safeAddressPart(input.source) || "source"
+  const ownerHash = crypto.createHash("sha256").update(normalizeMailAddress(input.ownerEmail)).digest("hex").slice(0, 8)
+  return `grant_${input.agentId}_${sourcePart}_${ownerHash}`
+}
+
+export function ensureMailboxRegistry(input: {
+  agentId: string
+  domain?: string
+  registry?: MailroomRegistry
+  keys?: Record<string, string>
+  ownerEmail?: string
+  source?: string
+  sourceTag?: string
+}): MailroomEnsureResult {
+  const domain = (input.registry?.domain ?? input.domain ?? "ouro.bot").toLowerCase()
+  const agentId = safeAddressPart(input.agentId) || "agent"
+  const keys: Record<string, string> = { ...(input.keys ?? {}) }
+  const registry: MailroomRegistry = input.registry
+    ? cloneMailroomRegistry(input.registry, domain)
+    : {
+        schemaVersion: 1,
+        domain,
+        mailboxes: [] as AgentMailboxRecord[],
+        sourceGrants: [] as SourceGrantRecord[],
+      }
+
+  let addedMailbox = false
+  let mailbox = registry.mailboxes.find((entry) => entry.agentId === agentId)
+  if (mailbox) {
+    requireExistingPrivateKey(keys, mailbox.keyId, `mailbox ${mailbox.canonicalAddress}`)
+  } else {
+    const mailboxKey = generateMailKeyPair(`${agentId}-native`)
+    mailbox = {
+      agentId,
+      mailboxId: `mailbox_${agentId}`,
+      canonicalAddress: `${agentId}@${domain}`,
+      keyId: mailboxKey.keyId,
+      publicKeyPem: mailboxKey.publicKeyPem,
+      defaultPlacement: "screener",
+    }
+    registry.mailboxes.push(mailbox)
+    keys[mailboxKey.keyId] = mailboxKey.privateKeyPem
+    addedMailbox = true
+  }
+
+  let sourceAlias: string | null = null
+  let addedSourceGrant = false
+  if (input.ownerEmail) {
+    const ownerEmail = normalizeMailAddress(input.ownerEmail)
+    const source = (input.source?.trim() || "hey").toLowerCase()
+    const existing = registry.sourceGrants.find((grant) =>
+      grant.agentId === agentId &&
+      normalizeMailAddress(grant.ownerEmail) === ownerEmail &&
+      grant.source.toLowerCase() === source)
+    if (existing) {
+      requireExistingPrivateKey(keys, existing.keyId, `source grant ${existing.aliasAddress}`)
+      sourceAlias = existing.aliasAddress
+    } else {
+      const grantKey = generateMailKeyPair(`${agentId}-${source}`)
+      sourceAlias = sourceAliasForOwner({
+        ownerEmail,
+        agentId,
+        domain,
+        sourceTag: input.sourceTag ?? (source === "hey" ? undefined : source),
+      })
+      registry.sourceGrants.push({
+        grantId: sourceGrantId({ agentId, ownerEmail, source }),
+        agentId,
+        ownerEmail,
+        source,
+        aliasAddress: sourceAlias,
+        keyId: grantKey.keyId,
+        publicKeyPem: grantKey.publicKeyPem,
+        defaultPlacement: "imbox",
+        enabled: true,
+      })
+      keys[grantKey.keyId] = grantKey.privateKeyPem
+      addedSourceGrant = true
+    }
+  }
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_registry_ensured",
+    message: "mail registry ensured",
+    meta: {
+      agentId,
+      addedMailbox,
+      addedSourceGrant,
+      mailboxes: registry.mailboxes.length,
+      sourceGrants: registry.sourceGrants.length,
+    },
+  })
+  return {
+    registry,
+    keys,
+    mailboxAddress: mailbox.canonicalAddress,
+    sourceAlias,
+    addedMailbox,
+    addedSourceGrant,
   }
 }

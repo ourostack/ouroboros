@@ -7,6 +7,32 @@ afterEach(() => {
 })
 
 describe("mailroom reader", () => {
+  it("parses optional runtime knobs without requiring Azure storage", async () => {
+    const { parseMailroomConfig } = await import("../../mailroom/reader")
+
+    expect(parseMailroomConfig({
+      mailboxAddress: "slugger@ouro.bot",
+      registryPath: "/tmp/registry.json",
+      storePath: "/tmp/mailroom",
+      smtpPort: 2525,
+      httpPort: 8080,
+      host: "0.0.0.0",
+      attentionIntervalMs: 12_000,
+      outbound: { transport: "local-sink", sinkPath: "/tmp/sent.jsonl" },
+      privateKeys: { primary: "secret", empty: "   " },
+    })).toEqual({
+      mailboxAddress: "slugger@ouro.bot",
+      registryPath: "/tmp/registry.json",
+      storePath: "/tmp/mailroom",
+      smtpPort: 2525,
+      httpPort: 8080,
+      host: "0.0.0.0",
+      attentionIntervalMs: 12_000,
+      outbound: { transport: "local-sink", sinkPath: "/tmp/sent.jsonl" },
+      privateKeys: { primary: "secret" },
+    })
+  })
+
   it("resolves Azure Blob mailroom stores with managed identity and default container", async () => {
     const credentialOptions: unknown[] = []
     const serviceUrls: string[] = []

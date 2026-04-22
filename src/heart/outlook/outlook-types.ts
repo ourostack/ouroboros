@@ -394,13 +394,14 @@ export interface OutlookMailMessageSummary {
   date: string | null
   receivedAt: string
   snippet: string
-  placement: "imbox" | "screener"
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
   compartmentKind: "native" | "delegated"
   ownerEmail: string | null
   source: string | null
   recipient: string
   attachmentCount: number
   untrustedContentWarning: string
+  provenance: OutlookMailProvenance
 }
 
 export interface OutlookMailMessageDetail extends OutlookMailMessageSummary {
@@ -413,6 +414,53 @@ export interface OutlookMailMessageDetail extends OutlookMailMessageSummary {
     reason: string
     accessedAt: string
   }
+}
+
+export interface OutlookMailProvenance {
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
+  compartmentKind: "native" | "delegated"
+  ownerEmail: string | null
+  source: string | null
+  recipient: string
+  mailboxId: string
+  grantId: string | null
+  trustReason: string
+}
+
+export interface OutlookMailScreenerCandidate {
+  id: string
+  messageId: string
+  senderEmail: string
+  senderDisplay: string
+  recipient: string
+  source: string | null
+  ownerEmail: string | null
+  status: "pending" | "allowed" | "discarded" | "quarantined" | "restored"
+  placement: "imbox" | "screener" | "discarded" | "quarantine" | "draft" | "sent"
+  trustReason: string
+  firstSeenAt: string
+  lastSeenAt: string
+  messageCount: number
+}
+
+export interface OutlookMailOutboundRecord {
+  id: string
+  status: "draft" | "sent" | "failed"
+  from: string
+  to: string[]
+  cc: string[]
+  bcc: string[]
+  subject: string
+  createdAt: string
+  updatedAt: string
+  sentAt: string | null
+  transport: string | null
+  reason: string
+}
+
+export interface OutlookMailRecoverySummary {
+  discardedCount: number
+  quarantineCount: number
 }
 
 export interface OutlookMailAccessEntry {
@@ -435,6 +483,9 @@ export interface OutlookMailView {
   } | null
   folders: OutlookMailFolder[]
   messages: OutlookMailMessageSummary[]
+  screener: OutlookMailScreenerCandidate[]
+  outbound: OutlookMailOutboundRecord[]
+  recovery: OutlookMailRecoverySummary
   accessLog: OutlookMailAccessEntry[]
   error: string | null
 }

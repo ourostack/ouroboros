@@ -178,6 +178,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro auth",
     subcommands: ["verify", "switch"],
   },
+  account: {
+    category: "Auth",
+    description: "Ensure the agent's vault-backed work substrate account, including Mailroom setup",
+    usage: "ouro account ensure [--agent <name>]",
+    example: "ouro account ensure --agent slugger",
+    subcommands: ["ensure"],
+  },
   connect: {
     category: "Auth",
     description: "Set up providers, portable integrations, and local senses from one guided screen",
@@ -324,6 +331,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
     usage: "ouro connect mail [--agent <name>]",
     example: "ouro connect mail",
+  },
+  "account ensure": {
+    description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
+    usage: "ouro account ensure [--agent <name>]",
+    example: "ouro account ensure --agent slugger",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",

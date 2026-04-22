@@ -2,12 +2,17 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 import { decryptMessages, type MailAccessLogEntry } from "../../../mailroom/file-store"
 import { resolveMailroomReader } from "../../../mailroom/reader"
 import type { DecryptedMailMessage } from "../../../mailroom/core"
+import type { MailOutboundRecord, MailScreenerCandidate } from "../../../mailroom/core"
 import type {
   OutlookMailAccessEntry,
   OutlookMailFolder,
   OutlookMailMessageDetail,
   OutlookMailMessageSummary,
   OutlookMailMessageView,
+  OutlookMailOutboundRecord,
+  OutlookMailProvenance,
+  OutlookMailRecoverySummary,
+  OutlookMailScreenerCandidate,
   OutlookMailStatus,
   OutlookMailView,
 } from "../outlook-types"
@@ -20,9 +25,17 @@ function emptyFolders(): OutlookMailFolder[] {
   return [
     { id: "imbox", label: "Imbox", count: 0 },
     { id: "screener", label: "Screener", count: 0 },
+    { id: "discarded", label: "Discarded", count: 0 },
+    { id: "quarantine", label: "Quarantine", count: 0 },
+    { id: "draft", label: "Drafts", count: 0 },
+    { id: "sent", label: "Sent", count: 0 },
     { id: "delegated", label: "Delegated", count: 0 },
     { id: "native", label: "Native", count: 0 },
   ]
+}
+
+function emptyRecovery(): OutlookMailRecoverySummary {
+  return { discardedCount: 0, quarantineCount: 0 }
 }
 
 function unavailableMailView(agentName: string, status: Exclude<OutlookMailStatus, "ready">, error: string): OutlookMailView {
@@ -34,6 +47,9 @@ function unavailableMailView(agentName: string, status: Exclude<OutlookMailStatu
     store: null,
     folders: emptyFolders(),
     messages: [],
+    screener: [],
+    outbound: [],
+    recovery: emptyRecovery(),
     accessLog: [],
     error,
   }
@@ -52,6 +68,16 @@ function unavailableMessageView(agentName: string, status: Exclude<OutlookMailSt
 }
 
 function mailSummary(message: DecryptedMailMessage): OutlookMailMessageSummary {
+  const provenance: OutlookMailProvenance = {
+    placement: message.placement,
+    compartmentKind: message.compartmentKind,
+    ownerEmail: message.ownerEmail ?? null,
+    source: message.source ?? null,
+    recipient: message.recipient,
+    mailboxId: message.mailboxId,
+    grantId: message.grantId ?? null,
+    trustReason: message.trustReason,
+  }
   return {
     id: message.id,
     subject: message.private.subject,
@@ -68,13 +94,18 @@ function mailSummary(message: DecryptedMailMessage): OutlookMailMessageSummary {
     recipient: message.recipient,
     attachmentCount: message.private.attachments.length,
     untrustedContentWarning: message.private.untrustedContentWarning,
+    provenance,
   }
 }
 
-function buildFolders(messages: OutlookMailMessageSummary[]): OutlookMailFolder[] {
+function buildFolders(messages: OutlookMailMessageSummary[], outbound: OutlookMailOutboundRecord[]): OutlookMailFolder[] {
   const folders = [
     { id: "imbox", label: "Imbox", count: messages.filter((message) => message.placement === "imbox").length },
     { id: "screener", label: "Screener", count: messages.filter((message) => message.placement === "screener").length },
+    { id: "discarded", label: "Discarded", count: messages.filter((message) => message.placement === "discarded").length },
+    { id: "quarantine", label: "Quarantine", count: messages.filter((message) => message.placement === "quarantine").length },
+    { id: "draft", label: "Drafts", count: outbound.filter((record) => record.status === "draft").length },
+    { id: "sent", label: "Sent", count: outbound.filter((record) => record.status === "sent").length },
     { id: "delegated", label: "Delegated", count: messages.filter((message) => message.compartmentKind === "delegated").length },
     { id: "native", label: "Native", count: messages.filter((message) => message.compartmentKind === "native").length },
   ]
@@ -87,6 +118,48 @@ function buildFolders(messages: OutlookMailMessageSummary[]): OutlookMailFolder[
     folders.push({ id: `source:${source}`, label: source.toUpperCase(), count })
   }
   return folders
+}
+
+function screenerCandidate(candidate: MailScreenerCandidate): OutlookMailScreenerCandidate {
+  return {
+    id: candidate.id,
+    messageId: candidate.messageId,
+    senderEmail: candidate.senderEmail,
+    senderDisplay: candidate.senderDisplay,
+    recipient: candidate.recipient,
+    source: candidate.source ?? null,
+    ownerEmail: candidate.ownerEmail ?? null,
+    status: candidate.status,
+    placement: candidate.placement,
+    trustReason: candidate.trustReason,
+    firstSeenAt: candidate.firstSeenAt,
+    lastSeenAt: candidate.lastSeenAt,
+    messageCount: candidate.messageCount,
+  }
+}
+
+function outboundRecord(record: MailOutboundRecord): OutlookMailOutboundRecord {
+  return {
+    id: record.id,
+    status: record.status,
+    from: record.from,
+    to: record.to,
+    cc: record.cc,
+    bcc: record.bcc,
+    subject: record.subject,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    sentAt: record.sentAt ?? null,
+    transport: record.transport ?? null,
+    reason: record.reason,
+  }
+}
+
+function buildRecovery(messages: OutlookMailMessageSummary[]): OutlookMailRecoverySummary {
+  return {
+    discardedCount: messages.filter((message) => message.placement === "discarded").length,
+    quarantineCount: messages.filter((message) => message.placement === "quarantine").length,
+  }
 }
 
 function accessEntries(entries: MailAccessLogEntry[]): OutlookMailAccessEntry[] {
@@ -129,6 +202,9 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
     const stored = await resolved.store.listMessages({ agentId: agentName, limit: OUTLOOK_MAIL_COUNT_LIMIT })
     const decrypted = decryptMessages(stored, resolved.config.privateKeys)
     const summaries = decrypted.map(mailSummary)
+    const screener = (await resolved.store.listScreenerCandidates({ agentId: agentName, status: "pending", limit: 100 }))
+      .map(screenerCandidate)
+    const outbound = (await resolved.store.listMailOutbound(agentName)).map(outboundRecord)
     await resolved.store.recordAccess({
       agentId: agentName,
       tool: "outlook_mail_list",
@@ -145,8 +221,11 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
         kind: resolved.storeKind,
         label: resolved.storeLabel,
       },
-      folders: buildFolders(summaries),
+      folders: buildFolders(summaries, outbound),
       messages: summaries.slice(0, OUTLOOK_MAIL_LIST_LIMIT),
+      screener,
+      outbound,
+      recovery: buildRecovery(summaries),
       accessLog,
       error: null,
     }

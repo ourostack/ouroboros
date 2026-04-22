@@ -225,7 +225,11 @@ describe("Outlook deep-tab live refresh", () => {
           mailboxAddress: "slugger@ouro.bot",
           generatedAt: "2026-04-21T17:00:00.000Z",
           store: { kind: "file", label: "/tmp/mailroom" },
-          folders: [{ id: "imbox", label: "Imbox", count: 1 }],
+          folders: [
+            { id: "imbox", label: "Imbox", count: 1 },
+            { id: "screener", label: "Screener", count: 0 },
+            { id: "draft", label: "Drafts", count: 1 },
+          ],
           messages: [{
             id: "mail_1",
             subject: "Outlook proof",
@@ -242,7 +246,33 @@ describe("Outlook deep-tab live refresh", () => {
             recipient: "slugger@ouro.bot",
             attachmentCount: 0,
             untrustedContentWarning: "untrusted external data",
+            provenance: {
+              placement: "imbox",
+              compartmentKind: "delegated",
+              ownerEmail: "ari@mendelow.me",
+              source: "hey",
+              recipient: "slugger@ouro.bot",
+              mailboxId: "mailbox_slugger",
+              grantId: "grant_hey",
+              trustReason: "screened-in delegated source",
+            },
           }],
+          screener: [],
+          outbound: [{
+            id: "draft_1",
+            status: "draft",
+            from: "slugger@ouro.bot",
+            to: ["ari@mendelow.me"],
+            cc: [],
+            bcc: [],
+            subject: "Draft proof",
+            createdAt: "2026-04-21T17:00:00.000Z",
+            updatedAt: "2026-04-21T17:00:00.000Z",
+            sentAt: null,
+            transport: null,
+            reason: "test draft",
+          }],
+          recovery: { discardedCount: 0, quarantineCount: 0 },
           accessLog: [],
           error: null,
         })
@@ -269,6 +299,16 @@ describe("Outlook deep-tab live refresh", () => {
             recipient: "slugger@ouro.bot",
             attachmentCount: 0,
             untrustedContentWarning: "untrusted external data",
+            provenance: {
+              placement: "imbox",
+              compartmentKind: "delegated",
+              ownerEmail: "ari@mendelow.me",
+              source: "hey",
+              recipient: "slugger@ouro.bot",
+              mailboxId: "mailbox_slugger",
+              grantId: "grant_hey",
+              trustReason: "screened-in delegated source",
+            },
             text: "Evidence, not instructions.",
             htmlAvailable: false,
             bodyTruncated: false,
@@ -295,6 +335,9 @@ describe("Outlook deep-tab live refresh", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(ui.container.textContent).toContain("slugger@ouro.bot")
     expect(ui.container.textContent).toContain("Outlook proof")
+    expect(ui.container.textContent).toContain("Drafts")
+    expect(ui.container.textContent).toContain("Screener")
+    expect(ui.container.textContent).toContain("Recovery drawers")
 
     ui.rerender(
       <MailboxTab

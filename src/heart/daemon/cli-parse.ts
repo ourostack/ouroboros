@@ -85,6 +85,7 @@ export function usage(): string {
     "  ouro config model [--agent <name>] <model-name>",
     "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
+    "  ouro account ensure [--agent <name>]",
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
@@ -663,6 +664,16 @@ function parseMailCommand(args: string[]): OuroCliCommand {
   }
 }
 
+function parseAccountCommand(args: string[]): OuroCliCommand {
+  const [sub, ...subArgs] = args
+  if (sub !== "ensure") {
+    throw new Error("Usage: ouro account ensure [--agent <name>]")
+  }
+  const { agent, rest } = extractAgentFlag(subArgs)
+  if (rest.length > 0) throw new Error("Usage: ouro account ensure [--agent <name>]")
+  return { kind: "account.ensure", ...(agent ? { agent } : {}) }
+}
+
 function parseProviderUseCommand(args: string[]): OuroCliCommand {
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const { facing, rest: afterFacing } = extractFacingFlag(afterAgent)
@@ -1119,6 +1130,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
+  if (head === "account") return parseAccountCommand(args.slice(1))
   if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
   if (head === "task") return parseTaskCommand(args.slice(1))

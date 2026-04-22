@@ -306,6 +306,26 @@ const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 // advisory and geocode are public APIs but gated for consistency)
 // Flight search is also friend+ (read-only, no payment)
 const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search", "flight_search"])
+const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send"])
+const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
+
+function mailTrustGuardrail(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  if (MAIL_FAMILY_TOOLS.has(toolName)) {
+    if (context.trustLevel === undefined || context.trustLevel === "family") return allow
+    if (toolName === "mail_send") return deny("outbound mail sends require family trust.")
+    return deny(toolName === "mail_decide"
+      ? "mail screener decisions require family trust."
+      : "delegated human mail requires family trust.")
+  }
+  if (MAIL_DELEGATED_READ_TOOLS.has(toolName)) {
+    const scope = (args.scope ?? "").trim().toLowerCase()
+    if (scope === "delegated" || scope === "all") {
+      if (context.trustLevel === undefined || context.trustLevel === "family") return allow
+      return deny("delegated human mail requires family trust.")
+    }
+  }
+  return allow
+}
 
 function checkCredentialTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
   if (CREDENTIAL_FAMILY_TOOLS.has(toolName)) {
@@ -333,6 +353,9 @@ function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
 }
 
 function checkTrustLevelGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  const mailResult = mailTrustGuardrail(toolName, args, context)
+  if (!mailResult.allowed) return mailResult
+
   // Credential tools have their own trust rules that apply at all levels
   const credentialResult = checkCredentialTrustGuardrails(toolName, context)
   if (!credentialResult.allowed) return credentialResult
