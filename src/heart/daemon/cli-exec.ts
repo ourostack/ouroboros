@@ -2402,6 +2402,37 @@ async function applyRuntimeChangeToRunningAgent(
   }
 }
 
+async function applyLocalSenseChangeToRunningDaemon(
+  agent: string,
+  senseLabel: string,
+  deps: OuroCliDeps,
+  onProgress?: (message: string) => void,
+): Promise<string> {
+  try {
+    onProgress?.("checking whether Ouro is already running")
+    const alive = await deps.checkSocketAlive(deps.socketPath)
+    if (!alive) return "daemon is not running; next `ouro up` will load the change"
+
+    onProgress?.(`restarting Ouro so ${senseLabel} is attached in the live sense manager`)
+    const stopped = await withCliTimeout(
+      DEFAULT_AGENT_RESTART_TIMEOUT_MS,
+      "daemon stop request timed out",
+      () => deps.sendCommand(deps.socketPath, { kind: "daemon.stop" }),
+    )
+    if (!stopped.ok) return `daemon restart skipped: ${stopped.error ?? stopped.message ?? "unknown daemon error"}`
+
+    deps.cleanupStaleSocket(deps.socketPath)
+    const started = await ensureDaemonRunning({
+      ...deps,
+      reportDaemonStartupPhase: (message) => onProgress?.(message),
+    }, { initialAlive: false })
+    if (!started.ok) return `daemon restart requested, but startup failed: ${started.message}`
+    return `restarted Ouro; ${senseLabel} is loaded for ${agent}`
+  } catch (error) {
+    return `daemon restart skipped: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 async function executeVaultConfigSet(
   command: Extract<ResolvedOuroCliCommand, { kind: "vault.config.set" }>,
   deps: OuroCliDeps,
@@ -3165,6 +3196,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
   let stored: Awaited<ReturnType<typeof upsertMachineRuntimeCredentialConfig>>
+  let daemonApply = "not applied"
   try {
     progress.startPhase("saving BlueBubbles attachment")
     progress.updateDetail("checking existing machine runtime config")
@@ -3191,6 +3223,12 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
     progress.updateDetail("enabling BlueBubbles in agent.json")
     enableAgentSense(agent, "bluebubbles", deps)
     progress.completePhase("saving BlueBubbles attachment", "secret stored")
+    daemonApply = await runCommandProgressPhase(
+      progress,
+      "applying BlueBubbles to running Ouro",
+      () => applyLocalSenseChangeToRunningDaemon(agent, "BlueBubbles", deps, (message) => progress.updateDetail(message)),
+      (result) => result,
+    )
     progress.end()
   } catch (error) {
     progress.end()
@@ -3204,11 +3242,13 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `Machine: ${machineId}`,
       `Stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
+      `Runtime: ${daemonApply}`,
       "secret was not printed",
       ...(syncSummary ? [syncSummary] : []),
     ],
     nextMoves: [
-      "Point BlueBubbles at this machine's webhook, then run ouro up.",
+      `Point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
+      "If BlueBubbles was already pointed there, messages can now reach the agent.",
       `Attach other machines separately if ${agent} should use BlueBubbles there too.`,
     ],
     fallbackLines: [
@@ -3216,9 +3256,10 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `machine: ${machineId}`,
       `stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
+      `runtime: ${daemonApply}`,
       "secret was not printed",
       "",
-      "Next: point BlueBubbles at this machine's webhook, then run `ouro up`.",
+      `Next: point BlueBubbles at this machine's webhook listener on port ${port}${webhookPath}.`,
       ...(syncSummary ? [syncSummary] : []),
     ],
   })

@@ -22,6 +22,7 @@ export interface HealthMonitorOptions {
   diskUsagePercent?: () => number
   onCriticalAgent?: (agentName: string) => void
   senseProbes?: SenseProbe[]
+  senseProbeProvider?: () => SenseProbe[]
 }
 
 export class HealthMonitor {
@@ -31,6 +32,7 @@ export class HealthMonitor {
   private readonly diskUsagePercent: () => number
   private readonly onCriticalAgent: (agentName: string) => void
   private readonly senseProbes: SenseProbe[]
+  private readonly senseProbeProvider: () => SenseProbe[]
   private intervalHandle: ReturnType<typeof setInterval> | null = null
 
   constructor(options: HealthMonitorOptions) {
@@ -40,6 +42,7 @@ export class HealthMonitor {
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
     this.senseProbes = options.senseProbes ?? []
+    this.senseProbeProvider = options.senseProbeProvider ?? (() => [])
   }
 
   startPeriodicChecks(intervalMs: number): void {
@@ -136,7 +139,18 @@ export class HealthMonitor {
       })
     }
 
-    for (const probe of this.senseProbes) {
+    const senseProbes = [...this.senseProbes]
+    try {
+      senseProbes.push(...this.senseProbeProvider())
+    } catch (error) {
+      results.push({
+        name: "sense-probes",
+        status: "warn",
+        message: `sense probe discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+
+    for (const probe of senseProbes) {
       try {
         const outcome = await probe.check()
         if (outcome.ok) {

@@ -142,6 +142,12 @@ describe("daemon entrypoint", () => {
           senseManagerCtor(_opts)
         }
         listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [
+          {
+            name: "bluebubbles:slugger",
+            check: async () => ({ ok: true }),
+          },
+        ])
         startAutoStartSenses = vi.fn(async () => undefined)
         stopAll = vi.fn(async () => undefined)
       },
@@ -191,7 +197,7 @@ describe("daemon entrypoint", () => {
       { name: "agent-processes", status: "critical", message: "non-running agents: slugger" },
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
-      expect.objectContaining({ name: "sense-probe:bluebubbles", status: "critical" }),
+      { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
     ])
     await expect(daemonOptions.router.send({
       from: "slugger",
