@@ -831,7 +831,11 @@ describe("mail tools", () => {
     expect(search).toContain("delegated source aliases: hey:ari@mendelow.me -> me.mendelow.ari.slugger@ouro.bot")
     expect(search).toContain("not evidence that the human's HEY inbox is empty")
     expect(search).toContain("ouro mail import-mbox")
-    expect(search).toContain("validation golden paths")
+    expect(search).toContain("validation golden paths before claiming setup works")
+    expect(search).toContain("1. HEY archive to work object")
+    expect(search).toContain("2. Native mail and Screener")
+    expect(search).toContain("3. Cross-sense reaction")
+    expect(search).toContain("4. Ouro Outlook audit")
     const recent = await tool("mail_recent").handler({
       source: "hey",
       reason: "source setup check",

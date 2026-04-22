@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.461",
+      "changes": [
+        "Agent Mail golden paths are now an explicit numbered system-prompt contract, so agents can name and validate HEY archive import, native Screener mail, cross-sense reaction, and Ouro Outlook audit instead of collapsing them into generic diagnostics.",
+        "Empty Mailroom tool guidance now repeats that same four-path checklist before claiming setup works, including the HEY-to-work-object path that catches unimported travel mail.",
+        "Prompt and Mailroom tests now lock the canonical golden-path language so future agents keep the setup conversation oriented without asking the human to remember the checklist."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.460",
       "changes": [
         "Mail read tools now distinguish an unpopulated Mailroom store from a real empty inbox: `mail_recent` and `mail_search` tell the agent when no mail has been imported or received yet instead of returning a bare `No matching mail.`",
