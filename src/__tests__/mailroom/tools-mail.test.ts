@@ -240,6 +240,13 @@ describe("mail tools", () => {
     expect(recent).toContain("untrusted external data")
     const messageId = /mail_[a-f0-9]+/.exec(String(recent))?.[0]
     expect(messageId).toBeTruthy()
+    const emptySourceFolder = await tool("mail_recent").handler({
+      scope: "delegated",
+      source: "hey",
+      placement: "sent",
+      reason: "source folder check",
+    }, trustedContext())
+    expect(emptySourceFolder).toBe("No matching mail.")
 
     const search = await tool("mail_search").handler({ query: "pancakes", reason: "find breakfast" }, trustedContext())
     expect(search).toContain(messageId!)
@@ -748,9 +755,88 @@ describe("mail tools", () => {
     const accessLog = await tool("mail_access_log").handler({}, contextWithoutFriend())
     expect(accessLog).toBe("No mail access records yet.")
     const recent = await tool("mail_recent").handler({ limit: "nope" }, contextWithoutFriend())
-    expect(recent).toBe("No matching mail.")
+    expect(recent).toContain("No visible mail yet.")
+    expect(recent).toContain("0 messages")
+    expect(recent).toContain("not evidence that the human's HEY inbox is empty")
+    const search = await tool("mail_search").handler({ query: "anything" }, contextWithoutFriend())
+    expect(search).toContain("No visible mail yet.")
     const screener = await tool("mail_screener").handler({ status: "restored" }, contextWithoutFriend())
     expect(screener).toBe("No Screener candidates.")
+
+    const noGrantAgent = `mailtool-nogrant-${Date.now()}`
+    const noGrantRoot = tempDir()
+    const noGrantRegistryPath = path.join(noGrantRoot, "registry.json")
+    const noGrantStorePath = path.join(noGrantRoot, "mailroom")
+    const noGrantProvisioned = provisionMailboxRegistry({ agentId: noGrantAgent })
+    fs.writeFileSync(noGrantRegistryPath, `${JSON.stringify(noGrantProvisioned.registry, null, 2)}\n`, "utf-8")
+    setAgentName(noGrantAgent)
+    cacheRuntimeCredentialConfig(noGrantAgent, {
+      mailroom: {
+        mailboxAddress: `${noGrantAgent}@ouro.bot`,
+        registryPath: noGrantRegistryPath,
+        storePath: noGrantStorePath,
+        privateKeys: noGrantProvisioned.keys,
+      },
+    })
+    const noGrantRecent = await tool("mail_recent").handler({}, contextWithoutFriend())
+    expect(noGrantRecent).toContain("delegated source aliases: none configured yet.")
+
+    const brokenAgent = `mailtool-broken-${Date.now()}`
+    const brokenRoot = tempDir()
+    const brokenRegistryPath = path.join(brokenRoot, "registry.json")
+    const brokenStorePath = path.join(brokenRoot, "mailroom")
+    const brokenProvisioned = provisionMailboxRegistry({ agentId: brokenAgent })
+    fs.writeFileSync(brokenRegistryPath, "not json", "utf-8")
+    setAgentName(brokenAgent)
+    cacheRuntimeCredentialConfig(brokenAgent, {
+      mailroom: {
+        mailboxAddress: `${brokenAgent}@ouro.bot`,
+        registryPath: brokenRegistryPath,
+        storePath: brokenStorePath,
+        privateKeys: brokenProvisioned.keys,
+      },
+    })
+    const brokenRecent = await tool("mail_recent").handler({}, contextWithoutFriend())
+    expect(brokenRecent).toContain("delegated source aliases: unreadable registry")
+  })
+
+  it("orients the agent when delegated HEY mail has not been imported yet", async () => {
+    setAgentName("slugger")
+    const root = tempDir()
+    const storePath = path.join(root, "mailroom")
+    const registryPath = path.join(root, "registry.json")
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const search = await tool("mail_search").handler({
+      query: "Basel",
+      scope: "delegated",
+      source: "hey",
+      reason: "update travel plans",
+    }, trustedContext())
+    expect(search).toContain("No visible mail yet.")
+    expect(search).toContain("Mailroom is provisioned for slugger@ouro.bot")
+    expect(search).toContain("delegated source aliases: hey:ari@mendelow.me -> me.mendelow.ari.slugger@ouro.bot")
+    expect(search).toContain("not evidence that the human's HEY inbox is empty")
+    expect(search).toContain("ouro mail import-mbox")
+    expect(search).toContain("validation golden paths")
+    const recent = await tool("mail_recent").handler({
+      source: "hey",
+      reason: "source setup check",
+    }, trustedContext())
+    expect(recent).toContain("No visible mail yet.")
   })
 
   it("handles native mail fallbacks, validation paths, truncation, and access-log targets", async () => {
@@ -764,6 +850,12 @@ describe("mail tools", () => {
     expect(recent).toContain("(no subject)")
     const friendRecent = await tool("mail_recent").handler({ reason: "native friend scan" }, friendContext())
     expect(friendRecent).toContain(seeded.longId)
+    const delegatedRecent = await tool("mail_recent").handler({ scope: "delegated", reason: "delegated setup check" }, trustedContext())
+    expect(delegatedRecent).toContain("No delegated mail is visible for this source/scope yet.")
+    const sourceRecent = await tool("mail_recent").handler({ source: "hey", reason: "source setup check" }, trustedContext())
+    expect(sourceRecent).toContain("No delegated mail is visible for this source/scope yet.")
+    const sentRecent = await tool("mail_recent").handler({ placement: "sent", reason: "sent folder check" }, trustedContext())
+    expect(sentRecent).toBe("No matching mail.")
 
     await expect(tool("mail_search").handler({}, trustedContext())).resolves.toBe("query is required.")
     await expect(tool("mail_search").handler({ query: "absent" }, trustedContext())).resolves.toBe("No matching mail.")
@@ -811,5 +903,19 @@ describe("mail tools", () => {
 
     const recent = await tool("mail_recent").handler({ scope: "delegated" }, trustedContext())
     expect(recent).toContain("delegated:unknown:source")
+    fs.writeFileSync(
+      path.join(storePath, "messages", `${message.id}.json`),
+      `${JSON.stringify({ ...message, ownerEmail: undefined }, null, 2)}\n`,
+      "utf-8",
+    )
+    const missingOwner = await tool("mail_recent").handler({ scope: "delegated" }, trustedContext())
+    expect(missingOwner).toContain("delegated:unknown:hey")
+    fs.writeFileSync(
+      path.join(storePath, "messages", `${message.id}.json`),
+      `${JSON.stringify({ ...message, source: undefined }, null, 2)}\n`,
+      "utf-8",
+    )
+    const missingSource = await tool("mail_recent").handler({ scope: "delegated" }, trustedContext())
+    expect(missingSource).toContain("delegated:ari@mendelow.me:source")
   })
 })

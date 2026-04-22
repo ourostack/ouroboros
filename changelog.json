@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.460",
+      "changes": [
+        "Mail read tools now distinguish an unpopulated Mailroom store from a real empty inbox: `mail_recent` and `mail_search` tell the agent when no mail has been imported or received yet instead of returning a bare `No matching mail.`",
+        "Empty delegated HEY/source reads now surface the configured source alias, explain that absence is onboarding/import/forwarding state rather than evidence about the human's inbox, and point the agent back to the agent-run setup/import flow.",
+        "The system prompt now carries the empty-Mailroom invariant plus the four Agent Mail golden paths, so agents know to validate HEY import, native Screener mail, cross-sense reaction, and Ouro Outlook audit without asking the human to remember the checklist."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.459",
       "changes": [
         "`ouro connect bluebubbles` now applies a machine-local attachment to a running daemon by recycling Ouro once after the vault and bundle update, so the webhook listener starts immediately instead of requiring a manual `ouro down && ouro up` discovery step.",
