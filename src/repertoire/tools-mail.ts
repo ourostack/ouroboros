@@ -1,8 +1,8 @@
 import * as fs from "node:fs"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
-import { decryptMessages, type MailAccessLogEntry } from "../mailroom/file-store"
-import { resolveMailroomReader } from "../mailroom/reader"
+import { decryptMessages, type MailAccessLogEntry, type MailroomStore } from "../mailroom/file-store"
+import { resolveMailroomReader, type MailroomRuntimeConfig } from "../mailroom/reader"
 import { confirmMailDraftSend, createMailDraft, resolveOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
 import {
@@ -123,6 +123,72 @@ function renderAccessLog(entries: MailAccessLogEntry[]): string {
       return `- ${entry.accessedAt} ${entry.tool} ${target} reason="${entry.reason}"`
     })
     .join("\n")
+}
+
+function renderSourceGrantStatus(config: MailroomRuntimeConfig, agentId: string): string[] {
+  if (!config.registryPath) {
+    return [
+      "delegated source aliases: unknown (runtime config has no registryPath).",
+      `agent-runnable repair: run ouro connect mail --agent ${agentId} --owner-email <human-email> --source hey.`,
+    ]
+  }
+  try {
+    const registry = readRegistry(config.registryPath)
+    const grants = registry.sourceGrants
+      .filter((grant) => grant.agentId === agentId && grant.enabled)
+      .map((grant) => `${grant.source}:${grant.ownerEmail} -> ${grant.aliasAddress}`)
+    if (grants.length === 0) {
+      return [
+        "delegated source aliases: none configured yet.",
+        `agent-runnable next step: run ouro account ensure --agent ${agentId} --owner-email <human-email> --source hey.`,
+      ]
+    }
+    return [`delegated source aliases: ${grants.join("; ")}.`]
+  } catch (error) {
+    const message = error instanceof Error ? error.message : /* v8 ignore next -- fs and JSON.parse failures are Error instances. @preserve */ String(error)
+    return [
+      `delegated source aliases: unreadable registry (${message}).`,
+      `agent-runnable repair: run ouro connect mail --agent ${agentId} --owner-email <human-email> --source hey.`,
+    ]
+  }
+}
+
+async function renderEmptyMailResult(input: {
+  agentId: string
+  config: MailroomRuntimeConfig
+  store: MailroomStore
+  scope?: "native" | "delegated"
+  source?: string
+}): Promise<string> {
+  const anyVisible = await input.store.listMessages({ agentId: input.agentId, limit: 1 })
+  if (anyVisible.length === 0) {
+    return [
+      "No visible mail yet.",
+      `mail onboarding status: Mailroom is provisioned for ${input.config.mailboxAddress}, but this agent's encrypted store has 0 messages.`,
+      ...renderSourceGrantStatus(input.config, input.agentId),
+      "interpretation: this is not evidence that the human's HEY inbox is empty; Agent Mail has not yet received or imported mail visible to this agent.",
+      `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, ask the human for the exported MBOX file path, run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>, then verify with mail_recent/mail_search/Ouro Outlook.`,
+      "validation golden paths: HEY import updates a real work object; native send/receive goes through Screener; email can trigger another sense such as iMessage; Ouro Outlook audits the full story.",
+    ].join("\n")
+  }
+
+  if (input.scope === "delegated" || input.source) {
+    const delegated = await input.store.listMessages({
+      agentId: input.agentId,
+      compartmentKind: "delegated",
+      ...(input.source ? { source: input.source } : {}),
+      limit: 1,
+    })
+    if (delegated.length === 0) {
+      return [
+        "No delegated mail is visible for this source/scope yet.",
+        ...renderSourceGrantStatus(input.config, input.agentId),
+        "Mailroom has other mail, so check the delegated HEY import/forwarding/source filter before treating the human inbox as empty.",
+      ].join("\n")
+    }
+  }
+
+  return "No matching mail."
 }
 
 function actorFromContext(ctx: Parameters<ToolDefinition["handler"]>[1], agentId: string): MailDecisionActor {
@@ -306,7 +372,15 @@ export const mailToolDefinitions: ToolDefinition[] = [
         tool: "mail_recent",
         reason: args.reason || "recent mail overview",
       })
-      if (messages.length === 0) return "No matching mail."
+      if (messages.length === 0) {
+        return renderEmptyMailResult({
+          agentId: resolved.agentName,
+          config: resolved.config,
+          store: resolved.store,
+          ...(scope ? { scope } : {}),
+          ...(args.source ? { source: args.source } : {}),
+        })
+      }
       return decryptMessages(messages, resolved.config.privateKeys).map(renderMessageSummary).join("\n\n")
     },
     summaryKeys: ["scope", "placement", "source", "limit"],
@@ -474,6 +548,15 @@ export const mailToolDefinitions: ToolDefinition[] = [
         tool: "mail_search",
         reason: args.reason || `search: ${query}`,
       })
+      if (all.length === 0) {
+        return renderEmptyMailResult({
+          agentId: resolved.agentName,
+          config: resolved.config,
+          store: resolved.store,
+          ...(scope ? { scope } : {}),
+          ...(args.source ? { source: args.source } : {}),
+        })
+      }
       if (matching.length === 0) return "No matching mail."
       return matching.map(renderMessageSummary).join("\n\n")
     },
