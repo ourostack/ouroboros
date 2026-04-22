@@ -13,6 +13,8 @@ import {
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
+import { createHttpHealthProbe } from "./http-health-probe"
+import type { SenseProbe } from "./health-monitor"
 
 export interface DaemonSenseRow {
   agent: string
@@ -27,6 +29,7 @@ export interface DaemonSenseManagerLike {
   startAutoStartSenses(): Promise<void>
   stopAll(): Promise<void>
   listSenseRows(): DaemonSenseRow[]
+  listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
 }
 
@@ -409,6 +412,24 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       .filter((pid): pid is number => pid !== null && pid !== undefined)
   }
   /* v8 ignore stop */
+
+  listHealthProbes(): SenseProbe[] {
+    const probes: SenseProbe[] = []
+    for (const [agent, context] of this.contexts.entries()) {
+      const runtimeConfig = readRuntimeCredentialConfig(agent)
+      const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agent)
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+      if (!context.senses.bluebubbles.enabled || !context.facts.bluebubbles.configured || !machineRuntimeConfig.ok) {
+        continue
+      }
+
+      const machinePayload = machineRuntimeConfig.config
+      const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
+      const port = numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT)
+      probes.push(createHttpHealthProbe(`bluebubbles:${agent}`, port))
+    }
+    return probes
+  }
 
   listSenseRows(): DaemonSenseRow[] {
     const runtime = new Map<string, Partial<Record<SenseName, SenseRuntimeInfo>>>()

@@ -3262,6 +3262,214 @@ describe("provider CLI command execution", () => {
     expect(agentJson.senses?.bluebubbles?.preserved).toBe("yes")
   })
 
+  it("restarts a running daemon after connecting BlueBubbles so the local sense starts immediately", async () => {
+    emitTestEvent("provider cli connect bluebubbles applies running daemon")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-restart-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-restart-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_live")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    let nowMs = Date.parse(NOW)
+    const cleanupStaleSocket = vi.fn()
+    const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
+    const sentCommands: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms },
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 50,
+      checkSocketAlive: async () => true,
+      cleanupStaleSocket,
+      startDaemonProcess,
+      sendCommand: async (_socketPath, command) => {
+        sentCommands.push(command.kind)
+        if (command.kind === "daemon.stop") return { ok: true, message: "daemon stopped" }
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            data: {
+              overview: { daemon: "running", health: "ok", workerCount: 1, senseCount: 1 },
+              workers: [{
+                agent: "Slugger",
+                worker: "inner-dialog",
+                status: "running",
+                pid: 42,
+                restartCount: 0,
+                startedAt: new Date(nowMs - 10_000).toISOString(),
+                lastExitCode: null,
+                lastSignal: null,
+                errorReason: null,
+                fixHint: null,
+              }],
+              senses: [{
+                agent: "Slugger",
+                sense: "bluebubbles",
+                label: "BlueBubbles",
+                enabled: true,
+                status: "running",
+                detail: ":18888 /bb-webhook",
+              }],
+              sync: [],
+              agents: [{ name: "Slugger", enabled: true }],
+              providers: [],
+            },
+          }
+        }
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("runtime: restarted Ouro; BlueBubbles is loaded for Slugger")
+    expect(sentCommands).toContain("daemon.stop")
+    expect(sentCommands).toContain("daemon.status")
+    expect(cleanupStaleSocket).toHaveBeenCalledWith("/tmp/test-socket")
+    expect(startDaemonProcess).toHaveBeenCalledWith("/tmp/test-socket")
+  })
+
+  it("keeps BlueBubbles setup successful when live daemon apply cannot inspect the socket", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon apply socket inspection failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_socket_fail")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => {
+        throw "socket unavailable"
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart skipped: socket unavailable")
+  })
+
+  it("keeps BlueBubbles setup successful when socket inspection throws an Error", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon apply socket inspection error")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-error-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-apply-error-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_socket_error")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => {
+        throw new Error("socket probe blew up")
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart skipped: socket probe blew up")
+  })
+
+  it.each([
+    [{ ok: false, error: "stop refused" }, "stop refused"],
+    [{ ok: false, message: "stop returned a message" }, "stop returned a message"],
+    [{ ok: false }, "unknown daemon error"],
+  ])("keeps BlueBubbles setup successful when daemon stop does not accept the restart (%s)", async (stopResponse, expectedReason) => {
+    emitTestEvent(`provider cli connect bluebubbles daemon stop fallback ${expectedReason}`)
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-stop-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-stop-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_stop_fallback")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    const startDaemonProcess = vi.fn(async () => ({ pid: 42 }))
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      checkSocketAlive: async () => true,
+      startDaemonProcess,
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "daemon.stop") return stopResponse as any
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain(`runtime: daemon restart skipped: ${expectedReason}`)
+    expect(startDaemonProcess).not.toHaveBeenCalled()
+  })
+
+  it("keeps BlueBubbles setup successful when daemon restart begins but startup fails", async () => {
+    emitTestEvent("provider cli connect bluebubbles daemon restart startup failure")
+    const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-daemon-startup-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-bluebubbles-daemon-startup-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeMachineIdentity(homeDir, "machine_bb_startup_failure")
+
+    const answers = [
+      "http://127.0.0.1:1234",
+      "18888",
+      "/bb-webhook",
+      "12000",
+    ]
+    let nowMs = Date.parse(NOW)
+    let socketChecks = 0
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => nowMs,
+      sleep: async (ms) => { nowMs += ms },
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 3,
+      startupRetryLimit: 0,
+      checkSocketAlive: async () => {
+        socketChecks += 1
+        return socketChecks === 1
+      },
+      startDaemonProcess: async () => ({ pid: 42 }),
+      sendCommand: async (_socketPath, command) => {
+        if (command.kind === "daemon.stop") return { ok: true, message: "daemon stopped" }
+        return { ok: true }
+      },
+      promptInput: async () => answers.shift() ?? "",
+      promptSecret: async () => "bb-password",
+    })
+
+    const result = await runOuroCli(["connect", "bluebubbles", "--agent", "Slugger"], deps)
+
+    expect(result).toContain("BlueBubbles attached for Slugger on this machine")
+    expect(result).toContain("runtime: daemon restart requested, but startup failed:")
+    expect(result).toContain("new background service did not answer")
+  })
+
   it("renders a richer TTY onboarding board and shared completion board for BlueBubbles", async () => {
     emitTestEvent("provider cli connect bluebubbles tty boards")
     const bundlesRoot = makeTempDir("provider-cli-connect-bluebubbles-tty-bundles")

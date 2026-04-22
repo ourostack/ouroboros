@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.459",
+      "changes": [
+        "`ouro connect bluebubbles` now applies a machine-local attachment to a running daemon by recycling Ouro once after the vault and bundle update, so the webhook listener starts immediately instead of requiring a manual `ouro down && ouro up` discovery step.",
+        "`ouro status` and daemon health now probe the BlueBubbles listener declared in the agent's machine-local vault config, including non-default webhook ports, instead of reporting stale health against the default port.",
+        "BlueBubbles setup docs now state the live-apply behavior directly, and daemon coverage locks the dynamic sense-health probe plus running-daemon connect path."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.458",
       "changes": [
         "Agent Mail setup guidance now explicitly forbids telling the human to run setup CLI commands; the agent must run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, and `ouro doctor` itself when doing setup.",

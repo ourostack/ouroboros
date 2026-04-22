@@ -23,6 +23,7 @@ describe("daemon sense manager", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../heart/runtime-credentials")
+    vi.doUnmock("../../../heart/daemon/http-health-probe")
     vi.resetModules()
   })
 
@@ -87,6 +88,78 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
       expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
     ])
+  })
+
+  it("builds BlueBubbles health probes from the machine-local listener config", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "bb-secret",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/bb-hook",
+      },
+    })
+    const createHttpHealthProbe = vi.fn((name: string, port: number) => ({
+      name,
+      check: async () => ({ ok: true, detail: String(port) }),
+    }))
+    vi.doMock("../../../heart/daemon/http-health-probe", () => ({ createHttpHealthProbe }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    const probes = manager.listHealthProbes()
+    expect(createHttpHealthProbe).toHaveBeenCalledWith("bluebubbles:slugger", 18888)
+    expect(probes).toHaveLength(1)
+    await expect(probes[0]!.check()).resolves.toEqual({ ok: true, detail: "18888" })
+  })
+
+  it("skips BlueBubbles health probes when this machine is not attached", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listHealthProbes()).toEqual([])
   })
 
   it("uses configured details, ignores malformed snapshot ids, and marks non-running daemon senses as error", async () => {
