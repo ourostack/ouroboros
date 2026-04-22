@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.463",
+      "changes": [
+        "Agent Mail golden-path guidance now gives agents a stricter answer shape: if Ari asks for golden paths, the answer is only the four product paths, not a diagnostic checklist.",
+        "Supporting mail diagnostics are now described as evidence inside golden paths instead of a competing list, preventing agents from naming `ouro status`, `ouro doctor`, or mail tools as the validation story.",
+        "Empty Mailroom output now repeats that golden-path questions should not be answered with command names, tool names, or status checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.462",
       "changes": [
         "Agent Mail prompt guidance now explicitly separates golden paths from supporting diagnostics, so agents do not answer a golden-path question with `ouro status`, `ouro doctor`, or mail tool names.",

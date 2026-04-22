@@ -173,7 +173,7 @@ async function renderEmptyMailResult(input: {
       "2. Native mail and Screener: send and receive agent-native mail, confirm unknown senders enter Screener, get family authorization for allow/discard, verify sender policy, and confirm discarded mail is recoverable.",
       "3. Cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available.",
       "4. Ouro Outlook audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.",
-      "supporting diagnostics are separate: ouro status, ouro doctor, bounded mail tools, and Outlook inspection help verify the paths but are not substitutes for them.",
+      "supporting diagnostics are separate evidence inside those paths, not additional paths; never answer a golden-path question with command names, tool names, or status checks.",
     ].join("\n")
   }
 
