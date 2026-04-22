@@ -56,10 +56,11 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "repertoire/tools-config",
   "repertoire/tools-base",
   // CLI sub-modules: cli-exec.ts is the router with emitNervesEvent calls;
-  // cli-parse, cli-render, and cli-help are pure functions/data with no side effects.
+  // cli-parse, cli-render, cli-help, and their small helpers are pure functions/data with no side effects.
   "daemon/cli-parse",
   "daemon/cli-render",
   "daemon/cli-help",
+  "daemon/porkbun-ops",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
   "repertoire/api-client",

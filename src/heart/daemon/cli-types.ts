@@ -43,6 +43,8 @@ export type OuroCliCommand =
   | { kind: "vault.status"; agent?: string; store?: VaultUnlockStoreKind }
   | { kind: "vault.config.set"; agent?: string; key: string; value?: string; scope?: RuntimeConfigScope }
   | { kind: "vault.config.status"; agent?: string; scope?: RuntimeConfigStatusScope }
+  | { kind: "vault.ops.porkbun.set"; agent?: string; account: string }
+  | { kind: "vault.ops.porkbun.status"; agent?: string; account?: string }
   | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
   | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath: string; ownerEmail?: string; source?: string }
@@ -225,7 +227,7 @@ export type AuthVerifyCliCommand = Extract<OuroCliCommand, { kind: "auth.verify"
 export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch" }>
 export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" } | { kind: "provider.refresh" }>
 export type RepairCliCommand = Extract<OuroCliCommand, { kind: "repair" }>
-export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" }>
+export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" } | { kind: "vault.ops.porkbun.set" } | { kind: "vault.ops.porkbun.status" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>

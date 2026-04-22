@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.465",
+      "changes": [
+        "`ouro vault ops porkbun set` now stores account-scoped Porkbun API credentials in the owning agent vault through hidden prompts, outside the connect bay and runtime/config.",
+        "Porkbun ops credentials are named by their true authority boundary at `ops/registrars/porkbun/accounts/<account>`, so multiple Porkbun accounts can coexist and domain allowlists remain separate.",
+        "Auth/provider docs now clarify that `ouro connect` is only for harness-managed capabilities, while registrar and deployment credentials belong in explicit `ops/...` vault items."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.464",
       "changes": [
         "Agent Mail prompt guidance now tells agents to answer empty-mail hypotheticals directly before discussing current mailbox state.",

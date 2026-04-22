@@ -180,6 +180,7 @@ ouro vault unlock --agent <name>
 ouro vault status --agent <name>
 ouro vault config set --agent <name> --key teams.clientSecret
 ouro vault config status --agent <name> --scope all
+ouro vault ops porkbun set --agent <name> --account <account>
 ouro connect --agent <name>
 ouro connect providers --agent <name>
 ouro connect perplexity --agent <name>

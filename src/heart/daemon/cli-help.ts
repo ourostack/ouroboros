@@ -227,9 +227,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   vault: {
     category: "Auth",
     description: "Create, replace, recover, unlock, inspect, and populate the agent credential vault",
-    usage: "ouro vault <create|replace|recover|unlock|status|config> [--agent <name>]",
+    usage: "ouro vault <create|replace|recover|unlock|status|config|ops> [--agent <name>]",
     example: "ouro vault status",
-    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status"],
+    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status", "ops porkbun set", "ops porkbun status"],
   },
   thoughts: {
     category: "Internal",
@@ -381,6 +381,16 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "List runtime configuration keys stored in the agent credential vault",
     usage: "ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     example: "ouro vault config status --scope all",
+  },
+  "vault ops porkbun set": {
+    description: "Store account-scoped Porkbun API credentials as an ops vault item, outside connect/runtime config",
+    usage: "ouro vault ops porkbun set [--agent <name>] --account <account>",
+    example: "ouro vault ops porkbun set --agent slugger --account ari@mendelow.me",
+  },
+  "vault ops porkbun status": {
+    description: "Check whether Porkbun ops credentials are present without printing secret values",
+    usage: "ouro vault ops porkbun status [--agent <name>] [--account <account>]",
+    example: "ouro vault ops porkbun status --agent slugger --account ari@mendelow.me",
   },
 }
 

@@ -152,6 +152,13 @@ import {
   verifyEmbeddingsCapability,
   verifyPerplexityCapability,
 } from "../runtime-capability-check"
+import {
+  PORKBUN_OPS_CREDENTIAL_KIND,
+  PORKBUN_OPS_CREDENTIAL_PREFIX,
+  normalizePorkbunOpsAccount,
+  porkbunOpsCredentialItemName,
+  requirePorkbunOpsSecret,
+} from "./porkbun-ops"
 
 // ── ensureDaemonRunning ──
 
@@ -464,6 +471,8 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "vault.status":
     case "vault.config.set":
     case "vault.config.status":
+    case "vault.ops.porkbun.set":
+    case "vault.ops.porkbun.status":
     case "connect":
     case "account.ensure":
     case "mail.import-mbox":
@@ -2516,6 +2525,86 @@ async function executeVaultConfigStatus(
   } finally {
     progress.end()
   }
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultOpsPorkbunSet(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.ops.porkbun.set" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent credential vault. Store ops credentials in the owning agent vault.")
+  }
+  const account = normalizePorkbunOpsAccount(command.account)
+  const promptSecret = requirePromptSecret(deps, "Porkbun ops credential entry")
+  const apiKey = requirePorkbunOpsSecret(await promptSecret(`Porkbun API key for ${account}: `), "Porkbun API key")
+  const secretApiKey = requirePorkbunOpsSecret(await promptSecret(`Porkbun Secret API key for ${account}: `), "Porkbun Secret API key")
+  const itemName = porkbunOpsCredentialItemName(account)
+  const payload = {
+    schemaVersion: 1,
+    kind: PORKBUN_OPS_CREDENTIAL_KIND,
+    updatedAt: providerCliNow(deps).toISOString(),
+    account,
+    apiKey,
+    secretApiKey,
+  }
+  const progress = createHumanCommandProgress(deps, "vault ops porkbun")
+  try {
+    await runCommandProgressPhase(
+      progress,
+      "storing Porkbun ops credentials",
+      async () => {
+        const store = getCredentialStore(command.agent)
+        await store.store(itemName, {
+          username: account,
+          password: JSON.stringify(payload),
+          notes: "Operational Porkbun account API credential. Domain API access and Ouro DNS allowlists live outside this secret item.",
+        })
+        return itemName
+      },
+      () => "secret stored",
+    )
+  } finally {
+    progress.end()
+  }
+
+  const message = [
+    `stored Porkbun ops credentials for ${command.agent}`,
+    `item: vault:${command.agent}:${itemName}`,
+    `account: ${account}`,
+    "authority: Porkbun account-level API credential",
+    "domain bindings and DNS allowlists live outside this secret item",
+    "secret values were not printed",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultOpsPorkbunStatus(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.ops.porkbun.status" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent credential vault. Ops credentials belong in the owning agent vault."
+    deps.writeStdout(message)
+    return message
+  }
+  const store = getCredentialStore(command.agent)
+  const lines = [`agent: ${command.agent}`, "ops credentials: Porkbun"]
+  if (command.account) {
+    const account = normalizePorkbunOpsAccount(command.account)
+    const itemName = porkbunOpsCredentialItemName(account)
+    const meta = await store.get(itemName)
+    lines.push(`item: vault:${command.agent}:${itemName}`)
+    lines.push(`status: ${meta ? "present" : "missing"}`)
+    if (meta?.username) lines.push(`account: ${meta.username}`)
+  } else {
+    const items = (await store.list()).filter((item) => item.domain.startsWith(`${PORKBUN_OPS_CREDENTIAL_PREFIX}/`))
+    lines.push(`items: ${items.length === 0 ? "none stored" : items.map((item) => item.domain).sort().join(", ")}`)
+  }
+  lines.push("secret values were not printed")
   const message = lines.join("\n")
   deps.writeStdout(message)
   return message
@@ -6137,6 +6226,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "vault.config.status") {
     return executeVaultConfigStatus(command, deps)
+  }
+
+  if (command.kind === "vault.ops.porkbun.set") {
+    return executeVaultOpsPorkbunSet(command, deps)
+  }
+
+  if (command.kind === "vault.ops.porkbun.status") {
+    return executeVaultOpsPorkbunStatus(command, deps)
   }
 
   // ── auth (local, no daemon socket needed) ──
