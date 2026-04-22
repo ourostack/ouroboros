@@ -22,6 +22,10 @@ describe("mail tool registration and trust boundaries", () => {
       readPaths: new Set(),
       trustLevel: "friend",
     }).allowed).toBe(true)
+    expect(guardInvocation("mail_search", {}, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    }).allowed).toBe(true)
 
     const delegated = guardInvocation("mail_recent", { scope: "delegated" }, {
       readPaths: new Set(),
@@ -53,6 +57,13 @@ describe("mail tool registration and trust boundaries", () => {
       action: "discard",
       reason: "unknown sender",
     }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+    }).allowed).toBe(true)
+    expect(guardInvocation("mail_access_log", {}, {
+      readPaths: new Set(),
+    }).allowed).toBe(true)
+    expect(guardInvocation("mail_search", { scope: "all" }, {
       readPaths: new Set(),
       trustLevel: "family",
     }).allowed).toBe(true)

@@ -858,6 +858,9 @@ describe("provider CLI command parsing", () => {
       kind: "account.ensure",
       agent: "Slugger",
     })
+    expect(parseOuroCommand(["account", "ensure"])).toEqual({
+      kind: "account.ensure",
+    })
     expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail")
     expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
@@ -866,6 +869,7 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
+    expect(() => parseOuroCommand(["account", "ensure", "extra"])).toThrow("ouro account ensure")
   })
 
   it("rejects malformed provider command shapes with direct usage", () => {
@@ -1066,6 +1070,18 @@ describe("provider CLI command execution", () => {
     expect(readAgentConfig(bundlesRoot, "Nova").senses).toMatchObject({
       mail: { enabled: true },
     })
+
+    writeAgentConfig(bundlesRoot, "NoSource")
+    updateAgentConfig(bundlesRoot, "NoSource", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+    const noSource = await runOuroCli(["account", "ensure", "--agent", "NoSource"], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptInput: async () => "",
+    }))
+    expect(noSource).toContain("mailbox: nosource@ouro.bot")
+    expect(noSource).not.toContain("delegated alias:")
+    expect(noSource).toContain("bundle sync: could not push bundle changes")
   })
 
   it("stops Mail setup before overwriting unreadable runtime credentials", async () => {
@@ -1079,6 +1095,29 @@ describe("provider CLI command execution", () => {
     await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
       promptInput: async () => answers.shift() ?? "",
     }))).rejects.toThrow("cannot read existing runtime credentials")
+  })
+
+  it("stops Mail setup when an existing registry is malformed", async () => {
+    emitTestEvent("provider cli connect mail malformed registry")
+    const bundlesRoot = makeTempDir("provider-cli-connect-mail-malformed-registry-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-mail-malformed-registry-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, JSON.stringify({ schemaVersion: 1, mailboxes: [] }), "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_native: "secret" },
+      },
+    })
+
+    await expect(runOuroCli(["connect", "mail", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async () => "",
+    }))).rejects.toThrow("is not a valid Mailroom registry")
   })
 
   it("imports delegated HEY mail from an MBOX into the Mailroom store", async () => {

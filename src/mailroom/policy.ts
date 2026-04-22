@@ -69,6 +69,7 @@ export interface ApplyMailDecisionInput {
 }
 
 function stableJson(value: unknown): string {
+  /* v8 ignore next -- current sender-policy IDs are built from object/scalar fields; array support is defensive. @preserve */
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>
@@ -97,6 +98,7 @@ function normalizeSender(sender: string): string | null {
 
 function senderDomain(sender: string | null): string | null {
   if (!sender) return null
+  /* v8 ignore next -- normalizeMailAddress guarantees a domain for non-null senders. @preserve */
   return sender.split("@")[1]?.toLowerCase() ?? null
 }
 

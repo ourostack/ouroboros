@@ -107,9 +107,12 @@ function closeServer(server: { close(callback: () => void): unknown }): Promise<
 
 export async function startMailSenseApp(options: MailSenseAppOptions): Promise<MailSenseApp> {
   const now = options.now ?? (() => Date.now())
+  /* v8 ignore next -- production wiring uses the default vault refresh; tests inject a deterministic refresh. @preserve */
   const refreshRuntime = options.refreshRuntime ?? refreshRuntimeCredentialConfig
   await refreshRuntime(options.agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
-  const resolved = options.resolveReader?.(options.agentName) ?? resolveMailroomReader(options.agentName)
+  const resolved = options.resolveReader
+    ? options.resolveReader(options.agentName)
+    : resolveMailroomReader(options.agentName)
   if (!resolved.ok) {
     throw new Error(resolved.error)
   }

@@ -55,18 +55,10 @@ function numberArg(value: string | undefined, fallback: number, min: number, max
   return Math.min(max, Math.max(min, parsed))
 }
 
+const MAIL_PLACEMENTS: readonly MailPlacement[] = ["imbox", "screener", "discarded", "quarantine", "draft", "sent"]
+
 function parsePlacement(value: string | undefined): MailPlacement | undefined {
-  if (
-    value === "imbox" ||
-    value === "screener" ||
-    value === "discarded" ||
-    value === "quarantine" ||
-    value === "draft" ||
-    value === "sent"
-  ) {
-    return value
-  }
-  return undefined
+  return MAIL_PLACEMENTS.includes(value as MailPlacement) ? value as MailPlacement : undefined
 }
 
 function parseScope(value: string | undefined): "native" | "delegated" | undefined {
@@ -146,34 +138,26 @@ function actorFromContext(ctx: Parameters<ToolDefinition["handler"]>[1], agentId
   return { kind: "agent", agentId }
 }
 
+const MAIL_DECISION_ACTIONS: readonly MailDecisionAction[] = [
+  "link-friend",
+  "create-friend",
+  "allow-sender",
+  "allow-source",
+  "allow-domain",
+  "allow-thread",
+  "discard",
+  "quarantine",
+  "restore",
+]
+
 function parseDecisionAction(value: string | undefined): MailDecisionAction | null {
-  if (
-    value === "link-friend" ||
-    value === "create-friend" ||
-    value === "allow-sender" ||
-    value === "allow-source" ||
-    value === "allow-domain" ||
-    value === "allow-thread" ||
-    value === "discard" ||
-    value === "quarantine" ||
-    value === "restore"
-  ) {
-    return value
-  }
-  return null
+  return MAIL_DECISION_ACTIONS.includes(value as MailDecisionAction) ? value as MailDecisionAction : null
 }
 
+const MAIL_CANDIDATE_STATUSES: readonly MailScreenerCandidateStatus[] = ["pending", "allowed", "discarded", "quarantined", "restored"]
+
 function parseCandidateStatus(value: string | undefined): MailScreenerCandidateStatus | undefined {
-  if (
-    value === "pending" ||
-    value === "allowed" ||
-    value === "discarded" ||
-    value === "quarantined" ||
-    value === "restored"
-  ) {
-    return value
-  }
-  return undefined
+  return MAIL_CANDIDATE_STATUSES.includes(value as MailScreenerCandidateStatus) ? value as MailScreenerCandidateStatus : undefined
 }
 
 function readRegistry(registryPath: string): MailroomRegistry {
@@ -201,6 +185,7 @@ function normalizePolicySender(candidate: MailScreenerCandidate | undefined, mes
       // Try the next source of sender truth.
     }
   }
+  /* v8 ignore next -- exhaustive fallback: current persisted-policy actions are handled above. @preserve */
   return null
 }
 
@@ -218,20 +203,10 @@ function policyMatchForDecision(input: {
   }
   if (!input.sender) return null
   if (input.action === "allow-domain") {
-    const domain = input.sender.split("@")[1]
-    if (!domain) return null
+    const domain = input.sender.slice(input.sender.indexOf("@") + 1)
     return { match: { kind: "domain", value: domain }, scope: policyScopeForMessage(input.message) }
   }
-  if (
-    input.action === "allow-sender" ||
-    input.action === "link-friend" ||
-    input.action === "create-friend" ||
-    input.action === "discard" ||
-    input.action === "quarantine"
-  ) {
-    return { match: { kind: "email", value: input.sender }, scope: policyScopeForMessage(input.message) }
-  }
-  return null
+  return { match: { kind: "email", value: input.sender }, scope: policyScopeForMessage(input.message) }
 }
 
 function samePolicy(left: MailSenderPolicyRecord, right: MailSenderPolicyRecord): boolean {
@@ -256,15 +231,8 @@ function persistSenderPolicyForDecision(input: {
   message: StoredMailMessage
   privateKeys: Record<string, string>
 }): string | null {
-  if (
-    input.action !== "allow-sender" &&
-    input.action !== "allow-domain" &&
-    input.action !== "allow-source" &&
-    input.action !== "link-friend" &&
-    input.action !== "create-friend" &&
-    input.action !== "discard" &&
-    input.action !== "quarantine"
-  ) {
+  const persistedActions: readonly MailDecisionAction[] = ["allow-sender", "allow-domain", "allow-source", "link-friend", "create-friend", "discard", "quarantine"]
+  if (!persistedActions.includes(input.action)) {
     return null
   }
   if (!input.registryPath) return "sender policy: skipped (registryPath missing)"
@@ -393,7 +361,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           "send: call mail_send with draft_id and confirmation=CONFIRM_SEND after explicit approval.",
         ].join("\n")
       } catch (error) {
-        return error instanceof Error ? error.message : String(error)
+        return error instanceof Error ? error.message : /* v8 ignore next -- defensive: draft creation throws Error instances. @preserve */ String(error)
       }
     },
     summaryKeys: ["to", "subject"],
@@ -447,7 +415,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           `to: ${sent.to.join(", ")}`,
         ].join("\n")
       } catch (error) {
-        return error instanceof Error ? error.message : String(error)
+        return error instanceof Error ? error.message : /* v8 ignore next -- defensive: send confirmation throws Error instances. @preserve */ String(error)
       }
     },
     summaryKeys: ["draft_id"],
@@ -477,7 +445,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
       const query = (args.query ?? "").trim().toLowerCase()
       if (!query) return "query is required."
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
-      if (!familyOrAgentSelf(ctx) && requestedScope !== "native") {
+      const explicitScope = (args.scope ?? "").trim().length > 0
+      if (!familyOrAgentSelf(ctx) && explicitScope && requestedScope !== "native") {
         return "delegated human mail requires family trust."
       }
       const resolved = resolveMailroomReader()

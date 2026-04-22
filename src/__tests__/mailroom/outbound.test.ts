@@ -126,5 +126,98 @@ describe("mail outbound confirmed send", () => {
 
   it("surfaces missing outbound transport as human-required setup", () => {
     expect(() => resolveOutboundTransport({})).toThrow("outbound mail transport is not configured")
+    expect(() => resolveOutboundTransport({ outbound: { transport: "local-sink" } }))
+      .toThrow("missing sinkPath")
+    expect(() => resolveOutboundTransport({ outbound: { transport: "azure-communication-services" } }))
+      .toThrow("missing endpoint")
+    expect(resolveOutboundTransport({
+      outbound: {
+        transport: "azure-communication-services",
+        endpoint: "https://mail.communication.azure.com",
+        senderAddress: "slugger@ouro.bot",
+      },
+    })).toEqual({
+      kind: "azure-communication-services",
+      endpoint: "https://mail.communication.azure.com",
+      senderAddress: "slugger@ouro.bot",
+    })
+    expect(resolveOutboundTransport({
+      outbound: {
+        transport: "azure-communication-services",
+        endpoint: "https://mail.communication.azure.com",
+        senderAddress: "   ",
+      },
+    })).toEqual({
+      kind: "azure-communication-services",
+      endpoint: "https://mail.communication.azure.com",
+    })
+    expect(() => resolveOutboundTransport({ outbound: { transport: "smtp" } }))
+      .toThrow("choose local-sink or azure-communication-services")
+  })
+
+  it("covers recipient, missing draft, already-sent, and ACS refusal branches", async () => {
+    const root = tempDir()
+    const store = new FileMailroomStore({ rootDir: path.join(root, "mailroom") })
+    const actor = { kind: "agent" as const, agentId: "slugger" }
+
+    await expect(createMailDraft({
+      store,
+      agentId: "slugger",
+      from: "slugger@ouro.bot",
+      to: ["  "],
+      subject: "No recipient",
+      text: "Nope.",
+      actor,
+      reason: "recipient validation",
+    })).rejects.toThrow("at least one recipient")
+
+    await expect(confirmMailDraftSend({
+      store,
+      agentId: "slugger",
+      draftId: "draft_missing",
+      transport: { kind: "local-sink", sinkPath: path.join(root, "sink.jsonl") },
+      confirmation: "CONFIRM_SEND",
+      actor,
+      reason: "missing draft validation",
+    })).rejects.toThrow("No draft found")
+
+    const draft = await createMailDraft({
+      store,
+      agentId: "slugger",
+      from: "slugger@ouro.bot",
+      to: ["ari@example.com"],
+      subject: "ACS proof",
+      text: "This should not leave through ACS yet.",
+      actor,
+      reason: "acs refusal proof",
+    })
+    await expect(confirmMailDraftSend({
+      store,
+      agentId: "slugger",
+      draftId: draft.id,
+      transport: { kind: "azure-communication-services", endpoint: "https://mail.communication.azure.com" },
+      confirmation: "CONFIRM_SEND",
+      actor,
+      reason: "acs not enabled",
+    })).rejects.toThrow("Azure Communication Services outbound send is configured but not enabled")
+
+    const sent = await confirmMailDraftSend({
+      store,
+      agentId: "slugger",
+      draftId: draft.id,
+      transport: { kind: "local-sink", sinkPath: path.join(root, "sink.jsonl") },
+      confirmation: "CONFIRM_SEND",
+      actor,
+      reason: "send once",
+    })
+    await expect(confirmMailDraftSend({
+      store,
+      agentId: "slugger",
+      draftId: sent.id,
+      transport: { kind: "local-sink", sinkPath: path.join(root, "sink.jsonl") },
+      confirmation: "CONFIRM_SEND",
+      actor,
+      reason: "send twice",
+    })).rejects.toThrow("already sent")
   })
 })

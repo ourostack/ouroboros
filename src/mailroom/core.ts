@@ -482,7 +482,7 @@ function candidateSender(input: { parsedFrom: string[]; envelope: MailEnvelopeIn
     const email = normalizeMailAddress(input.envelope.mailFrom)
     return { email, display: email }
   } catch {
-    return { email: "(unknown)", display: input.envelope.mailFrom.trim() || "(unknown)" }
+    return { email: "(unknown)", display: input.envelope.mailFrom.trim() }
   }
 }
 

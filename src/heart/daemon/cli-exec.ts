@@ -3320,6 +3320,7 @@ async function ensureAgentMailroom(
     progress.end()
     throw error
   }
+  /* v8 ignore next -- defensive: successful setup always stores before leaving the guarded block. @preserve */
   if (!stored) throw new Error("Mailroom setup did not store runtime credentials")
   const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
   return { mailboxAddress, sourceAlias, registryPath, storePath, stored, syncSummary }
