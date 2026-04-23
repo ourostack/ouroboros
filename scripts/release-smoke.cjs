@@ -39,16 +39,40 @@ function buildNpmExecArgs(prefixDir, packageRef, command, args = []) {
   ]
 }
 
-function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
-  return deps.execFileSync(
-    "npm",
-    buildNpmExecArgs(prefixDir, packageRef, command, args),
-    {
-      cwd: prefixDir,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
+function npmExecErrorText(error) {
+  return [
+    error && error.message,
+    error && error.stderr,
+    error && Array.isArray(error.output) ? error.output.join("\n") : "",
+  ].filter(Boolean).join("\n")
+}
+
+function isRetryableNpmExecError(error) {
+  return /\b(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ERR_SOCKET_TIMEOUT)\b|Invalid response body|fetch failed|network.*aborted/i.test(
+    npmExecErrorText(error),
   )
+}
+
+function runNpmExec(deps, prefixDir, packageRef, command, args = []) {
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return deps.execFileSync(
+        "npm",
+        buildNpmExecArgs(prefixDir, packageRef, command, args),
+        {
+          cwd: prefixDir,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      )
+    } catch (error) {
+      if (attempt === maxAttempts || !isRetryableNpmExecError(error)) throw error
+      deps.sleepSync(5000)
+    }
+  }
+
+  throw new Error("unreachable npm exec retry state")
 }
 
 function runPublishedBinResolutionSmoke(input, deps = defaultDeps()) {
@@ -141,6 +165,9 @@ function defaultDeps() {
     execFileSync: childProcess.execFileSync,
     mkdtempSync: fs.mkdtempSync,
     rmSync: fs.rmSync,
+    sleepSync(ms) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    },
     tmpdir: os.tmpdir,
   }
 }
@@ -167,6 +194,7 @@ if (require.main === module) {
 module.exports = {
   buildNpmExecArgs,
   isNpmExecBinPath,
+  isRetryableNpmExecError,
   lastNonEmptyLine,
   runPublishedBinResolutionSmoke,
   runPublishedBinVersionSmoke,

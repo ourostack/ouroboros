@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.468",
+      "changes": [
+        "Published package binary smoke checks now retry transient npm registry/network failures such as `ECONNRESET`, so a successful publish is not left red by one aborted `npm exec` fetch.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the release-smoke retry hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.467",
       "changes": [
         "`ouro dns certificate` can now retrieve the TLS bundle named by a DNS workflow binding and store it as an ordinary workflow-managed vault item without printing private key material.",
