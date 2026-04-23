@@ -383,6 +383,44 @@ describe("DNS workflow binding", () => {
     expect(plan.changes).toEqual([])
   })
 
+  it("creates sibling verification records without rewriting unrelated same-name TXT records", async () => {
+    const { planDnsRollback, planDnsWorkflow } = await loadDnsWorkflowModule()
+    const googleTxt = { id: "google", type: "TXT" as const, name: "@", content: "google-site-verification=keep-this", ttl: 600 }
+    const spfTxt = { id: "spf", type: "TXT" as const, name: "@", content: "v=spf1 include:spf.protection.outlook.com -all", ttl: 600 }
+    const domainTxt = { type: "TXT" as const, name: "@", content: "ms-domain-verification=abc", ttl: 3600 }
+    const binding = {
+      ...ouroBotBinding,
+      resources: { records: [{ type: "TXT" as const, name: "@" }] },
+      desired: { records: [spfTxt, domainTxt] },
+      certificate: undefined,
+    }
+
+    const plan = planDnsWorkflow({
+      binding,
+      currentRecords: [googleTxt, spfTxt],
+    })
+
+    expect(plan.changes).toEqual([
+      { action: "create", record: domainTxt, reason: "desired record is missing" },
+    ])
+    expect(plan.preservedRecords).toEqual([googleTxt])
+
+    const rollbackPlan = planDnsRollback({
+      binding,
+      currentRecords: [googleTxt, spfTxt, { ...domainTxt, id: "domain" }],
+      backupRecords: [googleTxt, spfTxt],
+    })
+
+    expect(rollbackPlan.changes).toEqual([
+      {
+        action: "delete",
+        record: { ...domainTxt, id: "domain" },
+        currentRecord: { ...domainTxt, id: "domain" },
+        reason: "allowlisted record is absent from rollback backup",
+      },
+    ])
+  })
+
   it("normalizes MX priority zero but still updates mismatched MX priorities", async () => {
     const { planDnsWorkflow } = await loadDnsWorkflowModule()
     const binding = {

@@ -343,27 +343,62 @@ function recordsEqual(left: DnsRecord, right: DnsRecord): boolean {
     priorityEqual
 }
 
+function recordIdentityKey(record: DnsRecord): string {
+  const priority = record.type === "MX" ? String(record.priority ?? 0) : ""
+  return `${recordKey(record)}:${record.content}:${priority}`
+}
+
+function sameRecordIdentity(left: DnsRecord, right: DnsRecord): boolean {
+  return recordIdentityKey(left) === recordIdentityKey(right)
+}
+
+function recordsWithKey(records: DnsRecord[], key: string): DnsRecord[] {
+  return records.filter((record) => recordKey(record) === key)
+}
+
+function findCurrentRecordForDesired(input: {
+  desired: DnsRecord
+  desiredRecords: DnsRecord[]
+  currentRecords: DnsRecord[]
+}): DnsRecord | undefined {
+  const key = recordKey(input.desired)
+  const currentSameKey = recordsWithKey(input.currentRecords, key)
+  const exact = currentSameKey.find((record) => sameRecordIdentity(record, input.desired))
+  if (exact) return exact
+
+  const desiredSameKey = recordsWithKey(input.desiredRecords, key)
+  if (currentSameKey.length === 1 && desiredSameKey.length === 1) return currentSameKey[0]
+  return undefined
+}
+
 export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; deleteExtraAllowedRecords?: boolean }): DnsWorkflowPlan {
   assertDesiredRecordsAllowed(input.binding)
   const allowedKeys = new Set(input.binding.resources.records.map(recordKey))
-  const desiredKeys = new Set(input.binding.desired.records.map(recordKey))
   const changes: DnsWorkflowPlan["changes"] = []
+  const matchedCurrentRecords = new Set<DnsRecord>()
   for (const desired of input.binding.desired.records) {
-    const current = input.currentRecords.find((record) => recordKey(record) === recordKey(desired))
+    const current = findCurrentRecordForDesired({
+      desired,
+      desiredRecords: input.binding.desired.records,
+      currentRecords: input.currentRecords,
+    })
     if (!current) {
       changes.push({ action: "create", record: desired, reason: "desired record is missing" })
     } else if (!recordsEqual(current, desired)) {
+      matchedCurrentRecords.add(current)
       changes.push({ action: "update", record: desired, currentRecord: current, reason: "desired record differs from current provider record" })
+    } else {
+      matchedCurrentRecords.add(current)
     }
   }
   if (input.deleteExtraAllowedRecords) {
     for (const current of input.currentRecords) {
-      if (allowedKeys.has(recordKey(current)) && !desiredKeys.has(recordKey(current))) {
+      if (allowedKeys.has(recordKey(current)) && !matchedCurrentRecords.has(current)) {
         changes.push({ action: "delete", record: current, currentRecord: current, reason: "allowlisted record is absent from rollback backup" })
       }
     }
   }
-  const preservedRecords = input.currentRecords.filter((record) => !desiredKeys.has(recordKey(record)))
+  const preservedRecords = input.currentRecords.filter((record) => !matchedCurrentRecords.has(record))
   return {
     backup: { domain: input.binding.domain, records: input.currentRecords },
     changes,

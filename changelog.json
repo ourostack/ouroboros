@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.474",
+      "changes": [
+        "DNS workflow planning now handles duplicate-capable records safely by matching exact type/name/content identity before singleton replacement, so adding an ACS apex TXT verification record cannot rewrite unrelated Google, Microsoft, or SPF TXT records.",
+        "DNS rollback planning can now delete only the extra allowlisted duplicate record that was not present in the backup while preserving sibling TXT records with the same name.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the DNS duplicate-record safety release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.473",
       "changes": [
         "`mail_send` now resolves Azure Communication Services outbound provider clients from explicit generic vault-item bindings, so production ACS sends can leave the agent mailbox after `CONFIRM_SEND` without parsing vault notes.",
