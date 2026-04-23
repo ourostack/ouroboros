@@ -193,4 +193,39 @@ describe("mailroom reader", () => {
     })).resolves.toEqual(registryJson)
     expect(credentialOptions).toEqual([{ managedIdentityClientId: "client-id" }])
   })
+
+  it("rejects hosted registry reads when runtime config omits hosted registry coordinates", async () => {
+    const { readMailroomRegistry } = await import("../../mailroom/reader")
+
+    await expect(readMailroomRegistry({
+      mailboxAddress: "slugger@ouro.bot",
+      privateKeys: { mail_slugger_primary: "secret" },
+    })).rejects.toThrow("mailroom config is missing registryPath or hosted registry coordinates")
+  })
+
+  it("rejects hosted registry reads when the configured registry blob is missing", async () => {
+    vi.doMock("@azure/storage-blob", () => ({
+      BlobServiceClient: class {
+        getContainerClient() {
+          return {
+            getBlockBlobClient() {
+              return {
+                exists: async () => false,
+              }
+            },
+          }
+        }
+      },
+    }))
+
+    const { readMailroomRegistry } = await import("../../mailroom/reader")
+
+    await expect(readMailroomRegistry({
+      mailboxAddress: "slugger@ouro.bot",
+      registryAzureAccountUrl: "https://registry.blob.core.windows.net",
+      registryContainer: "mailroom",
+      registryBlob: "registry/missing.json",
+      privateKeys: { mail_slugger_primary: "secret" },
+    })).rejects.toThrow("mailroom registry blob not found: https://registry.blob.core.windows.net/mailroom/registry/missing.json")
+  })
 })

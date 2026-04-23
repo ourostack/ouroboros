@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.476",
+      "changes": [
+        "`ouro mail import-mbox` now works against hosted Mailroom config by reading public registry coordinates from the owning agent vault instead of requiring local-only registry and store paths.",
+        "Delegated HEY archive imports now stream large local MBOX files into encrypted Mailroom storage with per-message dedupe, so multi-gigabyte hosted backfills can resume safely after interruption.",
+        "Agent Mail docs now teach linked HEY accounts as separate export and forwarding feeders even under one browser login, while keeping one delegated-source provenance lens for the agent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.475",
       "changes": [
         "Native mail autonomy now counts recently submitted provider-backed sends against the rate window immediately, so Azure Communication Services deliveries cannot slip past the autonomous send limit while delivery events are still pending.",

@@ -343,7 +343,6 @@ export async function importMboxToStore(input: MboxImportInput): Promise<MboxImp
     importedAt: input.importedAt,
     collectMessages: true,
     sourceFreshThrough,
-    maxConcurrency: 1,
   })
 }
 

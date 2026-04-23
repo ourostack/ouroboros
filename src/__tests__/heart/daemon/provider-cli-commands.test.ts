@@ -117,6 +117,7 @@ import type {
   ProviderCredentialPool,
   ProviderCredentialPoolReadResult,
 } from "../../../heart/provider-credentials"
+import * as mailroomReader from "../../../mailroom/reader"
 import {
   readProviderState,
   writeProviderState,
@@ -2466,6 +2467,18 @@ describe("provider CLI command execution", () => {
     writeRuntimeConfig("Slugger", {
       mailroom: {
         mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing hosted registry coordinates")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
         registryPath: path.join(mailStateDir, "missing.json"),
         storePath: mailStateDir,
         privateKeys: { mail_slugger_primary: "secret" },
@@ -2473,6 +2486,91 @@ describe("provider CLI command execution", () => {
     })
     resetRuntimeCredentialConfigCache()
     await expect(runOuroCli(command, deps)).rejects.toThrow("no such file")
+  })
+
+  it("surfaces Mailroom reader resolution failures after config parsing", async () => {
+    emitTestEvent("provider cli mail import reader resolution failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-reader-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-reader-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    fs.writeFileSync(registryPath, JSON.stringify(provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry), "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- synthetic reader failure for coverage",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic reader failure for coverage")
+
+    readerSpy.mockRestore()
+  })
+
+  it("accepts complete hosted Mail import registry coordinates before reader resolution", async () => {
+    emitTestEvent("provider cli mail import hosted reader resolution")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-hosted-reader-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-hosted-reader-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        registryContainer: "mailroom",
+        registryBlob: "registry/mailroom.json",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation")
+
+    readerSpy.mockRestore()
   })
 
   it("ouro use writes local provider state after a successful live check", async () => {

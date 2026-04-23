@@ -142,6 +142,225 @@ describe("mailroom mbox import", () => {
     ])
   })
 
+  it("parses folded plain From headers while streaming file-backed MBOX imports", async () => {
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const mboxPath = path.join(tempDir(), "hey-export-folded.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From folded@example.com Thu Apr 04 09:00:00 2026",
+      "From: Folded Sender",
+      " plain.sender@example.com",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Folded sender header",
+      "Date: Thu, 04 Apr 2026 09:00:00 -0700",
+      "",
+      "A folded sender message.",
+      "",
+    ].join("\n"))
+
+    const imported = await importMboxFileToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      importedAt: new Date("2026-04-04T17:00:00Z"),
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 1,
+      imported: 1,
+      duplicates: 0,
+      sourceFreshThrough: "2026-04-04T16:00:00.000Z",
+    }))
+    expect(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey" })).toEqual([
+      expect.objectContaining({
+        envelope: expect.objectContaining({
+          mailFrom: "plain.sender@example.com",
+        }),
+      }),
+    ])
+  })
+
+  it("streams chunked CRLF archives and preserves a final message without a trailing newline", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const mboxPath = path.join(tempDir(), "hey-export-crlf-large.mbox")
+    const longSubject = `Chunked ${"A".repeat(70_000)}`
+    fs.writeFileSync(mboxPath, [
+      "From first@example.com Thu Apr 04 09:00:00 2026\r\n",
+      "From: First <first@example.com>\r\n",
+      "To: Ari <ari@mendelow.me>\r\n",
+      `Subject: ${longSubject}\r\n`,
+      "Date: Thu, 04 Apr 2026 09:00:00 -0700\r\n",
+      "\r\n",
+      "First body line.\r\n",
+      "From second@example.com Fri Apr 05 10:00:00 2026\r\n",
+      "From: Second <second@example.com>\r\n",
+      "To: Ari <ari@mendelow.me>\r\n",
+      "Subject: Final without newline\r\n",
+      "Date: Fri, 05 Apr 2026 10:00:00 -0700\r\n",
+      "\r\n",
+      "Final body without trailing newline",
+    ].join(""), "utf-8")
+
+    const imported = await importMboxFileToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 2,
+      imported: 2,
+      duplicates: 0,
+      sourceFreshThrough: "2026-04-05T17:00:00.000Z",
+    }))
+    const decrypted = decryptMessages(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey" }), keys)
+    expect(decrypted.map((message) => message.private.subject).sort()).toEqual([
+      "Final without newline",
+      longSubject,
+    ].sort())
+  })
+
+  it("ignores a dangling EOF separator and flushes the preceding message exactly once", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const mboxPath = path.join(tempDir(), "hey-export-dangling-separator.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From first@example.com Thu Apr 04 09:00:00 2026\n",
+      "From: First <first@example.com>\n",
+      "To: Ari <ari@mendelow.me>\n",
+      "Subject: Before dangling separator\n",
+      "Date: Thu, 04 Apr 2026 09:00:00 -0700\n",
+      "\n",
+      "Body before dangling separator.\n",
+      "From dangling@example.com Fri Apr 05 10:00:00 2026",
+    ].join(""), "utf-8")
+
+    const imported = await importMboxFileToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 1,
+      imported: 1,
+      duplicates: 0,
+      sourceFreshThrough: "2026-04-04T16:00:00.000Z",
+    }))
+    const decrypted = decryptMessages(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey" }), keys)
+    expect(decrypted.map((message) => message.private.subject)).toEqual(["Before dangling separator"])
+  })
+
+  it("treats a separator-only archive tail as empty", async () => {
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const mboxPath = path.join(tempDir(), "hey-export-separator-only.mbox")
+    fs.writeFileSync(mboxPath, "From dangling@example.com Fri Apr 05 10:00:00 2026", "utf-8")
+
+    const imported = await importMboxFileToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 0,
+      imported: 0,
+      duplicates: 0,
+      sourceFreshThrough: null,
+      messages: [],
+    }))
+    expect(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey" })).toEqual([])
+  })
+
+  it("handles body-only and header-only edge cases without inventing sender or date metadata", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+
+    const bodyOnly = await importMboxToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      rawMbox: Buffer.from([
+        "From body-only@example.com Sat Apr 06 11:00:00 2026",
+        "",
+        "",
+        "Body only payload",
+      ].join("\n"), "utf-8"),
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(bodyOnly).toEqual(expect.objectContaining({
+      scanned: 1,
+      imported: 1,
+      duplicates: 0,
+      sourceFreshThrough: null,
+    }))
+
+    const headerOnly = await importMboxToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      rawMbox: Buffer.from([
+        "From header-only@example.com Sun Apr 07 12:00:00 2026",
+        "From: Name Only",
+        "To: Ari <ari@mendelow.me>",
+        "Subject: Header-only message",
+        "Date: definitely not a date",
+      ].join("\n"), "utf-8"),
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    expect(headerOnly).toEqual(expect.objectContaining({
+      scanned: 1,
+      imported: 1,
+      duplicates: 0,
+      sourceFreshThrough: null,
+    }))
+
+    const decrypted = decryptMessages(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey", limit: 10 }), keys)
+    const bodyOnlyMessage = decrypted.find((message) => message.id === bodyOnly.messages[0]?.id)
+    const headerOnlyMessage = decrypted.find((message) => message.id === headerOnly.messages[0]?.id)
+    expect(bodyOnlyMessage?.envelope.mailFrom).toBe("")
+    expect(headerOnlyMessage?.envelope.mailFrom).toBe("")
+    expect(headerOnlyMessage?.private.subject).toBe("Header-only message")
+    expect(headerOnlyMessage?.receivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+    expect(headerOnly.messages[0]?.receivedAt).toBeDefined()
+  })
+
   it("records HEY archive freshness/provenance and keeps historical imports out of attention", async () => {
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
