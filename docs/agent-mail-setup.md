@@ -149,7 +149,7 @@ The import stores delegated HEY mail under the agent's encrypted Mailroom store.
 
 ## Live Inbound Mail
 
-Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`; external delivery still needs a production ingress host and human-confirmed DNS/MX.
+Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`. In production, the agent vault `runtime/config` item carries `workSubstrate.mode: "hosted"` plus `workSubstrate.mailControl.url` and a bearer `token`; setup then calls hosted Mail Control, stores the one-time private keys it returns, records hosted Blob coordinates, and refuses to claim success if a hosted mailbox/source key id is missing from the vault. Without hosted work-substrate config, setup stays explicit local development and writes a local registry/cache under the bundle. External delivery still needs a production ingress host and human-confirmed DNS/MX.
 
 Hosted service code now lives in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate):
 

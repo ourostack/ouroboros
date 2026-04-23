@@ -3472,8 +3472,11 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
 interface MailroomSetupOutcome {
   mailboxAddress: string
   sourceAlias: string | null
-  registryPath: string
-  storePath: string
+  mode: "local" | "hosted"
+  registryPath: string | null
+  storePath: string | null
+  hostedControlUrl?: string
+  blobStoreLabel?: string
   stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>>
   syncSummary: string | null
 }
@@ -3494,6 +3497,77 @@ function readMailroomRegistryFromDisk(registryPath: string): MailroomRegistry | 
 function mailroomPrivateKeys(mailroom: Record<string, unknown> | undefined): Record<string, string> {
   const keys = isPlainRecord(mailroom?.privateKeys) ? mailroom.privateKeys : {}
   return Object.fromEntries(Object.entries(keys).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+}
+
+interface HostedMailControlConfig {
+  url: string
+  token: string
+}
+
+interface HostedMailControlEnsureResponse {
+  ok?: boolean
+  error?: string
+  mailboxAddress?: unknown
+  sourceAlias?: unknown
+  generatedPrivateKeys?: unknown
+  mailbox?: unknown
+  sourceGrant?: unknown
+  publicRegistry?: unknown
+  blobStore?: unknown
+}
+
+function hostedMailControlConfig(config: RuntimeCredentialConfig): HostedMailControlConfig | null {
+  const workSubstrate = isPlainRecord(config.workSubstrate) ? config.workSubstrate : undefined
+  if (!workSubstrate || stringField(workSubstrate, "mode") !== "hosted") return null
+  const mailControl = isPlainRecord(workSubstrate.mailControl) ? workSubstrate.mailControl : undefined
+  const url = mailControl ? stringField(mailControl, "url").replace(/\/+$/, "") : ""
+  const token = mailControl ? (stringField(mailControl, "token") || stringField(mailControl, "adminToken")) : ""
+  if (!url || !token) {
+    throw new Error("hosted workSubstrate.mailControl requires url and token in the agent vault runtime/config item")
+  }
+  return { url, token }
+}
+
+function cleanHostedMailroomBase(existingMailroom: Record<string, unknown> | undefined): Record<string, unknown> {
+  const base = { ...(existingMailroom ?? {}) }
+  delete base.registryPath
+  delete base.storePath
+  return base
+}
+
+function requiredResponseRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isPlainRecord(value)) throw new Error(`Mail Control response missing ${label}`)
+  return value
+}
+
+function requiredResponseText(record: Record<string, unknown>, key: string, label: string): string {
+  const value = stringField(record, key)
+  if (!value) throw new Error(`Mail Control response missing ${label}`)
+  return value
+}
+
+function responsePrivateKeys(value: unknown): Record<string, string> {
+  if (!isPlainRecord(value)) return {}
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] =>
+    typeof entry[0] === "string" && typeof entry[1] === "string" && entry[1].trim().length > 0))
+}
+
+function requiredHostedKeyIds(body: HostedMailControlEnsureResponse): string[] {
+  return [body.mailbox, body.sourceGrant]
+    .filter(isPlainRecord)
+    .map((record) => stringField(record, "keyId"))
+    .filter((keyId) => keyId.length > 0)
+}
+
+function assertHostedPrivateKeys(input: {
+  agent: string
+  keys: Record<string, string>
+  requiredKeyIds: string[]
+}): void {
+  for (const keyId of input.requiredKeyIds) {
+    if (input.keys[keyId]) continue
+    throw new Error(`hosted Mail Control references private mail key ${keyId}, but it was not returned and is not present in ${input.agent}'s vault runtime/config. Repair requires a fresh Mail Control one-time key response or key rotation.`)
+  }
 }
 
 interface MailSourceSetupInput {
@@ -3534,8 +3608,11 @@ async function ensureAgentMailroom(
   let stored: Awaited<ReturnType<typeof upsertRuntimeCredentialConfig>> | undefined
   let mailboxAddress = `${agent.toLowerCase()}@ouro.bot`
   let sourceAlias: string | null = null
-  let registryPath = path.join(mailStateDir, "registry.json")
-  let storePath = mailStateDir
+  let mode: MailroomSetupOutcome["mode"] = "local"
+  let registryPath: string | null = path.join(mailStateDir, "registry.json")
+  let storePath: string | null = mailStateDir
+  let hostedControlUrl: string | undefined
+  let blobStoreLabel: string | undefined
   try {
     progress.startPhase("checking Mailroom runtime config")
     const current = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
@@ -3544,30 +3621,92 @@ async function ensureAgentMailroom(
     }
     const currentConfig = current.ok ? current.config : {}
     const existingMailroom = isPlainRecord(currentConfig.mailroom) ? currentConfig.mailroom : undefined
+    const hostedConfig = hostedMailControlConfig(currentConfig)
     registryPath = stringField(existingMailroom ?? {}, "registryPath") || registryPath
     storePath = stringField(existingMailroom ?? {}, "storePath") || storePath
-    progress.updateDetail("ensuring Mailroom identity")
-    const ensured = ensureMailboxRegistry({
-      agentId: agent,
-      registry: readMailroomRegistryFromDisk(registryPath),
-      keys: mailroomPrivateKeys(existingMailroom),
-      ownerEmail: input.ownerEmail || undefined,
-      source: input.source || undefined,
-    })
-    mailboxAddress = ensured.mailboxAddress
-    sourceAlias = ensured.sourceAlias
-    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
-    fs.mkdirSync(storePath, { recursive: true })
-    fs.writeFileSync(registryPath, `${JSON.stringify(ensured.registry, null, 2)}\n`, "utf-8")
-    const nextConfig: RuntimeCredentialConfig = {
-      ...currentConfig,
-      mailroom: {
-        ...(existingMailroom ?? {}),
-        mailboxAddress,
-        registryPath,
-        storePath,
-        privateKeys: ensured.keys,
-      },
+    let nextConfig: RuntimeCredentialConfig
+    if (hostedConfig) {
+      progress.updateDetail("calling hosted Mail Control")
+      const fetchImpl = deps.fetchImpl ?? fetch
+      const response = await fetchImpl(`${hostedConfig.url}/v1/mailboxes/ensure`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${hostedConfig.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          agentId: agent,
+          ...(input.ownerEmail ? { ownerEmail: input.ownerEmail } : {}),
+          ...(input.source ? { source: input.source } : {}),
+        }),
+      })
+      const body = await response.json() as HostedMailControlEnsureResponse
+      if (!response.ok || body.ok === false) {
+        throw new Error(`hosted Mail Control ensure failed (${response.status}): ${body.error ?? response.statusText}`)
+      }
+      const publicRegistry = requiredResponseRecord(body.publicRegistry, "publicRegistry")
+      const blobStore = requiredResponseRecord(body.blobStore, "blobStore")
+      mailboxAddress = typeof body.mailboxAddress === "string" && body.mailboxAddress.trim()
+        ? body.mailboxAddress.trim()
+        : requiredResponseText(requiredResponseRecord(body.mailbox, "mailbox"), "canonicalAddress", "mailboxAddress")
+      sourceAlias = typeof body.sourceAlias === "string" && body.sourceAlias.trim() ? body.sourceAlias.trim() : null
+      const generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
+      const privateKeys = {
+        ...mailroomPrivateKeys(existingMailroom),
+        ...generatedPrivateKeys,
+      }
+      assertHostedPrivateKeys({
+        agent,
+        keys: privateKeys,
+        requiredKeyIds: requiredHostedKeyIds(body),
+      })
+      mode = "hosted"
+      registryPath = null
+      storePath = null
+      hostedControlUrl = hostedConfig.url
+      blobStoreLabel = `${requiredResponseText(blobStore, "azureAccountUrl", "blobStore.azureAccountUrl")}/${requiredResponseText(blobStore, "container", "blobStore.container")}`
+      nextConfig = {
+        ...currentConfig,
+        mailroom: {
+          ...cleanHostedMailroomBase(existingMailroom),
+          mode,
+          mailboxAddress,
+          sourceAlias,
+          azureAccountUrl: requiredResponseText(blobStore, "azureAccountUrl", "blobStore.azureAccountUrl"),
+          azureContainer: requiredResponseText(blobStore, "container", "blobStore.container"),
+          registryAzureAccountUrl: requiredResponseText(publicRegistry, "azureAccountUrl", "publicRegistry.azureAccountUrl"),
+          registryContainer: requiredResponseText(publicRegistry, "container", "publicRegistry.container"),
+          registryBlob: requiredResponseText(publicRegistry, "blob", "publicRegistry.blob"),
+          registryDomain: requiredResponseText(publicRegistry, "domain", "publicRegistry.domain"),
+          registryRevision: requiredResponseText(publicRegistry, "revision", "publicRegistry.revision"),
+          privateKeys,
+        },
+      }
+    } else {
+      progress.updateDetail("ensuring local Mailroom identity")
+      const ensured = ensureMailboxRegistry({
+        agentId: agent,
+        registry: readMailroomRegistryFromDisk(registryPath!),
+        keys: mailroomPrivateKeys(existingMailroom),
+        ownerEmail: input.ownerEmail || undefined,
+        source: input.source || undefined,
+      })
+      mailboxAddress = ensured.mailboxAddress
+      sourceAlias = ensured.sourceAlias
+      fs.mkdirSync(path.dirname(registryPath!), { recursive: true })
+      fs.mkdirSync(storePath!, { recursive: true })
+      fs.writeFileSync(registryPath!, `${JSON.stringify(ensured.registry, null, 2)}\n`, "utf-8")
+      nextConfig = {
+        ...currentConfig,
+        mailroom: {
+          ...(existingMailroom ?? {}),
+          mode,
+          mailboxAddress,
+          registryPath,
+          storePath,
+          privateKeys: ensured.keys,
+        },
+      }
     }
     progress.updateDetail("storing private mail keys in vault")
     stored = await upsertRuntimeCredentialConfig(agent, nextConfig, providerCliNow(deps))
@@ -3582,7 +3721,7 @@ async function ensureAgentMailroom(
   /* v8 ignore next -- defensive: successful setup always stores before leaving the guarded block. @preserve */
   if (!stored) throw new Error("Mailroom setup did not store runtime credentials")
   const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
-  return { mailboxAddress, sourceAlias, registryPath, storePath, stored, syncSummary }
+  return { mailboxAddress, sourceAlias, mode, registryPath, storePath, hostedControlUrl, blobStoreLabel, stored, syncSummary }
 }
 
 async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<string> {
@@ -3628,8 +3767,10 @@ async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailS
     whatChanged: [
       `Mailbox: ${outcome.mailboxAddress}`,
       ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
-      `Registry: ${outcome.registryPath}`,
-      `Encrypted store: ${outcome.storePath}`,
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`Registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`Encrypted store: ${outcome.storePath}`] : []),
       `Stored: ${outcome.stored.itemPath}`,
       "agent.json: senses.mail.enabled = true",
       "private mail keys were not printed",
@@ -3645,8 +3786,10 @@ async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailS
       `Agent Mail connected for ${agent}`,
       `mailbox: ${outcome.mailboxAddress}`,
       ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
-      `registry: ${outcome.registryPath}`,
-      `encrypted store: ${outcome.storePath}`,
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`encrypted store: ${outcome.storePath}`] : []),
       `stored: ${outcome.stored.itemPath}`,
       "agent.json: senses.mail.enabled = true",
       "private mail keys were not printed",
@@ -3695,9 +3838,12 @@ async function executeAccountEnsure(
       "Vault item: runtime/config",
       `Mailbox: ${outcome.mailboxAddress}`,
       ...(outcome.sourceAlias ? [`Delegated alias: ${outcome.sourceAlias}`] : []),
-      `Registry: ${outcome.registryPath}`,
-      `Encrypted store: ${outcome.storePath}`,
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`Registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`Encrypted store: ${outcome.storePath}`] : []),
       "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
       ...(outcome.syncSummary ? [outcome.syncSummary] : []),
     ],
     nextMoves: [
@@ -3710,9 +3856,12 @@ async function executeAccountEnsure(
       "vault: runtime/config",
       `mailbox: ${outcome.mailboxAddress}`,
       ...(outcome.sourceAlias ? [`delegated alias: ${outcome.sourceAlias}`] : []),
-      `registry: ${outcome.registryPath}`,
-      `encrypted store: ${outcome.storePath}`,
+      ...(outcome.hostedControlUrl ? [`Hosted Mail Control: ${outcome.hostedControlUrl}`] : []),
+      ...(outcome.blobStoreLabel ? [`Blob store: ${outcome.blobStoreLabel}`] : []),
+      ...(outcome.registryPath ? [`registry: ${outcome.registryPath}`] : []),
+      ...(outcome.storePath ? [`encrypted store: ${outcome.storePath}`] : []),
       "agent.json: senses.mail.enabled = true",
+      "private mail keys were not printed",
       ...(outcome.syncSummary ? [outcome.syncSummary] : []),
     ],
   })

@@ -26,6 +26,8 @@ This harness keeps:
 - Ouro Outlook, including the read-only mailbox/audit UI.
 - Local development stores and tests needed for agent runtime behavior.
 
+Production account setup is controlled by the agent vault `runtime/config` item. When `workSubstrate.mode` is `hosted`, the harness reads `workSubstrate.mailControl.url` plus its bearer token, calls `POST /v1/mailboxes/ensure`, merges returned one-time private keys with existing vault-held keys, verifies every returned public mailbox/source key id is present, and stores hosted Blob reader coordinates on `mailroom`. When that config is absent, `ouro connect mail` remains an explicit local-development setup and writes local registry/store paths instead of pretending to be production.
+
 ## Website
 
 Website and marketing updates are intentionally deferred. Treat the hosted repo docs as the source of truth for product boundary language until a dedicated website pass happens.
