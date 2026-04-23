@@ -48,6 +48,7 @@ const mockVaultDeps = vi.hoisted(() => ({
   credentialProbeGet: vi.fn(async () => null),
   credentialProbeList: vi.fn(async () => []),
   rawSecrets: new Map<string, string>(),
+  storedItems: new Map<string, { username?: string; password: string; notes?: string }>(),
 }))
 
 const { fetchMock } = vi.hoisted(() => ({
@@ -95,8 +96,9 @@ vi.mock("../../../repertoire/credential-access", () => ({
       if (raw === undefined) throw new Error(`no credential found for domain "${domain}"`)
       return raw
     },
-    store: async (domain: string, data: { password: string }) => {
+    store: async (domain: string, data: { username?: string; password: string; notes?: string }) => {
       mockVaultDeps.rawSecrets.set(`${agentName}:${domain}`, data.password)
+      mockVaultDeps.storedItems.set(`${agentName}:${domain}`, data)
     },
     list: (...args: unknown[]) => mockVaultDeps.credentialProbeList(...args),
     delete: async () => false,
@@ -466,6 +468,7 @@ afterEach(() => {
   mockVaultDeps.credentialProbeList.mockReset()
   mockVaultDeps.credentialProbeList.mockResolvedValue([])
   mockVaultDeps.rawSecrets.clear()
+  mockVaultDeps.storedItems.clear()
   resetRuntimeCredentialConfigCache()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
@@ -777,22 +780,115 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       scope: "all",
     })
-    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
-      kind: "vault.ops.porkbun.set",
+    expect(parseOuroCommand([
+      "vault", "item", "set",
+      "--agent", "Slugger",
+      "--item", "ops/porkbun/ari@mendelow.me",
+      "--template", "porkbun-api",
+      "--note", "human context",
+    ])).toEqual({
+      kind: "vault.item.set",
       agent: "Slugger",
-      account: "ari@mendelow.me",
+      item: "ops/porkbun/ari@mendelow.me",
+      template: "porkbun-api",
+      note: "human context",
+    })
+    expect(parseOuroCommand([
+      "vault", "item", "set",
+      "--agent", "Slugger",
+      "--item", "ops/custom/service",
+      "--secret-field", "apiKey",
+      "--secret-field", "secretApiKey",
+      "--public-field", "account=ari@mendelow.me",
+    ])).toEqual({
+      kind: "vault.item.set",
+      agent: "Slugger",
+      item: "ops/custom/service",
+      secretFields: ["apiKey", "secretApiKey"],
+      publicFields: ["account=ari@mendelow.me"],
+    })
+    expect(parseOuroCommand(["vault", "item", "status", "--agent", "Slugger", "--item", "ops/custom/service"])).toEqual({
+      kind: "vault.item.status",
+      agent: "Slugger",
+      item: "ops/custom/service",
+    })
+    expect(parseOuroCommand(["vault", "item", "status", "--item", "ops/custom/service"])).toEqual({
+      kind: "vault.item.status",
+      item: "ops/custom/service",
+    })
+    expect(parseOuroCommand(["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/"])).toEqual({
+      kind: "vault.item.list",
+      agent: "Slugger",
+      prefix: "ops/",
+    })
+    expect(parseOuroCommand(["vault", "item", "list"])).toEqual({
+      kind: "vault.item.list",
+    })
+    expect(parseOuroCommand(["vault", "item", "set", "--item", "ops/custom/service", "--secret-field", "apiKey"])).toEqual({
+      kind: "vault.item.set",
+      item: "ops/custom/service",
+      secretFields: ["apiKey"],
+    })
+    expect(parseOuroCommand(["vault", "item", "set", "--item", "ops/custom/service", "--secret-field", "apiKey", "--note"])).toEqual({
+      kind: "vault.item.set",
+      item: "ops/custom/service",
+      secretFields: ["apiKey"],
+      note: "",
+    })
+    expect(() => parseOuroCommand(["vault", "item", "delete"])).toThrow("ouro vault item set|status|list")
+    expect(() => parseOuroCommand(["vault", "item", "status"])).toThrow("ouro vault item status")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "/ops/service", "--secret-field", "apiKey"]))
+      .toThrow("Vault item name/path")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", ""]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", "ops\tbad"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "list", "--prefix", "/ops"]))
+      .toThrow("Vault item prefix")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--template", "aws"]))
+      .toThrow("vault item --template")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "bad=field"]))
+      .toThrow("Vault item field names")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field"]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field", "bad"]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--public-field", "account="]))
+      .toThrow("vault item --public-field")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service", "--secret-field", "apiKey", "--bad"]))
+      .toThrow("Usage: ouro vault item set")
+    expect(() => parseOuroCommand(["vault", "item", "set", "--item", "ops/service"]))
+      .toThrow("requires --secret-field")
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.set",
+      agent: "Slugger",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      template: "porkbun-api",
+      compatibilityAlias: "vault ops porkbun",
     })
     expect(parseOuroCommand(["vault", "ops", "porkbun", "set", "--account", "ari@mendelow.me"])).toEqual({
-      kind: "vault.ops.porkbun.set",
-      account: "ari@mendelow.me",
+      kind: "vault.item.set",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      template: "porkbun-api",
+      compatibilityAlias: "vault ops porkbun",
     })
     expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"])).toEqual({
-      kind: "vault.ops.porkbun.status",
+      kind: "vault.item.status",
       agent: "Slugger",
-      account: "ari@mendelow.me",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      compatibilityAlias: "vault ops porkbun",
+    })
+    expect(parseOuroCommand(["vault", "ops", "porkbun", "status", "--account", "ari@mendelow.me"])).toEqual({
+      kind: "vault.item.status",
+      item: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      compatibilityAlias: "vault ops porkbun",
     })
     expect(parseOuroCommand(["vault", "ops", "porkbun", "status"])).toEqual({
-      kind: "vault.ops.porkbun.status",
+      kind: "vault.item.list",
+      prefix: "ops/registrars/porkbun/accounts",
+      compatibilityAlias: "vault ops porkbun",
     })
     expect(() => parseOuroCommand(["vault", "config", "status", "--agent", "Slugger", "--key", "bluebubbles.password"]))
       .toThrow("ouro vault config status")
@@ -3119,7 +3215,254 @@ describe("provider CLI command execution", () => {
     expect(promptedSecret).not.toContain("pplx-hidden")
   })
 
-  it("vault ops porkbun stores account-scoped credentials outside connect/runtime config", async () => {
+  it("vault item set stores ordinary items with notes and hidden fields", async () => {
+    emitTestEvent("provider cli vault item set")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompted: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        prompted.push(question)
+        return question.includes("secretApiKey") ? "porkbun-secret-key" : "porkbun-api-key"
+      },
+    })
+
+    const result = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/porkbun/ari@mendelow.me",
+        "--secret-field", "apiKey",
+        "--secret-field", "secretApiKey",
+        "--public-field", "account=ari@mendelow.me",
+        "--note", "Account-level Porkbun key; DNS workflow bindings live outside this note.",
+      ],
+      deps,
+    )
+
+    expect(prompted).toEqual([
+      "Secret field apiKey for ops/porkbun/ari@mendelow.me: ",
+      "Secret field secretApiKey for ops/porkbun/ari@mendelow.me: ",
+    ])
+    expect(result).toContain("stored ordinary vault item for Slugger")
+    expect(result).toContain("item: vault:Slugger:ops/porkbun/ari@mendelow.me")
+    expect(result).toContain("public fields: account")
+    expect(result).toContain("secret fields: apiKey, secretApiKey")
+    expect(result).toContain("notes: present")
+    expect(result).toContain("secret values were not printed")
+    expect(result).not.toContain("porkbun-api-key")
+    expect(result).not.toContain("porkbun-secret-key")
+    expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
+
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/ari@mendelow.me")
+    expect(stored?.notes).toBe("Account-level Porkbun key; DNS workflow bindings live outside this note.")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    })
+    expect(payload).not.toHaveProperty("kind")
+
+    const noPublicResult = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/custom/no-public",
+        "--secret-field", "apiKey",
+      ],
+      makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        promptSecret: async () => "no-public-secret",
+      }),
+    )
+    expect(noPublicResult).toContain("public fields: none")
+    expect(noPublicResult).toContain("secret fields: apiKey")
+    expect(noPublicResult).not.toContain("no-public-secret")
+  })
+
+  it("vault item set supports templates without making provider-specific credential species", async () => {
+    emitTestEvent("provider cli vault item template")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-template-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-template-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompted: string[] = []
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      promptSecret: async (question) => {
+        prompted.push(question)
+        return question.includes("secretApiKey") ? "templated-secret-key" : "templated-api-key"
+      },
+    })
+
+    const result = await runOuroCli(
+      [
+        "vault", "item", "set",
+        "--agent", "Slugger",
+        "--item", "ops/porkbun/template-account",
+        "--template", "porkbun-api",
+        "--secret-field", "apiKey",
+        "--public-field", "account=ari@mendelow.me",
+      ],
+      deps,
+    )
+
+    expect(prompted).toEqual([
+      "Secret field apiKey for ops/porkbun/template-account: ",
+      "Secret field secretApiKey for ops/porkbun/template-account: ",
+    ])
+    expect(result).toContain("stored ordinary vault item")
+    expect(result).toContain("notes: absent")
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/porkbun/template-account")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
+    expect(payload).toMatchObject({
+      schemaVersion: 1,
+      updatedAt: NOW,
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "templated-api-key",
+        secretApiKey: "templated-secret-key",
+      },
+    })
+    expect(payload).not.toHaveProperty("kind")
+  })
+
+  it("vault item reports status and lists metadata without exposing secrets", async () => {
+    emitTestEvent("provider cli vault item status list")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-status-list-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-status-list-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce({
+      domain: "ops/custom/service",
+      username: "agent@example.com",
+      notes: "human context",
+      createdAt: NOW,
+    })
+    const present = await runOuroCli(
+      ["vault", "item", "status", "--agent", "Slugger", "--item", "ops/custom/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(present).toContain("item: vault:Slugger:ops/custom/service")
+    expect(present).toContain("status: present")
+    expect(present).toContain("username: agent@example.com")
+    expect(present).toContain("notes: present")
+    expect(present).toContain("secret values were not printed")
+    expect(present).not.toContain("porkbun-api-key")
+
+    mockVaultDeps.credentialProbeGet.mockResolvedValueOnce(null)
+    const missing = await runOuroCli(
+      ["vault", "item", "status", "--agent", "Slugger", "--item", "ops/missing/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(missing).toContain("status: missing")
+    expect(missing).not.toContain("username:")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listed = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/custom"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listed).toContain("prefix: ops/custom")
+    expect(listed).toContain("items: ops/custom/a, ops/custom/z")
+    expect(listed).not.toContain("runtime/config")
+    expect(listed).toContain("secret values were not printed")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listedTrailingPrefix = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger", "--prefix", "ops/custom/"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listedTrailingPrefix).toContain("prefix: ops/custom/")
+    expect(listedTrailingPrefix).toContain("items: ops/custom/a, ops/custom/z")
+    expect(listedTrailingPrefix).not.toContain("runtime/config")
+
+    mockVaultDeps.credentialProbeList.mockResolvedValueOnce([
+      { domain: "runtime/config", createdAt: NOW },
+      { domain: "ops/custom/z", createdAt: NOW },
+      { domain: "ops/custom/a", createdAt: NOW },
+    ])
+    const listedWithoutPrefix = await runOuroCli(
+      ["vault", "item", "list", "--agent", "Slugger"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(listedWithoutPrefix).not.toContain("prefix:")
+    expect(listedWithoutPrefix).toContain("items: ops/custom/a, ops/custom/z, runtime/config")
+    expect(listedWithoutPrefix).toContain("secret values were not printed")
+  })
+
+  it("vault item set guards hidden entry, blank secrets, SerpentGuide, and harness-managed item names", async () => {
+    emitTestEvent("provider cli vault item guards")
+    const bundlesRoot = makeTempDir("provider-cli-vault-item-guards-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-item-guards-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )).rejects.toThrow("Vault item secret entry requires an interactive terminal")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "   ",
+      }),
+    )).rejects.toThrow("Secret field apiKey cannot be blank")
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "SerpentGuide", "--item", "ops/custom/service", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "secret",
+      }),
+    )).rejects.toThrow("SerpentGuide has no persistent credential vault")
+
+    const prompted: string[] = []
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "runtime/config", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async (question) => {
+          prompted.push(question)
+          return "secret"
+        },
+      }),
+    )).rejects.toThrow("reserved for harness-managed workflows")
+    expect(prompted).toEqual([])
+
+    await expect(runOuroCli(
+      ["vault", "item", "set", "--agent", "Slugger", "--item", "providers/openai-codex", "--secret-field", "apiKey"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        promptSecret: async () => "secret",
+      }),
+    )).rejects.toThrow("Use ouro auth or ouro connect")
+
+    const serpentStatus = await runOuroCli(
+      ["vault", "item", "status", "--agent", "SerpentGuide", "--item", "ops/custom/service"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentStatus).toContain("SerpentGuide has no persistent credential vault")
+
+    const serpentList = await runOuroCli(
+      ["vault", "item", "list", "--agent", "SerpentGuide"],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(serpentList).toContain("SerpentGuide has no persistent credential vault")
+  })
+
+  it("vault ops porkbun is a deprecated compatibility alias for an ordinary vault item", async () => {
     emitTestEvent("provider cli vault ops porkbun")
     const bundlesRoot = makeTempDir("provider-cli-vault-ops-porkbun-bundles")
     const homeDir = makeTempDir("provider-cli-vault-ops-porkbun-home")
@@ -3142,25 +3485,30 @@ describe("provider CLI command execution", () => {
       "Porkbun API key for ari@mendelow.me: ",
       "Porkbun Secret API key for ari@mendelow.me: ",
     ])
-    expect(result).toContain("stored Porkbun ops credentials for Slugger")
+    expect(result).toContain("deprecated compatibility alias")
+    expect(result).toContain("ouro vault item set --template porkbun-api")
+    expect(result).toContain("stored ordinary vault item for Slugger")
     expect(result).toContain("ops/registrars/porkbun/accounts/ari@mendelow.me")
     expect(result).toContain("account: ari@mendelow.me")
     expect(result).toContain("secret values were not printed")
+    expect(result).not.toContain("authority:")
+    expect(result).not.toContain("ops credentials")
     expect(result).not.toContain("porkbun-api-key")
     expect(result).not.toContain("porkbun-secret-key")
     expect(mockVaultDeps.rawSecrets.has("Slugger:runtime/config")).toBe(false)
 
-    const raw = mockVaultDeps.rawSecrets.get("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
-    expect(raw).toBeDefined()
-    const payload = JSON.parse(raw ?? "{}") as Record<string, unknown>
+    const stored = mockVaultDeps.storedItems.get("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    const payload = JSON.parse(stored?.password ?? "{}") as Record<string, unknown>
     expect(payload).toMatchObject({
       schemaVersion: 1,
-      kind: "ops-credential/porkbun",
       updatedAt: NOW,
-      account: "ari@mendelow.me",
-      apiKey: "porkbun-api-key",
-      secretApiKey: "porkbun-secret-key",
+      publicFields: { account: "ari@mendelow.me" },
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
     })
+    expect(payload).not.toHaveProperty("kind")
   })
 
   it("vault ops porkbun status reports presence without exposing secrets", async () => {
@@ -3179,11 +3527,13 @@ describe("provider CLI command execution", () => {
       ["vault", "ops", "porkbun", "status", "--agent", "Slugger", "--account", "ari@mendelow.me"],
       makeCliDeps(homeDir, bundlesRoot),
     )
+    expect(present).toContain("deprecated compatibility alias")
     expect(present).toContain("agent: Slugger")
-    expect(present).toContain(`item: vault:Slugger:${itemName}`)
+    expect(present).toContain(`ordinary vault item: vault:Slugger:${itemName}`)
     expect(present).toContain("status: present")
     expect(present).toContain("account: ari@mendelow.me")
     expect(present).toContain("secret values were not printed")
+    expect(present).not.toContain("authority:")
     expect(present).not.toContain("porkbun-api-key")
 
     mockVaultDeps.credentialProbeGet.mockResolvedValueOnce(null)

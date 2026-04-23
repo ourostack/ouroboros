@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.466",
+      "changes": [
+        "`ouro vault item set/status/list` is now the generic human-facing path for storing ordinary agent-owned vault items with hidden secret fields, optional public fields, freeform notes, metadata-only status/list output, and no assumed provider semantics.",
+        "`ouro vault ops porkbun` remains as a deprecated compatibility alias over ordinary vault items, while docs and help teach vault item -> managed workflow -> non-secret binding instead of treating Porkbun, DNS, or ops credentials as separate credential species.",
+        "Vault item guardrails now keep harness-managed provider/runtime items on `ouro auth`, `ouro connect`, and `ouro vault config`, and coverage locks no-secret logging, notes-as-orientation, reserved item errors, compatibility behavior, and 100% branch coverage for the new surface."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.465",
       "changes": [
         "`ouro vault ops porkbun set` now stores account-scoped Porkbun API credentials in the owning agent vault through hidden prompts, outside the connect bay and runtime/config.",

@@ -60,7 +60,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "daemon/cli-parse",
   "daemon/cli-render",
   "daemon/cli-help",
-  "daemon/porkbun-ops",
+  "daemon/vault-items",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
   "repertoire/api-client",

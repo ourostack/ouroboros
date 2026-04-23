@@ -42,6 +42,11 @@ function optionalTrimmedText(value: unknown, fieldName: string): string | undefi
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+function resolveVaultItemArg(args: Record<string, unknown>, legacyFieldName = "domain"): string {
+  if (args.item !== undefined) return requireTrimmedText(args.item, "item")
+  return requireTrimmedText(args[legacyFieldName], legacyFieldName)
+}
+
 function parsePasswordLength(value: unknown): number {
   if (value === undefined || value === null || value === "") return DEFAULT_PASSWORD_LENGTH
   const parsed = typeof value === "number" ? value : Number(value)
@@ -102,13 +107,17 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_get",
         description:
-          "Get credential metadata for a domain. Returns username, notes, and creation date. Never returns passwords — the credential gateway handles secret injection internally.",
+          "Get credential metadata for a vault item name/path. Returns username, notes, and creation date. Never returns passwords — the credential gateway handles secret injection internally.",
         parameters: {
           type: "object",
           properties: {
+            item: {
+              type: "string",
+              description: "Vault item name/path to look up (e.g. 'airbnb.com' or 'ops/porkbun/account')",
+            },
             domain: {
               type: "string",
-              description: "Domain to look up (e.g. 'airbnb.com', 'api.openweathermap.org')",
+              description: "compatibility alias for item when the vault item name is a service domain",
             },
           },
           required: ["domain"],
@@ -116,19 +125,20 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      const itemName = resolveVaultItemArg(args)
       emitNervesEvent({
         component: "repertoire",
         event: "repertoire.credential_tool_call",
         message: "credential_get invoked",
-        meta: { tool: "credential_get", domain: args.domain },
+        meta: { tool: "credential_get", domain: itemName, item: itemName },
       })
 
       try {
         const store = getCredentialStore()
-        const meta = await store.get(args.domain)
+        const meta = await store.get(itemName)
 
         if (!meta) {
-          return `No credential found for "${args.domain}".`
+          return `No credential found for "${itemName}".`
         }
 
         return JSON.stringify(meta, null, 2)
@@ -202,13 +212,17 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_store",
         description:
-          "Store credentials the agent acquired or just used successfully during signup. Prefer credential_generate_password for new passwords, then call this tool once the site accepts the exact password. Stored passwords are never returned later — only metadata is visible.",
+          "Store credentials in a vault item name/path after the agent acquired or just used them successfully. Prefer credential_generate_password for new passwords, then call this tool once the site accepts the exact password. Stored passwords are never returned later — only metadata is visible.",
         parameters: {
           type: "object",
           properties: {
+            item: {
+              type: "string",
+              description: "Vault item name/path to store under; domains are examples, not the schema",
+            },
             domain: {
               type: "string",
-              description: "Domain these credentials are for (e.g. 'airbnb.com')",
+              description: "compatibility alias for item when the vault item name is a service domain",
             },
             username: {
               type: "string",
@@ -220,7 +234,7 @@ export const credentialToolDefinitions: ToolDefinition[] = [
             },
             notes: {
               type: "string",
-              description: "Optional notes about this credential",
+              description: "Optional human/agent orientation notes about this credential; not parsed by code",
             },
           },
           required: ["domain", "username", "password"],
@@ -232,16 +246,17 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       let username = ""
       let password = ""
       let notes: string | undefined
+      const itemNameForEvent = typeof args.item === "string" && args.item.trim() ? args.item.trim() : args.domain
 
       emitNervesEvent({
         component: "repertoire",
         event: "repertoire.credential_tool_call",
         message: "credential_store invoked",
-        meta: { tool: "credential_store", domain: args.domain },
+        meta: { tool: "credential_store", domain: itemNameForEvent, item: itemNameForEvent },
       })
 
       try {
-        domain = requireTrimmedText(args.domain, "domain")
+        domain = resolveVaultItemArg(args)
         username = requireTrimmedText(args.username, "username")
         password = requireNonBlankSecret(args.password, "password")
         notes = optionalTrimmedText(args.notes, "notes")
@@ -268,13 +283,13 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       function: {
         name: "credential_list",
         description:
-          "List stored credential domains. Returns metadata only (domain, username, notes, creation date). Never returns passwords.",
+          "List stored vault items. Returns metadata only (item/domain name, username, notes, creation date). Never returns passwords.",
         parameters: {
           type: "object",
           properties: {
             search: {
               type: "string",
-              description: "Optional search filter to match against domain names",
+              description: "Optional search filter to match against vault item names/paths",
             },
           },
         },
@@ -316,13 +331,17 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "credential_delete",
-        description: "Delete stored credentials for a domain.",
+        description: "Delete stored credentials for a vault item name/path.",
         parameters: {
           type: "object",
           properties: {
+            item: {
+              type: "string",
+              description: "Vault item name/path whose credentials should be deleted",
+            },
             domain: {
               type: "string",
-              description: "Domain whose credentials should be deleted",
+              description: "compatibility alias for item when the vault item name is a service domain",
             },
           },
           required: ["domain"],
@@ -338,13 +357,14 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       })
 
       try {
+        const itemName = resolveVaultItemArg(args)
         const store = getCredentialStore()
-        const deleted = await store.delete(args.domain)
+        const deleted = await store.delete(itemName)
 
         if (deleted) {
-          return `Credentials for "${args.domain}" deleted.`
+          return `Credentials for "${itemName}" deleted.`
         }
-        return `No credential found for "${args.domain}".`
+        return `No credential found for "${itemName}".`
       } catch (err) {
         /* v8 ignore next -- defensive: store.delete wraps errors @preserve */
         return `Credential delete error: ${err instanceof Error ? err.message : String(err)}`

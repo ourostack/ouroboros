@@ -206,6 +206,26 @@ describe("getCommandHelp()", () => {
     expect(result).not.toContain("--generate-unlock-secret")
   })
 
+  it("shows generic vault item help before compatibility aliases", () => {
+    const result = getCommandHelp("vault")
+
+    expect(result).not.toBeNull()
+    expect(result).toContain("vault item set")
+    expect(result).toContain("vault item status")
+    expect(result).toContain("vault item list")
+    expect(result).toContain("vault ops porkbun set")
+    expect(result!.indexOf("vault item set")).toBeLessThan(result!.indexOf("vault ops porkbun set"))
+
+    expect(getCommandHelp("vault item set")).toContain("ordinary vault item")
+    expect(getCommandHelp("vault item set")).toContain("no assumed use")
+    expect(getCommandHelp("vault item set")).toContain("notes")
+    expect(getCommandHelp("vault item set")).toContain("secret values are not printed")
+
+    expect(getCommandHelp("vault ops porkbun set")).toContain("deprecated compatibility alias")
+    expect(getCommandHelp("vault ops porkbun set")).toContain("ouro vault item set --template porkbun-api")
+    expect(getCommandHelp("vault ops porkbun set")).not.toContain("ops vault item")
+  })
+
   it("returns focused help for connect", () => {
     const result = getCommandHelp("connect")
 

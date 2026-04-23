@@ -13,8 +13,17 @@ import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { OuroCliCommand } from "./cli-types"
+import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
-import { normalizePorkbunOpsAccount } from "./porkbun-ops"
+import {
+  isVaultItemTemplate,
+  normalizePorkbunOpsAccount,
+  normalizeVaultItemFieldName,
+  normalizeVaultItemName,
+  PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  PORKBUN_OPS_CREDENTIAL_PREFIX,
+  porkbunOpsCredentialItemName,
+} from "./vault-items"
 
 // ── Shared helpers ──
 
@@ -98,6 +107,9 @@ export function usage(): string {
     "  ouro vault status [--agent <name>] [--store auto|macos-keychain|windows-dpapi|linux-secret-service|plaintext-file]",
     "  ouro vault config set [--agent <name>] --key <path> [--value <value>] [--scope agent|machine]",
     "  ouro vault config status [--agent <name>] [--scope agent|machine|all]",
+    "  ouro vault item set [--agent <name>] --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]",
+    "  ouro vault item status [--agent <name>] --item <path>",
+    "  ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
     "  ouro vault ops porkbun set [--agent <name>] --account <account>",
     "  ouro vault ops porkbun status [--agent <name>] [--account <account>]",
     "  ouro chat <agent>",
@@ -477,6 +489,7 @@ function isVaultUnlockStoreKind(value: unknown): value is VaultUnlockStoreKind {
 function parseVaultCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
   if (sub === "config") return parseVaultConfigCommand(args.slice(1))
+  if (sub === "item") return parseVaultItemCommand(args.slice(1))
   if (sub === "ops") return parseVaultOpsCommand(args.slice(1))
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let email: string | undefined
@@ -566,6 +579,90 @@ function parseVaultCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.status", ...(agent ? { agent } : {}), ...(store ? { store } : {}) }
 }
 
+function parseVaultItemCommand(args: string[]): OuroCliCommand {
+  const action = args[0]
+  if (action !== "set" && action !== "status" && action !== "list") {
+    throw new Error("Usage: ouro vault item set|status|list [--agent <name>] --item <path>")
+  }
+
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let item: string | undefined
+  let prefix: string | undefined
+  let template: VaultItemTemplate | undefined
+  let note: string | undefined
+  const secretFields: string[] = []
+  const publicFields: string[] = []
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--item") {
+      item = normalizeVaultItemName(rest[i + 1])
+      i += 1
+      continue
+    }
+    if (token === "--prefix") {
+      const value = rest[i + 1]?.trim() ?? ""
+      if (!value || /[\r\n\t]/.test(value) || value.startsWith("/")) {
+        throw new Error("Vault item prefix must be non-empty, relative, and free of control characters.")
+      }
+      prefix = value
+      i += 1
+      continue
+    }
+    if (token === "--template") {
+      const value = rest[i + 1]
+      if (!isVaultItemTemplate(value)) {
+        throw new Error("vault item --template must be porkbun-api")
+      }
+      template = value
+      i += 1
+      continue
+    }
+    if (token === "--secret-field") {
+      secretFields.push(normalizeVaultItemFieldName(rest[i + 1]))
+      i += 1
+      continue
+    }
+    if (token === "--public-field") {
+      const value = rest[i + 1]?.trim() ?? ""
+      const separator = value.indexOf("=")
+      if (separator <= 0 || separator === value.length - 1) {
+        throw new Error("vault item --public-field must be key=value")
+      }
+      normalizeVaultItemFieldName(value.slice(0, separator))
+      publicFields.push(value)
+      i += 1
+      continue
+    }
+    if (token === "--note") {
+      note = rest[i + 1] ?? ""
+      i += 1
+      continue
+    }
+    throw new Error(`Usage: ouro vault item ${action} [--agent <name>] --item <path>`)
+  }
+
+  if (action === "list") {
+    return { kind: "vault.item.list", ...(agent ? { agent } : {}), ...(prefix ? { prefix } : {}) }
+  }
+  if (!item) throw new Error(`Usage: ouro vault item ${action} [--agent <name>] --item <path>`)
+  if (action === "status") {
+    return { kind: "vault.item.status", ...(agent ? { agent } : {}), item }
+  }
+  if (!template && secretFields.length === 0) {
+    throw new Error("ouro vault item set requires --secret-field or --template")
+  }
+  return {
+    kind: "vault.item.set",
+    ...(agent ? { agent } : {}),
+    item,
+    ...(template ? { template } : {}),
+    ...(secretFields.length > 0 ? { secretFields } : {}),
+    ...(publicFields.length > 0 ? { publicFields } : {}),
+    ...(note !== undefined ? { note } : {}),
+  }
+}
+
 function parseVaultOpsCommand(args: string[]): OuroCliCommand {
   const provider = args[0]
   const action = args[1]
@@ -590,9 +687,28 @@ function parseVaultOpsCommand(args: string[]): OuroCliCommand {
 
   if (action === "set") {
     if (!account) throw new Error("Usage: ouro vault ops porkbun set [--agent <name>] --account <account>")
-    return { kind: "vault.ops.porkbun.set", ...(agent ? { agent } : {}), account }
+    return {
+      kind: "vault.item.set",
+      ...(agent ? { agent } : {}),
+      item: porkbunOpsCredentialItemName(account),
+      template: "porkbun-api",
+      compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+    }
   }
-  return { kind: "vault.ops.porkbun.status", ...(agent ? { agent } : {}), ...(account ? { account } : {}) }
+  if (account) {
+    return {
+      kind: "vault.item.status",
+      ...(agent ? { agent } : {}),
+      item: porkbunOpsCredentialItemName(account),
+      compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+    }
+  }
+  return {
+    kind: "vault.item.list",
+    ...(agent ? { agent } : {}),
+    prefix: PORKBUN_OPS_CREDENTIAL_PREFIX,
+    compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  }
 }
 
 function parseVaultConfigCommand(args: string[]): OuroCliCommand {

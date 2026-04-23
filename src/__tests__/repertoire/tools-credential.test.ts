@@ -56,6 +56,21 @@ describe("credential_get", () => {
     expect(mockGet).toHaveBeenCalledWith("airbnb.com")
   })
 
+  it("accepts item name/path as the preferred lookup argument", async () => {
+    mockGet.mockResolvedValue({
+      domain: "ops/custom/service",
+      username: "agent@test.com",
+      notes: "stored outside workflow binding",
+      createdAt: "2026-04-05T00:00:00Z",
+    })
+
+    const tool = findTool("credential_get")
+    const result = await tool.handler({ item: "ops/custom/service", domain: "ignored.example" })
+
+    expect(result).toContain("ops/custom/service")
+    expect(mockGet).toHaveBeenCalledWith("ops/custom/service")
+  })
+
   it("returns not-found message for unknown domain", async () => {
     mockGet.mockResolvedValue(null)
 
@@ -117,6 +132,24 @@ describe("credential_store", () => {
       username: "agent@test.com",
       password: "secret123",
       notes: "test",
+    })
+  })
+
+  it("stores under item name/path when provided", async () => {
+    mockStore.mockResolvedValue(undefined)
+
+    const tool = findTool("credential_store")
+    const result = await tool.handler({
+      item: "ops/custom/service",
+      domain: "ignored.example",
+      username: "agent@test.com",
+      password: "secret123",
+    })
+
+    expect(result).toContain("ops/custom/service")
+    expect(mockStore).toHaveBeenCalledWith("ops/custom/service", {
+      username: "agent@test.com",
+      password: "secret123",
     })
   })
 
@@ -417,6 +450,16 @@ describe("credential_delete", () => {
     expect(mockDelete).toHaveBeenCalledWith("airbnb.com")
   })
 
+  it("deletes by item name/path when provided", async () => {
+    mockDelete.mockResolvedValue(true)
+
+    const tool = findTool("credential_delete")
+    const result = await tool.handler({ item: "ops/custom/service", domain: "ignored.example" })
+
+    expect(result).toContain("ops/custom/service")
+    expect(mockDelete).toHaveBeenCalledWith("ops/custom/service")
+  })
+
   it("reports when domain not found", async () => {
     mockDelete.mockResolvedValue(false)
 
@@ -479,5 +522,23 @@ describe("tool definitions structure", () => {
       "credential_list",
       "credential_store",
     ])
+  })
+
+  it("describes stored credentials as vault item names, not only domains", () => {
+    for (const toolName of ["credential_get", "credential_store", "credential_list", "credential_delete"]) {
+      const tool = findTool(toolName)
+      expect(tool.tool.function.description.toLowerCase()).toContain("vault item")
+    }
+
+    const getParams = findTool("credential_get").tool.function.parameters as any
+    expect(getParams.properties.item).toBeDefined()
+    expect(getParams.properties.item.description).toContain("name/path")
+    expect(getParams.properties.domain.description).toContain("compatibility alias")
+
+    const storeParams = findTool("credential_store").tool.function.parameters as any
+    expect(storeParams.properties.item).toBeDefined()
+    expect(storeParams.properties.item.description).toContain("name/path")
+    expect(storeParams.properties.notes.description).toContain("human/agent orientation")
+    expect(storeParams.properties.notes.description).toContain("not parsed by code")
   })
 })

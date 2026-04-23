@@ -153,12 +153,13 @@ import {
   verifyPerplexityCapability,
 } from "../runtime-capability-check"
 import {
-  PORKBUN_OPS_CREDENTIAL_KIND,
-  PORKBUN_OPS_CREDENTIAL_PREFIX,
+  normalizeVaultItemFieldName,
+  PORKBUN_OPS_COMPATIBILITY_ALIAS,
   normalizePorkbunOpsAccount,
-  porkbunOpsCredentialItemName,
-  requirePorkbunOpsSecret,
-} from "./porkbun-ops"
+  porkbunOpsAccountFromItemName,
+  requireVaultItemSecret,
+  vaultItemTemplateSecretFields,
+} from "./vault-items"
 
 // ── ensureDaemonRunning ──
 
@@ -363,6 +364,9 @@ type MissingAgentResolvableKind =
   | "vault.status"
   | "vault.config.set"
   | "vault.config.status"
+  | "vault.item.set"
+  | "vault.item.status"
+  | "vault.item.list"
   | "connect"
   | "account.ensure"
   | "mail.import-mbox"
@@ -471,8 +475,9 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "vault.status":
     case "vault.config.set":
     case "vault.config.status":
-    case "vault.ops.porkbun.set":
-    case "vault.ops.porkbun.status":
+    case "vault.item.set":
+    case "vault.item.status":
+    case "vault.item.list":
     case "connect":
     case "account.ensure":
     case "mail.import-mbox":
@@ -2530,39 +2535,122 @@ async function executeVaultConfigStatus(
   return message
 }
 
-async function executeVaultOpsPorkbunSet(
-  command: Extract<ResolvedOuroCliCommand, { kind: "vault.ops.porkbun.set" }>,
+type VaultItemSecretPayload = {
+  schemaVersion: 1
+  updatedAt: string
+  publicFields: Record<string, string>
+  secretFields: Record<string, string>
+}
+
+function parseVaultItemPublicFields(fields: string[] | undefined): Record<string, string> {
+  const parsed: Record<string, string> = {}
+  for (const field of fields ?? []) {
+    const separator = field.indexOf("=")
+    const key = normalizeVaultItemFieldName(field.slice(0, separator))
+    parsed[key] = field.slice(separator + 1)
+  }
+  return parsed
+}
+
+function uniqueVaultItemSecretFields(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>): string[] {
+  const fields = command.template ? vaultItemTemplateSecretFields(command.template) : []
+  for (const field of command.secretFields ?? []) {
+    if (!fields.includes(field)) fields.push(field)
+  }
+  return fields
+}
+
+function vaultItemCompatibilityNotice(command: { compatibilityAlias?: string }): string[] {
+  if (command.compatibilityAlias !== PORKBUN_OPS_COMPATIBILITY_ALIAS) return []
+  return ["deprecated compatibility alias: use ouro vault item set --template porkbun-api"]
+}
+
+function freeformVaultItemReservedMessage(itemName: string): string | undefined {
+  if (itemName.startsWith("providers/")) {
+    return `Vault item "${itemName}" is reserved for harness-managed workflows. Use ouro auth or ouro connect for provider credentials.`
+  }
+  if (itemName === "runtime/config" || /^runtime\/machines\/[^/]+\/config$/.test(itemName)) {
+    return `Vault item "${itemName}" is reserved for harness-managed workflows. Use ouro connect or ouro vault config for runtime and sense configuration.`
+  }
+  return undefined
+}
+
+function assertFreeformVaultItemWritable(itemName: string): void {
+  const reservedMessage = freeformVaultItemReservedMessage(itemName)
+  if (reservedMessage) throw new Error(reservedMessage)
+}
+
+function porkbunAccountForCompatibility(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" | "vault.item.status" }>): string | undefined {
+  if (command.compatibilityAlias !== PORKBUN_OPS_COMPATIBILITY_ALIAS) return undefined
+  return normalizePorkbunOpsAccount(porkbunOpsAccountFromItemName(command.item))
+}
+
+const PORKBUN_OPS_PROMPT_LABELS = {
+  apiKey: (account: string) => `Porkbun API key for ${account}: `,
+  secretApiKey: (account: string) => `Porkbun Secret API key for ${account}: `,
+} as const
+
+const PORKBUN_OPS_VALIDATION_LABELS = {
+  apiKey: "Porkbun API key",
+  secretApiKey: "Porkbun Secret API key",
+} as const
+
+function vaultItemTemplatePromptLabel(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>, field: string, account?: string): string {
+  if (command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS) {
+    return PORKBUN_OPS_PROMPT_LABELS[field as keyof typeof PORKBUN_OPS_PROMPT_LABELS](account!)
+  }
+  return `Secret field ${field} for ${command.item}: `
+}
+
+function vaultItemSecretValidationLabel(command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>, field: string): string {
+  if (command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS) {
+    return PORKBUN_OPS_VALIDATION_LABELS[field as keyof typeof PORKBUN_OPS_VALIDATION_LABELS]
+  }
+  return `Secret field ${field}`
+}
+
+async function executeVaultItemSet(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.set" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
-    throw new Error("SerpentGuide has no persistent credential vault. Store ops credentials in the owning agent vault.")
+    throw new Error("SerpentGuide has no persistent credential vault. Store vault items in the owning agent vault.")
   }
-  const account = normalizePorkbunOpsAccount(command.account)
-  const promptSecret = requirePromptSecret(deps, "Porkbun ops credential entry")
-  const apiKey = requirePorkbunOpsSecret(await promptSecret(`Porkbun API key for ${account}: `), "Porkbun API key")
-  const secretApiKey = requirePorkbunOpsSecret(await promptSecret(`Porkbun Secret API key for ${account}: `), "Porkbun Secret API key")
-  const itemName = porkbunOpsCredentialItemName(account)
-  const payload = {
+  if (!command.compatibilityAlias) assertFreeformVaultItemWritable(command.item)
+  const account = porkbunAccountForCompatibility(command)
+  const promptSecret = requirePromptSecret(deps, command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "Porkbun ops credential entry" : "Vault item secret entry")
+  const secretFieldNames = uniqueVaultItemSecretFields(command)
+  const publicFields = parseVaultItemPublicFields(command.publicFields)
+  if (account && !publicFields.account) publicFields.account = account
+  const secretFields: Record<string, string> = {}
+  for (const field of secretFieldNames) {
+    const normalized = normalizeVaultItemFieldName(field)
+    const value = await promptSecret(vaultItemTemplatePromptLabel(command, normalized, account))
+    secretFields[normalized] = requireVaultItemSecret(value, vaultItemSecretValidationLabel(command, normalized))
+  }
+  const payload: VaultItemSecretPayload = {
     schemaVersion: 1,
-    kind: PORKBUN_OPS_CREDENTIAL_KIND,
     updatedAt: providerCliNow(deps).toISOString(),
-    account,
-    apiKey,
-    secretApiKey,
+    publicFields,
+    secretFields,
   }
-  const progress = createHumanCommandProgress(deps, "vault ops porkbun")
+  const progress = createHumanCommandProgress(deps, command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "vault ops porkbun" : "vault item set")
   try {
     await runCommandProgressPhase(
       progress,
-      "storing Porkbun ops credentials",
+      command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "storing ordinary vault item" : "storing vault item",
       async () => {
         const store = getCredentialStore(command.agent)
-        await store.store(itemName, {
-          username: account,
+        await store.store(command.item, {
+          ...(account ? { username: account } : {}),
           password: JSON.stringify(payload),
-          notes: "Operational Porkbun account API credential. Domain API access and Ouro DNS allowlists live outside this secret item.",
+          ...(command.note !== undefined
+            ? { notes: command.note }
+            : command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS
+              ? { notes: "Ordinary vault item written by a deprecated Porkbun compatibility alias. Notes are for human/agent orientation only; workflow bindings live outside this item." }
+              : {}),
         })
-        return itemName
+        return command.item
       },
       () => "secret stored",
     )
@@ -2571,40 +2659,67 @@ async function executeVaultOpsPorkbunSet(
   }
 
   const message = [
-    `stored Porkbun ops credentials for ${command.agent}`,
-    `item: vault:${command.agent}:${itemName}`,
-    `account: ${account}`,
-    "authority: Porkbun account-level API credential",
-    "domain bindings and DNS allowlists live outside this secret item",
+    ...vaultItemCompatibilityNotice(command),
+    `stored ordinary vault item for ${command.agent}`,
+    `item: vault:${command.agent}:${command.item}`,
+    ...(account ? [`account: ${account}`] : []),
+    `public fields: ${Object.keys(publicFields).length === 0 ? "none" : Object.keys(publicFields).sort().join(", ")}`,
+    `secret fields: ${Object.keys(secretFields).sort().join(", ")}`,
+    `notes: ${command.note !== undefined || command.compatibilityAlias === PORKBUN_OPS_COMPATIBILITY_ALIAS ? "present" : "absent"}`,
     "secret values were not printed",
   ].join("\n")
   deps.writeStdout(message)
   return message
 }
 
-async function executeVaultOpsPorkbunStatus(
-  command: Extract<ResolvedOuroCliCommand, { kind: "vault.ops.porkbun.status" }>,
+async function executeVaultItemStatus(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.status" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
   if (command.agent === "SerpentGuide") {
-    const message = "SerpentGuide has no persistent credential vault. Ops credentials belong in the owning agent vault."
+    const message = "SerpentGuide has no persistent credential vault. Vault items belong in the owning agent vault."
     deps.writeStdout(message)
     return message
   }
   const store = getCredentialStore(command.agent)
-  const lines = [`agent: ${command.agent}`, "ops credentials: Porkbun"]
-  if (command.account) {
-    const account = normalizePorkbunOpsAccount(command.account)
-    const itemName = porkbunOpsCredentialItemName(account)
-    const meta = await store.get(itemName)
-    lines.push(`item: vault:${command.agent}:${itemName}`)
-    lines.push(`status: ${meta ? "present" : "missing"}`)
-    if (meta?.username) lines.push(`account: ${meta.username}`)
-  } else {
-    const items = (await store.list()).filter((item) => item.domain.startsWith(`${PORKBUN_OPS_CREDENTIAL_PREFIX}/`))
-    lines.push(`items: ${items.length === 0 ? "none stored" : items.map((item) => item.domain).sort().join(", ")}`)
-  }
+  const account = porkbunAccountForCompatibility(command)
+  const meta = await store.get(command.item)
+  const lines = [
+    ...vaultItemCompatibilityNotice(command),
+    `agent: ${command.agent}`,
+    `${command.compatibilityAlias ? "ordinary vault item" : "item"}: vault:${command.agent}:${command.item}`,
+    `status: ${meta ? "present" : "missing"}`,
+  ]
+  if (meta?.username) lines.push(account ? `account: ${meta.username}` : `username: ${meta.username}`)
+  if (meta?.notes) lines.push("notes: present")
   lines.push("secret values were not printed")
+  const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+async function executeVaultItemList(
+  command: Extract<ResolvedOuroCliCommand, { kind: "vault.item.list" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  if (command.agent === "SerpentGuide") {
+    const message = "SerpentGuide has no persistent credential vault. Vault items belong in the owning agent vault."
+    deps.writeStdout(message)
+    return message
+  }
+  const store = getCredentialStore(command.agent)
+  const prefix = command.prefix
+  const items = (await store.list())
+    .filter((item) => !prefix || item.domain.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`))
+    .map((item) => item.domain)
+    .sort()
+  const lines = [
+    ...vaultItemCompatibilityNotice(command),
+    `agent: ${command.agent}`,
+    ...(prefix ? [`prefix: ${prefix}`] : []),
+    `items: ${items.length === 0 ? "none stored" : items.join(", ")}`,
+    "secret values were not printed",
+  ]
   const message = lines.join("\n")
   deps.writeStdout(message)
   return message
@@ -6228,12 +6343,16 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeVaultConfigStatus(command, deps)
   }
 
-  if (command.kind === "vault.ops.porkbun.set") {
-    return executeVaultOpsPorkbunSet(command, deps)
+  if (command.kind === "vault.item.set") {
+    return executeVaultItemSet(command, deps)
   }
 
-  if (command.kind === "vault.ops.porkbun.status") {
-    return executeVaultOpsPorkbunStatus(command, deps)
+  if (command.kind === "vault.item.status") {
+    return executeVaultItemStatus(command, deps)
+  }
+
+  if (command.kind === "vault.item.list") {
+    return executeVaultItemList(command, deps)
   }
 
   // ── auth (local, no daemon socket needed) ──

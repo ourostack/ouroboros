@@ -180,6 +180,8 @@ ouro vault unlock --agent <name>
 ouro vault status --agent <name>
 ouro vault config set --agent <name> --key teams.clientSecret
 ouro vault config status --agent <name> --scope all
+ouro vault item set --agent <name> --item <path> --secret-field <field>
+ouro vault item status --agent <name> --item <path>
 ouro vault ops porkbun set --agent <name> --account <account>
 ouro connect --agent <name>
 ouro connect providers --agent <name>
@@ -207,6 +209,8 @@ ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a d
 ouro mcp-serve --agent <name>             # start MCP server on stdin/stdout (used by dev tools)
 ouro hook <event> --agent <name>          # fire a lifecycle hook (SessionStart, Stop, PostToolUse)
 ```
+
+The generic secret primitive is a vault item / credential in the owning agent vault: stable item name/path, hidden secret material, optional public fields, notes, timestamps/provenance, and no assumed use. `ouro connect` is for harness-managed workflows; workflow bindings reference ordinary vault items when they need secret material.
 
 ## Setting Up On Another Machine
 

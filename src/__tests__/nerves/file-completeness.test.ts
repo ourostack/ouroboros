@@ -178,14 +178,14 @@ const cache = new Map()
         ["src/heart/daemon/cli-exec.ts", 'emitNervesEvent({ component: "daemon", event: "daemon.cli_command" })'],
         ["src/heart/daemon/cli-parse.ts", "export function parseOuroCommand() {}"],
         ["src/heart/daemon/cli-render.ts", "export function formatTable() {}"],
-        ["src/heart/daemon/porkbun-ops.ts", "export function normalizePorkbunOpsAccount() {}"],
+        ["src/heart/daemon/vault-items.ts", "export function normalizeVaultItemName() {}"],
       ])
       const result = checkFileCompleteness(files, fileContents)
       expect(result.status).toBe("pass")
       expect(result.missing).toHaveLength(0)
       expect(result.exempt).toContain("src/heart/daemon/cli-parse.ts")
       expect(result.exempt).toContain("src/heart/daemon/cli-render.ts")
-      expect(result.exempt).toContain("src/heart/daemon/porkbun-ops.ts")
+      expect(result.exempt).toContain("src/heart/daemon/vault-items.ts")
     })
 
     it("exempts pure attachment helper modules whose callers own observability", () => {

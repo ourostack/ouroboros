@@ -105,26 +105,55 @@ ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
 
-## Operational Credentials
+## Vault Items, Managed Workflows, And Bindings
 
-`ouro connect` is not a generic password-manager entry tool. It is reserved for harness-managed capabilities whose runtime behavior Ouro owns: model providers, portable integrations, local sense attachments, and Agent Mail. A credential should get an `ouro connect <name>` flow only when the harness can explain the capability, store it in a known runtime location, verify it, and apply the resulting runtime state.
+The primitive is a vault item / credential: a private record in the owning agent vault with a stable item name/path, hidden secret material, optional public fields, freeform notes, folder-ish organization, timestamps/provenance, and no assumed use.
 
-Operational credentials are different. Registrar, cloud, deployment, billing, and other operator credentials may still belong in the owning agent vault, but they do not become connect-bay capabilities just because an agent needs them during production work. Store them as `ops/...` vault items and keep their resource allowlists in repo configuration or runbooks.
+Everything else lives outside that item.
 
-Name operational vault items by their real authority boundary, not by the first resource they will touch:
+### Managed workflow
 
-- Account-scoped credential: `ops/registrars/porkbun/accounts/<account>`
-- Domain binding: stored outside the secret item, such as `ouro.bot -> ops/registrars/porkbun/accounts/ari@mendelow.me`
-- Bad shape: `domains/porkbun/ouro.bot`, because the Porkbun API key is account-scoped and the domain API toggle is a separate permission boundary
+`ouro connect` is not a generic password-manager entry tool. It is reserved for harness-managed workflows whose runtime behavior Ouro owns: model providers, portable integrations, local sense attachments, and Agent Mail. A credential should get an `ouro connect <name>` flow only when the harness can explain the capability, store it in a known runtime location, verify it, repair it, and apply the resulting runtime state.
 
-For Porkbun:
+### Freeform vault item
+
+Use freeform vault items when an agent or human needs to store a credential or secret without teaching Ouro a new capability:
+
+```bash
+ouro vault item set --agent <agent> --item <path> --secret-field <name> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
+```
+
+Templates are convenience only. A template may shape hidden prompts and field names, but it does not create a new credential species. `--template porkbun-api` stores an ordinary vault item with hidden `apiKey` and `secretApiKey` fields.
+
+Notes are for humans and agents. Code must not parse meaning out of notes. Notes can explain what the item is, what not to assume, how it was obtained, who can rotate it, and recovery hints. If a workflow needs machine-readable facts, put them in explicit workflow binding fields or committed non-secret run config, not prose.
+
+### Binding / run config
+
+A binding is non-secret configuration that says a workflow should use a specific vault item for a specific task.
+
+For example, a DNS workflow binding may say:
+
+```yaml
+domain: ouro.bot
+driver: porkbun
+credentialItem: ops/registrars/porkbun/accounts/ari@mendelow.me
+resourceAllowlist:
+  - ouro.bot
+```
+
+That binding does not make the referenced vault item a DNS credential, provider credential, ops credential, or authority. It only says this workflow plans to use that ordinary item through this driver and allowlist.
+
+The older Porkbun helper remains as a deprecated compatibility alias:
 
 ```bash
 ouro vault ops porkbun set --agent <agent> --account <porkbun-account>
 ouro vault ops porkbun status --agent <agent> --account <porkbun-account>
 ```
 
-The set command prompts for the API key and secret through hidden terminal input and stores a structured secret payload at `ops/registrars/porkbun/accounts/<account>`. Domain API access in Porkbun and Ouro DNS allowlists remain separate from the secret item. This keeps multiple Porkbun accounts possible and prevents a vault item name from implying narrower authority than the key actually has.
+It should store and report an ordinary vault item, then point humans and agents toward `ouro vault item set --template porkbun-api`.
 
 ## Human CLI Progress
 
@@ -435,6 +464,10 @@ ouro vault recover --agent <agent> --from <json> [--from <json> ...]
 ouro vault config set --agent <agent> --key <field>
 ouro vault config set --agent <agent> --key <field> --scope machine
 ouro vault config status --agent <agent> [--scope agent|machine|all]
+ouro vault item set --agent <agent> --item <path> --secret-field <field> [--public-field <key=value>] [--note <text>]
+ouro vault item set --agent <agent> --item <path> --template porkbun-api
+ouro vault item status --agent <agent> --item <path>
+ouro vault item list --agent <agent> [--prefix <path-prefix>]
 ouro vault ops porkbun set --agent <agent> --account <account>
 ouro vault ops porkbun status --agent <agent> [--account <account>]
 ouro connect --agent <agent>

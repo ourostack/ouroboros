@@ -227,9 +227,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   vault: {
     category: "Auth",
     description: "Create, replace, recover, unlock, inspect, and populate the agent credential vault",
-    usage: "ouro vault <create|replace|recover|unlock|status|config|ops> [--agent <name>]",
+    usage: "ouro vault <create|replace|recover|unlock|status|config|item|ops> [--agent <name>]",
     example: "ouro vault status",
-    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status", "ops porkbun set", "ops porkbun status"],
+    subcommands: ["create", "replace", "recover", "unlock", "status", "config set", "config status", "vault item set", "vault item status", "vault item list", "vault ops porkbun set", "vault ops porkbun status"],
   },
   thoughts: {
     category: "Internal",
@@ -382,13 +382,28 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     usage: "ouro vault config status [--agent <name>] [--scope agent|machine|all]",
     example: "ouro vault config status --scope all",
   },
+  "vault item set": {
+    description: "Store an ordinary vault item / credential with no assumed use. Prompts for hidden secret fields, stores optional public fields and notes, and secret values are not printed.",
+    usage: "ouro vault item set [--agent <name>] --item <path> (--secret-field <name>...|--template <template>) [--public-field <key=value>] [--note <text>]",
+    example: "ouro vault item set --agent slugger --item ops/porkbun/ari@mendelow.me --template porkbun-api",
+  },
+  "vault item status": {
+    description: "Show metadata for an ordinary vault item without printing secret values",
+    usage: "ouro vault item status [--agent <name>] --item <path>",
+    example: "ouro vault item status --agent slugger --item ops/porkbun/ari@mendelow.me",
+  },
+  "vault item list": {
+    description: "List ordinary vault item names and metadata without printing secret values",
+    usage: "ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
+    example: "ouro vault item list --agent slugger --prefix ops/",
+  },
   "vault ops porkbun set": {
-    description: "Store account-scoped Porkbun API credentials as an ops vault item, outside connect/runtime config",
+    description: "deprecated compatibility alias for `ouro vault item set --template porkbun-api`; stores an ordinary vault item, not a special credential kind",
     usage: "ouro vault ops porkbun set [--agent <name>] --account <account>",
     example: "ouro vault ops porkbun set --agent slugger --account ari@mendelow.me",
   },
   "vault ops porkbun status": {
-    description: "Check whether Porkbun ops credentials are present without printing secret values",
+    description: "deprecated compatibility alias for checking the ordinary vault item used by the Porkbun API template",
     usage: "ouro vault ops porkbun status [--agent <name>] [--account <account>]",
     example: "ouro vault ops porkbun status --agent slugger --account ari@mendelow.me",
   },
