@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.472",
+      "changes": [
+        "Mail tools now stay usable when a visible message was encrypted to a missing old private key: `mail_recent`, `mail_search`, and `mail_thread` skip or explain only the undecryptable record with body-safe message/key ids.",
+        "Agent Mail recovery docs now distinguish restoring an old private key from hosted key rotation, so future agents do not repeatedly rotate when only an already-lost message is affected."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.471",
       "changes": [
         "`ouro account ensure` and `ouro connect mail` can now repair hosted Mail Control registry/vault drift with `--rotate-missing-mail-keys`, storing freshly returned one-time private keys in the owning agent vault without printing them.",

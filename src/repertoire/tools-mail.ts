@@ -8,6 +8,7 @@ import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type Mai
 import {
   describeMailProvenance,
   normalizeMailAddress,
+  type DecryptedMailMessage,
   type MailPlacement,
   type MailroomRegistry,
   type MailScreenerCandidate,
@@ -17,6 +18,16 @@ import {
   type StoredMailMessage,
 } from "../mailroom/core"
 import { emitNervesEvent } from "../nerves/runtime"
+
+interface MailDecryptSkip {
+  messageId: string
+  keyId: string
+}
+
+interface VisibleMailDecryptResult {
+  decrypted: DecryptedMailMessage[]
+  skipped: MailDecryptSkip[]
+}
 
 function trustAllowsMailRead(ctx: Parameters<ToolDefinition["handler"]>[1]): boolean {
   const trustLevel = ctx?.context?.friend?.trustLevel
@@ -73,7 +84,58 @@ function parseMailList(value: string | undefined): string[] {
     .filter(Boolean)
 }
 
-function renderMessageSummary(message: ReturnType<typeof decryptMessages>[number]): string {
+function missingPrivateMailKeyId(error: unknown): string | null {
+  const match = /^(?:Error: )?Missing private mail key ([^\s]+)$/.exec(String(error))
+  return match?.[1] ?? null
+}
+
+function decryptVisibleMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): VisibleMailDecryptResult {
+  const decrypted: DecryptedMailMessage[] = []
+  const skipped: MailDecryptSkip[] = []
+  for (const message of messages) {
+    try {
+      decrypted.push(decryptMessages([message], privateKeys)[0]!)
+    } catch (error) {
+      const keyId = missingPrivateMailKeyId(error)
+      if (!keyId) throw error
+      skipped.push({ messageId: message.id, keyId })
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.mail_decrypt_skipped",
+        message: "mail message skipped because its private key is missing",
+        meta: { messageId: message.id, keyId },
+      })
+    }
+  }
+  return { decrypted, skipped }
+}
+
+function renderDecryptSkips(skipped: MailDecryptSkip[]): string {
+  if (skipped.length === 0) return ""
+  const noun = skipped.length === 1 ? "message" : "messages"
+  const sample = skipped.slice(0, 3).map((entry) => `${entry.messageId} (${entry.keyId})`).join(", ")
+  const more = skipped.length > 3 ? `; ${skipped.length - 3} more` : ""
+  return [
+    `${skipped.length} mail ${noun} could not be decrypted because this agent's vault is missing private mail key material.`,
+    `skipped: ${sample}${more}`,
+    "recovery: restore the missing private key if available; hosted key rotation can repair future mail, but rotation cannot recover mail already encrypted to a lost private key.",
+  ].join("\n")
+}
+
+function appendDecryptSkips(body: string, skipped: MailDecryptSkip[]): string {
+  const warning = renderDecryptSkips(skipped)
+  return warning ? `${body}\n\n${warning}` : body
+}
+
+function renderUndecryptableThread(message: StoredMailMessage, keyId: string): string {
+  return [
+    `Mail message ${message.id} could not be decrypted because this agent's vault is missing private mail key ${keyId}.`,
+    "No body or subject was decrypted.",
+    "recovery: restore the missing private key if available; hosted key rotation can repair future mail, but rotation cannot recover mail already encrypted to a lost private key.",
+  ].join("\n")
+}
+
+function renderMessageSummary(message: DecryptedMailMessage): string {
   const scope = message.compartmentKind === "delegated"
     ? `delegated:${message.ownerEmail ?? "unknown"}:${message.source ?? "source"}`
     : "native"
@@ -266,9 +328,15 @@ function policyScopeForMessage(message: StoredMailMessage): MailSenderPolicyScop
 }
 
 function normalizePolicySender(candidate: MailScreenerCandidate | undefined, message: StoredMailMessage, privateKeys: Record<string, string>): string | null {
+  let decryptedFrom: string[] = []
+  try {
+    decryptedFrom = decryptMessages([message], privateKeys)[0]!.private.from
+  } catch {
+    decryptedFrom = []
+  }
   const candidates = [
     candidate?.senderEmail,
-    ...decryptMessages([message], privateKeys)[0].private.from,
+    ...decryptedFrom,
     message.envelope.mailFrom,
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0 && value !== "(unknown)")
   for (const candidateValue of candidates) {
@@ -408,7 +476,11 @@ export const mailToolDefinitions: ToolDefinition[] = [
           ...(args.source ? { source: args.source } : {}),
         })
       }
-      return decryptMessages(messages, resolved.config.privateKeys).map(renderMessageSummary).join("\n\n")
+      const result = decryptVisibleMessages(messages, resolved.config.privateKeys)
+      if (result.decrypted.length === 0) {
+        return appendDecryptSkips("No decryptable mail to show.", result.skipped)
+      }
+      return appendDecryptSkips(result.decrypted.map(renderMessageSummary).join("\n\n"), result.skipped)
     },
     summaryKeys: ["scope", "placement", "source", "limit"],
   },
@@ -573,7 +645,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
         source: args.source,
         limit: 200,
       })
-      const matching = decryptMessages(all, resolved.config.privateKeys)
+      const result = decryptVisibleMessages(all, resolved.config.privateKeys)
+      const matching = result.decrypted
         .filter((message) => [
           message.private.subject,
           message.private.snippet,
@@ -595,8 +668,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
           ...(args.source ? { source: args.source } : {}),
         })
       }
-      if (matching.length === 0) return "No matching mail."
-      return matching.map(renderMessageSummary).join("\n\n")
+      if (matching.length === 0) return appendDecryptSkips("No matching mail.", result.skipped)
+      return appendDecryptSkips(matching.map(renderMessageSummary).join("\n\n"), result.skipped)
     },
     summaryKeys: ["query", "limit"],
   },
@@ -629,7 +702,6 @@ export const mailToolDefinitions: ToolDefinition[] = [
         const blocked = delegatedHumanMailBlocked(ctx)
         if (blocked) return blocked
       }
-      const decrypted = decryptMessages([message], resolved.config.privateKeys)[0]
       await resolved.store.recordAccess({
         agentId: resolved.agentName,
         messageId,
@@ -637,6 +709,14 @@ export const mailToolDefinitions: ToolDefinition[] = [
         reason: args.reason,
         ...accessProvenance(message),
       })
+      let decrypted: DecryptedMailMessage
+      try {
+        decrypted = decryptMessages([message], resolved.config.privateKeys)[0]!
+      } catch (error) {
+        const keyId = missingPrivateMailKeyId(error)
+        if (!keyId) throw error
+        return renderUndecryptableThread(message, keyId)
+      }
       const maxChars = numberArg(args.max_chars, 2000, 200, 6000)
       const body = decrypted.private.text.length > maxChars
         ? `${decrypted.private.text.slice(0, maxChars - 3)}...`
