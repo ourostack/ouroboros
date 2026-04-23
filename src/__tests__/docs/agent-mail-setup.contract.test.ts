@@ -64,4 +64,16 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Ouro Outlook should feel like logging into the agent's mailbox")
     expect(guide).toContain("mail_access_log")
   })
+
+  it("keeps HEY forwarding as a Slugger-managed browser workflow with explicit delegated alias recovery", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("Slugger drives the browser-automation portion")
+    expect(guide).toContain("The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation")
+    expect(guide).toContain("me.mendelow.ari.slugger@ouro.bot")
+    expect(guide).toContain("Do not forward Ari's HEY mailbox to `slugger@ouro.bot`")
+    expect(guide).toContain("sourceFreshThrough")
+    expect(guide).toContain("Archive imports are historical backfill")
+    expect(guide).toContain("Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`")
+  })
 })

@@ -4050,6 +4050,8 @@ async function executeMailImportMbox(
       `scanned: ${result.scanned}`,
       `imported: ${result.imported}`,
       `duplicates: ${result.duplicates}`,
+      `source fresh through: ${result.sourceFreshThrough ?? "unknown"}`,
+      "archive imports are historical; they do not create Screener wakeups.",
       "body reads remain explicit through mail_recent/mail_search/mail_thread and are access-logged.",
     ].join("\n")
     deps.writeStdout(message)

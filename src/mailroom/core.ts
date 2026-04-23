@@ -27,6 +27,7 @@ export type MailScreenerCandidateStatus = "pending" | "allowed" | "discarded" | 
 export type MailOutboundStatus = "draft" | "sent" | "failed"
 export type MailboxRole = "agent-native-mailbox" | "delegated-human-mailbox"
 export type MailSendAuthority = "agent-native"
+export type MailIngestKind = "smtp" | "mbox-import"
 
 export interface MailAuthenticationSummary {
   spf: MailAuthenticationState
@@ -196,6 +197,14 @@ export interface PrivateMailEnvelope {
   untrustedContentWarning: string
 }
 
+export interface MailIngestProvenance {
+  schemaVersion: 1
+  kind: MailIngestKind
+  importedAt?: string
+  sourceFreshThrough?: string | null
+  attentionSuppressed?: boolean
+}
+
 export interface StoredMailMessage {
   schemaVersion: 1
   id: string
@@ -215,6 +224,7 @@ export interface StoredMailMessage {
   rawSha256: string
   rawSize: number
   privateEnvelope: EncryptedPayload
+  ingest: MailIngestProvenance
   receivedAt: string
 }
 
@@ -529,11 +539,16 @@ function candidateSender(input: { parsedFrom: string[]; envelope: MailEnvelopeIn
   }
 }
 
+function normalizedIngestProvenance(input?: MailIngestProvenance): MailIngestProvenance {
+  return input ?? { schemaVersion: 1, kind: "smtp" }
+}
+
 export async function buildStoredMailMessage(input: {
   resolved: ResolvedMailAddress
   envelope: MailEnvelopeInput
   rawMime: Buffer
   receivedAt?: Date
+  ingest?: MailIngestProvenance
   classification?: MailClassification
 }): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload; candidate?: MailScreenerCandidate }> {
   const parsed = await simpleParser(input.rawMime)
@@ -585,10 +600,12 @@ export async function buildStoredMailMessage(input: {
     rawSha256,
     rawSize: input.rawMime.byteLength,
     privateEnvelope: privatePayload,
+    ingest: normalizedIngestProvenance(input.ingest),
     receivedAt,
   }
   const sender = candidateSender({ parsedFrom: privateEnvelope.from, envelope: input.envelope })
-  const candidate: MailScreenerCandidate | undefined = input.classification?.candidate || placement === "screener"
+  const shouldCreateCandidate = input.classification?.candidate ?? placement === "screener"
+  const candidate: MailScreenerCandidate | undefined = shouldCreateCandidate
     ? {
         schemaVersion: 1,
         id: `candidate_${id}`,

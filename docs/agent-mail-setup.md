@@ -145,7 +145,7 @@ For Slugger:
 ouro mail import-mbox --file <path-to-hey.mbox> --owner-email ari@mendelow.me --source hey --agent slugger
 ```
 
-The import stores delegated HEY mail under the agent's encrypted Mailroom store. Reads remain explicit and access-logged through `mail_recent`, `mail_search`, and `mail_thread`.
+The import stores delegated HEY mail under the agent's encrypted Mailroom store. Archive imports are historical backfill: each imported message keeps MBOX provenance, `sourceFreshThrough` records the newest dated message in the export, and the import suppresses Screener wakeups so old mail does not arrive as a fresh attention storm. Reads remain explicit and access-logged through `mail_recent`, `mail_search`, and `mail_thread`.
 
 ## Live Inbound Mail
 
@@ -183,6 +183,8 @@ Do this only after SMTP ingress and production MX are explicitly accepted by the
 
 Human-required step, agent-guided:
 
+Slugger drives the browser-automation portion when browser MCP is available. The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation. The target is always the delegated source alias, for example `me.mendelow.ari.slugger@ouro.bot`. Do not forward Ari's HEY mailbox to `slugger@ouro.bot`; that is Slugger's native mailbox and would erase the executive-assistant provenance boundary.
+
 - In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias verified by the agent.
 - Prefer a HEY setup that still leaves critical mail accessible in HEY itself. HEY notes that forwarding can miss spam-classified mail and can be affected by mail-authentication forwarding behavior.
 
@@ -191,6 +193,8 @@ Agent step:
 - Report the exact delegated alias to the human.
 - After the human confirms forwarding, run a live test message and verify it appears in Ouro Outlook and `mail_recent`.
 - Do not change DNS, enable production MX, or claim live forwarding is active until the human confirms the HEY/DNS side.
+
+Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`. A wrong-target probe, especially one delivered to `slugger@ouro.bot`, is recoverable setup friction: Slugger should correct HEY to the delegated alias and must not import or label that probe as Ari's delegated HEY mail.
 
 ## Outbound Mail
 

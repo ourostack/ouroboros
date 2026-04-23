@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.469",
+      "changes": [
+        "Delegated HEY MBOX imports now preserve archive freshness/provenance, use message dates when present, suppress historical Screener wakeups, and show `source fresh through` in `ouro mail import-mbox` output.",
+        "Agent Mail setup docs and source-state helpers now orient Slugger to drive browser automation while the human handles HEY login/MFA/export/forwarding confirmation, including recovery for wrong forwarding targets such as `slugger@ouro.bot`.",
+        "Delegated source setup state now emits body-safe Nerves events, and coverage locks the source-state, MBOX import, CLI freshness fallback, and Mailroom ingest provenance branches."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.468",
       "changes": [
         "Published package binary smoke checks now retry transient npm registry/network failures such as `ECONNRESET`, so a successful publish is not left red by one aborted `npm exec` fetch.",

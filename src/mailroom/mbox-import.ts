@@ -1,6 +1,7 @@
 import { simpleParser } from "mailparser"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
+  type MailClassification,
   normalizeMailAddress,
   resolveMailAddress,
   type MailEnvelopeInput,
@@ -26,7 +27,14 @@ export interface MboxImportResult {
   scanned: number
   imported: number
   duplicates: number
+  sourceFreshThrough: string | null
   messages: StoredMailMessage[]
+}
+
+interface ParsedMboxMessage {
+  rawMessage: Buffer
+  envelope: MailEnvelopeInput
+  messageDate?: Date
 }
 
 export function splitMboxMessages(rawMbox: Buffer): Buffer[] {
@@ -78,13 +86,33 @@ function findSourceGrant(input: {
   return grants[0]
 }
 
-async function envelopeForMboxMessage(rawMessage: Buffer, grant: SourceGrantRecord): Promise<MailEnvelopeInput> {
+async function parseMboxMessage(rawMessage: Buffer, grant: SourceGrantRecord): Promise<ParsedMboxMessage> {
   const parsed = await simpleParser(rawMessage)
   const mailFrom = parsed.from?.value?.[0]?.address
   return {
-    mailFrom: mailFrom ? normalizeMailAddress(mailFrom) : "",
-    rcptTo: [normalizeMailAddress(grant.aliasAddress)],
-    remoteAddress: "mbox-import",
+    rawMessage,
+    envelope: {
+      mailFrom: mailFrom ? normalizeMailAddress(mailFrom) : "",
+      rcptTo: [normalizeMailAddress(grant.aliasAddress)],
+      remoteAddress: "mbox-import",
+    },
+    ...(parsed.date ? { messageDate: parsed.date } : {}),
+  }
+}
+
+function latestMessageDate(messages: ParsedMboxMessage[]): string | null {
+  const timestamps = messages
+    .map((message) => message.messageDate?.getTime())
+    .filter((timestamp): timestamp is number => typeof timestamp === "number" && Number.isFinite(timestamp))
+  if (timestamps.length === 0) return null
+  return new Date(Math.max(...timestamps)).toISOString()
+}
+
+function historicalImportClassification(resolvedPlacement: StoredMailMessage["placement"], sourceGrant: SourceGrantRecord): MailClassification {
+  return {
+    placement: resolvedPlacement,
+    candidate: false,
+    trustReason: `delegated source grant ${sourceGrant.source} historical mbox import`,
   }
 }
 
@@ -107,12 +135,23 @@ export async function importMboxToStore(input: MboxImportInput): Promise<MboxImp
   let duplicates = 0
   const messages: StoredMailMessage[] = []
   const rawMessages = splitMboxMessages(input.rawMbox)
-  for (const rawMessage of rawMessages) {
+  const parsedMessages = await Promise.all(rawMessages.map((rawMessage) => parseMboxMessage(rawMessage, sourceGrant)))
+  const importedAt = (input.importedAt ?? new Date()).toISOString()
+  const sourceFreshThrough = latestMessageDate(parsedMessages)
+  for (const parsedMessage of parsedMessages) {
     const result = await input.store.putRawMessage({
       resolved,
-      envelope: await envelopeForMboxMessage(rawMessage, sourceGrant),
-      rawMime: rawMessage,
-      receivedAt: input.importedAt,
+      envelope: parsedMessage.envelope,
+      rawMime: parsedMessage.rawMessage,
+      receivedAt: parsedMessage.messageDate ?? input.importedAt,
+      ingest: {
+        schemaVersion: 1,
+        kind: "mbox-import",
+        importedAt,
+        sourceFreshThrough,
+        attentionSuppressed: true,
+      },
+      classification: historicalImportClassification(resolved.defaultPlacement, sourceGrant),
     })
     messages.push(result.message)
     if (result.created) imported += 1
@@ -131,6 +170,7 @@ export async function importMboxToStore(input: MboxImportInput): Promise<MboxImp
     scanned: rawMessages.length,
     imported,
     duplicates,
+    sourceFreshThrough,
     messages,
   }
 }

@@ -115,6 +115,41 @@ describe("mailroom core", () => {
     })
     expect(result.accepted).toHaveLength(1)
     expect(result.rejectedRecipients).toEqual(["unknown@ouro.bot"])
+    expect(result.accepted[0].ingest).toEqual({ schemaVersion: 1, kind: "smtp" })
+
+    const nativeImport = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "ops@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+        remoteAddress: "mbox-import",
+      },
+      rawMime: Buffer.from([
+        "From: Ops <ops@example.com>",
+        "To: Slugger <slugger@ouro.bot>",
+        "Subject: Historical native notice",
+        "Message-ID: <native-import@example.com>",
+        "Date: Tue, 21 Apr 2026 09:00:00 -0700",
+        "",
+        "Historical notice.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T16:00:00.000Z"),
+      ingest: {
+        schemaVersion: 1,
+        kind: "mbox-import",
+        importedAt: "2026-04-22T20:00:00.000Z",
+        sourceFreshThrough: "2026-04-21T16:00:00.000Z",
+        attentionSuppressed: true,
+      },
+    })
+    expect(nativeImport.accepted[0].ingest).toEqual({
+      schemaVersion: 1,
+      kind: "mbox-import",
+      importedAt: "2026-04-22T20:00:00.000Z",
+      sourceFreshThrough: "2026-04-21T16:00:00.000Z",
+      attentionSuppressed: true,
+    })
 
     const duplicate = await ingestRawMailToStore({ registry, store, envelope, rawMime: sampleRawMail() })
     expect(duplicate.accepted[0].id).toBe(result.accepted[0].id)

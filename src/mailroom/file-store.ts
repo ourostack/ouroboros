@@ -10,6 +10,7 @@ import {
   type MailCompartmentKind,
   type MailDecisionRecord,
   type MailEnvelopeInput,
+  type MailIngestProvenance,
   type MailOutboundRecord,
   type MailPlacement,
   type MailroomRegistry,
@@ -56,6 +57,7 @@ export interface MailroomStore {
     envelope: MailEnvelopeInput
     rawMime: Buffer
     receivedAt?: Date
+    ingest?: MailIngestProvenance
     classification?: MailClassification
   }): Promise<{ created: boolean; message: StoredMailMessage }>
   getMessage(id: string): Promise<StoredMailMessage | null>
@@ -428,6 +430,7 @@ export async function ingestRawMailToStore(input: {
   envelope: MailEnvelopeInput
   rawMime: Buffer
   receivedAt?: Date
+  ingest?: MailIngestProvenance
   authentication?: import("./core").MailAuthenticationSummary
 }): Promise<{ accepted: StoredMailMessage[]; rejectedRecipients: string[] }> {
   const { resolveMailAddress } = await import("./core")
@@ -451,6 +454,7 @@ export async function ingestRawMailToStore(input: {
       envelope: input.envelope,
       rawMime: input.rawMime,
       receivedAt: input.receivedAt,
+      ...(input.ingest ? { ingest: input.ingest } : {}),
       classification,
     })
     accepted.push(result.message)

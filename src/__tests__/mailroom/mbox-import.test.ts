@@ -108,6 +108,61 @@ describe("mailroom mbox import", () => {
     expect(withoutFrom.messages[0].envelope.mailFrom).toBe("")
   })
 
+  it("records HEY archive freshness/provenance and keeps historical imports out of attention", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    registry.sourceGrants[0]!.defaultPlacement = "screener"
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const imported = await importMboxToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      rawMbox: Buffer.from([
+        "From older@example.com Mon Apr 01 08:00:00 2026",
+        "From: Older <older@example.com>",
+        "To: Ari <ari@mendelow.me>",
+        "Subject: Older exported message",
+        "Date: Wed, 01 Apr 2026 08:00:00 -0700",
+        "",
+        "Historical body one.",
+        "From newer@example.com Tue Apr 02 09:00:00 2026",
+        "From: Newer <newer@example.com>",
+        "To: Ari <ari@mendelow.me>",
+        "Subject: Newer exported message",
+        "Date: Thu, 02 Apr 2026 09:00:00 -0700",
+        "",
+        "Historical body two.",
+        "",
+      ].join("\n"), "utf-8"),
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      importedAt: new Date("2026-04-22T21:00:00.000Z"),
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 2,
+      imported: 2,
+      duplicates: 0,
+      sourceFreshThrough: "2026-04-02T16:00:00.000Z",
+    }))
+    expect(await store.listScreenerCandidates({ agentId: "slugger", status: "pending" })).toHaveLength(0)
+
+    const listed = await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey", limit: 10 })
+    const decrypted = decryptMessages(listed, keys)
+    expect(decrypted.map((message) => message.receivedAt).sort()).toEqual([
+      "2026-04-01T15:00:00.000Z",
+      "2026-04-02T16:00:00.000Z",
+    ])
+    expect(decrypted.every((message) => message.ingest.kind === "mbox-import")).toBe(true)
+    expect(decrypted.every((message) => message.ingest.importedAt === "2026-04-22T21:00:00.000Z")).toBe(true)
+    expect(decrypted.every((message) => message.ingest.sourceFreshThrough === "2026-04-02T16:00:00.000Z")).toBe(true)
+    expect(decrypted.every((message) => message.ingest.attentionSuppressed === true)).toBe(true)
+    expect(decrypted.every((message) => message.placement === "screener")).toBe(true)
+  })
+
   it("requires an unambiguous enabled source grant", async () => {
     const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
     const store = new FileMailroomStore({ rootDir: tempDir() })

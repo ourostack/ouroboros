@@ -2133,8 +2133,63 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("grant:")
     expect(result).toContain("scanned: 1")
     expect(result).toContain("imported: 1")
+    expect(result).toContain("source fresh through: 2026-04-20T19:00:00.000Z")
+    expect(result).toContain("archive imports are historical; they do not create Screener wakeups")
     expect(result).toContain("body reads remain explicit")
     expect(fs.readdirSync(path.join(mailStateDir, "messages")).some((name) => name.endsWith(".json"))).toBe(true)
+  })
+
+  it("reports unknown source freshness when an imported MBOX has no dated messages", async () => {
+    emitTestEvent("provider cli mail import mbox unknown freshness")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-unknown-freshness-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-unknown-freshness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-undated.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Undated archive note",
+      "Message-ID: <undated@example.com>",
+      "",
+      "This archive export did not preserve a Date header.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("scanned: 1")
+    expect(result).toContain("imported: 1")
+    expect(result).toContain("source fresh through: unknown")
+    expect(result).toContain("archive imports are historical; they do not create Screener wakeups")
   })
 
   it("explains Mail MBOX import setup failures before touching the store", async () => {
