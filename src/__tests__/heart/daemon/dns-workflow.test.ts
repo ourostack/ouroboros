@@ -51,13 +51,34 @@ interface DnsWorkflowModule {
       publickey: string
       privatekey: string
     }>
+    createRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; record: DnsRecord }) => Promise<{ id?: string }>
+    editRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string; record: DnsRecord }) => Promise<void>
+    deleteRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string }) => Promise<void>
   }
-  planDnsWorkflow: (input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[] }) => {
+  planDnsWorkflow: (input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; deleteExtraAllowedRecords?: boolean }) => {
     backup: { domain: string; records: DnsRecord[] }
-    changes: Array<{ action: "create" | "update" | "delete"; record: DnsRecord; reason: string }>
+    changes: Array<{ action: "create" | "update" | "delete"; record: DnsRecord; reason: string; currentRecord?: DnsRecord }>
     preservedRecords: DnsRecord[]
     certificateActions: Array<{ action: string; host: string; secretItem: string }>
   }
+  planDnsRollback: (input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; backupRecords: DnsRecord[] }) => {
+    backup: { domain: string; records: DnsRecord[] }
+    changes: Array<{ action: "create" | "update" | "delete"; record: DnsRecord; reason: string; currentRecord?: DnsRecord }>
+    preservedRecords: DnsRecord[]
+    certificateActions: Array<{ action: string; host: string; secretItem: string }>
+  }
+  applyDnsWorkflowPlan: (input: {
+    driver: {
+      createRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; record: DnsRecord }) => Promise<{ id?: string }>
+      editRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string; record: DnsRecord }) => Promise<void>
+      deleteRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string }) => Promise<void>
+    }
+    domain: string
+    secrets: DnsWorkflowSecrets
+    plan: {
+      changes: Array<{ action: "create" | "update" | "delete"; record: DnsRecord; reason: string; currentRecord?: DnsRecord }>
+    }
+  }) => Promise<Array<{ action: "create" | "update" | "delete"; record: DnsRecord; id?: string }>>
   redactDnsWorkflowArtifact: (input: unknown) => unknown
 }
 
@@ -149,6 +170,40 @@ describe("DNS workflow binding", () => {
     expect(reader.readNotes).not.toHaveBeenCalled()
   })
 
+  it("rejects malformed bindings before any provider or vault lookup", async () => {
+    const { loadDnsWorkflowBinding } = await loadDnsWorkflowModule()
+
+    expect(() => loadDnsWorkflowBinding(null)).toThrow("DNS workflow binding must be an object")
+    expect(() => loadDnsWorkflowBinding({ ...ouroBotBinding, workflow: "mail" })).toThrow("workflow to dns")
+    expect(() => loadDnsWorkflowBinding({ ...ouroBotBinding, driver: "dnsimple" })).toThrow("driver must be porkbun")
+    expect(() => loadDnsWorkflowBinding({ ...ouroBotBinding, resources: { records: [] } })).toThrow("resource allowlist")
+    expect(() => loadDnsWorkflowBinding({ ...ouroBotBinding, desired: {} })).toThrow("desired records")
+    expect(() => loadDnsWorkflowBinding({ ...ouroBotBinding, domain: "   " })).toThrow("domain is required")
+    expect(() => loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      resources: { records: [{ type: "SRV", name: "mx1" }] },
+    })).toThrow("resources.records[0].type")
+    expect(() => loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      desired: { records: [{ type: "A", name: "mx1", content: " " }] },
+    })).toThrow("desired.records[0].content")
+    expect(loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      desired: { records: [{ id: "desired-id", type: "A", name: "mx1", content: "20.10.114.197" }] },
+      certificate: undefined,
+    })).toMatchObject({
+      desired: { records: [{ id: "desired-id", type: "A", name: "mx1", content: "20.10.114.197" }] },
+    })
+    expect(loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      certificate: {
+        host: "mx1.ouro.bot",
+        source: "acme-dns-01",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    })).toMatchObject({ certificate: { source: "acme-dns-01" } })
+  })
+
   it("uses Porkbun read-only GET endpoints with header auth for ping, DNS retrieve, and SSL retrieve", async () => {
     const { createPorkbunDnsDriver } = await loadDnsWorkflowModule()
     const fetchImpl = vi.fn(async (url: string) => {
@@ -156,7 +211,14 @@ describe("DNS workflow binding", () => {
         return Response.json({ status: "SUCCESS", credentialsValid: true })
       }
       if (url.endsWith("/dns/retrieve/ouro.bot")) {
-        return Response.json({ status: "SUCCESS", records: currentRecords })
+        return Response.json({
+          status: "SUCCESS",
+          records: [
+            { id: "mx-old", type: "MX", name: "ouro.bot", content: "ouro-bot.mail.protection.outlook.com", ttl: "600", prio: "0" },
+            { id: "autodiscover", type: "CNAME", name: "autodiscover.ouro.bot", content: "autodiscover.outlook.com", ttl: 300, prio: null },
+            { type: "A", name: "www", content: "203.0.113.12", prio: "" },
+          ],
+        })
       }
       return Response.json({
         status: "SUCCESS",
@@ -169,7 +231,11 @@ describe("DNS workflow binding", () => {
     const secrets = { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" }
 
     await expect(driver.ping(secrets)).resolves.toEqual({ credentialsValid: true })
-    await expect(driver.retrieveRecords({ domain: "ouro.bot", secrets })).resolves.toEqual(currentRecords)
+    await expect(driver.retrieveRecords({ domain: "ouro.bot", secrets })).resolves.toEqual([
+      { id: "mx-old", type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com", ttl: 600, priority: 0 },
+      { id: "autodiscover", type: "CNAME", name: "autodiscover", content: "autodiscover.outlook.com", ttl: 300 },
+      { type: "A", name: "www", content: "203.0.113.12" },
+    ])
     await expect(driver.retrieveCertificate({ domain: "ouro.bot", secrets })).resolves.toMatchObject({
       certificatechain: expect.stringContaining("BEGIN CERTIFICATE"),
       privatekey: expect.stringContaining("BEGIN PRIVATE KEY"),
@@ -188,6 +254,53 @@ describe("DNS workflow binding", () => {
       expect(headerValue(requestInit.headers, "X-API-Key")).toBe("porkbun-api-key")
       expect(headerValue(requestInit.headers, "X-Secret-API-Key")).toBe("porkbun-secret-key")
     }
+  })
+
+  it("uses Porkbun mutation endpoints with redaction-friendly header auth and provider errors", async () => {
+    const { createPorkbunDnsDriver } = await loadDnsWorkflowModule()
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/dns/create/ouro.bot")) return Response.json({ status: "SUCCESS", id: "created-a" })
+      if (url.endsWith("/dns/create/no-id.bot")) return Response.json({ status: "SUCCESS" })
+      if (url.endsWith("/dns/edit/ouro.bot/mx-old")) return Response.json({ status: "SUCCESS" })
+      if (url.endsWith("/dns/delete/ouro.bot/stale")) return Response.json({ status: "SUCCESS" })
+      if (url.endsWith("/dns/retrieve/empty.bot")) return Response.json({ status: "SUCCESS" })
+      if (url.endsWith("/dns/retrieve/rate-limited.bot")) {
+        return new Response(JSON.stringify({ status: "ERROR", message: "rate limit exceeded" }), { status: 429 })
+      }
+      return new Response(JSON.stringify({ status: "ERROR" }), { status: 500 })
+    }) as unknown as typeof fetch
+    const driver = createPorkbunDnsDriver({ baseUrl: "https://api.test/json/v3/", fetchImpl })
+    const secrets = { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" }
+
+    await expect(driver.createRecord({ domain: "ouro.bot", secrets, record: { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10 } }))
+      .resolves.toEqual({ id: "created-a" })
+    await expect(driver.createRecord({ domain: "no-id.bot", secrets, record: { type: "A", name: "mx1", content: "20.10.114.197" } }))
+      .resolves.toEqual({})
+    await expect(driver.editRecord({ domain: "ouro.bot", secrets, id: "mx-old", record: { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10 } }))
+      .resolves.toBeUndefined()
+    await expect(driver.deleteRecord({ domain: "ouro.bot", secrets, id: "stale" }))
+      .resolves.toBeUndefined()
+    await expect(driver.retrieveRecords({ domain: "empty.bot", secrets }))
+      .resolves.toEqual([])
+    await expect(driver.retrieveRecords({ domain: "rate-limited.bot", secrets }))
+      .rejects.toThrow("rate limit exceeded")
+    await expect(driver.deleteRecord({ domain: "broken.bot", secrets, id: "stale" }))
+      .rejects.toThrow("Porkbun request failed with status 500")
+
+    const [createUrl, createInit] = vi.mocked(fetchImpl).mock.calls[0]
+    expect(createUrl).toBe("https://api.test/json/v3/dns/create/ouro.bot")
+    expect(createInit?.method).toBe("POST")
+    expect(headerValue(createInit?.headers, "X-API-Key")).toBe("porkbun-api-key")
+    expect(headerValue(createInit?.headers, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+    expect(JSON.parse(String(createInit?.body))).toEqual({
+      type: "MX",
+      name: "",
+      content: "mx1.ouro.bot",
+      ttl: 600,
+      prio: 10,
+    })
+    expect(String(createInit?.body)).not.toContain("porkbun-api-key")
+    expect(String(createInit?.body)).not.toContain("porkbun-secret-key")
   })
 
   it("plans backup, dry-run changes, preservation, rollback inputs, and allowlist refusal", async () => {
@@ -209,6 +322,18 @@ describe("DNS workflow binding", () => {
       { action: "retrieve-and-store", host: "mx1.ouro.bot", secretItem: "runtime/mail/certificates/mx1.ouro.bot" },
     ])
 
+    expect(planDnsWorkflow({
+      binding: {
+        ...ouroBotBinding,
+        desired: { records: [currentRecords[0]] },
+        certificate: undefined,
+      },
+      currentRecords: [currentRecords[0]],
+    })).toMatchObject({
+      changes: [],
+      certificateActions: [],
+    })
+
     expect(() => planDnsWorkflow({
       binding: {
         ...ouroBotBinding,
@@ -221,6 +346,85 @@ describe("DNS workflow binding", () => {
       },
       currentRecords,
     })).toThrow("outside DNS workflow allowlist")
+  })
+
+  it("plans and applies rollback changes only for allowlisted records", async () => {
+    const { applyDnsWorkflowPlan, planDnsRollback, planDnsWorkflow } = await loadDnsWorkflowModule()
+    const rollbackPlan = planDnsRollback({
+      binding: ouroBotBinding,
+      currentRecords: [
+        { id: "mx-new", type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+        { id: "mx1-a", type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+        { id: "dmarc", type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none", ttl: 600 },
+        { id: "www", type: "A", name: "www", content: "203.0.113.12", ttl: 600 },
+      ],
+      backupRecords: currentRecords,
+    })
+
+    expect(rollbackPlan.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "update", record: expect.objectContaining({ type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com" }) }),
+      expect.objectContaining({ action: "delete", record: expect.objectContaining({ type: "A", name: "mx1" }) }),
+      expect.objectContaining({ action: "delete", record: expect.objectContaining({ type: "TXT", name: "_dmarc" }) }),
+    ]))
+    expect(rollbackPlan.changes).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ record: expect.objectContaining({ name: "www" }) }),
+    ]))
+
+    const driver = {
+      createRecord: vi.fn(async () => ({ id: "created" })),
+      editRecord: vi.fn(async () => undefined),
+      deleteRecord: vi.fn(async () => undefined),
+    }
+    await expect(applyDnsWorkflowPlan({
+      driver,
+      domain: "ouro.bot",
+      secrets: { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" },
+      plan: rollbackPlan,
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "update", id: "mx-new" }),
+      expect.objectContaining({ action: "delete", id: "mx1-a" }),
+      expect.objectContaining({ action: "delete", id: "dmarc" }),
+    ]))
+    expect(driver.editRecord).toHaveBeenCalledWith(expect.objectContaining({ id: "mx-new" }))
+    expect(driver.deleteRecord).toHaveBeenCalledTimes(2)
+
+    await expect(applyDnsWorkflowPlan({
+      driver,
+      domain: "ouro.bot",
+      secrets: { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" },
+      plan: {
+        backup: { domain: "ouro.bot", records: [] },
+        changes: [{ action: "create", record: { type: "A", name: "mx1", content: "20.10.114.197" }, reason: "create without provider id" }],
+        preservedRecords: [],
+        certificateActions: [],
+      },
+    })).resolves.toEqual([
+      { action: "create", record: { type: "A", name: "mx1", content: "20.10.114.197" }, id: "created" },
+    ])
+    driver.createRecord.mockResolvedValueOnce({})
+    await expect(applyDnsWorkflowPlan({
+      driver,
+      domain: "ouro.bot",
+      secrets: { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" },
+      plan: {
+        backup: { domain: "ouro.bot", records: [] },
+        changes: [{ action: "create", record: { type: "A", name: "mx1", content: "20.10.114.197" }, reason: "create without provider id" }],
+        preservedRecords: [],
+        certificateActions: [],
+      },
+    })).resolves.toEqual([
+      { action: "create", record: { type: "A", name: "mx1", content: "20.10.114.197" } },
+    ])
+
+    await expect(applyDnsWorkflowPlan({
+      driver,
+      domain: "ouro.bot",
+      secrets: { apiKey: "porkbun-api-key", secretApiKey: "porkbun-secret-key" },
+      plan: {
+        ...planDnsWorkflow({ binding: ouroBotBinding, currentRecords: [] }),
+        changes: [{ action: "update", record: { type: "MX", name: "@", content: "mx1.ouro.bot" }, reason: "missing id" }],
+      },
+    })).rejects.toThrow("without provider record id")
   })
 
   it("redacts secrets and certificate private keys from workflow artifacts", async () => {
@@ -248,5 +452,10 @@ describe("DNS workflow binding", () => {
     expect(serialized).not.toContain("porkbun-secret-key")
     expect(serialized).not.toContain("private-key")
     expect(serialized).not.toContain("BEGIN PRIVATE KEY")
+    expect(redactDnsWorkflowArtifact(["safe", "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"]))
+      .toEqual(["safe", "[redacted]"])
+    expect(redactDnsWorkflowArtifact({ pem: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----" }))
+      .toEqual({ pem: "[redacted]" })
+    expect(redactDnsWorkflowArtifact("plain text")).toBe("plain text")
   })
 })

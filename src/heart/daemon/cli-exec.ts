@@ -2756,9 +2756,10 @@ async function executeDnsWorkflow(
   const reader = {
     readSecretField: async (item: string, field: string): Promise<string> => {
       const raw = await store.getRawSecret(item, "password")
-      const payload = JSON.parse(raw) as { secretFields?: Record<string, unknown> }
-      const value = payload.secretFields?.[field]
-      if (typeof value !== "string" || value.trim() === "") {
+      const payload = JSON.parse(raw) as { secretFields?: Record<string, unknown> } & Record<string, unknown>
+      const value = [payload.secretFields?.[field], payload[field]]
+        .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "")
+      if (!value) {
         throw new Error(`vault item ${item} is missing required secret field ${field}`)
       }
       return value
@@ -2769,12 +2770,12 @@ async function executeDnsWorkflow(
   const currentRecords = await driver.retrieveRecords({ domain: binding.domain, secrets })
   let plan: ReturnType<typeof workflow.planDnsWorkflow>
   if (command.action === "rollback") {
-    if (!command.backupPath) throw new Error("dns rollback requires --backup <path>")
+    const backupPath = command.backupPath as string
     plan = workflow.planDnsRollback({
       binding,
       currentRecords,
       backupRecords: extractDnsBackupRecords(
-        JSON.parse(fs.readFileSync(resolveWorkflowFilePath(command.backupPath, deps), "utf-8")),
+        JSON.parse(fs.readFileSync(resolveWorkflowFilePath(backupPath, deps), "utf-8")),
       ),
     })
   } else {

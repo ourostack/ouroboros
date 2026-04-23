@@ -1057,6 +1057,20 @@ describe("provider CLI command parsing", () => {
 
     expect(() => parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath]))
       .toThrow("dns apply requires --yes after a reviewed dry-run")
+    expect(() => parseOuroCommand(["dns", "list", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("Usage: ouro dns backup|plan|apply|verify|rollback")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger"]))
+      .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding"]))
+      .toThrow("dns --binding must be a non-empty path without control characters")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", " \t"]))
+      .toThrow("dns --binding must be a non-empty path without control characters")
+    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("dns rollback requires --backup <path>")
+    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath, "--backup", "slugger/tasks/dns-backup.json"]))
+      .toThrow("dns rollback requires --yes after choosing a backup")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--bad"]))
+      .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
     expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--credential-item", "ops/registrars/porkbun/accounts/ari@mendelow.me"]))
       .toThrow("credential item belongs in the DNS workflow binding")
   })
@@ -4290,6 +4304,253 @@ describe("provider CLI command execution", () => {
     )
     expect(serpentStatus).toContain("SerpentGuide has no persistent credential vault")
     expect(serpentStatus).toContain("owning agent vault")
+  })
+
+  it("dns workflow plan resolves a binding-backed vault item without leaking secrets", async () => {
+    emitTestEvent("provider cli dns workflow plan")
+    const bundlesRoot = makeTempDir("provider-cli-dns-plan-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-plan-home")
+    const repoRoot = makeTempDir("provider-cli-dns-plan-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "dns-plan.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }] },
+      desired: {
+        records: [
+          { type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      expect(init?.method).toBe("GET")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        records: [
+          { id: "mx-old", type: "MX", name: "ouro.bot", content: "ouro-bot.mail.protection.outlook.com", prio: "0", ttl: "600" },
+        ],
+      })
+    })
+
+    const result = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--output", "artifacts/dns-plan.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+
+    expect(result).toContain("dns plan for ouro.bot")
+    expect(result).toContain("credential item: vault:Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me")
+    expect(result).toContain("changes: 2")
+    expect(result).toContain("secret values were not printed")
+    const artifact = fs.readFileSync(outputPath, "utf-8")
+    expect(artifact).toContain("mx1.ouro.bot")
+    expect(artifact).not.toContain("porkbun-api-key")
+    expect(artifact).not.toContain("porkbun-secret-key")
+
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: { apiKey: "porkbun-api-key" },
+    }))
+    await expect(runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("missing required secret field secretApiKey")
+
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      schemaVersion: 1,
+      kind: "ops-credential/porkbun",
+      account: "ari@mendelow.me",
+      apiKey: "legacy-porkbun-api-key",
+      secretApiKey: "legacy-porkbun-secret-key",
+    }))
+    fetchMock.mockClear()
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      expect(fetchHeader(init, "X-API-Key")).toBe("legacy-porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("legacy-porkbun-secret-key")
+      return mockJsonResponse({ status: "SUCCESS", records: [] })
+    })
+    const legacyResult = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+    expect(legacyResult).toContain("dns plan for ouro.bot")
+  })
+
+  it("dns workflow plan supports absolute paths and current-directory relative paths", async () => {
+    emitTestEvent("provider cli dns workflow path resolution")
+    const bundlesRoot = makeTempDir("provider-cli-dns-path-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-path-home")
+    const repoRoot = makeTempDir("provider-cli-dns-path-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "absolute-plan.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "MX", name: "@" }] },
+      desired: {
+        records: [
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        records: [{ id: "mx-old", type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 }],
+      })
+    })
+
+    const absoluteResult = await runOuroCli(
+      ["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--output", outputPath],
+      makeCliDeps(homeDir, bundlesRoot),
+    )
+    expect(absoluteResult).toContain("changes: 0")
+    expect(fs.readFileSync(outputPath, "utf-8")).not.toContain("porkbun-secret-key")
+
+    const previousCwd = process.cwd()
+    try {
+      process.chdir(repoRoot)
+      const relativeResult = await runOuroCli(
+        ["dns", "verify", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+        makeCliDeps(homeDir, bundlesRoot),
+      )
+      expect(relativeResult).toContain("dns verify for ouro.bot")
+    } finally {
+      process.chdir(previousCwd)
+    }
+  })
+
+  it("dns workflow apply and rollback mutate only planned allowlisted records", async () => {
+    emitTestEvent("provider cli dns workflow apply rollback")
+    const bundlesRoot = makeTempDir("provider-cli-dns-apply-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-apply-home")
+    const repoRoot = makeTempDir("provider-cli-dns-apply-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const backupPath = path.join(repoRoot, "artifacts", "backup.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "A", name: "mx1" }, { type: "MX", name: "@" }, { type: "TXT", name: "_dmarc" }] },
+      desired: {
+        records: [
+          { type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+          { type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+          { type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none", ttl: 600 },
+        ],
+      },
+    }, null, 2)}\n`, "utf-8")
+    fs.writeFileSync(backupPath, `${JSON.stringify({
+      plan: {
+        backup: {
+          records: [
+            { id: "mx-old", type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com", priority: 0, ttl: 600 },
+          ],
+        },
+      },
+    })}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    let mode: "apply" | "rollback" = "apply"
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = fetchRequestUrl(input)
+      if (url.endsWith("/dns/retrieve/ouro.bot")) {
+        return mockJsonResponse({
+          status: "SUCCESS",
+          records: mode === "apply"
+            ? [{ id: "mx-old", type: "MX", name: "@", content: "ouro-bot.mail.protection.outlook.com", priority: 0, ttl: 600 }]
+            : [
+                { id: "mx1-a", type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+                { id: "mx-new", type: "MX", name: "@", content: "mx1.ouro.bot", priority: 10, ttl: 600 },
+                { id: "dmarc", type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none", ttl: 600 },
+                { id: "www", type: "A", name: "www", content: "203.0.113.12", ttl: 600 },
+              ],
+        })
+      }
+      expect(init?.method).toBe("POST")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      expect(String(init?.body ?? "")).not.toContain("porkbun-api-key")
+      return mockJsonResponse(url.includes("/dns/create/") ? { status: "SUCCESS", id: "created" } : { status: "SUCCESS" })
+    })
+    const deps = makeCliDeps(homeDir, bundlesRoot, {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      getRepoCwd: () => repoRoot,
+    })
+
+    const applied = await runOuroCli(
+      ["dns", "apply", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--yes"],
+      deps,
+    )
+    expect(applied).toContain("applied: 3")
+    expect(fetchMock.mock.calls.map(([input]) => fetchRequestUrl(input))).toEqual([
+      "https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/create/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/edit/ouro.bot/mx-old",
+      "https://api.porkbun.com/api/json/v3/dns/create/ouro.bot",
+    ])
+
+    mode = "rollback"
+    fetchMock.mockClear()
+    const rolledBack = await runOuroCli(
+      ["dns", "rollback", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--backup", "artifacts/backup.json", "--yes"],
+      deps,
+    )
+    expect(rolledBack).toContain("applied: 3")
+    expect(fetchMock.mock.calls.map(([input]) => fetchRequestUrl(input))).toEqual([
+      "https://api.porkbun.com/api/json/v3/dns/retrieve/ouro.bot",
+      "https://api.porkbun.com/api/json/v3/dns/edit/ouro.bot/mx-new",
+      "https://api.porkbun.com/api/json/v3/dns/delete/ouro.bot/mx1-a",
+      "https://api.porkbun.com/api/json/v3/dns/delete/ouro.bot/dmarc",
+    ])
+
+    fs.writeFileSync(backupPath, "{\"not\":\"a backup\"}\n", "utf-8")
+    await expect(runOuroCli(
+      ["dns", "rollback", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--backup", "artifacts/backup.json", "--yes"],
+      deps,
+    )).rejects.toThrow("dns rollback backup does not contain records")
   })
 
   it("connects Perplexity through a discoverable hidden-prompt flow", async () => {

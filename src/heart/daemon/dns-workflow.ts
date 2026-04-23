@@ -1,8 +1,10 @@
+import { emitNervesEvent } from "../../nerves/runtime"
+
 export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "TXT"
 
 export interface DnsRecord {
   id?: string
-  type: DnsRecordType
+  type: string
   name: string
   content: string
   ttl?: number
@@ -190,23 +192,102 @@ function porkbunRecordBody(record: DnsRecord): Record<string, string | number> {
   }
 }
 
+function normalizePorkbunRecordName(domain: string, name: string): string {
+  const suffix = `.${domain}`
+  if (name === domain) return "@"
+  if (name.endsWith(suffix)) return name.slice(0, -suffix.length)
+  return name
+}
+
+function normalizePorkbunNumber(value: unknown): number | undefined {
+  const parsed = value === null || value === undefined || value === "" ? Number.NaN : Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function normalizePorkbunRecord(domain: string, input: unknown): DnsRecord {
+  const value = input as Record<string, unknown>
+  const ttl = normalizePorkbunNumber(value.ttl)
+  const priority = normalizePorkbunNumber(value.priority ?? value.prio)
+  return {
+    ...(typeof value.id === "string" ? { id: value.id } : {}),
+    type: requireString(value.type, "provider record type"),
+    name: normalizePorkbunRecordName(domain, requireString(value.name, "provider record name")),
+    content: requireString(value.content, "provider record content"),
+    ...(ttl === undefined ? {} : { ttl }),
+    ...(priority === undefined ? {} : { priority }),
+  }
+}
+
+async function emitPorkbunRequest<T>(input: {
+  method: "GET" | "POST"
+  path: string
+  execute: () => Promise<T>
+}): Promise<T> {
+  emitNervesEvent({
+    event: "daemon.dns_provider_request_start",
+    component: "daemon",
+    message: `DNS provider ${input.method} ${input.path} started`,
+    meta: {
+      driver: "porkbun",
+      method: input.method,
+      path: input.path,
+    },
+  })
+  try {
+    const result = await input.execute()
+    emitNervesEvent({
+      event: "daemon.dns_provider_request_end",
+      component: "daemon",
+      message: `DNS provider ${input.method} ${input.path} completed`,
+      meta: {
+        driver: "porkbun",
+        method: input.method,
+        path: input.path,
+      },
+    })
+    return result
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      event: "daemon.dns_provider_request_error",
+      component: "daemon",
+      message: `DNS provider ${input.method} ${input.path} failed`,
+      meta: {
+        driver: "porkbun",
+        method: input.method,
+        path: input.path,
+        error: String(error),
+      },
+    })
+    throw error
+  }
+}
+
 export function createPorkbunDnsDriver(options: { baseUrl?: string; fetchImpl: typeof fetch }): PorkbunDnsDriver {
   const baseUrl = (options.baseUrl ?? "https://api.porkbun.com/api/json/v3").replace(/\/+$/, "")
   const readOnly = async (path: string, secrets: DnsWorkflowSecrets): Promise<PorkbunResponse> => {
-    return readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
+    return emitPorkbunRequest({
       method: "GET",
-      headers: porkbunHeaders(secrets),
-    }))
+      path,
+      execute: async () => readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
+        method: "GET",
+        headers: porkbunHeaders(secrets),
+      })),
+    })
   }
   const mutate = async (path: string, secrets: DnsWorkflowSecrets, body: Record<string, unknown> = {}): Promise<PorkbunResponse> => {
-    return readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
+    return emitPorkbunRequest({
       method: "POST",
-      headers: {
-        ...porkbunHeaders(secrets),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    }))
+      path,
+      execute: async () => readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: {
+          ...porkbunHeaders(secrets),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      })),
+    })
   }
   return {
     async ping(secrets) {
@@ -215,7 +296,7 @@ export function createPorkbunDnsDriver(options: { baseUrl?: string; fetchImpl: t
     },
     async retrieveRecords({ domain, secrets }) {
       const payload = await readOnly(`/dns/retrieve/${encodeURIComponent(domain)}`, secrets)
-      return payload.records ?? []
+      return (payload.records ?? []).map((record) => normalizePorkbunRecord(domain, record))
     },
     async retrieveCertificate({ domain, secrets }) {
       const payload = await readOnly(`/ssl/retrieve/${encodeURIComponent(domain)}`, secrets)
