@@ -281,6 +281,60 @@ describe("mail sense runtime", () => {
     await app.stop()
   })
 
+  it("keeps hosted Blob mail sense alive when Blob attention scanning fails", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const startIngress = vi.fn()
+    const store = {
+      listScreenerCandidates: async () => {
+        throw new Error("DefaultAzureCredential authentication failed")
+      },
+    } as unknown as MailroomStore
+
+    const app = await startMailSenseApp({
+      agentName: "slugger",
+      now: () => 1_777_000_000_000,
+      refreshRuntime: async () => ({
+        ok: true,
+        itemPath: "vault:slugger:runtime/config",
+        config: {},
+        revision: "test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      resolveReader: () => ({
+        ok: true,
+        agentName: "slugger",
+        config: {
+          mailboxAddress: "slugger@ouro.bot",
+          azureAccountUrl: "https://stourotest.blob.core.windows.net",
+          azureContainer: "mailroom",
+          privateKeys: { mail_slugger_native: "secret" },
+          attentionIntervalMs: 5_000,
+        },
+        store,
+        storeKind: "azure-blob",
+        storeLabel: "https://stourotest.blob.core.windows.net/mailroom",
+      }),
+      startIngress,
+      setIntervalFn: () => "timer",
+      clearIntervalFn: vi.fn(),
+    })
+
+    expect(startIngress).not.toHaveBeenCalled()
+    expect(app.smtpPort).toBeNull()
+    expect(app.httpPort).toBeNull()
+    expect(fs.existsSync(app.runtimeStatePath)).toBe(false)
+
+    await app.stop()
+    const runtime = readJson<{ status: string; storeKind: string; lastQueuedCount: number; lastScanAt: string | null }>(app.runtimeStatePath)
+    expect(runtime).toEqual(expect.objectContaining({
+      status: "stopped",
+      storeKind: "azure-blob",
+      lastQueuedCount: 0,
+      lastScanAt: null,
+    }))
+  })
+
   it("supports servers without address helpers and scans on the interval callback", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot

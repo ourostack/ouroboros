@@ -1516,6 +1516,57 @@ describe("provider CLI command execution", () => {
     expect(mailroom.registryRevision).toBe("1:1:778")
   })
 
+  it("ignores stale local registry paths during hosted Mail repair", async () => {
+    emitTestEvent("provider cli hosted mail control ignores stale local registry")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-stale-local-registry-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-stale-local-registry-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, "{not-json", "utf-8")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mailboxAddress: "stale-local@ouro.bot",
+      registryPath,
+      storePath: mailStateDir,
+      privateKeys: {
+        mail_slugger_old: "old-key",
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse())
+    })
+
+    await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.mailboxAddress).toBe("slugger@ouro.bot")
+    expect(mailroom.registryPath).toBeUndefined()
+    expect(mailroom.storePath).toBeUndefined()
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_old: "old-key",
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    })
+  })
+
   it("reports hosted registry and vault drift when Mail Control no longer has a missing one-time key", async () => {
     emitTestEvent("provider cli hosted mail control drift")
     const bundlesRoot = makeTempDir("provider-cli-hosted-drift-bundles")
@@ -1615,6 +1666,37 @@ describe("provider CLI command execution", () => {
       detectMode: () => "production",
     }))).rejects.toThrow("requires url and token")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("stops hosted Mail setup before network calls when the runtime vault is locked", async () => {
+    emitTestEvent("provider cli hosted mail control locked vault")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-locked-vault-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-locked-vault-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const originalGet = mockVaultDeps.rawSecrets.get.bind(mockVaultDeps.rawSecrets)
+    mockVaultDeps.rawSecrets.get = ((key: string) => {
+      if (key === "Slugger:runtime/config") throw new Error("vault locked for runtime/config")
+      return originalGet(key)
+    }) as typeof mockVaultDeps.rawSecrets.get
+
+    try {
+      await expect(runOuroCli([
+        "connect",
+        "mail",
+        "--agent",
+        "Slugger",
+        "--owner-email",
+        "ari@mendelow.me",
+        "--source",
+        "hey",
+      ], makeCliDeps(homeDir, bundlesRoot, {
+        now: () => Date.parse(NOW),
+        detectMode: () => "production",
+      }))).rejects.toThrow("vault locked for runtime/config")
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
+    }
   })
 
   it("uses the hosted Mail Control admin token fallback for native-only setup", async () => {
