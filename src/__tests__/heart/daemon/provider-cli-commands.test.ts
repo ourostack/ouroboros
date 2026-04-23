@@ -123,6 +123,7 @@ import {
   writeProviderState,
   type ProviderState,
 } from "../../../heart/provider-state"
+import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
 
@@ -2588,6 +2589,13 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
 
     const backfillMessageIndexes = vi.fn(async () => 16616)
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill",
+      updatedAt: NOW,
+    })
     const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
       ok: true,
       agentName: "Slugger",
@@ -2612,8 +2620,10 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("Backfilled hosted mail indexes for Slugger")
     expect(result).toContain(`store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
     expect(result).toContain("indexed: 16616")
+    expect(refreshSpy).toHaveBeenCalledWith("Slugger", { preserveCachedOnFailure: true })
     expect(backfillMessageIndexes).toHaveBeenCalledWith("Slugger")
 
+    refreshSpy.mockRestore()
     readerSpy.mockRestore()
   })
 
@@ -2623,6 +2633,13 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-mail-backfill-local-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_local",
+      updatedAt: NOW,
+    })
     const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
       ok: true,
       agentName: "Slugger",
@@ -2646,7 +2663,33 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("Hosted mail index backfill not needed for Slugger")
     expect(result).toContain("local file Mailroom store")
 
+    refreshSpy.mockRestore()
     readerSpy.mockRestore()
+  })
+
+  it("surfaces runtime-config refresh failures during hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill runtime refresh failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-runtime-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-runtime-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:Slugger:runtime/config",
+      error: "no runtime credentials stored at vault:Slugger:runtime/config",
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow(
+      "cannot read Mailroom config from vault:Slugger:runtime/config: no runtime credentials stored at vault:Slugger:runtime/config",
+    )
+
+    refreshSpy.mockRestore()
   })
 
   it("surfaces Mailroom reader and repair-shape failures during hosted index backfill", async () => {
@@ -2655,6 +2698,13 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-mail-backfill-failure-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_failure",
+      updatedAt: NOW,
+    })
     const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader")
     readerSpy.mockReturnValueOnce({
       ok: false,
@@ -2689,6 +2739,7 @@ describe("provider CLI command execution", () => {
       "Slugger",
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("does not expose index backfill")
 
+    refreshSpy.mockRestore()
     readerSpy.mockRestore()
   })
 

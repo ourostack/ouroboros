@@ -4151,6 +4151,11 @@ async function executeMailBackfillIndexes(
   const progress = createHumanCommandProgress(deps, "mail index repair")
   try {
     progress.startPhase("resolving Mailroom store")
+    const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
+    if (!runtime.ok) {
+      progress.end()
+      throw new Error(`cannot read Mailroom config from ${runtime.itemPath}: ${runtime.error}`)
+    }
     const resolved = resolveMailroomReader(command.agent)
     if (!resolved.ok) {
       progress.end()

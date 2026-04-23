@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.478",
+      "changes": [
+        "`ouro mail backfill-indexes` now refreshes vault runtime credentials before resolving the hosted Mailroom reader, so the one-shot index repair works in a fresh CLI process instead of falsely reporting `runtime/config` missing.",
+        "Backfill CLI coverage now locks both the runtime-refresh path and the real failure shape, preventing future hosted-mail repair releases from depending on warmed in-process config caches.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper stay version-synced for the hosted mail index-repair follow-up."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.477",
       "changes": [
         "Hosted Mailroom reads now use per-agent message index blobs, so MCP mail tools and Outlook stop crawling the entire hosted mailbox just to load recent mail.",
