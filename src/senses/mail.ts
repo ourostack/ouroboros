@@ -116,23 +116,29 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
   if (!resolved.ok) {
     throw new Error(resolved.error)
   }
-  if (!resolved.config.registryPath) {
+  const hostedReaderOnly = resolved.storeKind === "azure-blob" && !resolved.config.registryPath
+  if (!resolved.config.registryPath && !hostedReaderOnly) {
     throw new Error(`missing mailroom.registryPath for ${options.agentName}; agent-runnable repair: 'ouro connect mail --agent ${options.agentName}'`)
   }
 
-  const registry = readRegistry(resolved.config.registryPath)
   const host = resolved.config.host ?? "127.0.0.1"
-  const ingress = (options.startIngress ?? startMailroomIngress)({
-    registry,
-    store: resolved.store,
-    smtpPort: validPort(resolved.config.smtpPort),
-    httpPort: validPort(resolved.config.httpPort),
-    host,
-  })
-  await Promise.all([
-    waitForListening(ingress.smtp),
-    waitForListening(ingress.health),
-  ])
+  const ingress = hostedReaderOnly
+    ? null
+    : (options.startIngress ?? startMailroomIngress)({
+        registry: readRegistry(resolved.config.registryPath!),
+        store: resolved.store,
+        smtpPort: validPort(resolved.config.smtpPort),
+        httpPort: validPort(resolved.config.httpPort),
+        host,
+      })
+  if (ingress) {
+    await Promise.all([
+      waitForListening(ingress.smtp),
+      waitForListening(ingress.health),
+    ])
+  }
+  const activeSmtpPort = () => ingress ? serverPort(ingress.smtp) : null
+  const activeHttpPort = () => ingress ? serverPort(ingress.health) : null
   const runtimePath = runtimeStatePath(options.agentName)
   const attentionPath = attentionStatePath(options.agentName)
   let lastScanAt: string | null = null
@@ -155,8 +161,8 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
         agentName: options.agentName,
         status: "running",
         mailboxAddress: resolved.config.mailboxAddress,
-        smtpPort: serverPort(ingress.smtp),
-        httpPort: serverPort(ingress.health),
+        smtpPort: activeSmtpPort(),
+        httpPort: activeHttpPort(),
         host,
         storeKind: resolved.storeKind,
         storeLabel: resolved.storeLabel,
@@ -188,8 +194,8 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
     meta: {
       agentName: options.agentName,
       mailboxAddress: resolved.config.mailboxAddress,
-      smtpPort: serverPort(ingress.smtp),
-      httpPort: serverPort(ingress.health),
+      smtpPort: activeSmtpPort(),
+      httpPort: activeHttpPort(),
       intervalMs,
     },
   })
@@ -197,21 +203,23 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
   return {
     runtimeStatePath: runtimePath,
     attentionStatePath: attentionPath,
-    smtpPort: serverPort(ingress.smtp),
-    httpPort: serverPort(ingress.health),
+    smtpPort: activeSmtpPort(),
+    httpPort: activeHttpPort(),
     async stop() {
       ;(options.clearIntervalFn ?? ((activeTimer) => clearInterval(activeTimer as NodeJS.Timeout)))(timer)
-      await Promise.all([
-        closeServer(ingress.smtp),
-        closeServer(ingress.health),
-      ])
+      if (ingress) {
+        await Promise.all([
+          closeServer(ingress.smtp),
+          closeServer(ingress.health),
+        ])
+      }
       writeRuntimeState(runtimePath, {
         schemaVersion: 1,
         agentName: options.agentName,
         status: "stopped",
         mailboxAddress: resolved.config.mailboxAddress,
-        smtpPort: serverPort(ingress.smtp),
-        httpPort: serverPort(ingress.health),
+        smtpPort: activeSmtpPort(),
+        httpPort: activeHttpPort(),
         host,
         storeKind: resolved.storeKind,
         storeLabel: resolved.storeLabel,

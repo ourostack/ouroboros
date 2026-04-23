@@ -1560,6 +1560,308 @@ describe("provider CLI command execution", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it("fails hosted Mail setup before network calls when the control token is missing", async () => {
+    emitTestEvent("provider cli hosted mail control missing token")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-token-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-token-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+        mailControl: {
+          url: HOSTED_MAIL_CONTROL_URL,
+        },
+      },
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("requires url and token")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("fails hosted Mail setup before network calls when the Mail Control config is missing", async () => {
+    emitTestEvent("provider cli hosted mail control missing config")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-config-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-config-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+      },
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("requires url and token")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("uses the hosted Mail Control admin token fallback for native-only setup", async () => {
+    emitTestEvent("provider cli hosted mail control admin token")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-admin-token-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-admin-token-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeRuntimeConfig("Slugger", {
+      workSubstrate: {
+        mode: "hosted",
+        mailControl: {
+          url: `${HOSTED_MAIL_CONTROL_URL}///`,
+          adminToken: HOSTED_MAIL_CONTROL_TOKEN,
+        },
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+      })
+      return mockJsonResponse({
+        ok: true,
+        generatedPrivateKeys: {
+          mail_slugger_native: HOSTED_NATIVE_KEY,
+        },
+        mailbox: {
+          keyId: "mail_slugger_native",
+          canonicalAddress: "slugger@ouro.bot",
+        },
+        publicRegistry: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+          blob: "registry/mailroom.json",
+          domain: "ouro.bot",
+          revision: "1:0:601",
+        },
+        blobStore: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+        },
+      })
+    })
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(readRuntimeSecret("Slugger").config.mailroom).toEqual(expect.objectContaining({
+      mode: "hosted",
+      sourceAlias: null,
+      registryRevision: "1:0:601",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    }))
+  })
+
+  it("surfaces hosted Mail Control outages with actor-runnable repair context", async () => {
+    emitTestEvent("provider cli hosted mail control outage")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-outage-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-outage-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: false,
+      error: "registry offline",
+    }, {
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("hosted Mail Control ensure failed (503): registry offline")
+  })
+
+  it("uses Mail Control status text when hosted errors omit a response body reason", async () => {
+    emitTestEvent("provider cli hosted mail control status text")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-status-text-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-status-text-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({ ok: false }, {
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("hosted Mail Control ensure failed (502): Bad Gateway")
+  })
+
+  it("rejects malformed hosted Mail Control responses before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control malformed")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-malformed-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-malformed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: true,
+      mailboxAddress: "slugger@ouro.bot",
+      generatedPrivateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+      mailbox: {
+        keyId: "mail_slugger_native",
+        canonicalAddress: "slugger@ouro.bot",
+      },
+    }))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("publicRegistry")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("rejects hosted Mail Control responses missing required Blob text before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control missing blob text")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-blob-text-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-blob-text-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse(hostedEnsureResponse({
+      blobStore: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      },
+    })))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("blobStore.container")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("accepts native-only hosted repairs from public mailbox records when no new key map is returned", async () => {
+    emitTestEvent("provider cli hosted mail control native-only repair")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-native-repair-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-native-repair-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    })
+    fetchMock.mockResolvedValueOnce(mockJsonResponse({
+      ok: true,
+      addedMailbox: false,
+      addedSourceGrant: false,
+      mailbox: {
+        keyId: "mail_slugger_native",
+        canonicalAddress: "slugger@ouro.bot",
+      },
+      publicRegistry: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        container: "mailroom",
+        blob: "registry/mailroom.json",
+        domain: "ouro.bot",
+        revision: "1:0:600",
+      },
+      blobStore: {
+        kind: "azure-blob",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        container: "mailroom",
+      },
+    }))
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(result).toContain("mailbox: slugger@ouro.bot")
+    expect(result).not.toContain("delegated alias:")
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom).toEqual(expect.objectContaining({
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: null,
+      registryRevision: "1:0:600",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    }))
+  })
+
   it("ensures the agent work substrate account through one command", async () => {
     emitTestEvent("provider cli account ensure")
     const bundlesRoot = makeTempDir("provider-cli-account-ensure-bundles")

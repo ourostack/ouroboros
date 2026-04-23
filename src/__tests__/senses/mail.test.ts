@@ -213,6 +213,74 @@ describe("mail sense runtime", () => {
     })).rejects.toThrow("missing mailroom.registryPath")
   })
 
+  it("scans hosted Blob mail without starting local SMTP ingress", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const startIngress = vi.fn()
+    const store = {
+      listScreenerCandidates: async () => [{
+        schemaVersion: 1,
+        id: "candidate_hosted",
+        agentId: "slugger",
+        mailboxId: "mailbox_slugger",
+        messageId: "mail_hosted",
+        senderEmail: "newperson@example.com",
+        senderDisplay: "New Person",
+        recipient: "slugger@ouro.bot",
+        placement: "screener",
+        status: "pending",
+        trustReason: "native agent mailbox default screener",
+        firstSeenAt: "2026-04-22T20:00:00.000Z",
+        lastSeenAt: "2026-04-22T20:00:00.000Z",
+        messageCount: 1,
+      }],
+    } as unknown as MailroomStore
+
+    const app = await startMailSenseApp({
+      agentName: "slugger",
+      now: () => 1_777_000_000_000,
+      refreshRuntime: async () => ({
+        ok: true,
+        itemPath: "vault:slugger:runtime/config",
+        config: {},
+        revision: "test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      resolveReader: () => ({
+        ok: true,
+        agentName: "slugger",
+        config: {
+          mailboxAddress: "slugger@ouro.bot",
+          azureAccountUrl: "https://stourotest.blob.core.windows.net",
+          azureContainer: "mailroom",
+          privateKeys: { mail_slugger_native: "secret" },
+          attentionIntervalMs: 5_000,
+        },
+        store,
+        storeKind: "azure-blob",
+        storeLabel: "https://stourotest.blob.core.windows.net/mailroom",
+      }),
+      startIngress,
+      setIntervalFn: () => "timer",
+      clearIntervalFn: vi.fn(),
+    })
+
+    expect(startIngress).not.toHaveBeenCalled()
+    expect(app.smtpPort).toBeNull()
+    expect(app.httpPort).toBeNull()
+    const runtime = readJson<{ status: string; storeKind: string; storeLabel: string; lastQueuedCount: number }>(app.runtimeStatePath)
+    expect(runtime).toEqual(expect.objectContaining({
+      status: "running",
+      storeKind: "azure-blob",
+      storeLabel: "https://stourotest.blob.core.windows.net/mailroom",
+      lastQueuedCount: 1,
+    }))
+    expect(pendingBodies(agentRoot)[0]).toContain("newperson@example.com")
+
+    await app.stop()
+  })
+
   it("supports servers without address helpers and scans on the interval callback", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
