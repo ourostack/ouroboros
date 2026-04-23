@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.479",
+      "changes": [
+        "Hosted Outlook mailbox reads now stay on the visible recent slice instead of requesting 500 full hosted messages, so Slugger's live mailbox can load again after the large HEY archive import.",
+        "Hosted Blob mail reads and index backfills now use bounded fan-out plus per-blob timeouts, which keeps large Azure Blob sweeps from hanging forever when one request stalls.",
+        "Ouro Outlook now treats missing old private mail keys as recovery state instead of a full mailbox outage: readable mail still renders, undecryptable counts surface in recovery, and the wrapper stays version-synced for the hosted mail stability release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.478",
       "changes": [
         "`ouro mail backfill-indexes` now refreshes vault runtime credentials before resolving the hosted Mailroom reader, so the one-shot index repair works in a fresh CLI process instead of falsely reporting `runtime/config` missing.",

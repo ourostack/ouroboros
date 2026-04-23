@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { decryptMessages, type MailAccessLogEntry } from "../../../mailroom/file-store"
 import { resolveMailroomReader } from "../../../mailroom/reader"
-import { describeMailProvenance, type DecryptedMailMessage } from "../../../mailroom/core"
+import { describeMailProvenance, type DecryptedMailMessage, type StoredMailMessage } from "../../../mailroom/core"
 import type { MailOutboundRecord, MailScreenerCandidate } from "../../../mailroom/core"
 import type {
   OutlookMailAccessEntry,
@@ -18,8 +18,18 @@ import type {
 } from "../outlook-types"
 
 const OUTLOOK_MAIL_LIST_LIMIT = 50
-const OUTLOOK_MAIL_COUNT_LIMIT = 500
+const OUTLOOK_MAIL_SUMMARY_LIMIT = OUTLOOK_MAIL_LIST_LIMIT
 const OUTLOOK_MAIL_BODY_LIMIT = 12_000
+
+interface MailDecryptSkip {
+  messageId: string
+  keyId: string
+}
+
+interface VisibleMailDecryptResult {
+  decrypted: DecryptedMailMessage[]
+  skipped: MailDecryptSkip[]
+}
 
 function emptyFolders(): OutlookMailFolder[] {
   return [
@@ -35,7 +45,7 @@ function emptyFolders(): OutlookMailFolder[] {
 }
 
 function emptyRecovery(): OutlookMailRecoverySummary {
-  return { discardedCount: 0, quarantineCount: 0 }
+  return { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] }
 }
 
 function unavailableMailView(agentName: string, status: Exclude<OutlookMailStatus, "ready">, error: string): OutlookMailView {
@@ -96,6 +106,26 @@ function mailSummary(message: DecryptedMailMessage): OutlookMailMessageSummary {
     untrustedContentWarning: message.private.untrustedContentWarning,
     provenance,
   }
+}
+
+function missingPrivateMailKeyId(error: unknown): string | null {
+  const match = /^(?:Error: )?Missing private mail key ([^\s]+)$/.exec(String(error))
+  return match?.[1] ?? null
+}
+
+function decryptVisibleMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): VisibleMailDecryptResult {
+  const decrypted: DecryptedMailMessage[] = []
+  const skipped: MailDecryptSkip[] = []
+  for (const message of messages) {
+    try {
+      decrypted.push(decryptMessages([message], privateKeys)[0]!)
+    } catch (error) {
+      const keyId = missingPrivateMailKeyId(error)
+      if (!keyId) throw error
+      skipped.push({ messageId: message.id, keyId })
+    }
+  }
+  return { decrypted, skipped }
 }
 
 function buildFolders(messages: OutlookMailMessageSummary[], outbound: OutlookMailOutboundRecord[]): OutlookMailFolder[] {
@@ -207,10 +237,12 @@ function outboundRecord(record: MailOutboundRecord): OutlookMailOutboundRecord {
   }
 }
 
-function buildRecovery(messages: OutlookMailMessageSummary[]): OutlookMailRecoverySummary {
+function buildRecovery(messages: OutlookMailMessageSummary[], skipped: MailDecryptSkip[] = []): OutlookMailRecoverySummary {
   return {
     discardedCount: messages.filter((message) => message.placement === "discarded").length,
     quarantineCount: messages.filter((message) => message.placement === "quarantine").length,
+    undecryptableCount: skipped.length,
+    missingKeyIds: [...new Set(skipped.map((entry) => entry.keyId))].sort(),
   }
 }
 
@@ -265,9 +297,9 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
   }
 
   try {
-    const stored = await resolved.store.listMessages({ agentId: agentName, limit: OUTLOOK_MAIL_COUNT_LIMIT })
-    const decrypted = decryptMessages(stored, resolved.config.privateKeys)
-    const summaries = decrypted.map(mailSummary)
+    const stored = await resolved.store.listMessages({ agentId: agentName, limit: OUTLOOK_MAIL_SUMMARY_LIMIT })
+    const result = decryptVisibleMessages(stored, resolved.config.privateKeys)
+    const summaries = result.decrypted.map(mailSummary)
     const screener = (await resolved.store.listScreenerCandidates({ agentId: agentName, status: "pending", limit: 100 }))
       .map(screenerCandidate)
     const outbound = (await resolved.store.listMailOutbound(agentName)).map(outboundRecord)
@@ -291,7 +323,7 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
       messages: summaries.slice(0, OUTLOOK_MAIL_LIST_LIMIT),
       screener,
       outbound,
-      recovery: buildRecovery(summaries),
+      recovery: buildRecovery(summaries, result.skipped),
       accessLog,
       error: null,
     }

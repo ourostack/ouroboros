@@ -45,7 +45,7 @@ function mailboxFallback(agentName: string, error: string): OutlookMailView {
     messages: [],
     screener: [],
     outbound: [],
-    recovery: { discardedCount: 0, quarantineCount: 0 },
+    recovery: { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] },
     accessLog: [],
     error,
   }
@@ -192,7 +192,12 @@ export function MailboxTab({ agentName, focus, onFocusConsumed, refreshGeneratio
       <div className="grid min-h-[66vh] grid-cols-1 lg:grid-cols-[14.5rem_minmax(19rem,25rem)_minmax(0,1fr)]">
         <aside className="border-b border-[#cbd8c8] bg-[#e4ecdf] p-3 lg:border-b-0 lg:border-r">
           <FolderRail folders={folders} activeFolder={activeFolder} setActiveFolder={setActiveFolder} />
-          <RecoveryBlock discarded={view.recovery.discardedCount} quarantine={view.recovery.quarantineCount} />
+          <RecoveryBlock
+            discarded={view.recovery.discardedCount}
+            quarantine={view.recovery.quarantineCount}
+            undecryptable={view.recovery.undecryptableCount}
+            missingKeyIds={view.recovery.missingKeyIds}
+          />
           <ScreenerBlock
             candidates={view.screener}
             onOpen={(messageId) => {
@@ -268,11 +273,21 @@ function FolderRail({ folders, activeFolder, setActiveFolder }: {
   )
 }
 
-function RecoveryBlock({ discarded, quarantine }: { discarded: number; quarantine: number }) {
+function RecoveryBlock({
+  discarded,
+  quarantine,
+  undecryptable,
+  missingKeyIds,
+}: {
+  discarded: number
+  quarantine: number
+  undecryptable: number
+  missingKeyIds: string[]
+}) {
   return (
     <div className="mt-5 border-t border-[#cbd8c8] pt-4">
       <p className="text-[11px] font-semibold text-[#687062]">Recovery drawers</p>
-      <div className="mt-2 grid grid-cols-2 gap-2">
+      <div className="mt-2 grid grid-cols-3 gap-2">
         <div className="rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2">
           <p className="text-xs text-[#687062]">Discarded</p>
           <p className="text-lg font-semibold tabular-nums text-[#172018]">{discarded}</p>
@@ -281,7 +296,17 @@ function RecoveryBlock({ discarded, quarantine }: { discarded: number; quarantin
           <p className="text-xs text-[#687062]">Quarantine</p>
           <p className="text-lg font-semibold tabular-nums text-[#172018]">{quarantine}</p>
         </div>
+        <div className="rounded border border-[#cbd8c8] bg-[#fbfdf8] px-3 py-2">
+          <p className="text-xs text-[#687062]">Undecryptable</p>
+          <p className="text-lg font-semibold tabular-nums text-[#172018]">{undecryptable}</p>
+        </div>
       </div>
+      {undecryptable > 0 && (
+        <p className="mt-2 text-[11px] leading-4 text-[#687062]">
+          missing key {missingKeyIds[0]}
+          {missingKeyIds.length > 1 ? ` +${missingKeyIds.length - 1} more` : ""}
+        </p>
+      )}
     </div>
   )
 }

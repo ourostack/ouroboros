@@ -511,6 +511,8 @@ export interface OutlookMailOutboundRecord {
 export interface OutlookMailRecoverySummary {
   discardedCount: number
   quarantineCount: number
+  undecryptableCount: number
+  missingKeyIds: string[]
 }
 
 export interface OutlookMailAccessEntry {

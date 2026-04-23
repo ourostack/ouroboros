@@ -9,16 +9,18 @@ interface FakeBlobState {
   downloads: number
   uploads: number
   deletes: number
+  stall?: boolean
+  downloadDelayMs?: number
 }
 
 class FakeBlockBlobClient {
-  constructor(private readonly blobs: Map<string, FakeBlobState>, readonly name: string) {}
+  constructor(private readonly container: FakeContainerClient, readonly name: string) {}
 
   private state(): FakeBlobState {
-    const existing = this.blobs.get(this.name)
+    const existing = this.container.blobs.get(this.name)
     if (existing) return existing
     const created: FakeBlobState = { downloads: 0, uploads: 0, deletes: 0 }
-    this.blobs.set(this.name, created)
+    this.container.blobs.set(this.name, created)
     return created
   }
 
@@ -26,14 +28,28 @@ class FakeBlockBlobClient {
     return this.state().data !== undefined
   }
 
-  async downloadToBuffer(): Promise<Buffer> {
+  async downloadToBuffer(_offset?: number, _count?: number, options?: { abortSignal?: AbortSignal }): Promise<Buffer> {
     const state = this.state()
     state.downloads += 1
-    if (!state.data) throw new Error(`missing blob ${this.name}`)
-    return Buffer.from(state.data)
+    this.container.activeDownloads += 1
+    this.container.maxConcurrentDownloads = Math.max(this.container.maxConcurrentDownloads, this.container.activeDownloads)
+    try {
+      if (state.stall) {
+        await new Promise<never>((_resolve, reject) => {
+          options?.abortSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true })
+        })
+      }
+      if (state.downloadDelayMs && state.downloadDelayMs > 0) {
+        await waitForAbortableDelay(state.downloadDelayMs, options?.abortSignal)
+      }
+      if (!state.data) throw new Error(`missing blob ${this.name}`)
+      return Buffer.from(state.data)
+    } finally {
+      this.container.activeDownloads -= 1
+    }
   }
 
-  async uploadData(data: Buffer): Promise<void> {
+  async uploadData(data: Buffer, _options?: { abortSignal?: AbortSignal }): Promise<void> {
     const state = this.state()
     state.uploads += 1
     state.data = Buffer.from(data)
@@ -43,20 +59,22 @@ class FakeBlockBlobClient {
     const state = this.state()
     state.deletes += 1
     const existed = state.data !== undefined
-    this.blobs.delete(this.name)
+    this.container.blobs.delete(this.name)
     return existed
   }
 }
 
 class FakeContainerClient {
   readonly blobs = new Map<string, FakeBlobState>()
+  activeDownloads = 0
+  maxConcurrentDownloads = 0
 
   async createIfNotExists(): Promise<void> {
     return undefined
   }
 
   getBlockBlobClient(name: string): FakeBlockBlobClient {
-    return new FakeBlockBlobClient(this.blobs, name)
+    return new FakeBlockBlobClient(this, name)
   }
 
   async *listBlobsFlat(options: { prefix?: string } = {}): AsyncGenerator<{ name: string }> {
@@ -89,6 +107,20 @@ function totalDownloads(container: FakeContainerClient, prefix: string): number 
   return [...container.blobs.entries()]
     .filter(([name, state]) => name.startsWith(prefix) && state.data)
     .reduce((sum, [, state]) => sum + state.downloads, 0)
+}
+
+async function waitForAbortableDelay(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      abortSignal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException("The operation was aborted.", "AbortError"))
+    }
+    abortSignal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 describe("AzureBlobMailroomStore", () => {
@@ -366,6 +398,63 @@ describe("AzureBlobMailroomStore", () => {
     expect(totalDownloads(serviceClient.container, "messages/")).toBe(3)
   })
 
+  it("limits indexed hosted message downloads to the configured concurrency", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      messageFetchConcurrency: 2,
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    for (let index = 0; index < 5; index += 1) {
+      const created = await store.putRawMessage({
+        resolved,
+        envelope: {
+          mailFrom: `slow-${index}@example.com`,
+          rcptTo: ["slugger@ouro.bot"],
+        },
+        rawMime: Buffer.from(
+          `From: Slow ${index} <slow-${index}@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Slow ${index}\r\n\r\nHello ${index}.\r\n`,
+        ),
+        receivedAt: new Date(`2024-01-${String(index + 1).padStart(2, "0")}T00:00:00Z`),
+      })
+      const blobState = serviceClient.container.blobs.get(`messages/${created.message.id}.json`)
+      if (!blobState) throw new Error("expected stored message blob")
+      blobState.downloadDelayMs = 10
+    }
+
+    await store.listMessages({ agentId: "slugger", limit: 5 })
+    expect(serviceClient.container.maxConcurrentDownloads).toBeLessThanOrEqual(2)
+  })
+
+  it("falls back to default hosted message fetch concurrency when options are non-positive", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      messageFetchConcurrency: 0,
+    })
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "fallback@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Fallback <fallback@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Fallback fetch\r\n\r\nHello.\r\n"),
+      receivedAt: new Date("2024-02-01T00:00:00Z"),
+    })
+
+    const listed = await store.listMessages({ agentId: "slugger", limit: 1 })
+    expect(decryptMessages(listed, keys).map((message) => message.private.subject)).toEqual(["Fallback fetch"])
+  })
+
   it("backfills missing hosted message indexes for legacy mailboxes", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({
@@ -411,6 +500,205 @@ describe("AzureBlobMailroomStore", () => {
     const secondPass = await store.listMessages({ agentId: "slugger", limit: 1 })
     expect(decryptMessages(secondPass, keys).map((message) => message.private.subject)).toEqual(["Legacy 2"])
     expect(totalDownloads(serviceClient.container, "messages/")).toBe(1)
+  })
+
+  it("fails hosted index backfill with a timeout instead of waiting forever on stalled blobs", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      blobOperationTimeoutMs: 5,
+      backfillConcurrency: 1,
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    for (let index = 0; index < 2; index += 1) {
+      await store.putRawMessage({
+        resolved,
+        envelope: {
+          mailFrom: `legacy-timeout-${index}@example.com`,
+          rcptTo: ["slugger@ouro.bot"],
+        },
+        rawMime: Buffer.from(
+          `From: Legacy Timeout ${index} <legacy-timeout-${index}@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Legacy timeout ${index}\r\n\r\nHello ${index}.\r\n`,
+        ),
+        receivedAt: new Date(`2024-03-${String(index + 1).padStart(2, "0")}T00:00:00Z`),
+      })
+    }
+
+    for (const name of [...serviceClient.container.blobs.keys()]) {
+      if (name.startsWith("message-index/")) {
+        serviceClient.container.blobs.delete(name)
+      }
+    }
+
+    const messageBlobNames = [...serviceClient.container.blobs.keys()].filter((name) => name.startsWith("messages/")).sort()
+    const stalledBlob = messageBlobNames[1]
+    if (!stalledBlob) throw new Error("expected stalled message blob")
+    const stalledState = serviceClient.container.blobs.get(stalledBlob)
+    if (!stalledState) throw new Error("expected stalled message blob state")
+    stalledState.stall = true
+
+    await expect(store.backfillMessageIndexes("slugger")).rejects.toThrow(
+      `first failure(s): download ${stalledBlob} timed out after 5ms`,
+    )
+    expect([...serviceClient.container.blobs.keys()].filter((name) => name.startsWith("message-index/slugger/"))).toHaveLength(1)
+  })
+
+  it("uses manual abort timers and fallback blob labels when hosted download timeouts cannot use AbortSignal.timeout", async () => {
+    const originalTimeout = AbortSignal.timeout
+    Object.defineProperty(AbortSignal, "timeout", { value: undefined, configurable: true })
+    try {
+      const serviceClient = new FakeBlobServiceClient()
+      const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+      serviceClient.container.getBlockBlobClient = ((name: string) => {
+        const client = originalGetBlockBlobClient(name)
+        if (name !== "messages/stalled.json") return client
+        return {
+          name: "   ",
+          exists: () => client.exists(),
+          downloadToBuffer: (offset?: number, count?: number, options?: { abortSignal?: AbortSignal }) => {
+            return client.downloadToBuffer(offset, count, options)
+          },
+          uploadData: (data: Buffer, options?: { abortSignal?: AbortSignal }) => client.uploadData(data, options),
+          deleteIfExists: () => client.deleteIfExists(),
+        }
+      }) as typeof serviceClient.container.getBlockBlobClient
+
+      serviceClient.container.blobs.set("messages/stalled.json", {
+        data: Buffer.from("{}\n"),
+        downloads: 0,
+        uploads: 0,
+        deletes: 0,
+        stall: true,
+      })
+      const store = new AzureBlobMailroomStore({
+        serviceClient: serviceClient as unknown as BlobServiceClient,
+        containerName: "mailroom",
+        blobOperationTimeoutMs: 5,
+      })
+
+      await expect(store.getMessage("stalled")).rejects.toThrow("download <unknown-blob> timed out after 5ms")
+    } finally {
+      Object.defineProperty(AbortSignal, "timeout", { value: originalTimeout, configurable: true })
+    }
+  })
+
+  it("normalizes aborted hosted upload failures during backfill", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      blobOperationTimeoutMs: 5,
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "upload-timeout@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Upload Timeout <upload-timeout@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Upload timeout\r\n\r\nHello.\r\n"),
+      receivedAt: new Date("2024-03-04T00:00:00Z"),
+    })
+
+    const indexBlobName = [...serviceClient.container.blobs.keys()].find((name) => {
+      return name.startsWith("message-index/slugger/") && name.endsWith(`__${created.message.id}.json`)
+    })
+    if (!indexBlobName) throw new Error("expected hosted index blob")
+
+    for (const name of [...serviceClient.container.blobs.keys()]) {
+      if (name.startsWith("message-index/")) {
+        serviceClient.container.blobs.delete(name)
+      }
+    }
+
+    const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+    serviceClient.container.getBlockBlobClient = ((name: string) => {
+      if (name !== indexBlobName) return originalGetBlockBlobClient(name)
+      return {
+        name,
+        exists: async () => false,
+        downloadToBuffer: async () => Buffer.from(""),
+        uploadData: async () => {
+          throw new Error("upload aborted by upstream")
+        },
+        deleteIfExists: async () => false,
+      }
+    }) as typeof serviceClient.container.getBlockBlobClient
+
+    await expect(store.backfillMessageIndexes("slugger")).rejects.toThrow(
+      `first failure(s): upload ${indexBlobName} timed out after 5ms`,
+    )
+  })
+
+  it("records non-Error hosted blob client failures during backfill", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "string-failure@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: String Failure <string-failure@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: String failure\r\n\r\nHello.\r\n"),
+      receivedAt: new Date("2024-03-05T00:00:00Z"),
+    })
+
+    for (const name of [...serviceClient.container.blobs.keys()]) {
+      if (name.startsWith("message-index/")) {
+        serviceClient.container.blobs.delete(name)
+      }
+    }
+
+    const messageBlobName = `messages/${created.message.id}.json`
+    const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+    serviceClient.container.getBlockBlobClient = ((name: string) => {
+      if (name === messageBlobName) throw "blob client string failure"
+      return originalGetBlockBlobClient(name)
+    }) as typeof serviceClient.container.getBlockBlobClient
+
+    await expect(store.backfillMessageIndexes("slugger")).rejects.toThrow(
+      "first failure(s): blob client string failure",
+    )
+  })
+
+  it("normalizes non-Error hosted download failures", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+    serviceClient.container.getBlockBlobClient = ((name: string) => {
+      if (name !== "messages/non-error.json") return originalGetBlockBlobClient(name)
+      return {
+        name,
+        exists: async () => true,
+        downloadToBuffer: async () => {
+          throw "socket closed early"
+        },
+        uploadData: async () => undefined,
+        deleteIfExists: async () => false,
+      }
+    }) as typeof serviceClient.container.getBlockBlobClient
+
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+
+    await expect(store.getMessage("non-error")).rejects.toThrow(
+      "download messages/non-error.json failed: socket closed early",
+    )
   })
 
   it("indexes delegated source tokens and skips malformed hosted index names", async () => {

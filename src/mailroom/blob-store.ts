@@ -20,7 +20,9 @@ const MESSAGE_INDEX_PREFIX = "message-index"
 const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
 const MESSAGE_INDEX_SORT_WIDTH = 13
 const MESSAGE_INDEX_NO_SOURCE = "~"
-const MESSAGE_INDEX_BACKFILL_CONCURRENCY = 16
+const DEFAULT_BLOB_OPERATION_TIMEOUT_MS = 20_000
+const DEFAULT_MESSAGE_FETCH_CONCURRENCY = 20
+const DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY = 8
 const MESSAGE_LIST_SCAN_CONCURRENCY = 32
 
 interface StoredMailMessageIndexRecord {
@@ -36,6 +38,20 @@ interface StoredMailMessageIndexRecord {
 export interface AzureBlobMailroomStoreOptions {
   serviceClient: BlobServiceClient
   containerName: string
+  blobOperationTimeoutMs?: number
+  messageFetchConcurrency?: number
+  backfillConcurrency?: number
+}
+
+interface DownloadBlobClientLike {
+  name?: string
+  exists(): Promise<boolean>
+  downloadToBuffer(offset?: number, count?: number, options?: { abortSignal?: AbortSignal }): Promise<Buffer>
+}
+
+interface UploadBlobClientLike {
+  name?: string
+  uploadData(data: Buffer, options?: { abortSignal?: AbortSignal }): Promise<unknown>
 }
 
 function compareNewestFirst(left: StoredMailMessage, right: StoredMailMessage): number {
@@ -50,9 +66,94 @@ function blobText(value: unknown): Buffer {
   return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf-8")
 }
 
-async function downloadJson<T>(blob: { exists(): Promise<boolean>; downloadToBuffer(): Promise<Buffer> }): Promise<T | null> {
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback
+  const normalized = Math.floor(value)
+  return normalized > 0 ? normalized : fallback
+}
+
+function blobClientName(blob: { name?: string }): string {
+  return typeof blob.name === "string" && blob.name.trim().length > 0 ? blob.name : "<unknown-blob>"
+}
+
+function timeoutSignal(timeoutMs: number): { signal: AbortSignal; dispose(): void } {
+  if (typeof AbortSignal.timeout === "function") {
+    return {
+      signal: AbortSignal.timeout(timeoutMs),
+      dispose() {
+        return undefined
+      },
+    }
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`The operation timed out after ${timeoutMs}ms`)), timeoutMs)
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer)
+    },
+  }
+}
+
+async function withBlobOperationTimeout<T>(timeoutMs: number, operation: (abortSignal: AbortSignal) => Promise<T>): Promise<T> {
+  const timeout = timeoutSignal(timeoutMs)
+  try {
+    return await operation(timeout.signal)
+  } finally {
+    timeout.dispose()
+  }
+}
+
+function normalizeBlobOperationError(action: "download" | "upload", blob: { name?: string }, timeoutMs: number, error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  if ((error instanceof Error && error.name === "AbortError") || message.toLowerCase().includes("aborted")) {
+    return new Error(`${action} ${blobClientName(blob)} timed out after ${timeoutMs}ms`)
+  }
+  return new Error(`${action} ${blobClientName(blob)} failed: ${message}`)
+}
+
+async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
   if (!await blob.exists()) return null
-  return JSON.parse((await blob.downloadToBuffer()).toString("utf-8")) as T
+  try {
+    const buffer = await withBlobOperationTimeout(timeoutMs, (abortSignal) => {
+      return blob.downloadToBuffer(undefined, undefined, { abortSignal })
+    })
+    return JSON.parse(buffer.toString("utf-8")) as T
+  } catch (error) {
+    throw normalizeBlobOperationError("download", blob, timeoutMs, error)
+  }
+}
+
+async function uploadJson(blob: UploadBlobClientLike, value: unknown, timeoutMs: number): Promise<void> {
+  try {
+    await withBlobOperationTimeout(timeoutMs, (abortSignal) => {
+      return blob.uploadData(blobText(value), { abortSignal })
+    })
+  } catch (error) {
+    throw normalizeBlobOperationError("upload", blob, timeoutMs, error)
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return []
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workerLoop = async () => {
+    while (true) {
+      const current = nextIndex
+      nextIndex += 1
+      if (current >= items.length) return
+      results[current] = await worker(items[current]!, current)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, async () => workerLoop()),
+  )
+  return results
 }
 
 function encodeSourceToken(source?: string): string {
@@ -127,11 +228,17 @@ function messageMatchesFilters<T extends Pick<StoredMailMessageIndexRecord, "age
 export class AzureBlobMailroomStore implements MailroomStore {
   private readonly serviceClient: BlobServiceClient
   private readonly containerName: string
+  private readonly blobOperationTimeoutMs: number
+  private readonly messageFetchConcurrency: number
+  private readonly backfillConcurrency: number
   private containerReady: Promise<void> | null = null
 
   constructor(options: AzureBlobMailroomStoreOptions) {
     this.serviceClient = options.serviceClient
     this.containerName = options.containerName
+    this.blobOperationTimeoutMs = positiveInteger(options.blobOperationTimeoutMs, DEFAULT_BLOB_OPERATION_TIMEOUT_MS)
+    this.messageFetchConcurrency = positiveInteger(options.messageFetchConcurrency, DEFAULT_MESSAGE_FETCH_CONCURRENCY)
+    this.backfillConcurrency = positiveInteger(options.backfillConcurrency, DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_init",
@@ -180,7 +287,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
   }
 
   private async putMessageIndex(message: StoredMailMessage): Promise<void> {
-    await this.messageIndexBlob(messageIndexBlobName(message)).uploadData(blobText(messageIndexRecord(message)))
+    await uploadJson(this.messageIndexBlob(messageIndexBlobName(message)), messageIndexRecord(message), this.blobOperationTimeoutMs)
   }
 
   private async removeMessageIndex(message: StoredMailMessage): Promise<void> {
@@ -199,7 +306,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
       while (nextIndex < messageBlobNames.length) {
         const current = messageBlobNames[nextIndex]
         nextIndex += 1
-        const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current))
+        const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current), this.blobOperationTimeoutMs)
         if (!message || !messageMatchesFilters(message, filters)) continue
         matches.push(message)
         matches.sort(compareNewestFirst)
@@ -223,7 +330,9 @@ export class AzureBlobMailroomStore implements MailroomStore {
       if (messageIds.length >= (filters.limit ?? 20)) break
     }
     if (!sawIndex) return null
-    return (await Promise.all(messageIds.map(async (id) => downloadJson<StoredMailMessage>(this.messageBlob(id)))))
+    return (await mapWithConcurrency(messageIds, this.messageFetchConcurrency, async (id) => {
+      return downloadJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
+    }))
       .filter((message): message is StoredMailMessage => message !== null)
       .filter((message) => messageMatchesFilters(message, filters))
       .sort(compareNewestFirst)
@@ -237,21 +346,32 @@ export class AzureBlobMailroomStore implements MailroomStore {
       messageBlobNames.push(item.name)
     }
     let indexed = 0
+    const failures: string[] = []
     let nextIndex = 0
     const worker = async () => {
       while (nextIndex < messageBlobNames.length) {
         const current = messageBlobNames[nextIndex]
         nextIndex += 1
-        const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current))
-        if (!message) continue
-        if (agentId && message.agentId !== agentId) continue
-        await this.messageIndexBlob(messageIndexBlobName(message)).uploadData(blobText(messageIndexRecord(message)))
-        indexed += 1
+        try {
+          const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current), this.blobOperationTimeoutMs)
+          if (!message) continue
+          if (agentId && message.agentId !== agentId) continue
+          await uploadJson(this.messageIndexBlob(messageIndexBlobName(message)), messageIndexRecord(message), this.blobOperationTimeoutMs)
+          indexed += 1
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error))
+        }
       }
     }
     await Promise.all(
-      Array.from({ length: Math.min(MESSAGE_INDEX_BACKFILL_CONCURRENCY, Math.max(messageBlobNames.length, 1)) }, async () => worker()),
+      Array.from({ length: Math.min(this.backfillConcurrency, Math.max(messageBlobNames.length, 1)) }, async () => worker()),
     )
+    if (failures.length > 0) {
+      const sample = failures.slice(0, 3).join("; ")
+      throw new Error(
+        `hosted message index backfill incomplete after indexing ${indexed} message(s); ${failures.length} blob operation(s) failed. first failure(s): ${sample}. rerun the command to retry remaining messages.`,
+      )
+    }
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_index_backfilled",
@@ -270,7 +390,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
     await this.ensureContainer()
     const { message, rawPayload, candidate } = await buildStoredMailMessage(input)
-    const existing = await downloadJson<StoredMailMessage>(this.messageBlob(message.id))
+    const existing = await downloadJson<StoredMailMessage>(this.messageBlob(message.id), this.blobOperationTimeoutMs)
     if (existing) {
       await this.putMessageIndex(existing)
       emitNervesEvent({
@@ -298,7 +418,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async getMessage(id: string): Promise<StoredMailMessage | null> {
     await this.ensureContainer()
-    const message = await downloadJson<StoredMailMessage>(this.messageBlob(id))
+    const message = await downloadJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_message_read",
@@ -328,7 +448,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
   async updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null> {
     await this.ensureContainer()
     const blob = this.messageBlob(id)
-    const message = await downloadJson<StoredMailMessage>(blob)
+    const message = await downloadJson<StoredMailMessage>(blob, this.blobOperationTimeoutMs)
     if (!message) {
       emitNervesEvent({
         component: "senses",
@@ -353,7 +473,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async readRawPayload(objectName: string): Promise<EncryptedPayload | null> {
     await this.ensureContainer()
-    const payload = await downloadJson<EncryptedPayload>(this.rawBlob(objectName))
+    const payload = await downloadJson<EncryptedPayload>(this.rawBlob(objectName), this.blobOperationTimeoutMs)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_raw_read",
@@ -383,7 +503,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await this.ensureContainer()
     const candidates: MailScreenerCandidate[] = []
     for await (const item of this.container.listBlobsFlat({ prefix: "candidates/" })) {
-      const candidate = await downloadJson<MailScreenerCandidate>(this.container.getBlockBlobClient(item.name))
+      const candidate = await downloadJson<MailScreenerCandidate>(this.container.getBlockBlobClient(item.name), this.blobOperationTimeoutMs)
       if (candidate) candidates.push(candidate)
     }
     const filtered = candidates
@@ -410,7 +530,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
       createdAt: entry.createdAt ?? new Date().toISOString(),
     }
     const blob = this.decisionsBlob(entry.agentId)
-    const existing = await downloadJson<MailDecisionRecord[]>(blob).catch(() => null)
+    const existing = await downloadJson<MailDecisionRecord[]>(blob, this.blobOperationTimeoutMs).catch(() => null)
     const entries = Array.isArray(existing) ? existing : []
     entries.push(complete)
     await blob.uploadData(blobText(entries))
@@ -425,7 +545,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async listMailDecisions(agentId: string): Promise<MailDecisionRecord[]> {
     await this.ensureContainer()
-    const entries = await downloadJson<MailDecisionRecord[]>(this.decisionsBlob(agentId))
+    const entries = await downloadJson<MailDecisionRecord[]>(this.decisionsBlob(agentId), this.blobOperationTimeoutMs)
     const safeEntries = Array.isArray(entries) ? entries : []
     emitNervesEvent({
       component: "senses",
@@ -450,7 +570,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async getMailOutbound(id: string): Promise<MailOutboundRecord | null> {
     await this.ensureContainer()
-    const record = await downloadJson<MailOutboundRecord>(this.outboundBlob(id))
+    const record = await downloadJson<MailOutboundRecord>(this.outboundBlob(id), this.blobOperationTimeoutMs)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_outbound_record_read",
@@ -464,7 +584,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await this.ensureContainer()
     const records: MailOutboundRecord[] = []
     for await (const item of this.container.listBlobsFlat({ prefix: "outbound/" })) {
-      const record = await downloadJson<MailOutboundRecord>(this.container.getBlockBlobClient(item.name))
+      const record = await downloadJson<MailOutboundRecord>(this.container.getBlockBlobClient(item.name), this.blobOperationTimeoutMs)
       if (record) records.push(record)
     }
     const filtered = records
@@ -487,7 +607,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
       accessedAt: new Date().toISOString(),
     }
     const blob = this.accessLogBlob(entry.agentId)
-    const existing = await downloadJson<MailAccessLogEntry[]>(blob).catch(() => null)
+    const existing = await downloadJson<MailAccessLogEntry[]>(blob, this.blobOperationTimeoutMs).catch(() => null)
     const entries = Array.isArray(existing) ? existing : []
     entries.push(complete)
     await blob.uploadData(blobText(entries))
@@ -502,7 +622,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async listAccessLog(agentId: string): Promise<MailAccessLogEntry[]> {
     await this.ensureContainer()
-    const entries = await downloadJson<MailAccessLogEntry[]>(this.accessLogBlob(agentId))
+    const entries = await downloadJson<MailAccessLogEntry[]>(this.accessLogBlob(agentId), this.blobOperationTimeoutMs)
     const safeEntries = Array.isArray(entries) ? entries : []
     emitNervesEvent({
       component: "senses",

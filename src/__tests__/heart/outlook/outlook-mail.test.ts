@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { resetIdentity } from "../../../heart/identity"
+import * as mailroomReader from "../../../mailroom/reader"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore } from "../../../mailroom/file-store"
 import { createMailDraft, confirmMailDraftSend } from "../../../mailroom/outbound"
@@ -114,6 +115,39 @@ describe("Outlook mail reader", () => {
     const missing = await readMailMessageView("slugger", "mail_missing")
     expect(missing.status).toBe("not-found")
     expect(missing.error).toContain("No visible mail message")
+  })
+
+  it("caps hosted Outlook summary reads to the visible mailbox slice", async () => {
+    const listMessages = vi.fn(async () => [])
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {},
+      },
+      store: {
+        listMessages,
+        listScreenerCandidates: vi.fn(async () => []),
+        listMailOutbound: vi.fn(async () => []),
+        recordAccess: vi.fn(async () => ({
+          id: "access_outlook_mail_list",
+          agentId: "slugger",
+          tool: "outlook_mail_list",
+          reason: "outlook read-only mailbox",
+          accessedAt: "2026-04-23T00:00:00.000Z",
+        })),
+        listAccessLog: vi.fn(async () => []),
+      } as any,
+      storeKind: "azure-blob",
+      storeLabel: "https://mail.blob.core.windows.net/mailroom",
+    })
+
+    const mailbox = await readMailView("slugger")
+
+    expect(mailbox.status).toBe("ready")
+    expect(listMessages).toHaveBeenCalledWith({ agentId: "slugger", limit: 50 })
+    readerSpy.mockRestore()
   })
 
   it("summarizes native screener mail and rich truncated message bodies", async () => {
@@ -601,11 +635,19 @@ describe("Outlook mail reader", () => {
       mailroom: {
         mailboxAddress: "slugger@ouro.bot",
         storePath,
-        privateKeys: { [stored!.privateEnvelope.keyId]: "not a private key" },
+        privateKeys: { mail_unused_other_key: "unused" },
       },
     })
     const undecryptableList = await readMailView("slugger")
-    expect(undecryptableList.status).toBe("error")
+    expect(undecryptableList).toEqual(expect.objectContaining({
+      status: "ready",
+      error: null,
+      messages: [],
+      recovery: expect.objectContaining({
+        undecryptableCount: 1,
+        missingKeyIds: [stored!.privateEnvelope.keyId],
+      }),
+    }))
     const undecryptableMessage = await readMailMessageView("slugger", messageId)
     expect(undecryptableMessage.status).toBe("error")
 
@@ -616,6 +658,12 @@ describe("Outlook mail reader", () => {
         privateKeys: { [stored!.privateEnvelope.keyId]: "still not a private key" },
       },
     })
+    const brokenDecrypt = await readMailView("slugger")
+    expect(brokenDecrypt).toEqual(expect.objectContaining({
+      status: "error",
+      error: expect.any(String),
+    }))
+
     vi.spyOn(FileMailroomStore.prototype, "listMessages").mockRejectedValueOnce("list unavailable")
     const brokenList = await readMailView("slugger")
     expect(brokenList).toEqual(expect.objectContaining({

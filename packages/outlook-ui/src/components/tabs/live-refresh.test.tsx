@@ -174,7 +174,7 @@ describe("Outlook deep-tab live refresh", () => {
           messages: [],
           screener: [],
           outbound: [],
-          recovery: { discardedCount: 0, quarantineCount: 0 },
+          recovery: { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] },
           accessLog: [],
           error: null,
         })
@@ -531,7 +531,7 @@ describe("Outlook deep-tab live refresh", () => {
             transport: null,
             reason: "test draft",
           }],
-          recovery: { discardedCount: 0, quarantineCount: 0 },
+          recovery: { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] },
           accessLog: [],
           error: null,
         })
@@ -682,7 +682,7 @@ describe("Outlook deep-tab live refresh", () => {
           ],
           screener: [],
           outbound: [],
-          recovery: { discardedCount: 0, quarantineCount: 0 },
+          recovery: { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] },
           accessLog: [],
           error: null,
         })
@@ -770,7 +770,7 @@ describe("Outlook deep-tab live refresh", () => {
               providerStatus: "Expanded",
             }],
           }],
-          recovery: { discardedCount: 0, quarantineCount: 0 },
+          recovery: { discardedCount: 0, quarantineCount: 0, undecryptableCount: 0, missingKeyIds: [] },
           accessLog: [
             {
               id: "access_delegated",
