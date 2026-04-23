@@ -1,13 +1,14 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { buildNativeMailAutonomyPolicy } from "../../mailroom/autonomy"
 import { FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { mailToolDefinitions } from "../../repertoire/tools-mail"
+import * as credentialAccess from "../../repertoire/credential-access"
 import type { ToolContext } from "../../repertoire/tools-base"
 
 const tempRoots: string[] = []
@@ -279,6 +280,8 @@ afterEach(() => {
   else process.env.HOME = originalHome
   resetIdentity()
   resetRuntimeCredentialConfigCache()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   for (const dir of tempRoots.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -860,6 +863,133 @@ describe("mail tools", () => {
       draft_id: noReasonDraftId!,
       confirmation: "CONFIRM_SEND",
     }, trustedContext())).resolves.toContain("Mail sent")
+  })
+
+  it("submits confirmed ACS sends through the configured vault-item binding", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const accessKey = Buffer.from("acs-secret-key").toString("base64")
+    const getRawSecret = vi.fn(async (item: string, field: string) => {
+      expect(item).toBe("ops/mail/azure-communication-services/ouro.bot")
+      expect(field).toBe("password")
+      return JSON.stringify({
+        schemaVersion: 1,
+        secretFields: { primaryAccessKey: accessKey },
+        publicFields: { endpoint: "https://contoso.communication.azure.com" },
+      })
+    })
+    vi.spyOn(credentialAccess, "getCredentialStore").mockReturnValue({
+      get: vi.fn(),
+      getRawSecret,
+      store: vi.fn(),
+      list: vi.fn(),
+      delete: vi.fn(),
+      isReady: () => true,
+    })
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: "acs-tool-operation" }), {
+      status: 202,
+      headers: { "x-ms-request-id": "tool-request-1" },
+    }))
+    vi.stubGlobal("fetch", fetchImpl)
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+        outbound: {
+          transport: "azure-communication-services",
+          endpoint: "https://contoso.communication.azure.com",
+          senderAddress: "slugger@ouro.bot",
+          credentialItem: "ops/mail/azure-communication-services/ouro.bot",
+          credentialFields: { accessKey: "primaryAccessKey" },
+        },
+      },
+    })
+
+    const draft = await tool("mail_compose").handler({
+      to: "ari@mendelow.me",
+      subject: "ACS live path proof",
+      text: "Provider acceptance is not final delivery.",
+      reason: "compose provider-bound native mail",
+    }, trustedContext())
+    const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+    expect(draftId).toBeTruthy()
+
+    const sent = await tool("mail_send").handler({
+      draft_id: draftId!,
+      confirmation: "CONFIRM_SEND",
+      reason: "family confirmed provider submission",
+    }, trustedContext())
+
+    expect(sent).toContain("Mail submitted")
+    expect(sent).toContain("status: submitted")
+    expect(sent).toContain("transport: azure-communication-services")
+    expect(sent).toContain("send authority: native agent mailbox")
+    expect(sent).not.toContain(accessKey)
+    expect(getRawSecret).toHaveBeenCalledTimes(1)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://contoso.communication.azure.com/emails:send?api-version=2025-09-01",
+      expect.objectContaining({ method: "POST" }),
+    )
+  })
+
+  it("reports ACS vault-item payload edge cases without exposing secrets", async () => {
+    const sendWithVaultPayload = async (rawSecret: string) => {
+      setAgentName("slugger")
+      const storePath = tempDir()
+      const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+      vi.spyOn(credentialAccess, "getCredentialStore").mockReturnValue({
+        get: vi.fn(),
+        getRawSecret: vi.fn(async () => rawSecret),
+        store: vi.fn(),
+        list: vi.fn(),
+        delete: vi.fn(),
+        isReady: () => true,
+      })
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ id: "acs-edge-operation" }), { status: 202 })))
+      cacheRuntimeCredentialConfig("slugger", {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          storePath,
+          privateKeys: keys,
+          outbound: {
+            transport: "azure-communication-services",
+            endpoint: "https://contoso.communication.azure.com",
+            credentialItem: "ops/mail/azure-communication-services/ouro.bot",
+            credentialFields: { accessKey: "primaryAccessKey" },
+          },
+        },
+      })
+      const draft = await tool("mail_compose").handler({
+        to: "ari@mendelow.me",
+        subject: "ACS vault edge",
+        text: "This body must not affect credential resolution.",
+        reason: "compose provider-bound edge proof",
+      }, trustedContext())
+      const draftId = /draft_[a-f0-9]+/.exec(String(draft))?.[0]
+      expect(draftId).toBeTruthy()
+      return tool("mail_send").handler({
+        draft_id: draftId!,
+        confirmation: "CONFIRM_SEND",
+        reason: "provider credential edge proof",
+      }, trustedContext())
+    }
+
+    const accessKey = Buffer.from("acs-secret-key").toString("base64")
+    await expect(sendWithVaultPayload(JSON.stringify({
+      schemaVersion: 1,
+      primaryAccessKey: accessKey,
+    }))).resolves.toContain("Mail submitted")
+    expect(await sendWithVaultPayload("null")).toContain("secret payload must be an object")
+    const invalidJson = "this is not json but contains acs-secret-key"
+    const invalidJsonResult = await sendWithVaultPayload(invalidJson)
+    expect(invalidJsonResult).toContain("secret payload must be valid JSON")
+    expect(invalidJsonResult).not.toContain("acs-secret-key")
+    expect(await sendWithVaultPayload(JSON.stringify({
+      schemaVersion: 1,
+      secretFields: {},
+    }))).toContain("missing required secret field primaryAccessKey")
   })
 
   it("lets policy-approved native mail send autonomously while new recipients require confirmation fallback", async () => {

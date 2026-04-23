@@ -3,7 +3,7 @@ import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { decryptMessages, type MailAccessLogEntry, type MailroomStore } from "../mailroom/file-store"
 import { resolveMailroomReader, type MailroomRuntimeConfig } from "../mailroom/reader"
-import { confirmMailDraftSend, createMailDraft, resolveOutboundTransport } from "../mailroom/outbound"
+import { confirmMailDraftSend, createMailDraft, resolveOutboundProviderClient, resolveOutboundTransport, type MailOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
 import {
   describeMailProvenance,
@@ -18,6 +18,7 @@ import {
   type StoredMailMessage,
 } from "../mailroom/core"
 import { emitNervesEvent } from "../nerves/runtime"
+import { getCredentialStore } from "./credential-access"
 
 interface MailDecryptSkip {
   messageId: string
@@ -125,6 +126,34 @@ function renderDecryptSkips(skipped: MailDecryptSkip[]): string {
 function appendDecryptSkips(body: string, skipped: MailDecryptSkip[]): string {
   const warning = renderDecryptSkips(skipped)
   return warning ? `${body}\n\n${warning}` : body
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function vaultItemSecretField(rawSecret: string, item: string, field: string): string {
+  let payload: unknown
+  try {
+    payload = JSON.parse(rawSecret) as unknown
+  } catch {
+    throw new Error(`vault item ${item} secret payload must be valid JSON`)
+  }
+  if (!isRecord(payload)) throw new Error(`vault item ${item} secret payload must be an object`)
+  const secretFields = isRecord(payload.secretFields) ? payload.secretFields : {}
+  const value = [secretFields[field], payload[field]]
+    .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+  if (!value) throw new Error(`vault item ${item} is missing required secret field ${field}`)
+  return value
+}
+
+async function outboundProviderClientForTransport(agentName: string, transport: MailOutboundTransport) {
+  return resolveOutboundProviderClient(transport, {
+    readSecretField: async (item, field) => {
+      const rawSecret = await getCredentialStore(agentName).getRawSecret(item, "password")
+      return vaultItemSecretField(rawSecret, item, field)
+    },
+  })
 }
 
 function renderUndecryptableThread(message: StoredMailMessage, keyId: string): string {
@@ -566,14 +595,16 @@ export const mailToolDefinitions: ToolDefinition[] = [
       const resolved = resolveMailroomReader()
       if (!resolved.ok) return resolved.error
       try {
+        const transport = resolveOutboundTransport(resolved.config)
         const sent = await confirmMailDraftSend({
           store: resolved.store,
           agentId: resolved.agentName,
           draftId,
-          transport: resolveOutboundTransport(resolved.config),
+          transport,
           confirmation: args.confirmation ?? "",
           autonomous: args.autonomous === "true",
           autonomyPolicy: resolved.config.autonomousSendPolicy,
+          providerClient: await outboundProviderClientForTransport(resolved.agentName, transport),
           actor: actorFromContext(ctx, resolved.agentName),
           reason: args.reason ?? "confirmed outbound send",
         })

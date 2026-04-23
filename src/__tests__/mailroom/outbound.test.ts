@@ -9,6 +9,7 @@ import {
   createMailDraft,
   listMailOutboundRecords,
   parseAcsEmailDeliveryReportEvent,
+  resolveOutboundProviderClient,
   reconcileOutboundDeliveryEvent,
   resolveOutboundTransport,
   type MailOutboundProviderClient,
@@ -381,6 +382,89 @@ describe("mail outbound confirmed send", () => {
 
     const duplicate = await reconcileOutboundDeliveryEvent({ store, agentId: "slugger", event })
     expect(duplicate.deliveryEvents).toHaveLength(1)
+  })
+
+  it("builds an ACS provider client from an explicit vault item binding", async () => {
+    const accessKey = Buffer.from("acs-secret-key").toString("base64")
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: "acs-operation-from-binding" }), {
+      status: 202,
+    }))
+    const reader = {
+      readSecretField: vi.fn(async (item: string, field: string) => {
+        expect(item).toBe("ops/mail/azure-communication-services/ouro.bot")
+        expect(field).toBe("primaryAccessKey")
+        return accessKey
+      }),
+    }
+
+    const client = await resolveOutboundProviderClient({
+      kind: "azure-communication-services",
+      endpoint: "https://contoso.communication.azure.com",
+      senderAddress: "slugger@ouro.bot",
+      credentialItem: "ops/mail/azure-communication-services/ouro.bot",
+      credentialFields: { accessKey: "primaryAccessKey" },
+    }, reader, {
+      fetch: fetchImpl,
+      now: () => new Date("2026-04-23T14:00:00.000Z"),
+    })
+
+    expect(client).toBeTruthy()
+    const result = await client!.submit({
+      draft: {
+        schemaVersion: 1,
+        id: "draft_binding",
+        agentId: "slugger",
+        status: "submitted",
+        mailboxRole: "agent-native-mailbox",
+        sendAuthority: "agent-native",
+        ownerEmail: null,
+        source: null,
+        from: "slugger@ouro.bot",
+        to: ["ari@mendelow.me"],
+        cc: [],
+        bcc: [],
+        subject: "Binding proof",
+        text: "This proves the provider client uses explicit vault fields.",
+        actor: { kind: "agent", agentId: "slugger" },
+        reason: "provider binding proof",
+        createdAt: "2026-04-23T13:59:00.000Z",
+        updatedAt: "2026-04-23T13:59:00.000Z",
+      },
+      transport: {
+        kind: "azure-communication-services",
+        endpoint: "https://contoso.communication.azure.com",
+        senderAddress: "slugger@ouro.bot",
+      },
+      submittedAt: "2026-04-23T14:00:00.000Z",
+    })
+
+    expect(reader.readSecretField).toHaveBeenCalledTimes(1)
+    expect(result.providerMessageId).toBe("acs-operation-from-binding")
+    expect(JSON.stringify(fetchImpl.mock.calls)).not.toContain(accessKey)
+  })
+
+  it("fails ACS provider-client construction without a usable explicit access key binding", async () => {
+    await expect(resolveOutboundProviderClient({
+      kind: "local-sink",
+      sinkPath: "/tmp/outbound.jsonl",
+    }, {
+      readSecretField: vi.fn(),
+    })).resolves.toBeUndefined()
+
+    await expect(resolveOutboundProviderClient({
+      kind: "azure-communication-services",
+      endpoint: "https://contoso.communication.azure.com",
+    }, {
+      readSecretField: vi.fn(),
+    })).rejects.toThrow("missing credentialItem")
+
+    await expect(resolveOutboundProviderClient({
+      kind: "azure-communication-services",
+      endpoint: "https://contoso.communication.azure.com",
+      credentialItem: "ops/mail/azure-communication-services/ouro.bot",
+    }, {
+      readSecretField: vi.fn(async () => "   "),
+    })).rejects.toThrow("required secret field accessKey is blank")
   })
 
   it("maps all ACS delivery outcomes and rejects mismatched delivery events", () => {

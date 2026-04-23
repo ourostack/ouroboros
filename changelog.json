@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.473",
+      "changes": [
+        "`mail_send` now resolves Azure Communication Services outbound provider clients from explicit generic vault-item bindings, so production ACS sends can leave the agent mailbox after `CONFIRM_SEND` without parsing vault notes.",
+        "Outbound provider bindings now require an explicit credential item and secret field for ACS access keys, with tests covering missing, blank, malformed, non-object, and legacy-shaped vault payloads without leaking secret values.",
+        "The `ouro.bot` wrapper stays version-synced for the outbound provider-client release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.472",
       "changes": [
         "Mail tools now stay usable when a visible message was encrypted to a missing old private key: `mail_recent`, `mail_search`, and `mail_thread` skip or explain only the undecryptable record with body-safe message/key ids.",

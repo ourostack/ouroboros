@@ -87,6 +87,15 @@ export interface CreateAcsEmailProviderClientInput {
   now?: () => Date
 }
 
+export interface MailOutboundSecretReader {
+  readSecretField(item: string, field: string): Promise<string>
+}
+
+export interface ResolveOutboundProviderClientOptions {
+  fetch?: typeof fetch
+  now?: () => Date
+}
+
 export interface ReconcileOutboundDeliveryEventInput {
   store: MailroomStore
   agentId: string
@@ -199,6 +208,29 @@ export function createAcsEmailProviderClient(input: CreateAcsEmailProviderClient
       }
     },
   }
+}
+
+export async function resolveOutboundProviderClient(
+  transport: MailOutboundTransport,
+  reader: MailOutboundSecretReader,
+  options: ResolveOutboundProviderClientOptions = {},
+): Promise<MailOutboundProviderClient | undefined> {
+  if (transport.kind !== "azure-communication-services") return undefined
+  const credentialItem = transport.credentialItem?.trim()
+  if (!credentialItem) {
+    throw new Error("outbound Azure Communication Services transport is missing credentialItem")
+  }
+  const accessKeyField = transport.credentialFields?.accessKey?.trim() || "accessKey"
+  const accessKey = (await reader.readSecretField(credentialItem, accessKeyField)).trim()
+  if (!accessKey) {
+    throw new Error(`outbound Azure Communication Services required secret field ${accessKeyField} is blank`)
+  }
+  return createAcsEmailProviderClient({
+    endpoint: transport.endpoint,
+    accessKey,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  })
 }
 
 function draftId(): string {
