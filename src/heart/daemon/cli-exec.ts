@@ -2767,6 +2767,52 @@ async function executeDnsWorkflow(
   }
   const secrets = await workflow.resolveDnsWorkflowSecrets(binding, reader)
   const driver = workflow.createPorkbunDnsDriver({ fetchImpl: deps.fetchImpl ?? fetch })
+  if (command.action === "certificate") {
+    if (!binding.certificate) throw new Error("DNS workflow binding does not define a certificate")
+    if (binding.certificate.source !== "porkbun-ssl") {
+      throw new Error(`DNS workflow certificate source ${binding.certificate.source} is not implemented`)
+    }
+    const certificate = await driver.retrieveCertificate({ domain: binding.domain, secrets })
+    const payload: VaultItemSecretPayload = {
+      schemaVersion: 1,
+      updatedAt: providerCliNow(deps).toISOString(),
+      publicFields: {
+        domain: binding.domain,
+        host: binding.certificate.host,
+        source: binding.certificate.source,
+      },
+      secretFields: certificate,
+    }
+    await store.store(binding.certificate.storeItem, {
+      username: binding.certificate.host,
+      password: JSON.stringify(payload),
+      notes: "TLS certificate bundle retrieved by DNS workflow. Notes are for human/agent orientation only; workflow bindings and deploy config remain the machine contract.",
+    })
+    const artifactPayload = workflow.redactDnsWorkflowArtifact({
+      action: command.action,
+      binding,
+      certificate: {
+        host: binding.certificate.host,
+        storeItem: binding.certificate.storeItem,
+        ...certificate,
+      },
+    })
+    if (command.outputPath) {
+      const outputPath = resolveWorkflowFilePath(command.outputPath, deps)
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+      fs.writeFileSync(outputPath, `${JSON.stringify(artifactPayload, null, 2)}\n`, "utf-8")
+    }
+    const message = [
+      `dns certificate for ${binding.domain}`,
+      `driver: ${binding.driver}`,
+      `credential item: vault:${command.agent}:${binding.credentialItem}`,
+      `certificate item: vault:${command.agent}:${binding.certificate.storeItem}`,
+      command.outputPath ? `artifact: ${command.outputPath}` : "artifact: not written",
+      "secret values were not printed",
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
   const currentRecords = await driver.retrieveRecords({ domain: binding.domain, secrets })
   let plan: ReturnType<typeof workflow.planDnsWorkflow>
   if (command.action === "rollback") {

@@ -1047,6 +1047,13 @@ describe("provider CLI command parsing", () => {
       action: "verify",
       bindingPath,
     })
+    expect(parseOuroCommand(["dns", "certificate", "--agent", "Slugger", "--binding", bindingPath, "--output", "slugger/tasks/dns-cert.json"])).toEqual({
+      kind: "dns.workflow",
+      action: "certificate",
+      agent: "Slugger",
+      bindingPath,
+      outputPath: "slugger/tasks/dns-cert.json",
+    })
     expect(parseOuroCommand(["dns", "rollback", "--binding", bindingPath, "--backup", "slugger/tasks/dns-backup.json", "--yes"])).toEqual({
       kind: "dns.workflow",
       action: "rollback",
@@ -1058,7 +1065,7 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath]))
       .toThrow("dns apply requires --yes after a reviewed dry-run")
     expect(() => parseOuroCommand(["dns", "list", "--agent", "Slugger", "--binding", bindingPath]))
-      .toThrow("Usage: ouro dns backup|plan|apply|verify|rollback")
+      .toThrow("Usage: ouro dns backup|plan|apply|verify|rollback|certificate")
     expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger"]))
       .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
     expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding"]))
@@ -4397,6 +4404,127 @@ describe("provider CLI command execution", () => {
       }),
     )
     expect(legacyResult).toContain("dns plan for ouro.bot")
+  })
+
+  it("dns workflow certificate retrieves and stores the TLS bundle without leaking secrets", async () => {
+    emitTestEvent("provider cli dns workflow certificate")
+    const bundlesRoot = makeTempDir("provider-cli-dns-certificate-bundles")
+    const homeDir = makeTempDir("provider-cli-dns-certificate-home")
+    const repoRoot = makeTempDir("provider-cli-dns-certificate-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const bindingPath = path.join(repoRoot, "infra", "dns", "ouro.bot.binding.json")
+    const outputPath = path.join(repoRoot, "artifacts", "dns-certificate.json")
+    fs.mkdirSync(path.dirname(bindingPath), { recursive: true })
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
+      desired: { records: [] },
+      certificate: {
+        host: "mx1.ouro.bot",
+        source: "porkbun-ssl",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    }, null, 2)}\n`, "utf-8")
+    mockVaultDeps.rawSecrets.set("Slugger:ops/registrars/porkbun/accounts/ari@mendelow.me", JSON.stringify({
+      secretFields: {
+        apiKey: "porkbun-api-key",
+        secretApiKey: "porkbun-secret-key",
+      },
+    }))
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(fetchRequestUrl(input)).toBe("https://api.porkbun.com/api/json/v3/ssl/retrieve/ouro.bot")
+      expect(init?.method).toBe("GET")
+      expect(fetchHeader(init, "X-API-Key")).toBe("porkbun-api-key")
+      expect(fetchHeader(init, "X-Secret-API-Key")).toBe("porkbun-secret-key")
+      return mockJsonResponse({
+        status: "SUCCESS",
+        certificatechain: "-----BEGIN CERTIFICATE-----\npublic-chain\n-----END CERTIFICATE-----",
+        publickey: "-----BEGIN CERTIFICATE-----\npublic-cert\n-----END CERTIFICATE-----",
+        privatekey: "-----BEGIN PRIVATE KEY-----\nprivate-key\n-----END PRIVATE KEY-----",
+      })
+    })
+
+    const result = await runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json", "--output", "artifacts/dns-certificate.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+
+    expect(result).toContain("dns certificate for ouro.bot")
+    expect(result).toContain("certificate item: vault:Slugger:runtime/mail/certificates/mx1.ouro.bot")
+    expect(result).toContain("secret values were not printed")
+    const stored = mockVaultDeps.storedItems.get("Slugger:runtime/mail/certificates/mx1.ouro.bot")
+    expect(stored?.username).toBe("mx1.ouro.bot")
+    expect(stored?.notes).toContain("workflow binding")
+    const payload = JSON.parse(stored?.password ?? "{}") as {
+      publicFields?: Record<string, string>
+      secretFields?: Record<string, string>
+    }
+    expect(payload.publicFields).toEqual(expect.objectContaining({
+      host: "mx1.ouro.bot",
+      source: "porkbun-ssl",
+      domain: "ouro.bot",
+    }))
+    expect(payload.secretFields).toEqual(expect.objectContaining({
+      certificatechain: expect.stringContaining("public-chain"),
+      publickey: expect.stringContaining("public-cert"),
+      privatekey: expect.stringContaining("private-key"),
+    }))
+    const artifact = fs.readFileSync(outputPath, "utf-8")
+    expect(artifact).toContain("public-cert")
+    expect(artifact).not.toContain("private-key")
+    expect(artifact).not.toContain("porkbun-secret-key")
+
+    const noArtifactResult = await runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )
+    expect(noArtifactResult).toContain("artifact: not written")
+
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "MX", name: "@" }] },
+      desired: { records: [] },
+    }, null, 2)}\n`, "utf-8")
+    await expect(runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("DNS workflow binding does not define a certificate")
+
+    fs.writeFileSync(bindingPath, `${JSON.stringify({
+      workflow: "dns",
+      domain: "ouro.bot",
+      driver: "porkbun",
+      credentialItem: "ops/registrars/porkbun/accounts/ari@mendelow.me",
+      resources: { records: [{ type: "TXT", name: "_acme-challenge.mx1" }] },
+      desired: { records: [] },
+      certificate: {
+        host: "mx1.ouro.bot",
+        source: "acme-dns-01",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    }, null, 2)}\n`, "utf-8")
+    await expect(runOuroCli(
+      ["dns", "certificate", "--agent", "Slugger", "--binding", "infra/dns/ouro.bot.binding.json"],
+      makeCliDeps(homeDir, bundlesRoot, {
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        getRepoCwd: () => repoRoot,
+      }),
+    )).rejects.toThrow("DNS workflow certificate source acme-dns-01 is not implemented")
   })
 
   it("dns workflow plan supports absolute paths and current-directory relative paths", async () => {

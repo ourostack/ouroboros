@@ -84,6 +84,12 @@ function requireRecordType(value: unknown, label: string): DnsRecordType {
   return value
 }
 
+function parseCertificateSource(value: unknown): "porkbun-ssl" | "acme-dns-01" {
+  if (value === undefined || value === "porkbun-ssl") return "porkbun-ssl"
+  if (value === "acme-dns-01") return "acme-dns-01"
+  throw new Error("certificate.source must be porkbun-ssl or acme-dns-01")
+}
+
 function recordKey(record: Pick<DnsRecord, "type" | "name">): string {
   return `${record.type}:${record.name}`
 }
@@ -145,7 +151,7 @@ export function loadDnsWorkflowBinding(input: unknown): DnsWorkflowBinding {
     ...(certificate ? {
       certificate: {
         host: requireString(certificate.host, "certificate.host"),
-        source: certificate.source === "acme-dns-01" ? "acme-dns-01" : "porkbun-ssl",
+        source: parseCertificateSource(certificate.source),
         storeItem: requireString(certificate.storeItem, "certificate.storeItem"),
         ...(certificate.acmeChallengeRecord
           ? {
@@ -327,11 +333,14 @@ function assertDesiredRecordsAllowed(binding: DnsWorkflowBinding): void {
 }
 
 function recordsEqual(left: DnsRecord, right: DnsRecord): boolean {
+  const priorityEqual = left.type === "MX"
+    ? (left.priority ?? 0) === (right.priority ?? 0)
+    : true
   return left.type === right.type &&
     left.name === right.name &&
     left.content === right.content &&
     left.ttl === right.ttl &&
-    left.priority === right.priority
+    priorityEqual
 }
 
 export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; deleteExtraAllowedRecords?: boolean }): DnsWorkflowPlan {

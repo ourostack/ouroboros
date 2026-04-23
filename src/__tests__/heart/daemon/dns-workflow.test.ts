@@ -202,6 +202,20 @@ describe("DNS workflow binding", () => {
         storeItem: "runtime/mail/certificates/mx1.ouro.bot",
       },
     })).toMatchObject({ certificate: { source: "acme-dns-01" } })
+    expect(loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      certificate: {
+        host: "mx1.ouro.bot",
+        storeItem: "runtime/mail/certificates/mx1.ouro.bot",
+      },
+    })).toMatchObject({ certificate: { source: "porkbun-ssl" } })
+    expect(() => loadDnsWorkflowBinding({
+      ...ouroBotBinding,
+      certificate: {
+        ...ouroBotBinding.certificate,
+        source: "manual-upload",
+      },
+    })).toThrow("certificate.source must be porkbun-ssl or acme-dns-01")
   })
 
   it("uses Porkbun read-only GET endpoints with header auth for ping, DNS retrieve, and SSL retrieve", async () => {
@@ -346,6 +360,92 @@ describe("DNS workflow binding", () => {
       },
       currentRecords,
     })).toThrow("outside DNS workflow allowlist")
+  })
+
+  it("ignores Porkbun priority zero on non-MX records during verification planning", async () => {
+    const { planDnsWorkflow } = await loadDnsWorkflowModule()
+    const plan = planDnsWorkflow({
+      binding: {
+        ...ouroBotBinding,
+        desired: {
+          records: [
+            { type: "A", name: "mx1", content: "20.10.114.197", ttl: 600 },
+            { type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none; rua=mailto:dmarc@ouro.bot", ttl: 600 },
+          ],
+        },
+      },
+      currentRecords: [
+        { id: "a", type: "A", name: "mx1", content: "20.10.114.197", ttl: 600, priority: 0 },
+        { id: "txt", type: "TXT", name: "_dmarc", content: "v=DMARC1; p=none; rua=mailto:dmarc@ouro.bot", ttl: 600, priority: 0 },
+      ],
+    })
+
+    expect(plan.changes).toEqual([])
+  })
+
+  it("normalizes MX priority zero but still updates mismatched MX priorities", async () => {
+    const { planDnsWorkflow } = await loadDnsWorkflowModule()
+    const binding = {
+      ...ouroBotBinding,
+      desired: {
+        records: [
+          { type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600 },
+        ],
+      },
+    }
+
+    expect(planDnsWorkflow({
+      binding,
+      currentRecords: [
+        { id: "mx", type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600, priority: 0 },
+      ],
+    }).changes).toEqual([])
+
+    expect(planDnsWorkflow({
+      binding,
+      currentRecords: [
+        { id: "mx", type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600 },
+      ],
+    }).changes).toEqual([])
+
+    expect(planDnsWorkflow({
+      binding: {
+        ...binding,
+        desired: {
+          records: [
+            { type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600, priority: 0 },
+          ],
+        },
+      },
+      currentRecords: [
+        { id: "mx", type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600 },
+      ],
+    }).changes).toEqual([])
+
+    expect(planDnsWorkflow({
+      binding: {
+        ...binding,
+        desired: {
+          records: [
+            { type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600, priority: 10 },
+          ],
+        },
+      },
+      currentRecords: [
+        { id: "mx", type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600 },
+      ],
+    }).changes).toEqual([
+      expect.objectContaining({ action: "update", currentRecord: expect.objectContaining({ id: "mx" }) }),
+    ])
+
+    expect(planDnsWorkflow({
+      binding,
+      currentRecords: [
+        { id: "mx", type: "MX", name: "@", content: "mx1.ouro.bot", ttl: 600, priority: 5 },
+      ],
+    }).changes).toEqual([
+      expect.objectContaining({ action: "update", currentRecord: expect.objectContaining({ id: "mx" }) }),
+    ])
   })
 
   it("plans and applies rollback changes only for allowlisted records", async () => {

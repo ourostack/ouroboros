@@ -112,7 +112,7 @@ export function usage(): string {
     "  ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
     "  ouro vault ops porkbun set [--agent <name>] --account <account>",
     "  ouro vault ops porkbun status [--agent <name>] [--account <account>]",
-    "  ouro dns backup|plan|apply|verify|rollback [--agent <name>] --binding <path> [--output <path>] [--backup <path>] [--yes]",
+    "  ouro dns backup|plan|apply|verify|rollback|certificate [--agent <name>] --binding <path> [--output <path>] [--backup <path>] [--yes]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -713,7 +713,7 @@ function parseVaultOpsCommand(args: string[]): OuroCliCommand {
 }
 
 function isDnsWorkflowAction(value: unknown): value is DnsWorkflowAction {
-  return value === "backup" || value === "plan" || value === "apply" || value === "verify" || value === "rollback"
+  return value === "backup" || value === "plan" || value === "apply" || value === "verify" || value === "rollback" || value === "certificate"
 }
 
 function normalizeWorkflowPath(value: string | undefined, label: string): string {
@@ -727,7 +727,7 @@ function normalizeWorkflowPath(value: string | undefined, label: string): string
 function parseDnsCommand(args: string[]): OuroCliCommand {
   const action = args[0]
   if (!isDnsWorkflowAction(action)) {
-    throw new Error("Usage: ouro dns backup|plan|apply|verify|rollback [--agent <name>] --binding <path>")
+    throw new Error("Usage: ouro dns backup|plan|apply|verify|rollback|certificate [--agent <name>] --binding <path>")
   }
   const { agent, rest } = extractAgentFlag(args.slice(1))
   let bindingPath: string | undefined
