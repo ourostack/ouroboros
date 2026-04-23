@@ -1018,6 +1018,49 @@ describe("provider CLI command parsing", () => {
       .toThrow("ouro vault create|replace|recover|unlock|status [--agent <name>]")
   })
 
+  it("parses DNS workflow commands as binding-backed operations", () => {
+    emitTestEvent("provider cli parse dns workflow")
+    const bindingPath = "infra/dns/ouro.bot.binding.json"
+
+    expect(parseOuroCommand(["dns", "backup", "--agent", "Slugger", "--binding", bindingPath, "--output", "slugger/tasks/dns-backup.json"])).toEqual({
+      kind: "dns.workflow",
+      action: "backup",
+      agent: "Slugger",
+      bindingPath,
+      outputPath: "slugger/tasks/dns-backup.json",
+    })
+    expect(parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath])).toEqual({
+      kind: "dns.workflow",
+      action: "plan",
+      agent: "Slugger",
+      bindingPath,
+    })
+    expect(parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath, "--yes"])).toEqual({
+      kind: "dns.workflow",
+      action: "apply",
+      agent: "Slugger",
+      bindingPath,
+      yes: true,
+    })
+    expect(parseOuroCommand(["dns", "verify", "--binding", bindingPath])).toEqual({
+      kind: "dns.workflow",
+      action: "verify",
+      bindingPath,
+    })
+    expect(parseOuroCommand(["dns", "rollback", "--binding", bindingPath, "--backup", "slugger/tasks/dns-backup.json", "--yes"])).toEqual({
+      kind: "dns.workflow",
+      action: "rollback",
+      bindingPath,
+      backupPath: "slugger/tasks/dns-backup.json",
+      yes: true,
+    })
+
+    expect(() => parseOuroCommand(["dns", "apply", "--agent", "Slugger", "--binding", bindingPath]))
+      .toThrow("dns apply requires --yes after a reviewed dry-run")
+    expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--credential-item", "ops/registrars/porkbun/accounts/ari@mendelow.me"]))
+      .toThrow("credential item belongs in the DNS workflow binding")
+  })
+
   it("parses connect commands for guided integration onboarding", () => {
     emitTestEvent("provider cli parse connect")
 
