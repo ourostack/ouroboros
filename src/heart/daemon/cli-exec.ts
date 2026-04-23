@@ -81,6 +81,7 @@ import type {
   ProviderCliCommand,
   RepairCliCommand,
   VaultCliCommand,
+  DnsCliCommand,
   ChangelogCliCommand,
   ConfigModelCliCommand,
   ConfigModelsCliCommand,
@@ -367,6 +368,7 @@ type MissingAgentResolvableKind =
   | "vault.item.set"
   | "vault.item.status"
   | "vault.item.list"
+  | "dns.workflow"
   | "connect"
   | "account.ensure"
   | "mail.import-mbox"
@@ -478,6 +480,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "vault.item.set":
     case "vault.item.status":
     case "vault.item.list":
+    case "dns.workflow":
     case "connect":
     case "account.ensure":
     case "mail.import-mbox":
@@ -1412,7 +1415,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" }>): DaemonCommand {
   return command
 }
 
@@ -2721,6 +2724,66 @@ async function executeVaultItemList(
     "secret values were not printed",
   ]
   const message = lines.join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
+function resolveWorkflowFilePath(filePath: string, deps: OuroCliDeps): string {
+  return path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(deps.getRepoCwd?.() ?? process.cwd(), filePath)
+}
+
+async function executeDnsWorkflow(
+  command: Extract<ResolvedOuroCliCommand, { kind: "dns.workflow" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const workflow = await import("./dns-workflow")
+  const bindingPath = resolveWorkflowFilePath(command.bindingPath, deps)
+  const binding = workflow.loadDnsWorkflowBinding(JSON.parse(fs.readFileSync(bindingPath, "utf-8")))
+  const store = getCredentialStore(command.agent)
+  const reader = {
+    readSecretField: async (item: string, field: string): Promise<string> => {
+      const raw = await store.getRawSecret(item, "password")
+      const payload = JSON.parse(raw) as { secretFields?: Record<string, unknown> }
+      const value = payload.secretFields?.[field]
+      if (typeof value !== "string" || value.trim() === "") {
+        throw new Error(`vault item ${item} is missing required secret field ${field}`)
+      }
+      return value
+    },
+  }
+  const secrets = await workflow.resolveDnsWorkflowSecrets(binding, reader)
+  const driver = workflow.createPorkbunDnsDriver({ fetchImpl: deps.fetchImpl ?? fetch })
+  const currentRecords = await driver.retrieveRecords({ domain: binding.domain, secrets })
+  const plan = workflow.planDnsWorkflow({ binding, currentRecords })
+  const payload = workflow.redactDnsWorkflowArtifact({
+    action: command.action,
+    binding,
+    plan,
+  })
+  if (command.outputPath) {
+    const outputPath = resolveWorkflowFilePath(command.outputPath, deps)
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+    fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
+  }
+  if (command.action === "apply") {
+    throw new Error("dns apply is parsed but waits for mutation-driver coverage before production use")
+  }
+  if (command.action === "rollback") {
+    throw new Error("dns rollback is parsed but waits for mutation-driver coverage before production use")
+  }
+  const changed = plan.changes.length
+  const preserved = plan.preservedRecords.length
+  const message = [
+    `dns ${command.action} for ${binding.domain}`,
+    `driver: ${binding.driver}`,
+    `credential item: vault:${command.agent}:${binding.credentialItem}`,
+    `changes: ${changed}`,
+    `preserved records: ${preserved}`,
+    command.outputPath ? `artifact: ${command.outputPath}` : "artifact: not written",
+    "secret values were not printed",
+  ].join("\n")
   deps.writeStdout(message)
   return message
 }
@@ -6502,6 +6565,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "vault.item.list") {
     return executeVaultItemList(command, deps)
+  }
+
+  if (command.kind === "dns.workflow") {
+    return executeDnsWorkflow(command, deps)
   }
 
   // ── auth (local, no daemon socket needed) ──

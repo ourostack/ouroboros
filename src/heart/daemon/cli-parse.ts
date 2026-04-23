@@ -12,7 +12,7 @@ import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { HatchCredentialsInput } from "../hatch/hatch-flow"
-import type { OuroCliCommand } from "./cli-types"
+import type { DnsWorkflowAction, OuroCliCommand } from "./cli-types"
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
 import {
@@ -112,6 +112,7 @@ export function usage(): string {
     "  ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
     "  ouro vault ops porkbun set [--agent <name>] --account <account>",
     "  ouro vault ops porkbun status [--agent <name>] [--account <account>]",
+    "  ouro dns backup|plan|apply|verify|rollback [--agent <name>] --binding <path> [--output <path>] [--backup <path>] [--yes]",
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
@@ -708,6 +709,75 @@ function parseVaultOpsCommand(args: string[]): OuroCliCommand {
     ...(agent ? { agent } : {}),
     prefix: PORKBUN_OPS_CREDENTIAL_PREFIX,
     compatibilityAlias: PORKBUN_OPS_COMPATIBILITY_ALIAS,
+  }
+}
+
+function isDnsWorkflowAction(value: unknown): value is DnsWorkflowAction {
+  return value === "backup" || value === "plan" || value === "apply" || value === "verify" || value === "rollback"
+}
+
+function normalizeWorkflowPath(value: string | undefined, label: string): string {
+  const trimmed = value?.trim() ?? ""
+  if (!trimmed || /[\r\n\t]/.test(trimmed)) {
+    throw new Error(`${label} must be a non-empty path without control characters.`)
+  }
+  return trimmed
+}
+
+function parseDnsCommand(args: string[]): OuroCliCommand {
+  const action = args[0]
+  if (!isDnsWorkflowAction(action)) {
+    throw new Error("Usage: ouro dns backup|plan|apply|verify|rollback [--agent <name>] --binding <path>")
+  }
+  const { agent, rest } = extractAgentFlag(args.slice(1))
+  let bindingPath: string | undefined
+  let outputPath: string | undefined
+  let backupPath: string | undefined
+  let yes = false
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i]
+    if (token === "--binding") {
+      bindingPath = normalizeWorkflowPath(rest[i + 1], "dns --binding")
+      i += 1
+      continue
+    }
+    if (token === "--output") {
+      outputPath = normalizeWorkflowPath(rest[i + 1], "dns --output")
+      i += 1
+      continue
+    }
+    if (token === "--backup") {
+      backupPath = normalizeWorkflowPath(rest[i + 1], "dns --backup")
+      i += 1
+      continue
+    }
+    if (token === "--yes") {
+      yes = true
+      continue
+    }
+    if (token === "--credential-item") {
+      throw new Error("credential item belongs in the DNS workflow binding")
+    }
+    throw new Error(`Usage: ouro dns ${action} [--agent <name>] --binding <path>`)
+  }
+  if (!bindingPath) {
+    throw new Error(`Usage: ouro dns ${action} [--agent <name>] --binding <path>`)
+  }
+  if (action === "apply" && !yes) {
+    throw new Error("dns apply requires --yes after a reviewed dry-run")
+  }
+  if (action === "rollback") {
+    if (!backupPath) throw new Error("dns rollback requires --backup <path>")
+    if (!yes) throw new Error("dns rollback requires --yes after choosing a backup")
+  }
+  return {
+    kind: "dns.workflow",
+    action,
+    ...(agent ? { agent } : {}),
+    bindingPath,
+    ...(outputPath ? { outputPath } : {}),
+    ...(backupPath ? { backupPath } : {}),
+    ...(yes ? { yes: true } : {}),
   }
 }
 
@@ -1344,6 +1414,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "provider") return parseProviderCommand(args.slice(1))
   if (head === "mail") return parseMailCommand(args.slice(1))
+  if (head === "dns") return parseDnsCommand(args.slice(1))
   if (head === "logs") {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }

@@ -24,6 +24,7 @@ import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-ite
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
 export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail"
+export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollback"
 
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
@@ -47,6 +48,7 @@ export type OuroCliCommand =
   | { kind: "vault.item.set"; agent?: string; item: string; template?: VaultItemTemplate; secretFields?: string[]; publicFields?: string[]; note?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "vault.item.list"; agent?: string; prefix?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
+  | { kind: "dns.workflow"; action: DnsWorkflowAction; agent?: string; bindingPath: string; outputPath?: string; backupPath?: string; yes?: boolean }
   | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
   | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath: string; ownerEmail?: string; source?: string }
@@ -230,6 +232,7 @@ export type AuthSwitchCliCommand = Extract<OuroCliCommand, { kind: "auth.switch"
 export type ProviderCliCommand = Extract<OuroCliCommand, { kind: "provider.use" } | { kind: "provider.check" } | { kind: "provider.status" } | { kind: "provider.refresh" }>
 export type RepairCliCommand = Extract<OuroCliCommand, { kind: "repair" }>
 export type VaultCliCommand = Extract<OuroCliCommand, { kind: "vault.create" } | { kind: "vault.replace" } | { kind: "vault.recover" } | { kind: "vault.unlock" } | { kind: "vault.status" } | { kind: "vault.config.set" } | { kind: "vault.config.status" } | { kind: "vault.item.set" } | { kind: "vault.item.status" } | { kind: "vault.item.list" }>
+export type DnsCliCommand = Extract<OuroCliCommand, { kind: "dns.workflow" }>
 export type ChangelogCliCommand = Extract<OuroCliCommand, { kind: "changelog" }>
 export type ConfigModelCliCommand = Extract<OuroCliCommand, { kind: "config.model" }>
 export type ConfigModelsCliCommand = Extract<OuroCliCommand, { kind: "config.models" }>
