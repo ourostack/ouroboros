@@ -446,6 +446,10 @@ export interface OutlookMailScreenerCandidate {
 export interface OutlookMailOutboundRecord {
   id: string
   status: "draft" | "sent" | "failed"
+  mailboxRole: "agent-native-mailbox" | "delegated-human-mailbox"
+  sendAuthority: "agent-native"
+  ownerEmail: string | null
+  source: string | null
   from: string
   to: string[]
   cc: string[]
@@ -469,6 +473,10 @@ export interface OutlookMailAccessEntry {
   threadId: string | null
   tool: string
   reason: string
+  mailboxRole: "agent-native-mailbox" | "delegated-human-mailbox" | null
+  compartmentKind: "native" | "delegated" | null
+  ownerEmail: string | null
+  source: string | null
   accessedAt: string
 }
 

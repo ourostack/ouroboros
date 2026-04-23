@@ -252,6 +252,11 @@ describe("Outlook mail reader", () => {
       ownerEmail: "jamie@example.com",
       source: "hey",
     })
+    const legacy = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "legacy@example.com",
+      source: "hey",
+    })
     const store = new FileMailroomStore({ rootDir: storePath })
     await ingestRawMailToStore({
       registry: ari.registry,
@@ -285,11 +290,32 @@ describe("Outlook mail reader", () => {
       ].join("\r\n")),
       receivedAt: new Date("2026-04-21T19:00:00.000Z"),
     })
+    const legacyResult = await ingestRawMailToStore({
+      registry: legacy.registry,
+      store,
+      envelope: {
+        mailFrom: "legacy@example.com",
+        rcptTo: [legacy.registry.sourceGrants[0].aliasAddress],
+      },
+      rawMime: Buffer.from([
+        "From: Legacy <legacy@example.com>",
+        `To: ${legacy.registry.sourceGrants[0].aliasAddress}`,
+        "Subject: Legacy HEY",
+        "",
+        "Legacy HEY body.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T19:30:00.000Z"),
+    })
+    fs.writeFileSync(
+      path.join(storePath, "messages", `${legacyResult.accepted[0].id}.json`),
+      `${JSON.stringify({ ...legacyResult.accepted[0], ownerEmail: undefined }, null, 2)}\n`,
+      "utf-8",
+    )
     cacheRuntimeCredentialConfig("slugger", {
       mailroom: {
         mailboxAddress: "slugger@ouro.bot",
         storePath,
-        privateKeys: { ...ari.keys, ...jamie.keys },
+        privateKeys: { ...ari.keys, ...jamie.keys, ...legacy.keys },
       },
     })
 
@@ -298,8 +324,9 @@ describe("Outlook mail reader", () => {
     expect(mailbox.folders).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "source:hey:ari@mendelow.me", label: "HEY / ari@mendelow.me", count: 1 }),
       expect.objectContaining({ id: "source:hey:jamie@example.com", label: "HEY / jamie@example.com", count: 1 }),
+      expect.objectContaining({ id: "source:hey:unknown-owner", label: "HEY / unknown owner", count: 1 }),
     ]))
-    expect(mailbox.folders).not.toContainEqual(expect.objectContaining({ id: "source:hey", count: 2 }))
+    expect(mailbox.folders).not.toContainEqual(expect.objectContaining({ id: "source:hey", count: 3 }))
   })
 
   it("exposes the full read-only mailbox workbench: Screener, recovery drawers, provenance, drafts, and sent mail", async () => {
@@ -376,6 +403,22 @@ describe("Outlook mail reader", () => {
       actor: { kind: "human", friendId: "ari", trustLevel: "family", channel: "cli" },
       reason: "confirmed for Outlook proof",
     })
+    await store.upsertMailOutbound({
+      schemaVersion: 1,
+      id: "draft_legacy_without_provenance",
+      agentId: "slugger",
+      status: "draft",
+      from: "slugger@ouro.bot",
+      to: ["legacy@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Legacy outbound proof",
+      text: "Old outbound records should still render as native agent mail.",
+      actor: { kind: "agent", agentId: "slugger" },
+      reason: "legacy Outlook fallback proof",
+      createdAt: "2026-04-21T20:10:00.000Z",
+      updatedAt: "2026-04-21T20:10:00.000Z",
+    })
     cacheRuntimeCredentialConfig("slugger", {
       mailroom: {
         mailboxAddress: "slugger@ouro.bot",
@@ -390,7 +433,7 @@ describe("Outlook mail reader", () => {
       expect.objectContaining({ id: "screener", count: 1 }),
       expect.objectContaining({ id: "discarded", count: 1 }),
       expect.objectContaining({ id: "quarantine", count: 0 }),
-      expect.objectContaining({ id: "draft", count: 1 }),
+      expect.objectContaining({ id: "draft", count: 2 }),
       expect.objectContaining({ id: "sent", count: 1 }),
     ]))
     expect(mailbox.screener).toEqual([
@@ -409,6 +452,13 @@ describe("Outlook mail reader", () => {
     expect(mailbox.outbound).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: draft.id, status: "draft", subject: "Draft from Outlook proof" }),
       expect.objectContaining({ id: sendDraft.id, status: "sent", subject: "Sent from Outlook proof", transport: "local-sink" }),
+      expect.objectContaining({
+        id: "draft_legacy_without_provenance",
+        mailboxRole: "agent-native-mailbox",
+        sendAuthority: "agent-native",
+        ownerEmail: null,
+        source: null,
+      }),
     ]))
     expect(mailbox.messages.find((message) => message.id === screener.accepted[0].id)?.provenance)
       .toEqual(expect.objectContaining({

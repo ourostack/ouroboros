@@ -7,11 +7,13 @@ import {
   type DecryptedMailMessage,
   type EncryptedPayload,
   type MailClassification,
+  type MailCompartmentKind,
   type MailDecisionRecord,
   type MailEnvelopeInput,
   type MailOutboundRecord,
   type MailPlacement,
   type MailroomRegistry,
+  type MailboxRole,
   type ResolvedMailAddress,
   type MailScreenerCandidate,
   type MailScreenerCandidateStatus,
@@ -26,6 +28,10 @@ export interface MailAccessLogEntry {
   tool: string
   reason: string
   session?: string
+  mailboxRole?: MailboxRole
+  compartmentKind?: MailCompartmentKind
+  ownerEmail?: string | null
+  source?: string | null
   accessedAt: string
 }
 

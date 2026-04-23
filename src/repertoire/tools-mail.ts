@@ -6,6 +6,7 @@ import { resolveMailroomReader, type MailroomRuntimeConfig } from "../mailroom/r
 import { confirmMailDraftSend, createMailDraft, resolveOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
 import {
+  describeMailProvenance,
   normalizeMailAddress,
   type MailPlacement,
   type MailroomRegistry,
@@ -120,9 +121,30 @@ function renderAccessLog(entries: MailAccessLogEntry[]): string {
     .reverse()
     .map((entry) => {
       const target = entry.messageId ? `message=${entry.messageId}` : entry.threadId ? `thread=${entry.threadId}` : "mailbox"
-      return `- ${entry.accessedAt} ${entry.tool} ${target} reason="${entry.reason}"`
+      const provenance = renderAccessLogProvenance(entry)
+      return `- ${entry.accessedAt} ${entry.tool} ${target}${provenance} reason="${entry.reason}"`
     })
     .join("\n")
+}
+
+function renderAccessLogProvenance(entry: MailAccessLogEntry): string {
+  if (entry.mailboxRole === "delegated-human-mailbox") {
+    return ` delegated human mailbox: ${entry.ownerEmail ?? "unknown owner"} / ${entry.source ?? "unknown source"}`
+  }
+  if (entry.mailboxRole === "agent-native-mailbox") {
+    return " native agent mailbox"
+  }
+  return ""
+}
+
+function accessProvenance(message: StoredMailMessage): Pick<MailAccessLogEntry, "mailboxRole" | "compartmentKind" | "ownerEmail" | "source"> {
+  const provenance = describeMailProvenance(message)
+  return {
+    mailboxRole: provenance.mailboxRole,
+    compartmentKind: message.compartmentKind,
+    ownerEmail: provenance.ownerEmail,
+    source: provenance.source,
+  }
 }
 
 function renderSourceGrantStatus(config: MailroomRuntimeConfig, agentId: string): string[] {
@@ -602,6 +624,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         messageId,
         tool: "mail_thread",
         reason: args.reason,
+        ...accessProvenance(message),
       })
       const maxChars = numberArg(args.max_chars, 2000, 200, 6000)
       const body = decrypted.private.text.length > maxChars
@@ -710,6 +733,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         messageId,
         tool: "mail_decide",
         reason,
+        ...accessProvenance(message),
       })
       const senderPolicyLine = persistSenderPolicyForDecision({
         registryPath: resolved.config.registryPath,

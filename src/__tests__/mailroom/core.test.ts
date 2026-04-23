@@ -157,16 +157,16 @@ describe("mailroom core", () => {
     })
     const native = resolveMailAddress(registry, "slugger@ouro.bot")!
     const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")!
-    const nativeMessage = buildStoredMailMessage({
+    const nativeMessage = (await buildStoredMailMessage({
       resolved: native,
       envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
       rawMime: Buffer.from("From: Friend <friend@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Native\r\n\r\nbody"),
-    }).message
-    const delegatedMessage = buildStoredMailMessage({
+    })).message
+    const delegatedMessage = (await buildStoredMailMessage({
       resolved: delegated,
       envelope: { mailFrom: "ari@mendelow.me", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: Delegated\r\n\r\nbody"),
-    }).message
+    })).message
 
     expect(describeMailProvenance(nativeMessage)).toEqual({
       mailboxRole: "agent-native-mailbox",
@@ -183,6 +183,15 @@ describe("mailroom core", () => {
       agentId: "slugger",
       ownerEmail: "ari@mendelow.me",
       source: "hey",
+      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      sendAsHumanAllowed: false,
+    })
+    expect(describeMailProvenance({ ...delegatedMessage, ownerEmail: undefined, source: undefined })).toEqual({
+      mailboxRole: "delegated-human-mailbox",
+      mailboxLabel: "unknown owner / unknown source delegated to slugger",
+      agentId: "slugger",
+      ownerEmail: null,
+      source: null,
       recipient: "me.mendelow.ari.slugger@ouro.bot",
       sendAsHumanAllowed: false,
     })

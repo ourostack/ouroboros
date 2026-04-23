@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { decryptMessages, type MailAccessLogEntry } from "../../../mailroom/file-store"
 import { resolveMailroomReader } from "../../../mailroom/reader"
-import type { DecryptedMailMessage } from "../../../mailroom/core"
+import { describeMailProvenance, type DecryptedMailMessage } from "../../../mailroom/core"
 import type { MailOutboundRecord, MailScreenerCandidate } from "../../../mailroom/core"
 import type {
   OutlookMailAccessEntry,
@@ -110,12 +110,26 @@ function buildFolders(messages: OutlookMailMessageSummary[], outbound: OutlookMa
     { id: "native", label: "Native", count: messages.filter((message) => message.compartmentKind === "native").length },
   ]
   const sourceCounts = new Map<string, number>()
+  const sourceOwnerCounts = new Map<string, Map<string, number>>()
   for (const message of messages) {
     if (!message.source) continue
     sourceCounts.set(message.source, (sourceCounts.get(message.source) ?? 0) + 1)
+    const owner = message.ownerEmail ?? ""
+    const ownerCounts = sourceOwnerCounts.get(message.source) ?? new Map<string, number>()
+    ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1)
+    sourceOwnerCounts.set(message.source, ownerCounts)
   }
   for (const [source, count] of [...sourceCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    folders.push({ id: `source:${source}`, label: source.toUpperCase(), count })
+    const ownerCounts = sourceOwnerCounts.get(source)
+    if (!ownerCounts || ownerCounts.size <= 1) {
+      folders.push({ id: `source:${source}`, label: source.toUpperCase(), count })
+      continue
+    }
+    for (const [owner, ownerCount] of [...ownerCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const ownerLabel = owner || "unknown owner"
+      const ownerId = owner || "unknown-owner"
+      folders.push({ id: `source:${source}:${ownerId}`, label: `${source.toUpperCase()} / ${ownerLabel}`, count: ownerCount })
+    }
   }
   return folders
 }
@@ -142,6 +156,10 @@ function outboundRecord(record: MailOutboundRecord): OutlookMailOutboundRecord {
   return {
     id: record.id,
     status: record.status,
+    mailboxRole: record.mailboxRole ?? "agent-native-mailbox",
+    sendAuthority: record.sendAuthority ?? "agent-native",
+    ownerEmail: record.ownerEmail ?? null,
+    source: record.source ?? null,
     from: record.from,
     to: record.to,
     cc: record.cc,
@@ -173,8 +191,22 @@ function accessEntries(entries: MailAccessLogEntry[]): OutlookMailAccessEntry[] 
       threadId: entry.threadId ?? null,
       tool: entry.tool,
       reason: entry.reason,
+      mailboxRole: entry.mailboxRole ?? null,
+      compartmentKind: entry.compartmentKind ?? null,
+      ownerEmail: entry.ownerEmail ?? null,
+      source: entry.source ?? null,
       accessedAt: entry.accessedAt,
     }))
+}
+
+function accessProvenance(message: DecryptedMailMessage): Pick<MailAccessLogEntry, "mailboxRole" | "compartmentKind" | "ownerEmail" | "source"> {
+  const provenance = describeMailProvenance(message)
+  return {
+    mailboxRole: provenance.mailboxRole,
+    compartmentKind: message.compartmentKind,
+    ownerEmail: provenance.ownerEmail,
+    source: provenance.source,
+  }
 }
 
 function emitMailRead(agentName: string, mode: "list" | "message", status: OutlookMailStatus): void {
@@ -265,6 +297,7 @@ export async function readMailMessageView(agentName: string, messageId: string):
       messageId,
       tool: "outlook_mail_message",
       reason: "outlook read-only message body",
+      ...accessProvenance(decrypted),
     })
     const body = decrypted.private.text.length > OUTLOOK_MAIL_BODY_LIMIT
       ? decrypted.private.text.slice(0, OUTLOOK_MAIL_BODY_LIMIT)

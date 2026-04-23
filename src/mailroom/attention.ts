@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending"
-import type { MailScreenerCandidate } from "./core"
+import type { MailCompartmentKind, MailScreenerCandidate, MailboxRole } from "./core"
 import type { MailroomStore } from "./file-store"
 
 export interface MailScreenerAttentionState {
@@ -19,6 +19,10 @@ export interface MailScreenerAttentionQueued {
   senderDisplay: string
   recipient: string
   placement: MailScreenerCandidate["placement"]
+  mailboxRole: MailboxRole
+  compartmentKind: MailCompartmentKind
+  ownerEmail: string | null
+  source: string | null
   queuedAt: string
 }
 
@@ -81,6 +85,16 @@ function displaySender(candidate: MailScreenerCandidate): string {
   return candidate.senderEmail
 }
 
+function candidateCompartmentKind(candidate: MailScreenerCandidate): MailCompartmentKind {
+  return candidate.ownerEmail || candidate.source ? "delegated" : "native"
+}
+
+function candidateMailboxRole(candidate: MailScreenerCandidate): MailboxRole {
+  return candidateCompartmentKind(candidate) === "delegated"
+    ? "delegated-human-mailbox"
+    : "agent-native-mailbox"
+}
+
 function renderAttentionContent(candidate: MailScreenerCandidate): string {
   return [
     "[Mail Screener]",
@@ -100,6 +114,7 @@ function renderAttentionContent(candidate: MailScreenerCandidate): string {
 }
 
 function queuedSummary(candidate: MailScreenerCandidate, queuedAt: string): MailScreenerAttentionQueued {
+  const compartmentKind = candidateCompartmentKind(candidate)
   return {
     candidateId: candidate.id,
     messageId: candidate.messageId,
@@ -107,6 +122,10 @@ function queuedSummary(candidate: MailScreenerCandidate, queuedAt: string): Mail
     senderDisplay: candidate.senderDisplay,
     recipient: candidate.recipient,
     placement: candidate.placement,
+    mailboxRole: candidateMailboxRole(candidate),
+    compartmentKind,
+    ownerEmail: candidate.ownerEmail ?? null,
+    source: candidate.source ?? null,
     queuedAt,
   }
 }

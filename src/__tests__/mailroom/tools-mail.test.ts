@@ -271,6 +271,17 @@ describe("mail tools", () => {
         source: "hey",
       }),
     ]))
+
+    await seeded.store.recordAccess({
+      agentId: "slugger",
+      messageId,
+      tool: "mail_thread",
+      reason: "legacy delegated audit",
+      mailboxRole: "delegated-human-mailbox",
+      compartmentKind: "delegated",
+    })
+    const legacyAccessLog = await tool("mail_access_log").handler({}, trustedContext())
+    expect(legacyAccessLog).toContain("delegated human mailbox: unknown owner / unknown source")
   })
 
   it("keeps delegated human mail family-only while still treating native mail as the agent's sense", async () => {
