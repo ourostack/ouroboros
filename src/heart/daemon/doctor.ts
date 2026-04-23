@@ -16,7 +16,7 @@ import type {
 import { emitNervesEvent } from "../../nerves/runtime"
 import { probeBlueBubblesHealth } from "./bluebubbles-health-diagnostics"
 import { diagnoseOuroPath } from "../versioning/ouro-path-installer"
-import { refreshMachineRuntimeCredentialConfig } from "../runtime-credentials"
+import { refreshMachineRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 
 const DEFAULT_BLUEBUBBLES_REQUEST_TIMEOUT_MS = 30_000
@@ -97,6 +97,18 @@ function textField(record: Record<string, unknown> | null | undefined, key: stri
 function numberField(record: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const value = record?.[key]
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function hasStringRecordValue(value: unknown): boolean {
+  const record = asRecord(value)
+  return !!record && Object.values(record).some((entry) => typeof entry === "string" && entry.trim().length > 0)
+}
+
+function mailAutonomyDetail(mailroom: Record<string, unknown> | null): string {
+  const policy = asRecord(mailroom?.autonomousSendPolicy)
+  const autonomy = policy?.enabled === true ? "autonomy enabled" : "autonomy disabled"
+  const killSwitch = policy?.killSwitch === true ? "kill switch on" : "kill switch off"
+  return `${autonomy}; ${killSwitch}`
 }
 
 const SENSITIVE_CONFIG_KEYS = ["apiKey", "token", "secret", "password"]
@@ -270,6 +282,48 @@ export async function checkSenses(deps: DoctorDeps): Promise<DoctorCategory> {
             detail: probe.detail,
           })
         }
+      }
+
+      if (sense === "mail" && senseObj.enabled === true) {
+        const runtimeConfig = await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true })
+        if (!runtimeConfig.ok) {
+          checks.push({
+            label: `${agentDir} mail config`,
+            status: "fail",
+            detail: `runtime config unavailable: ${runtimeConfig.error}`,
+          })
+          continue
+        }
+
+        const mailroom = asRecord(runtimeConfig.config.mailroom)
+        const workSubstrate = asRecord(runtimeConfig.config.workSubstrate)
+        const mailboxAddress = textField(mailroom, "mailboxAddress")
+        const hosted = textField(workSubstrate, "mode") === "hosted"
+        const azureAccountUrl = textField(mailroom, "azureAccountUrl")
+        const azureContainer = textField(mailroom, "azureContainer") || "mailroom"
+        const missing: string[] = []
+        if (!mailboxAddress) missing.push("mailroom.mailboxAddress")
+        if (!hasStringRecordValue(mailroom?.privateKeys)) missing.push("mailroom.privateKeys")
+        if (hosted && !azureAccountUrl) missing.push("mailroom.azureAccountUrl for hosted Blob reader")
+
+        if (missing.length > 0) {
+          checks.push({
+            label: `${agentDir} mail config`,
+            status: "fail",
+            detail: `missing ${missing.join("/")}`,
+          })
+          continue
+        }
+
+        checks.push({
+          label: `${agentDir} mail config`,
+          status: "pass",
+          detail: [
+            mailboxAddress,
+            hosted ? `hosted azure-blob ${azureAccountUrl}/${azureContainer}` : "local file Mailroom",
+            mailAutonomyDetail(mailroom),
+          ].join("; "),
+        })
       }
     }
   }

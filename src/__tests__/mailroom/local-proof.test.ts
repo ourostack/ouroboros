@@ -350,7 +350,7 @@ describe("Agent Mail local proof", () => {
       confirmation: "CONFIRM_SEND",
       autonomous: "true",
       reason: "should refuse autonomous send",
-    }, familyContext())).resolves.toContain("Autonomous mail sending is disabled")
+    }, familyContext())).resolves.toContain("Autonomous mail sending requires an enabled native-agent policy")
     const sent = await tool("mail_send").handler({
       draft_id: draftId!,
       confirmation: "CONFIRM_SEND",

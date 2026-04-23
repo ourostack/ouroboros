@@ -30,6 +30,8 @@ export type {
   OutlookMailMessageDetail,
   OutlookMailMessageSummary,
   OutlookMailMessageView,
+  OutlookMailOutboundDeliveryEvent,
+  OutlookMailOutboundPolicyDecision,
   OutlookMailOutboundRecord,
   OutlookMailProvenance,
   OutlookMailRecoverySummary,

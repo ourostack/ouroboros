@@ -1,7 +1,8 @@
-import { act } from "react"
+import { act, StrictMode } from "react"
 import { fireEvent, render, waitFor, cleanup } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { NavigationContext } from "../../navigation"
+import { AgentInspector } from "../agent-inspector"
 import { OverviewTab } from "./overview"
 import { SessionsTab } from "./sessions"
 import { WorkTab } from "./work"
@@ -159,6 +160,48 @@ afterEach(() => {
 })
 
 describe("Outlook deep-tab live refresh", () => {
+  it("keeps the initial hash tab under StrictMode", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/mail")) {
+        return jsonResponse({
+          status: "ready",
+          agentName: "slugger",
+          mailboxAddress: "slugger@ouro.bot",
+          generatedAt: "2026-04-23T01:35:00.000Z",
+          store: { kind: "file", label: "/tmp/mailroom" },
+          folders: [],
+          messages: [],
+          screener: [],
+          outbound: [],
+          recovery: { discardedCount: 0, quarantineCount: 0 },
+          accessLog: [],
+          error: null,
+        })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <StrictMode>
+        <AgentInspector
+          agentName="slugger"
+          view={makeAgentView()}
+          deskPrefs={null}
+          refreshGeneration={0}
+          initialRoute={{ agent: "slugger", tab: "mail", focus: undefined }}
+        />
+      </StrictMode>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    await flushRefresh()
+
+    expect(ui.container.textContent).toContain("Agent mailbox")
+    expect(ui.container.textContent).not.toContain("CENTER OF GRAVITY")
+  })
+
   it("re-fetches overview deep data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -565,6 +608,221 @@ describe("Outlook deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("filters owner-scoped delegated source folders by both source and owner", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/mail")) {
+        return jsonResponse({
+          status: "ready",
+          agentName: "slugger",
+          mailboxAddress: "slugger@ouro.bot",
+          generatedAt: "2026-04-21T17:00:00.000Z",
+          store: { kind: "file", label: "/tmp/mailroom" },
+          folders: [
+            { id: "source:hey:ari@mendelow.me", label: "Ari HEY", count: 1 },
+            { id: "source:hey:maya@example.com", label: "Maya HEY", count: 1 },
+          ],
+          messages: [
+            {
+              id: "mail_ari",
+              subject: "Ari delegated note",
+              from: ["ari@mendelow.me"],
+              to: ["me.mendelow.ari.slugger@ouro.bot"],
+              cc: [],
+              date: null,
+              receivedAt: "2026-04-21T17:00:00.000Z",
+              snippet: "Ari mailbox evidence.",
+              placement: "imbox",
+              compartmentKind: "delegated",
+              ownerEmail: "ari@mendelow.me",
+              source: "hey",
+              recipient: "me.mendelow.ari.slugger@ouro.bot",
+              attachmentCount: 0,
+              untrustedContentWarning: "untrusted external data",
+              provenance: {
+                placement: "imbox",
+                compartmentKind: "delegated",
+                ownerEmail: "ari@mendelow.me",
+                source: "hey",
+                recipient: "me.mendelow.ari.slugger@ouro.bot",
+                mailboxId: "mailbox_slugger",
+                grantId: "grant_ari_hey",
+                trustReason: "screened-in delegated source",
+              },
+            },
+            {
+              id: "mail_maya",
+              subject: "Maya delegated note",
+              from: ["maya@example.com"],
+              to: ["me.example.maya.slugger@ouro.bot"],
+              cc: [],
+              date: null,
+              receivedAt: "2026-04-21T18:00:00.000Z",
+              snippet: "Maya mailbox evidence.",
+              placement: "imbox",
+              compartmentKind: "delegated",
+              ownerEmail: "maya@example.com",
+              source: "hey",
+              recipient: "me.example.maya.slugger@ouro.bot",
+              attachmentCount: 0,
+              untrustedContentWarning: "untrusted external data",
+              provenance: {
+                placement: "imbox",
+                compartmentKind: "delegated",
+                ownerEmail: "maya@example.com",
+                source: "hey",
+                recipient: "me.example.maya.slugger@ouro.bot",
+                mailboxId: "mailbox_slugger",
+                grantId: "grant_maya_hey",
+                trustReason: "screened-in delegated source",
+              },
+            },
+          ],
+          screener: [],
+          outbound: [],
+          recovery: { discardedCount: 0, quarantineCount: 0 },
+          accessLog: [],
+          error: null,
+        })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <MailboxTab
+        agentName="slugger"
+        onFocusConsumed={() => {}}
+        refreshGeneration={0}
+      />
+    )
+
+    await waitFor(() => expect(ui.container.textContent).toContain("Ari HEY"))
+    fireEvent.click(ui.getByRole("button", { name: /Ari HEY/ }))
+    expect(ui.container.textContent).toContain("Ari delegated note")
+    expect(ui.container.textContent).not.toContain("Maya delegated note")
+  })
+
+  it("renders explicit mailbox-role, autonomous send, and delivery audit labels without raw body leakage", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/mail")) {
+        return jsonResponse({
+          status: "ready",
+          agentName: "slugger",
+          mailboxAddress: "slugger@ouro.bot",
+          generatedAt: "2026-04-23T01:35:00.000Z",
+          store: { kind: "file", label: "/tmp/mailroom" },
+          folders: [
+            { id: "sent", label: "Sent", count: 1 },
+          ],
+          messages: [],
+          screener: [],
+          outbound: [{
+            id: "draft_acs",
+            status: "accepted",
+            mailboxRole: "agent-native-mailbox",
+            sendAuthority: "agent-native",
+            ownerEmail: null,
+            source: null,
+            from: "slugger@ouro.bot",
+            to: ["ari@mendelow.me"],
+            cc: [],
+            bcc: [],
+            subject: "Autonomous provider proof",
+            createdAt: "2026-04-23T01:30:00.000Z",
+            updatedAt: "2026-04-23T01:32:00.000Z",
+            sentAt: null,
+            submittedAt: "2026-04-23T01:31:00.000Z",
+            acceptedAt: "2026-04-23T01:32:00.000Z",
+            deliveredAt: null,
+            failedAt: null,
+            sendMode: "autonomous",
+            provider: "azure-communication-services",
+            providerMessageId: "acs-operation-1",
+            providerRequestId: "req-1",
+            transport: null,
+            reason: "policy-approved autonomous native send",
+            policyDecision: {
+              schemaVersion: 1,
+              allowed: true,
+              mode: "autonomous",
+              code: "allowed",
+              reason: "Autonomous native-agent mail policy allowed this send",
+              evaluatedAt: "2026-04-23T01:30:00.000Z",
+              recipients: ["ari@mendelow.me"],
+              fallback: "none",
+              policyId: "policy_slugger_native_mail",
+              remainingSendsInWindow: 1,
+            },
+            deliveryEvents: [{
+              schemaVersion: 1,
+              provider: "azure-communication-services",
+              providerEventId: "event-expanded-1",
+              providerMessageId: "acs-operation-1",
+              outcome: "accepted",
+              recipient: "ari@mendelow.me",
+              occurredAt: "2026-04-23T01:32:00.000Z",
+              receivedAt: "2026-04-23T01:32:01.000Z",
+              bodySafeSummary: "ACS delivery report Expanded for ari@mendelow.me",
+              providerStatus: "Expanded",
+            }],
+          }],
+          recovery: { discardedCount: 0, quarantineCount: 0 },
+          accessLog: [
+            {
+              id: "access_delegated",
+              messageId: "mail_ari",
+              threadId: null,
+              tool: "mail_thread",
+              reason: "read delegated message body",
+              mailboxRole: "delegated-human-mailbox",
+              compartmentKind: "delegated",
+              ownerEmail: "ari@mendelow.me",
+              source: "hey",
+              accessedAt: "2026-04-23T01:10:00.000Z",
+            },
+            {
+              id: "access_send",
+              messageId: null,
+              threadId: null,
+              tool: "mail_send",
+              reason: "policy-approved autonomous native send",
+              mailboxRole: "agent-native-mailbox",
+              compartmentKind: "native",
+              ownerEmail: null,
+              source: null,
+              accessedAt: "2026-04-23T01:31:00.000Z",
+            },
+          ],
+          error: null,
+        })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <MailboxTab
+        agentName="slugger"
+        onFocusConsumed={() => {}}
+        refreshGeneration={0}
+      />
+    )
+
+    await waitFor(() => expect(ui.container.textContent).toContain("Access audit"))
+    expect(ui.container.textContent).toContain("delegated human mailbox")
+    expect(ui.container.textContent).toContain("ari@mendelow.me / hey")
+    expect(ui.container.textContent).toContain("native agent mailbox")
+
+    fireEvent.click(ui.getByRole("button", { name: /Sent/ }))
+    expect(ui.container.textContent).toContain("Autonomous provider proof")
+    expect(ui.container.textContent).toContain("autonomous")
+    expect(ui.container.textContent).toContain("acs-operation-1")
+    expect(ui.container.textContent).toContain("ACS delivery report Expanded for ari@mendelow.me")
+    expect(ui.container.textContent).not.toContain("Provider raw body leaked")
   })
 
   it("re-fetches a focused session transcript even if the same focus is re-applied within the same refresh generation", async () => {

@@ -443,9 +443,44 @@ export interface OutlookMailScreenerCandidate {
   messageCount: number
 }
 
+export interface OutlookMailOutboundPolicyDecision {
+  allowed: boolean
+  mode: "autonomous" | "confirmation-required" | "blocked" | "confirmed"
+  code:
+    | "allowed"
+    | "explicit-confirmation"
+    | "autonomy-policy-disabled"
+    | "autonomy-kill-switch"
+    | "recipient-not-allowed"
+    | "recipient-limit-exceeded"
+    | "autonomous-rate-limit"
+    | "delegated-send-as-human-not-authorized"
+    | "agent-mismatch"
+    | "native-mailbox-mismatch"
+    | "draft-not-sendable"
+  reason: string
+  evaluatedAt: string
+  recipients: string[]
+  fallback: "CONFIRM_SEND" | "none"
+  policyId: string | null
+  remainingSendsInWindow: number | null
+}
+
+export interface OutlookMailOutboundDeliveryEvent {
+  provider: "local-sink" | "azure-communication-services"
+  providerEventId: string
+  providerMessageId: string
+  outcome: "accepted" | "delivered" | "bounced" | "suppressed" | "quarantined" | "spam-filtered" | "failed"
+  recipient: string | null
+  occurredAt: string
+  receivedAt: string
+  bodySafeSummary: string
+  providerStatus: string | null
+}
+
 export interface OutlookMailOutboundRecord {
   id: string
-  status: "draft" | "sent" | "failed"
+  status: "draft" | "sent" | "submitted" | "accepted" | "delivered" | "bounced" | "suppressed" | "quarantined" | "spam-filtered" | "failed"
   mailboxRole: "agent-native-mailbox" | "delegated-human-mailbox"
   sendAuthority: "agent-native"
   ownerEmail: string | null
@@ -458,6 +493,17 @@ export interface OutlookMailOutboundRecord {
   createdAt: string
   updatedAt: string
   sentAt: string | null
+  submittedAt: string | null
+  acceptedAt: string | null
+  deliveredAt: string | null
+  failedAt: string | null
+  sendMode: "confirmed" | "autonomous" | null
+  policyDecision: OutlookMailOutboundPolicyDecision | null
+  provider: string | null
+  providerMessageId: string | null
+  providerRequestId: string | null
+  operationLocation: string | null
+  deliveryEvents: OutlookMailOutboundDeliveryEvent[]
   transport: string | null
   reason: string
 }

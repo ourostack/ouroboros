@@ -543,6 +543,174 @@ describe("checkSenses", () => {
     expect(cat.checks[0].detail).toContain("no agents")
   })
 
+  it("fails enabled Mail config checks when hosted Blob reader fields are missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "hosted" },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: {},
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "missing mailroom.privateKeys/mailroom.azureAccountUrl for hosted Blob reader",
+    }))
+  })
+
+  it("fails enabled Mail config checks when mailbox identity is missing", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      mailroom: {
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "missing mailroom.mailboxAddress",
+    }))
+  })
+
+  it("passes enabled Mail config checks and reports hosted Blob plus autonomy kill switch state", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      workSubstrate: { mode: "hosted" },
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+        azureAccountUrl: "https://mailstore.blob.core.windows.net",
+        azureContainer: "mailroom",
+        autonomousSendPolicy: {
+          enabled: true,
+          killSwitch: true,
+        },
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "pass",
+      detail: "slugger@ouro.bot; hosted azure-blob https://mailstore.blob.core.windows.net/mailroom; autonomy enabled; kill switch on",
+    }))
+  })
+
+  it("passes enabled local Mail config checks and reports autonomy fallback state", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    seedRuntimeConfig("test", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger: "PRIVATE KEY" },
+        storePath: "/tmp/bundles/test.ouro/state/mailroom",
+      },
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "pass",
+      detail: "slugger@ouro.bot; local file Mailroom; autonomy disabled; kill switch off",
+    }))
+  })
+
+  it("fails enabled Mail config checks when portable runtime config is unavailable", async () => {
+    const config = JSON.stringify({
+      senses: {
+        mail: { enabled: true },
+      },
+    })
+    mockRuntimeConfigs.set("test", {
+      ok: false,
+      reason: "locked",
+      itemPath: "vault:test:runtime/config",
+      error: "vault is locked",
+    })
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/agent.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/agent.json": config,
+      }),
+    })
+
+    const cat = await checkSenses(deps)
+
+    expect(cat.checks).toContainEqual(expect.objectContaining({
+      label: "test.ouro mail config",
+      status: "fail",
+      detail: "runtime config unavailable: vault is locked",
+    }))
+  })
+
   it("fails when agent.json is unparseable for senses check", async () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/agent.json"]),

@@ -6,6 +6,10 @@ function readGuide(): string {
   return fs.readFileSync(path.resolve(process.cwd(), "docs", "agent-mail-setup.md"), "utf-8")
 }
 
+function readDoc(fileName: string): string {
+  return fs.readFileSync(path.resolve(process.cwd(), "docs", fileName), "utf-8")
+}
+
 describe("agent mail setup documentation contract", () => {
   it("documents the all-agent signup path and storage boundaries", () => {
     const guide = readGuide()
@@ -58,7 +62,7 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("persist a discard policy for that sender")
     expect(guide).toContain("Discard does not reject, bounce, or return mail to sender")
     expect(guide).toContain("retained recovery drawer")
-    expect(guide).toContain("Do not publish production MX records")
+    expect(guide).toContain("Verify the current `ouro.bot` DNS/MX state")
     expect(guide).toContain("HEY browser export")
     expect(guide).toContain("confirmation=CONFIRM_SEND")
     expect(guide).toContain("Ouro Outlook should feel like logging into the agent's mailbox")
@@ -75,5 +79,44 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("sourceFreshThrough")
     expect(guide).toContain("Archive imports are historical backfill")
     expect(guide).toContain("Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`")
+  })
+
+  it("documents guarded native autonomous sending instead of a blended or always-disabled outbound story", () => {
+    const guide = readGuide()
+
+    expect(guide).toContain("autonomous native-agent sending is policy-governed")
+    expect(guide).toContain("mailroom.autonomousSendPolicy")
+    expect(guide).toContain("kill switch")
+    expect(guide).toContain("allowed recipients or domains")
+    expect(guide).toContain("recipient and rate limits")
+    expect(guide).toContain("new or risky recipients fall back to `CONFIRM_SEND`")
+    expect(guide).toContain("Delegated human mail still never grants send-as-human authority")
+  })
+
+  it("links current production recovery guidance without stale MX proof language", () => {
+    const guide = readGuide()
+    const recovery = readDoc("agent-mail-recovery.md")
+
+    expect(guide).toContain("docs/agent-mail-recovery.md")
+    expect(guide).toContain("Current production proof state as of April 23, 2026")
+    expect(guide).toContain("mx1.ouro.bot:25")
+    expect(guide).not.toContain("Current proof state as of April 21, 2026")
+    expect(guide).not.toContain("did not prove public port `25`")
+    expect(guide).not.toContain("Do not publish production MX records")
+
+    for (const term of [
+      "Agent-runnable",
+      "Human-required",
+      "DNS/MX drift",
+      "HEY forwarding missing or stale",
+      "hosted registry/vault key drift",
+      "Blob reader or decryption failure",
+      "delivery event missing",
+      "autonomy kill switch",
+      "wrong mailbox provenance",
+      "Do not parse vault item notes",
+    ]) {
+      expect(recovery).toContain(term)
+    }
   })
 })

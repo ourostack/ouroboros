@@ -6,6 +6,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { AzureBlobMailroomStore } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
+import type { MailAutonomyPolicy } from "./core"
 
 export interface MailroomRuntimeConfig {
   mailboxAddress: string
@@ -19,6 +20,7 @@ export interface MailroomRuntimeConfig {
   host?: string
   attentionIntervalMs?: number
   outbound?: Record<string, unknown>
+  autonomousSendPolicy?: MailAutonomyPolicy
   privateKeys: Record<string, string>
 }
 
@@ -75,6 +77,9 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
   const host = textField(value, "host")
   const attentionIntervalMs = numberField(value, "attentionIntervalMs")
   const outbound = isRecord(value.outbound) ? { ...value.outbound } : undefined
+  const autonomousSendPolicy = isRecord(value.autonomousSendPolicy)
+    ? ({ ...value.autonomousSendPolicy } as unknown as MailAutonomyPolicy)
+    : undefined
   return {
     mailboxAddress,
     ...(registryPath ? { registryPath } : {}),
@@ -87,6 +92,7 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
     ...(host ? { host } : {}),
     ...(attentionIntervalMs !== undefined ? { attentionIntervalMs } : {}),
     ...(outbound ? { outbound } : {}),
+    ...(autonomousSendPolicy ? { autonomousSendPolicy } : {}),
     privateKeys,
   }
 }

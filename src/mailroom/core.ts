@@ -24,10 +24,44 @@ export type MailDecisionAction =
   | "quarantine"
   | "restore"
 export type MailScreenerCandidateStatus = "pending" | "allowed" | "discarded" | "quarantined" | "restored"
-export type MailOutboundStatus = "draft" | "sent" | "failed"
+export type MailOutboundStatus =
+  | "draft"
+  | "sent"
+  | "submitted"
+  | "accepted"
+  | "delivered"
+  | "bounced"
+  | "suppressed"
+  | "quarantined"
+  | "spam-filtered"
+  | "failed"
 export type MailboxRole = "agent-native-mailbox" | "delegated-human-mailbox"
 export type MailSendAuthority = "agent-native"
+export type MailSendMode = "confirmed" | "autonomous"
+export type MailOutboundProvider = "local-sink" | "azure-communication-services"
+export type MailOutboundDeliveryEventOutcome =
+  | "accepted"
+  | "delivered"
+  | "bounced"
+  | "suppressed"
+  | "quarantined"
+  | "spam-filtered"
+  | "failed"
 export type MailIngestKind = "smtp" | "mbox-import"
+export type MailAutonomyDecisionMode = "autonomous" | "confirmation-required" | "blocked" | "confirmed"
+export type MailAutonomyDecisionFallback = "CONFIRM_SEND" | "none"
+export type MailAutonomyDecisionCode =
+  | "allowed"
+  | "explicit-confirmation"
+  | "autonomy-policy-disabled"
+  | "autonomy-kill-switch"
+  | "recipient-not-allowed"
+  | "recipient-limit-exceeded"
+  | "autonomous-rate-limit"
+  | "delegated-send-as-human-not-authorized"
+  | "agent-mismatch"
+  | "native-mailbox-mismatch"
+  | "draft-not-sendable"
 
 export interface MailAuthenticationSummary {
   spf: MailAuthenticationState
@@ -100,6 +134,53 @@ export interface MailScreenerCandidate {
   resolvedByDecisionId?: string
 }
 
+export interface MailAutonomyRateLimit {
+  maxSends: number
+  windowMs: number
+}
+
+export interface MailAutonomyPolicy {
+  schemaVersion: 1
+  policyId: string
+  agentId: string
+  mailboxAddress: string
+  enabled: boolean
+  killSwitch: boolean
+  allowedRecipients: string[]
+  allowedDomains: string[]
+  maxRecipientsPerMessage: number
+  rateLimit: MailAutonomyRateLimit
+  actor?: MailDecisionActor
+  reason?: string
+  updatedAt?: string
+}
+
+export interface MailAutonomyDecision {
+  schemaVersion: 1
+  allowed: boolean
+  mode: MailAutonomyDecisionMode
+  code: MailAutonomyDecisionCode
+  reason: string
+  evaluatedAt: string
+  recipients: string[]
+  fallback: MailAutonomyDecisionFallback
+  policyId?: string
+  remainingSendsInWindow?: number
+}
+
+export interface MailOutboundDeliveryEvent {
+  schemaVersion: 1
+  provider: MailOutboundProvider
+  providerEventId: string
+  providerMessageId: string
+  outcome: MailOutboundDeliveryEventOutcome
+  recipient?: string
+  occurredAt: string
+  receivedAt: string
+  bodySafeSummary: string
+  providerStatus?: string
+}
+
 export interface MailOutboundRecord {
   schemaVersion: 1
   id: string
@@ -119,10 +200,35 @@ export interface MailOutboundRecord {
   reason: string
   createdAt: string
   updatedAt: string
+  sendMode?: MailSendMode
+  policyDecision?: MailAutonomyDecision
+  provider?: MailOutboundProvider
+  providerMessageId?: string
+  providerRequestId?: string
+  operationLocation?: string
+  submittedAt?: string
+  acceptedAt?: string
+  deliveredAt?: string
+  failedAt?: string
+  deliveryEvents?: MailOutboundDeliveryEvent[]
   sentAt?: string
   transport?: string
   transportMessageId?: string
   error?: string
+}
+
+export interface BuildMailProviderSubmissionInput {
+  draft: MailOutboundRecord
+  provider: MailOutboundProvider
+  providerMessageId: string
+  submittedAt: string
+  operationLocation?: string
+  providerRequestId?: string
+}
+
+export interface ReconcileMailDeliveryEventInput {
+  outbound: MailOutboundRecord
+  event: MailOutboundDeliveryEvent
 }
 
 export interface AgentMailboxRecord {
@@ -290,6 +396,95 @@ export function normalizeMailAddress(address: string): string {
     throw new Error(`Invalid email address: ${address}`)
   }
   return normalized
+}
+
+export function buildMailProviderSubmission(input: BuildMailProviderSubmissionInput): MailOutboundRecord {
+  return {
+    ...input.draft,
+    status: "submitted",
+    provider: input.provider,
+    providerMessageId: input.providerMessageId,
+    ...(input.providerRequestId ? { providerRequestId: input.providerRequestId } : {}),
+    ...(input.operationLocation ? { operationLocation: input.operationLocation } : {}),
+    submittedAt: input.submittedAt,
+    updatedAt: input.submittedAt,
+    deliveryEvents: [],
+  }
+}
+
+function recordField(value: unknown, key: string): unknown {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined
+}
+
+function stringField(value: unknown, key: string): string {
+  const field = recordField(value, key)
+  return typeof field === "string" ? field : ""
+}
+
+function acsOutcome(status: string): MailOutboundDeliveryEventOutcome {
+  switch (status) {
+    case "Delivered": return "delivered"
+    case "Suppressed": return "suppressed"
+    case "Bounced": return "bounced"
+    case "Quarantined": return "quarantined"
+    case "FilteredSpam": return "spam-filtered"
+    case "Expanded": return "accepted"
+    case "Failed": return "failed"
+    default: throw new Error(`unsupported ACS delivery status: ${status || "unknown"}`)
+  }
+}
+
+export function parseAcsEmailDeliveryReportEvent(event: unknown): MailOutboundDeliveryEvent {
+  const providerEventId = stringField(event, "id")
+  const eventType = stringField(event, "eventType")
+  const data = recordField(event, "data")
+  if (!providerEventId) throw new Error("ACS delivery event is missing id")
+  if (eventType !== "Microsoft.Communication.EmailDeliveryReportReceived") {
+    throw new Error(`unsupported ACS event type: ${eventType || "unknown"}`)
+  }
+  const providerMessageId = stringField(data, "messageId")
+  const status = stringField(data, "status")
+  if (!providerMessageId) throw new Error("ACS delivery event is missing messageId")
+  const recipient = stringField(data, "recipient")
+  const eventTime = stringField(event, "eventTime")
+  const occurredAt = stringField(data, "deliveryAttemptTimeStamp") || eventTime || new Date().toISOString()
+  const normalizedRecipient = recipient ? normalizeMailAddress(recipient) : ""
+  return {
+    schemaVersion: 1,
+    provider: "azure-communication-services",
+    providerEventId,
+    providerMessageId,
+    outcome: acsOutcome(status),
+    ...(normalizedRecipient ? { recipient: normalizedRecipient } : {}),
+    occurredAt,
+    receivedAt: eventTime || occurredAt,
+    bodySafeSummary: `ACS delivery report ${status} for ${normalizedRecipient || "unknown recipient"}`,
+    providerStatus: status,
+  }
+}
+
+export function reconcileMailDeliveryEvent(input: ReconcileMailDeliveryEventInput): MailOutboundRecord {
+  if (input.outbound.providerMessageId && input.outbound.providerMessageId !== input.event.providerMessageId) {
+    throw new Error("delivery event providerMessageId does not match outbound record")
+  }
+  const existingEvents = input.outbound.deliveryEvents ?? []
+  if (existingEvents.some((event) => event.providerEventId === input.event.providerEventId)) {
+    return input.outbound
+  }
+  const timestampKey = input.event.outcome === "delivered"
+    ? "deliveredAt"
+    : input.event.outcome === "accepted"
+      ? "acceptedAt"
+      : "failedAt"
+  return {
+    ...input.outbound,
+    status: input.event.outcome,
+    updatedAt: input.event.occurredAt,
+    deliveryEvents: [...existingEvents, input.event],
+    [timestampKey]: input.event.occurredAt,
+  }
 }
 
 function safeAddressPart(value: string): string {

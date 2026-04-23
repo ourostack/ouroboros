@@ -19,7 +19,14 @@ function folderMatches(message: OutlookMailMessageSummary, folderId: MailFolderF
   if (folderId === "all") return true
   if (["imbox", "screener", "discarded", "quarantine"].includes(folderId)) return message.placement === folderId
   if (folderId === "native" || folderId === "delegated") return message.compartmentKind === folderId
-  if (folderId.startsWith("source:")) return message.source === folderId.slice("source:".length)
+  if (folderId.startsWith("source:")) {
+    const sourceSpec = folderId.slice("source:".length)
+    const ownerSeparator = sourceSpec.indexOf(":")
+    if (ownerSeparator === -1) return message.source === sourceSpec
+    const source = sourceSpec.slice(0, ownerSeparator)
+    const owner = sourceSpec.slice(ownerSeparator + 1)
+    return message.source === source && (message.ownerEmail ?? "unknown-owner") === owner
+  }
   return false
 }
 
@@ -58,9 +65,30 @@ function messageFallback(agentName: string, mailboxAddress: string | null, error
 
 function provenanceLabel(message: OutlookMailMessageSummary): string {
   if (message.provenance.compartmentKind === "delegated") {
-    return `${message.provenance.ownerEmail ?? "delegated"} / ${message.provenance.source ?? "source"}`
+    return `delegated human mailbox · ${message.provenance.ownerEmail ?? "unknown owner"} / ${message.provenance.source ?? "unknown source"}`
   }
-  return "native mailbox"
+  return "native agent mailbox"
+}
+
+function accessProvenanceLabel(entry: OutlookMailView["accessLog"][number]): string {
+  if (entry.mailboxRole === "delegated-human-mailbox") {
+    return `delegated human mailbox · ${entry.ownerEmail ?? "unknown owner"} / ${entry.source ?? "unknown source"}`
+  }
+  if (entry.mailboxRole === "agent-native-mailbox") return "native agent mailbox"
+  return "mailbox"
+}
+
+function sendAuthorityLabel(record: OutlookMailOutboundRecord): string {
+  if (record.sendAuthority === "agent-native") return "native agent mailbox"
+  return record.mailboxRole
+}
+
+function outboundTransportLabel(record: OutlookMailOutboundRecord): string {
+  return record.transport ?? record.provider ?? "not sent"
+}
+
+function outboundEventTime(record: OutlookMailOutboundRecord): string {
+  return record.deliveredAt ?? record.failedAt ?? record.acceptedAt ?? record.sentAt ?? record.submittedAt ?? record.updatedAt
 }
 
 function pillClass(placement: string): string {
@@ -129,7 +157,8 @@ export function MailboxTab({ agentName, focus, onFocusConsumed, refreshGeneratio
 
   const visibleOutbound = useMemo(() => {
     if (activeFolder !== "draft" && activeFolder !== "sent") return []
-    return (view?.outbound ?? []).filter((record) => record.status === activeFolder)
+    return (view?.outbound ?? []).filter((record) =>
+      activeFolder === "draft" ? record.status === "draft" : record.status !== "draft")
   }, [activeFolder, view])
 
   if (!view) return <Loading label="Opening mailbox" />
@@ -290,6 +319,7 @@ function AccessBlock({ entries }: { entries: OutlookMailView["accessLog"] }) {
         {entries.slice(0, 4).map((entry) => (
           <div key={entry.id} className="text-xs leading-4 text-[#687062]">
             <p className="truncate font-medium text-[#3f4b42]">{entry.tool}</p>
+            <p className="truncate">{accessProvenanceLabel(entry)}</p>
             <p className="truncate">{entry.reason}</p>
           </div>
         ))}
@@ -327,6 +357,7 @@ function MessageRow({ message, selected, onSelect }: {
 }
 
 function OutboundRow({ record }: { record: OutlookMailOutboundRecord }) {
+  const latestDeliveryEvent = record.deliveryEvents[record.deliveryEvents.length - 1]
   return (
     <div className="border-b border-[#d8e2d4] px-4 py-3">
       <div className="flex items-start justify-between gap-3">
@@ -334,7 +365,19 @@ function OutboundRow({ record }: { record: OutlookMailOutboundRecord }) {
         <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] ring-1 ${pillClass(record.status)}`}>{record.status}</span>
       </div>
       <p className="mt-1 truncate text-xs text-[#536157]">to {addressLine(record.to)}</p>
-      <p className="mt-1 text-xs text-[#687062]">{record.transport ?? "not sent"} · {relTime(record.sentAt ?? record.updatedAt)}</p>
+      <p className="mt-1 text-xs text-[#687062]">{outboundTransportLabel(record)} · {relTime(outboundEventTime(record))}</p>
+      <p className="mt-1 truncate text-xs text-[#687062]">
+        {sendAuthorityLabel(record)} · {record.sendMode ?? "mode unknown"}
+        {record.policyDecision ? ` · policy ${record.policyDecision.code} / ${record.policyDecision.fallback}` : ""}
+      </p>
+      {(record.providerMessageId || record.providerRequestId) && (
+        <p className="mt-1 truncate text-xs text-[#687062]">
+          provider {record.providerMessageId ?? "unknown"}{record.providerRequestId ? ` · request ${record.providerRequestId}` : ""}
+        </p>
+      )}
+      {latestDeliveryEvent && (
+        <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#687062]">{latestDeliveryEvent.bodySafeSummary}</p>
+      )}
     </div>
   )
 }

@@ -42,17 +42,24 @@ export function AgentInspector({ agentName, view, deskPrefs, refreshGeneration, 
   const [activeTab, setActiveTab] = useState<TabId>(initialRoute?.tab ?? "overview")
   const [focusTarget, setFocusTarget] = useState<string | undefined>(initialRoute?.focus)
   const initialConsumed = useRef(false)
+  const previousAgent = useRef(agentName)
 
   useEffect(() => {
+    const agentChanged = previousAgent.current !== agentName
+    previousAgent.current = agentName
+
     if (initialRoute?.agent === agentName && !initialConsumed.current) {
       initialConsumed.current = true
       setActiveTab(initialRoute.tab)
       setFocusTarget(initialRoute.focus)
-    } else {
+      return
+    }
+
+    if (agentChanged) {
       setActiveTab("overview")
       setFocusTarget(undefined)
     }
-  }, [agentName])
+  }, [agentName, initialRoute?.agent, initialRoute?.focus, initialRoute?.tab])
 
   const navigate = useCallback((target: NavigateTarget) => {
     setActiveTab(target.tab)

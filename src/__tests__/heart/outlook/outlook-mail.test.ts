@@ -479,6 +479,118 @@ describe("Outlook mail reader", () => {
     }))
   })
 
+  it("surfaces outbound autonomy and provider delivery audit without body leakage", async () => {
+    const storePath = tempDir()
+    const { keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+
+    await store.upsertMailOutbound({
+      schemaVersion: 1,
+      id: "draft_acs_bounced",
+      agentId: "slugger",
+      status: "bounced",
+      mailboxRole: "agent-native-mailbox",
+      sendAuthority: "agent-native",
+      from: "slugger@ouro.bot",
+      to: ["ari@mendelow.me"],
+      cc: [],
+      bcc: [],
+      subject: "Provider delivery proof",
+      text: "smtp diagnostic body should stay private",
+      actor: { kind: "agent", agentId: "slugger" },
+      reason: "policy-approved provider send",
+      createdAt: "2026-04-23T01:30:00.000Z",
+      updatedAt: "2026-04-23T01:33:00.000Z",
+      sendMode: "autonomous",
+      policyDecision: {
+        schemaVersion: 1,
+        allowed: true,
+        mode: "autonomous",
+        code: "allowed",
+        reason: "Autonomous native-agent mail policy allowed this send",
+        evaluatedAt: "2026-04-23T01:30:00.000Z",
+        recipients: ["ari@mendelow.me"],
+        fallback: "none",
+        policyId: "policy_slugger_native_mail",
+        remainingSendsInWindow: 1,
+      },
+      provider: "azure-communication-services",
+      providerMessageId: "acs-operation-1",
+      providerRequestId: "req-1",
+      operationLocation: "https://contoso.communication.azure.com/emails/operations/acs-operation-1?api-version=2025-09-01",
+      submittedAt: "2026-04-23T01:31:00.000Z",
+      acceptedAt: "2026-04-23T01:32:00.000Z",
+      failedAt: "2026-04-23T01:33:00.000Z",
+      deliveryEvents: [{
+        schemaVersion: 1,
+        provider: "azure-communication-services",
+        providerEventId: "event-bounced-1",
+        providerMessageId: "acs-operation-1",
+        outcome: "bounced",
+        recipient: "ari@mendelow.me",
+        occurredAt: "2026-04-23T01:33:00.000Z",
+        receivedAt: "2026-04-23T01:33:01.000Z",
+        bodySafeSummary: "ACS delivery report Bounced for ari@mendelow.me",
+        providerStatus: "Bounced",
+      }, {
+        schemaVersion: 1,
+        provider: "azure-communication-services",
+        providerEventId: "event-expanded-unknown-recipient",
+        providerMessageId: "acs-operation-1",
+        outcome: "accepted",
+        occurredAt: "2026-04-23T01:32:00.000Z",
+        receivedAt: "2026-04-23T01:32:01.000Z",
+        bodySafeSummary: "ACS delivery report Expanded for unknown recipient",
+      }],
+    })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: keys,
+      },
+    })
+
+    const mailbox = await readMailView("slugger")
+    expect(mailbox.outbound).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "draft_acs_bounced",
+        status: "bounced",
+        mailboxRole: "agent-native-mailbox",
+        sendAuthority: "agent-native",
+        sendMode: "autonomous",
+        policyDecision: expect.objectContaining({
+          code: "allowed",
+          fallback: "none",
+          policyId: "policy_slugger_native_mail",
+        }),
+        provider: "azure-communication-services",
+        providerMessageId: "acs-operation-1",
+        providerRequestId: "req-1",
+        operationLocation: "https://contoso.communication.azure.com/emails/operations/acs-operation-1?api-version=2025-09-01",
+        submittedAt: "2026-04-23T01:31:00.000Z",
+        acceptedAt: "2026-04-23T01:32:00.000Z",
+        failedAt: "2026-04-23T01:33:00.000Z",
+        deliveryEvents: expect.arrayContaining([
+          expect.objectContaining({
+            providerEventId: "event-bounced-1",
+            outcome: "bounced",
+            bodySafeSummary: "ACS delivery report Bounced for ari@mendelow.me",
+          }),
+          expect.objectContaining({
+            providerEventId: "event-expanded-unknown-recipient",
+            recipient: null,
+            providerStatus: null,
+            bodySafeSummary: "ACS delivery report Expanded for unknown recipient",
+          }),
+        ]),
+      }),
+    ]))
+    const serializedOutbound = JSON.stringify(mailbox.outbound)
+    expect(serializedOutbound).toContain("ACS delivery report Bounced for ari@mendelow.me")
+    expect(serializedOutbound).not.toContain("smtp diagnostic body should stay private")
+  })
+
   it("returns error views when mailbox reads or decryption fail", async () => {
     const storePath = tempDir()
     const { store, messageId } = await seedMailbox(storePath)

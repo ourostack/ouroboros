@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
+import { buildSenderPolicy } from "../../mailroom/policy"
 import { FileMailroomStore, ingestRawMailToStore, type MailroomStore } from "../../mailroom/file-store"
 import { scanMailScreenerAttention } from "../../mailroom/attention"
 
@@ -124,6 +125,81 @@ describe("mail screener attention", () => {
     })
     expect(second.queued).toEqual([])
     expect(pendingBodies(pendingDir)).toHaveLength(1)
+  })
+
+  it("queues unknown native mail for Screener while known sender policy goes quietly to Imbox", async () => {
+    const root = tempDir()
+    const storePath = path.join(root, "mailroom")
+    const pendingDir = path.join(root, "pending", "self", "inner", "dialog")
+    const statePath = path.join(root, "senses", "mail", "attention.json")
+    const ensured = provisionMailboxRegistry({ agentId: "slugger" })
+    const registry = {
+      ...ensured.registry,
+      senderPolicies: [
+        buildSenderPolicy({
+          agentId: "slugger",
+          scope: "native",
+          match: { kind: "email", value: "known@example.com" },
+          action: "allow",
+          actor: { kind: "human", trustLevel: "family" },
+          reason: "Ari screened this sender in",
+          now: new Date("2026-04-22T00:00:00.000Z"),
+        }),
+      ],
+    }
+    const store = new FileMailroomStore({ rootDir: storePath })
+    const unknown = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "unknown@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: unknown@example.com",
+        "To: slugger@ouro.bot",
+        "Subject: Needs screening",
+        "",
+        "Screen this body, but do not leak it.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T20:00:00.000Z"),
+    })
+    const known = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: {
+        mailFrom: "known@example.com",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from([
+        "From: known@example.com",
+        "To: slugger@ouro.bot",
+        "Subject: Already screened in",
+        "",
+        "Quietly file this.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T20:01:00.000Z"),
+    })
+
+    expect(unknown.accepted[0]?.placement).toBe("screener")
+    expect(known.accepted[0]?.placement).toBe("imbox")
+
+    const result = await scanMailScreenerAttention({
+      agentName: "slugger",
+      store,
+      pendingDir,
+      statePath,
+      now: () => 1_777_000_000_000,
+    })
+
+    expect(result.queued).toEqual([
+      expect.objectContaining({
+        senderEmail: "unknown@example.com",
+        mailboxRole: "agent-native-mailbox",
+        compartmentKind: "native",
+      }),
+    ])
+    expect(pendingBodies(pendingDir).join("\n")).not.toContain("Quietly file this")
   })
 
   it("does not resurface resolved screener candidates", async () => {

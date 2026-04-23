@@ -19,6 +19,18 @@ describe("mailroom reader", () => {
       host: "0.0.0.0",
       attentionIntervalMs: 12_000,
       outbound: { transport: "local-sink", sinkPath: "/tmp/sent.jsonl" },
+      autonomousSendPolicy: {
+        schemaVersion: 1,
+        policyId: "mail_auto_slugger",
+        agentId: "slugger",
+        mailboxAddress: "slugger@ouro.bot",
+        enabled: true,
+        killSwitch: false,
+        allowedRecipients: ["ari@mendelow.me"],
+        allowedDomains: ["trusted.example"],
+        maxRecipientsPerMessage: 3,
+        rateLimit: { maxSends: 2, windowMs: 60_000 },
+      },
       privateKeys: { primary: "secret", empty: "   " },
     })).toEqual({
       mailboxAddress: "slugger@ouro.bot",
@@ -29,6 +41,18 @@ describe("mailroom reader", () => {
       host: "0.0.0.0",
       attentionIntervalMs: 12_000,
       outbound: { transport: "local-sink", sinkPath: "/tmp/sent.jsonl" },
+      autonomousSendPolicy: {
+        schemaVersion: 1,
+        policyId: "mail_auto_slugger",
+        agentId: "slugger",
+        mailboxAddress: "slugger@ouro.bot",
+        enabled: true,
+        killSwitch: false,
+        allowedRecipients: ["ari@mendelow.me"],
+        allowedDomains: ["trusted.example"],
+        maxRecipientsPerMessage: 3,
+        rateLimit: { maxSends: 2, windowMs: 60_000 },
+      },
       privateKeys: { primary: "secret" },
     })
   })

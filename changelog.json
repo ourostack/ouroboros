@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.470",
+      "changes": [
+        "Agent Mail native sending now enforces autonomy policy, confirmation fallback, recipient/rate limits, delegated send-as-human refusal, audit records, and kill switch state.",
+        "Outbound Mail now records provider submission and delivery state through ACS/Event Grid while keeping status summaries and Outlook audit output body-safe.",
+        "Mail recovery docs and `ouro doctor` now check mailbox identity, vault-held mail keys, hosted Blob reader coordinates, and autonomy kill switch state without treating generic vault item notes as machine contracts."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.469",
       "changes": [
         "Delegated HEY MBOX imports now preserve archive freshness/provenance, use message dates when present, suppress historical Screener wakeups, and show `source fresh through` in `ouro mail import-mbox` output.",
