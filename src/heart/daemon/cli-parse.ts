@@ -98,6 +98,7 @@ export function usage(): string {
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
+    "  ouro mail backfill-indexes [--agent <name>]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro auth switch [--agent <name>] --provider <provider>",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
@@ -921,8 +922,17 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
 
 function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
+  const usageText = "Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]\n       ouro mail backfill-indexes [--agent <name>]"
+  if (sub === "backfill-indexes") {
+    const { agent, rest } = extractAgentFlag(subArgs)
+    if (rest.length > 0) throw new Error(usageText)
+    return {
+      kind: "mail.backfill-indexes",
+      ...(agent ? { agent } : {}),
+    }
+  }
   if (sub !== "import-mbox") {
-    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+    throw new Error(usageText)
   }
   const { agent, rest } = extractAgentFlag(subArgs)
   let filePath: string | undefined
@@ -942,10 +952,10 @@ function parseMailCommand(args: string[]): OuroCliCommand {
       source = rest[++i]
       continue
     }
-    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+    throw new Error(usageText)
   }
   if (!filePath) {
-    throw new Error("Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]")
+    throw new Error(usageText)
   }
   return {
     kind: "mail.import-mbox",

@@ -372,6 +372,7 @@ type MissingAgentResolvableKind =
   | "connect"
   | "account.ensure"
   | "mail.import-mbox"
+  | "mail.backfill-indexes"
   | "auth.run"
   | "auth.verify"
   | "auth.switch"
@@ -1415,7 +1416,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
   return command
 }
 
@@ -4143,6 +4144,52 @@ async function executeMailImportMbox(
   }
 }
 
+async function executeMailBackfillIndexes(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.backfill-indexes" }>,
+  deps: OuroCliDeps,
+): Promise<string> {
+  const progress = createHumanCommandProgress(deps, "mail index repair")
+  try {
+    progress.startPhase("resolving Mailroom store")
+    const resolved = resolveMailroomReader(command.agent)
+    if (!resolved.ok) {
+      progress.end()
+      throw new Error(resolved.error)
+    }
+    if (resolved.storeKind !== "azure-blob") {
+      progress.completePhase("resolving Mailroom store", "not needed")
+      progress.end()
+      const message = [
+        `Hosted mail index backfill not needed for ${command.agent}`,
+        `store: ${resolved.storeLabel}`,
+        "This agent is using the local file Mailroom store, so recent mail reads do not depend on hosted blob indexes.",
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+    const store = resolved.store as { backfillMessageIndexes?: (agentId?: string) => Promise<number> }
+    if (typeof store.backfillMessageIndexes !== "function") {
+      progress.end()
+      throw new Error(`hosted Mailroom store for ${command.agent} does not expose index backfill`)
+    }
+    progress.updateDetail("backfilling hosted message indexes")
+    const indexed = await store.backfillMessageIndexes(command.agent)
+    progress.completePhase("resolving Mailroom store", "backfilled")
+    progress.end()
+    const message = [
+      `Backfilled hosted mail indexes for ${command.agent}`,
+      `store: ${resolved.storeLabel}`,
+      `indexed: ${indexed}`,
+      "Safe to rerun. Existing index entries are rewritten in place.",
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  } catch (error) {
+    progress.end()
+    throw error
+  }
+}
+
 async function executeConnectProviders(agent: string, deps: OuroCliDeps): Promise<string> {
   const promptInput = deps.promptInput
   if (!promptInput) {
@@ -5689,6 +5736,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
   if (command.kind === "mail.import-mbox") {
     return executeMailImportMbox(command, deps)
+  }
+
+  if (command.kind === "mail.backfill-indexes") {
+    return executeMailBackfillIndexes(command, deps)
   }
 
   if (command.kind === "daemon.up") {

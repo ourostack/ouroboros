@@ -194,10 +194,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   mail: {
     category: "Auth",
-    description: "Import delegated mail into the agent Mailroom substrate",
-    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
+    description: "Import delegated mail and repair hosted Mailroom mailbox indexes",
+    usage: "ouro mail <import-mbox|backfill-indexes> [--agent <name>]",
     example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
-    subcommands: ["import-mbox"],
+    subcommands: ["import-mbox", "backfill-indexes"],
   },
   use: {
     category: "Auth",
@@ -341,6 +341,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
     usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
     example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
+  },
+  "mail backfill-indexes": {
+    description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",
+    usage: "ouro mail backfill-indexes [--agent <name>]",
+    example: "ouro mail backfill-indexes --agent slugger",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into daemon memory",

@@ -1217,6 +1217,13 @@ describe("provider CLI command parsing", () => {
       kind: "mail.import-mbox",
       filePath: "/tmp/hey.mbox",
     })
+    expect(parseOuroCommand(["mail", "backfill-indexes", "--agent", "Slugger"])).toEqual({
+      kind: "mail.backfill-indexes",
+      agent: "Slugger",
+    })
+    expect(parseOuroCommand(["mail", "backfill-indexes"])).toEqual({
+      kind: "mail.backfill-indexes",
+    })
     expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger"])).toEqual({
       kind: "account.ensure",
       agent: "Slugger",
@@ -1253,6 +1260,7 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "reset"])).toThrow("ouro account ensure")
     expect(() => parseOuroCommand(["account", "ensure", "extra"])).toThrow("ouro account ensure")
@@ -2569,6 +2577,117 @@ describe("provider CLI command execution", () => {
       "--file",
       mboxPath,
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation")
+
+    readerSpy.mockRestore()
+  })
+
+  it("backfills hosted mail indexes through the Mail CLI", async () => {
+    emitTestEvent("provider cli mail backfill indexes")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const backfillMessageIndexes = vi.fn(async () => 16616)
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: { backfillMessageIndexes } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Backfilled hosted mail indexes for Slugger")
+    expect(result).toContain(`store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
+    expect(result).toContain("indexed: 16616")
+    expect(backfillMessageIndexes).toHaveBeenCalledWith("Slugger")
+
+    readerSpy.mockRestore()
+  })
+
+  it("treats local mail stores as a no-op for hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill local noop")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-local-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-local-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath: "/tmp/mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {} as any,
+      storeKind: "file",
+      storeLabel: "/tmp/mailroom",
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Hosted mail index backfill not needed for Slugger")
+    expect(result).toContain("local file Mailroom store")
+
+    readerSpy.mockRestore()
+  })
+
+  it("surfaces Mailroom reader and repair-shape failures during hosted index backfill", async () => {
+    emitTestEvent("provider cli mail backfill failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader")
+    readerSpy.mockReturnValueOnce({
+      ok: false,
+      agentName: "Slugger",
+      reason: "misconfigured",
+      error: "AUTH_REQUIRED:mailroom -- synthetic backfill failure",
+    }).mockReturnValueOnce({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {} as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic backfill failure")
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("does not expose index backfill")
 
     readerSpy.mockRestore()
   })

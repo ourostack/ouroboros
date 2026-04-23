@@ -105,6 +105,12 @@ function compareCandidatesNewestFirst(left: MailScreenerCandidate, right: MailSc
   return Date.parse(right.lastSeenAt) - Date.parse(left.lastSeenAt)
 }
 
+function sourceMatchesFilter(source: string | undefined, filter: string | undefined): boolean {
+  if (!filter) return true
+  if (!source) return false
+  return source.toLowerCase() === filter.toLowerCase()
+}
+
 export class FileMailroomStore implements MailroomStore {
   private readonly rootDir: string
 
@@ -223,7 +229,7 @@ export class FileMailroomStore implements MailroomStore {
       .filter((message) => message.agentId === filters.agentId)
       .filter((message) => filters.placement ? message.placement === filters.placement : true)
       .filter((message) => filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true)
-      .filter((message) => filters.source ? message.source === filters.source : true)
+      .filter((message) => sourceMatchesFilter(message.source, filters.source))
       .sort(compareNewestFirst)
       .slice(0, filters.limit ?? 20)
     emitNervesEvent({

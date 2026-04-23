@@ -16,6 +16,23 @@ import {
 } from "./core"
 import type { MailAccessLogEntry, MailListFilters, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
 
+const MESSAGE_INDEX_PREFIX = "message-index"
+const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
+const MESSAGE_INDEX_SORT_WIDTH = 13
+const MESSAGE_INDEX_NO_SOURCE = "~"
+const MESSAGE_INDEX_BACKFILL_CONCURRENCY = 16
+const MESSAGE_LIST_SCAN_CONCURRENCY = 32
+
+interface StoredMailMessageIndexRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  compartmentKind: StoredMailMessage["compartmentKind"]
+  placement: MailPlacement
+  source?: string
+  receivedAt: string
+}
+
 export interface AzureBlobMailroomStoreOptions {
   serviceClient: BlobServiceClient
   containerName: string
@@ -36,6 +53,75 @@ function blobText(value: unknown): Buffer {
 async function downloadJson<T>(blob: { exists(): Promise<boolean>; downloadToBuffer(): Promise<Buffer> }): Promise<T | null> {
   if (!await blob.exists()) return null
   return JSON.parse((await blob.downloadToBuffer()).toString("utf-8")) as T
+}
+
+function encodeSourceToken(source?: string): string {
+  return source ? encodeURIComponent(source.toLowerCase()) : MESSAGE_INDEX_NO_SOURCE
+}
+
+function decodeSourceToken(token: string): string | undefined {
+  return token === MESSAGE_INDEX_NO_SOURCE ? undefined : decodeURIComponent(token)
+}
+
+function parseSortMs(receivedAt: string): number {
+  const parsed = Date.parse(receivedAt)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.max(0, Math.min(MESSAGE_INDEX_SORT_MAX_MS, parsed))
+}
+
+function messageIndexPrefix(agentId: string): string {
+  return `${MESSAGE_INDEX_PREFIX}/${agentId}/`
+}
+
+function messageIndexBlobName(message: Pick<StoredMailMessage, "id" | "agentId" | "compartmentKind" | "placement" | "source" | "receivedAt">): string {
+  const sortKey = String(MESSAGE_INDEX_SORT_MAX_MS - parseSortMs(message.receivedAt)).padStart(MESSAGE_INDEX_SORT_WIDTH, "0")
+  return `${messageIndexPrefix(message.agentId)}${sortKey}__${message.compartmentKind}__${message.placement}__${encodeSourceToken(message.source)}__${message.id}.json`
+}
+
+function messageIndexRecord(message: Pick<StoredMailMessage, "id" | "agentId" | "compartmentKind" | "placement" | "source" | "receivedAt">): StoredMailMessageIndexRecord {
+  return {
+    schemaVersion: 1,
+    id: message.id,
+    agentId: message.agentId,
+    compartmentKind: message.compartmentKind,
+    placement: message.placement,
+    ...(message.source ? { source: message.source } : {}),
+    receivedAt: message.receivedAt,
+  }
+}
+
+function parseMessageIndexBlobName(name: string): StoredMailMessageIndexRecord | null {
+  if (!name.startsWith(`${MESSAGE_INDEX_PREFIX}/`) || !name.endsWith(".json")) return null
+  const parts = name.split("/")
+  if (parts.length !== 3) return null
+  const agentId = parts[1]
+  const stem = parts[2]!.slice(0, -5)
+  const [sortKey, compartmentKind, placement, sourceToken, ...idParts] = stem.split("__")
+  if (!sortKey || !compartmentKind || !placement || !sourceToken || idParts.length === 0) return null
+  if (compartmentKind !== "native" && compartmentKind !== "delegated") return null
+  const receivedAtMs = MESSAGE_INDEX_SORT_MAX_MS - Number.parseInt(sortKey, 10)
+  return {
+    schemaVersion: 1,
+    id: idParts.join("__"),
+    agentId,
+    compartmentKind,
+    placement: placement as MailPlacement,
+    ...(decodeSourceToken(sourceToken) ? { source: decodeSourceToken(sourceToken) } : {}),
+    receivedAt: Number.isFinite(receivedAtMs) ? new Date(receivedAtMs).toISOString() : new Date(0).toISOString(),
+  }
+}
+
+function sourceMatchesFilter(source: string | undefined, filter: string | undefined): boolean {
+  if (!filter) return true
+  if (!source) return false
+  return source.toLowerCase() === filter.toLowerCase()
+}
+
+function messageMatchesFilters<T extends Pick<StoredMailMessageIndexRecord, "agentId" | "placement" | "compartmentKind" | "source">>(message: T, filters: MailListFilters): boolean {
+  return message.agentId === filters.agentId &&
+    (filters.placement ? message.placement === filters.placement : true) &&
+    (filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true) &&
+    sourceMatchesFilter(message.source, filters.source)
 }
 
 export class AzureBlobMailroomStore implements MailroomStore {
@@ -69,6 +155,10 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return this.container.getBlockBlobClient(`messages/${id}.json`)
   }
 
+  private messageIndexBlob(name: string) {
+    return this.container.getBlockBlobClient(name)
+  }
+
   private candidateBlob(id: string) {
     return this.container.getBlockBlobClient(`candidates/${id}.json`)
   }
@@ -89,6 +179,88 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return this.container.getBlockBlobClient(`outbound/${id}.json`)
   }
 
+  private async putMessageIndex(message: StoredMailMessage): Promise<void> {
+    await this.messageIndexBlob(messageIndexBlobName(message)).uploadData(blobText(messageIndexRecord(message)))
+  }
+
+  private async removeMessageIndex(message: StoredMailMessage): Promise<void> {
+    await (this.messageIndexBlob(messageIndexBlobName(message)) as { deleteIfExists(): Promise<unknown> }).deleteIfExists()
+  }
+
+  private async listMessagesLegacy(filters: MailListFilters): Promise<StoredMailMessage[]> {
+    const messageBlobNames: string[] = []
+    for await (const item of this.container.listBlobsFlat({ prefix: "messages/" })) {
+      messageBlobNames.push(item.name)
+    }
+    const matches: StoredMailMessage[] = []
+    const limit = filters.limit ?? 20
+    let nextIndex = 0
+    const worker = async () => {
+      while (nextIndex < messageBlobNames.length) {
+        const current = messageBlobNames[nextIndex]
+        nextIndex += 1
+        const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current))
+        if (!message || !messageMatchesFilters(message, filters)) continue
+        matches.push(message)
+        matches.sort(compareNewestFirst)
+        if (matches.length > limit) matches.length = limit
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(MESSAGE_LIST_SCAN_CONCURRENCY, Math.max(messageBlobNames.length, 1)) }, async () => worker()),
+    )
+    return matches.sort(compareNewestFirst).slice(0, limit)
+  }
+
+  private async listMessagesFromIndexes(filters: MailListFilters): Promise<StoredMailMessage[] | null> {
+    const messageIds: string[] = []
+    let sawIndex = false
+    for await (const item of this.container.listBlobsFlat({ prefix: messageIndexPrefix(filters.agentId) })) {
+      sawIndex = true
+      const parsed = parseMessageIndexBlobName(item.name)
+      if (!parsed || !messageMatchesFilters(parsed, filters)) continue
+      messageIds.push(parsed.id)
+      if (messageIds.length >= (filters.limit ?? 20)) break
+    }
+    if (!sawIndex) return null
+    return (await Promise.all(messageIds.map(async (id) => downloadJson<StoredMailMessage>(this.messageBlob(id)))))
+      .filter((message): message is StoredMailMessage => message !== null)
+      .filter((message) => messageMatchesFilters(message, filters))
+      .sort(compareNewestFirst)
+      .slice(0, filters.limit ?? 20)
+  }
+
+  async backfillMessageIndexes(agentId?: string): Promise<number> {
+    await this.ensureContainer()
+    const messageBlobNames: string[] = []
+    for await (const item of this.container.listBlobsFlat({ prefix: "messages/" })) {
+      messageBlobNames.push(item.name)
+    }
+    let indexed = 0
+    let nextIndex = 0
+    const worker = async () => {
+      while (nextIndex < messageBlobNames.length) {
+        const current = messageBlobNames[nextIndex]
+        nextIndex += 1
+        const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(current))
+        if (!message) continue
+        if (agentId && message.agentId !== agentId) continue
+        await this.messageIndexBlob(messageIndexBlobName(message)).uploadData(blobText(messageIndexRecord(message)))
+        indexed += 1
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(MESSAGE_INDEX_BACKFILL_CONCURRENCY, Math.max(messageBlobNames.length, 1)) }, async () => worker()),
+    )
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_index_backfilled",
+      message: "azure blob mailroom message indexes backfilled",
+      meta: { agentId: agentId ?? null, indexed },
+    })
+    return indexed
+  }
+
   async putRawMessage(input: {
     resolved: ResolvedMailAddress
     envelope: MailEnvelopeInput
@@ -100,6 +272,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     const { message, rawPayload, candidate } = await buildStoredMailMessage(input)
     const existing = await downloadJson<StoredMailMessage>(this.messageBlob(message.id))
     if (existing) {
+      await this.putMessageIndex(existing)
       emitNervesEvent({
         component: "senses",
         event: "senses.mail_blob_store_dedupe",
@@ -110,6 +283,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     }
     await this.rawBlob(message.rawObject).uploadData(blobText(rawPayload))
     await this.messageBlob(message.id).uploadData(blobText(message))
+    await this.putMessageIndex(message)
     if (candidate) {
       await this.candidateBlob(candidate.id).uploadData(blobText(candidate))
     }
@@ -136,23 +310,17 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   async listMessages(filters: MailListFilters): Promise<StoredMailMessage[]> {
     await this.ensureContainer()
-    const messages: StoredMailMessage[] = []
-    for await (const item of this.container.listBlobsFlat({ prefix: "messages/" })) {
-      const message = await downloadJson<StoredMailMessage>(this.container.getBlockBlobClient(item.name))
-      if (message) messages.push(message)
+    let filtered = await this.listMessagesFromIndexes(filters)
+    let source: "index" | "legacy" = "index"
+    if (filtered === null) {
+      filtered = await this.listMessagesLegacy(filters)
+      source = "legacy"
     }
-    const filtered = messages
-      .filter((message) => message.agentId === filters.agentId)
-      .filter((message) => filters.placement ? message.placement === filters.placement : true)
-      .filter((message) => filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true)
-      .filter((message) => filters.source ? message.source === filters.source : true)
-      .sort(compareNewestFirst)
-      .slice(0, filters.limit ?? 20)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_messages_listed",
       message: "azure blob mailroom store listed messages",
-      meta: { agentId: filters.agentId, count: filtered.length },
+      meta: { agentId: filters.agentId, count: filtered.length, source },
     })
     return filtered
   }
@@ -172,6 +340,8 @@ export class AzureBlobMailroomStore implements MailroomStore {
     }
     const updated: StoredMailMessage = { ...message, placement }
     await blob.uploadData(blobText(updated))
+    await this.removeMessageIndex(message)
+    await this.putMessageIndex(updated)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_message_placement_updated",
