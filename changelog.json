@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.475",
+      "changes": [
+        "Native mail autonomy now counts recently submitted provider-backed sends against the rate window immediately, so Azure Communication Services deliveries cannot slip past the autonomous send limit while delivery events are still pending.",
+        "Mail autonomy coverage now locks the submitted-provider case explicitly, preventing back-to-back autonomous sends from bypassing policy before provider reconciliation arrives.",
+        "The `ouro.bot` wrapper stays version-synced for the mail autonomy rate-limit repair release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.474",
       "changes": [
         "DNS workflow planning now handles duplicate-capable records safely by matching exact type/name/content identity before singleton replacement, so adding an ACS apex TXT verification record cannot rewrite unrelated Google, Microsoft, or SPF TXT records.",

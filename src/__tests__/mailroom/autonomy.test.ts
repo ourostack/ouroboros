@@ -412,4 +412,53 @@ describe("native mail autonomy", () => {
     }))
     expect(confirmedWithoutPolicy).not.toHaveProperty("policyId")
   })
+
+  it("counts submitted autonomous provider sends against the rate window before delivery events arrive", () => {
+    const currentPolicy = nativePolicy({
+      allowedRecipients: ["ari@mendelow.me", "slugger@ouro.bot"],
+      rateLimit: { maxSends: 1, windowMs: 60_000 },
+    })
+    const baseDraft = {
+      schemaVersion: 1 as const,
+      id: "draft_current",
+      agentId: "slugger",
+      status: "draft" as const,
+      mailboxRole: "agent-native-mailbox" as const,
+      sendAuthority: "agent-native" as const,
+      ownerEmail: null,
+      source: null,
+      from: "slugger@ouro.bot",
+      to: ["slugger@ouro.bot"],
+      cc: [],
+      bcc: [],
+      subject: "Check in",
+      text: "Hello.",
+      actor: { kind: "human" as const, friendId: "ari", trustLevel: "family" as const, channel: "mcp" },
+      reason: "test",
+      createdAt: "2026-04-23T16:11:01.604Z",
+      updatedAt: "2026-04-23T16:11:21.410Z",
+    }
+
+    expect(evaluateNativeMailSendPolicy({
+      policy: currentPolicy,
+      draft: baseDraft,
+      recentOutbound: [
+        {
+          ...baseDraft,
+          id: "draft_submitted",
+          status: "submitted",
+          sendMode: "autonomous",
+          provider: "azure-communication-services",
+          providerMessageId: "acs-operation-1",
+          sentAt: "2026-04-23T16:11:21.410Z",
+          submittedAt: "2026-04-23T16:11:21.410Z",
+          updatedAt: "2026-04-23T16:11:21.410Z",
+        },
+      ],
+      now: new Date("2026-04-23T16:12:00.000Z"),
+    })).toEqual(expect.objectContaining({
+      allowed: false,
+      code: "autonomous-rate-limit",
+    }))
+  })
 })

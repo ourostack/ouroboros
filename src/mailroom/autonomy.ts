@@ -82,8 +82,8 @@ function isRecipientAllowed(policy: MailAutonomyPolicy, recipient: string): bool
 }
 
 function autonomousSentAt(record: MailOutboundRecord): string | null {
-  if (record.status !== "sent" || record.sendMode !== "autonomous") return null
-  return record.sentAt ?? record.updatedAt
+  if (record.sendMode !== "autonomous") return null
+  return record.sentAt ?? record.submittedAt ?? record.acceptedAt ?? record.deliveredAt ?? record.failedAt ?? record.updatedAt
 }
 
 function countRecentAutonomousSends(input: {
