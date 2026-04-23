@@ -11,7 +11,7 @@ Hosted service source lives at [`ouroborosbot/ouro-work-substrate`](https://gith
 
 The hosted repo owns:
 
-- `packages/work-protocol`: shared mail registry, readable delegated aliases, key generation, private-envelope encryption, Screener placement, sender policy, and account-lifecycle records.
+- `packages/work-protocol`: shared mail registry, readable delegated aliases, key generation, private-envelope encryption, Screener placement, sender policy, account-lifecycle records, and machine-readable contracts. While the package remains private, harness-side copies must stay aligned with the canonical contracts in that repo.
 - `apps/mail-ingress`: SMTP ingress, health endpoint, private-envelope parsing, encrypted local/Azure Blob storage, recipient rejection, and production container entrypoint.
 - `apps/vault-control`: authenticated, rate-limited, domain-limited Vaultwarden account creation.
 - `infra/azure`: Azure Container Apps, VNet-backed external TCP ingress shape, Blob Storage, managed identity, and role assignment.

@@ -153,7 +153,7 @@ Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mai
 
 Hosted service code now lives in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate):
 
-- `packages/work-protocol` owns shared registry, route, encryption, and Screener records.
+- `packages/work-protocol` owns shared registry, route, encryption, Screener records, and machine-readable protocol contracts. Harness mailroom tests validate the vendored contract copy and compare it with a local `ouro-work-substrate` checkout when present.
 - `apps/mail-ingress` owns SMTP ingress and encrypted Azure Blob/file storage.
 - `apps/vault-control` owns authenticated programmatic Vaultwarden account creation.
 - `infra/azure` owns the Container Apps/Blob Storage deployment shape.

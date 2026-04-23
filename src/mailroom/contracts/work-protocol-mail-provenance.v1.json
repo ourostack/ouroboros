@@ -1,0 +1,60 @@
+{
+  "contract": "mail-provenance",
+  "version": 1,
+  "canonicalPackage": "@ouro/work-protocol",
+  "cases": [
+    {
+      "name": "native-agent-mail",
+      "message": {
+        "agentId": "slugger",
+        "compartmentKind": "native",
+        "recipient": "slugger@ouro.bot"
+      },
+      "expected": {
+        "mailboxRole": "agent-native-mailbox",
+        "mailboxLabel": "slugger@ouro.bot (native agent mail)",
+        "agentId": "slugger",
+        "ownerEmail": null,
+        "source": null,
+        "recipient": "slugger@ouro.bot",
+        "sendAsHumanAllowed": false
+      }
+    },
+    {
+      "name": "delegated-hey-mail",
+      "message": {
+        "agentId": "slugger",
+        "compartmentKind": "delegated",
+        "ownerEmail": "ari@mendelow.me",
+        "source": "hey",
+        "recipient": "me.mendelow.ari.slugger@ouro.bot"
+      },
+      "expected": {
+        "mailboxRole": "delegated-human-mailbox",
+        "mailboxLabel": "ari@mendelow.me / hey delegated to slugger",
+        "agentId": "slugger",
+        "ownerEmail": "ari@mendelow.me",
+        "source": "hey",
+        "recipient": "me.mendelow.ari.slugger@ouro.bot",
+        "sendAsHumanAllowed": false
+      }
+    },
+    {
+      "name": "legacy-delegated-mail-missing-source-metadata",
+      "message": {
+        "agentId": "slugger",
+        "compartmentKind": "delegated",
+        "recipient": "me.mendelow.ari.slugger@ouro.bot"
+      },
+      "expected": {
+        "mailboxRole": "delegated-human-mailbox",
+        "mailboxLabel": "unknown owner / unknown source delegated to slugger",
+        "agentId": "slugger",
+        "ownerEmail": null,
+        "source": null,
+        "recipient": "me.mendelow.ari.slugger@ouro.bot",
+        "sendAsHumanAllowed": false
+      }
+    }
+  ]
+}
