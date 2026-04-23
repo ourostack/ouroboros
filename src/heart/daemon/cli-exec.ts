@@ -2734,6 +2734,17 @@ function resolveWorkflowFilePath(filePath: string, deps: OuroCliDeps): string {
     : path.resolve(deps.getRepoCwd?.() ?? process.cwd(), filePath)
 }
 
+function extractDnsBackupRecords(input: unknown): Array<import("./dns-workflow").DnsRecord> {
+  const value = input as {
+    records?: Array<import("./dns-workflow").DnsRecord>
+    backup?: { records?: Array<import("./dns-workflow").DnsRecord> }
+    plan?: { backup?: { records?: Array<import("./dns-workflow").DnsRecord> } }
+  }
+  const records = value.plan?.backup?.records ?? value.backup?.records ?? value.records
+  if (!Array.isArray(records)) throw new Error("dns rollback backup does not contain records")
+  return records
+}
+
 async function executeDnsWorkflow(
   command: Extract<ResolvedOuroCliCommand, { kind: "dns.workflow" }>,
   deps: OuroCliDeps,
@@ -2756,22 +2767,32 @@ async function executeDnsWorkflow(
   const secrets = await workflow.resolveDnsWorkflowSecrets(binding, reader)
   const driver = workflow.createPorkbunDnsDriver({ fetchImpl: deps.fetchImpl ?? fetch })
   const currentRecords = await driver.retrieveRecords({ domain: binding.domain, secrets })
-  const plan = workflow.planDnsWorkflow({ binding, currentRecords })
+  let plan: ReturnType<typeof workflow.planDnsWorkflow>
+  if (command.action === "rollback") {
+    if (!command.backupPath) throw new Error("dns rollback requires --backup <path>")
+    plan = workflow.planDnsRollback({
+      binding,
+      currentRecords,
+      backupRecords: extractDnsBackupRecords(
+        JSON.parse(fs.readFileSync(resolveWorkflowFilePath(command.backupPath, deps), "utf-8")),
+      ),
+    })
+  } else {
+    plan = workflow.planDnsWorkflow({ binding, currentRecords })
+  }
+  const applied = command.action === "apply" || command.action === "rollback"
+    ? await workflow.applyDnsWorkflowPlan({ driver, domain: binding.domain, secrets, plan })
+    : []
   const payload = workflow.redactDnsWorkflowArtifact({
     action: command.action,
     binding,
     plan,
+    applied,
   })
   if (command.outputPath) {
     const outputPath = resolveWorkflowFilePath(command.outputPath, deps)
     fs.mkdirSync(path.dirname(outputPath), { recursive: true })
     fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
-  }
-  if (command.action === "apply") {
-    throw new Error("dns apply is parsed but waits for mutation-driver coverage before production use")
-  }
-  if (command.action === "rollback") {
-    throw new Error("dns rollback is parsed but waits for mutation-driver coverage before production use")
   }
   const changed = plan.changes.length
   const preserved = plan.preservedRecords.length
@@ -2780,6 +2801,7 @@ async function executeDnsWorkflow(
     `driver: ${binding.driver}`,
     `credential item: vault:${command.agent}:${binding.credentialItem}`,
     `changes: ${changed}`,
+    ...(applied.length > 0 ? [`applied: ${applied.length}`] : []),
     `preserved records: ${preserved}`,
     command.outputPath ? `artifact: ${command.outputPath}` : "artifact: not written",
     "secret values were not printed",

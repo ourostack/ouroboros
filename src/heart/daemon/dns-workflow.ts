@@ -45,6 +45,19 @@ export interface DnsWorkflowPlan {
   certificateActions: Array<{ action: string; host: string; secretItem: string }>
 }
 
+export interface PorkbunDnsDriver {
+  ping: (secrets: DnsWorkflowSecrets) => Promise<{ credentialsValid: boolean }>
+  retrieveRecords: (input: { domain: string; secrets: DnsWorkflowSecrets }) => Promise<DnsRecord[]>
+  retrieveCertificate: (input: { domain: string; secrets: DnsWorkflowSecrets }) => Promise<{
+    certificatechain: string
+    publickey: string
+    privatekey: string
+  }>
+  createRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; record: DnsRecord }) => Promise<{ id?: string }>
+  editRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string; record: DnsRecord }) => Promise<void>
+  deleteRecord: (input: { domain: string; secrets: DnsWorkflowSecrets; id: string }) => Promise<void>
+}
+
 interface PorkbunResponse {
   status?: string
   message?: string
@@ -167,20 +180,32 @@ function porkbunHeaders(secrets: DnsWorkflowSecrets): Record<string, string> {
   }
 }
 
-export function createPorkbunDnsDriver(options: { baseUrl?: string; fetchImpl: typeof fetch }): {
-  ping: (secrets: DnsWorkflowSecrets) => Promise<{ credentialsValid: boolean }>
-  retrieveRecords: (input: { domain: string; secrets: DnsWorkflowSecrets }) => Promise<DnsRecord[]>
-  retrieveCertificate: (input: { domain: string; secrets: DnsWorkflowSecrets }) => Promise<{
-    certificatechain: string
-    publickey: string
-    privatekey: string
-  }>
-} {
+function porkbunRecordBody(record: DnsRecord): Record<string, string | number> {
+  return {
+    type: record.type,
+    name: record.name === "@" ? "" : record.name,
+    content: record.content,
+    ttl: record.ttl ?? 600,
+    prio: record.priority ?? 0,
+  }
+}
+
+export function createPorkbunDnsDriver(options: { baseUrl?: string; fetchImpl: typeof fetch }): PorkbunDnsDriver {
   const baseUrl = (options.baseUrl ?? "https://api.porkbun.com/api/json/v3").replace(/\/+$/, "")
   const readOnly = async (path: string, secrets: DnsWorkflowSecrets): Promise<PorkbunResponse> => {
     return readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
       method: "GET",
       headers: porkbunHeaders(secrets),
+    }))
+  }
+  const mutate = async (path: string, secrets: DnsWorkflowSecrets, body: Record<string, unknown> = {}): Promise<PorkbunResponse> => {
+    return readPorkbunJson(await options.fetchImpl(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        ...porkbunHeaders(secrets),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     }))
   }
   return {
@@ -200,6 +225,16 @@ export function createPorkbunDnsDriver(options: { baseUrl?: string; fetchImpl: t
         privatekey: requireString(payload.privatekey, "privatekey"),
       }
     },
+    async createRecord({ domain, secrets, record }) {
+      const payload = await mutate(`/dns/create/${encodeURIComponent(domain)}`, secrets, porkbunRecordBody(record))
+      return typeof (payload as { id?: unknown }).id === "string" ? { id: (payload as { id: string }).id } : {}
+    },
+    async editRecord({ domain, secrets, id, record }) {
+      await mutate(`/dns/edit/${encodeURIComponent(domain)}/${encodeURIComponent(id)}`, secrets, porkbunRecordBody(record))
+    },
+    async deleteRecord({ domain, secrets, id }) {
+      await mutate(`/dns/delete/${encodeURIComponent(domain)}/${encodeURIComponent(id)}`, secrets)
+    },
   }
 }
 
@@ -218,8 +253,9 @@ function recordsEqual(left: DnsRecord, right: DnsRecord): boolean {
     left.priority === right.priority
 }
 
-export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[] }): DnsWorkflowPlan {
+export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; deleteExtraAllowedRecords?: boolean }): DnsWorkflowPlan {
   assertDesiredRecordsAllowed(input.binding)
+  const allowedKeys = new Set(input.binding.resources.records.map(recordKey))
   const desiredKeys = new Set(input.binding.desired.records.map(recordKey))
   const changes: DnsWorkflowPlan["changes"] = []
   for (const desired of input.binding.desired.records) {
@@ -228,6 +264,13 @@ export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRec
       changes.push({ action: "create", record: desired, reason: "desired record is missing" })
     } else if (!recordsEqual(current, desired)) {
       changes.push({ action: "update", record: desired, currentRecord: current, reason: "desired record differs from current provider record" })
+    }
+  }
+  if (input.deleteExtraAllowedRecords) {
+    for (const current of input.currentRecords) {
+      if (allowedKeys.has(recordKey(current)) && !desiredKeys.has(recordKey(current))) {
+        changes.push({ action: "delete", record: current, currentRecord: current, reason: "allowlisted record is absent from rollback backup" })
+      }
     }
   }
   const preservedRecords = input.currentRecords.filter((record) => !desiredKeys.has(recordKey(record)))
@@ -243,6 +286,47 @@ export function planDnsWorkflow(input: { binding: DnsWorkflowBinding; currentRec
         }]
       : [],
   }
+}
+
+export function planDnsRollback(input: { binding: DnsWorkflowBinding; currentRecords: DnsRecord[]; backupRecords: DnsRecord[] }): DnsWorkflowPlan {
+  const allowedKeys = new Set(input.binding.resources.records.map(recordKey))
+  const rollbackBinding: DnsWorkflowBinding = {
+    ...input.binding,
+    desired: {
+      records: input.backupRecords.filter((record) => allowedKeys.has(recordKey(record))),
+    },
+  }
+  return planDnsWorkflow({
+    binding: rollbackBinding,
+    currentRecords: input.currentRecords,
+    deleteExtraAllowedRecords: true,
+  })
+}
+
+export async function applyDnsWorkflowPlan(input: {
+  driver: Pick<PorkbunDnsDriver, "createRecord" | "editRecord" | "deleteRecord">
+  domain: string
+  secrets: DnsWorkflowSecrets
+  plan: DnsWorkflowPlan
+}): Promise<Array<{ action: "create" | "update" | "delete"; record: DnsRecord; id?: string }>> {
+  const applied: Array<{ action: "create" | "update" | "delete"; record: DnsRecord; id?: string }> = []
+  for (const change of input.plan.changes) {
+    if (change.action === "create") {
+      const result = await input.driver.createRecord({ domain: input.domain, secrets: input.secrets, record: change.record })
+      applied.push({ action: "create", record: change.record, ...(result.id ? { id: result.id } : {}) })
+      continue
+    }
+    const id = change.currentRecord?.id ?? change.record.id
+    if (!id) throw new Error(`cannot ${change.action} ${change.record.type} ${change.record.name} without provider record id`)
+    if (change.action === "update") {
+      await input.driver.editRecord({ domain: input.domain, secrets: input.secrets, id, record: change.record })
+      applied.push({ action: "update", record: change.record, id })
+      continue
+    }
+    await input.driver.deleteRecord({ domain: input.domain, secrets: input.secrets, id })
+    applied.push({ action: "delete", record: change.record, id })
+  }
+  return applied
 }
 
 function redactedValueForKey(key: string, value: unknown): unknown | undefined {
