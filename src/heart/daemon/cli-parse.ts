@@ -95,8 +95,8 @@ export function usage(): string {
     "  ouro config model [--agent <name>] <model-name>",
     "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
-    "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]",
+    "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro auth switch [--agent <name>] --provider <provider>",
@@ -844,6 +844,7 @@ interface MailSourceFlagParse {
   ownerEmail?: string
   source?: string
   noDelegatedSource?: boolean
+  rotateMissingMailKeys?: boolean
   hasMailSourceFlags: boolean
 }
 
@@ -852,6 +853,7 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
   let ownerEmail: string | undefined
   let source: string | undefined
   let noDelegatedSource = false
+  let rotateMissingMailKeys = false
   let hasMailSourceFlags = false
 
   for (let i = 0; i < args.length; i += 1) {
@@ -873,6 +875,11 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
       hasMailSourceFlags = true
       continue
     }
+    if (token === "--rotate-missing-mail-keys") {
+      rotateMissingMailKeys = true
+      hasMailSourceFlags = true
+      continue
+    }
     rest.push(token)
   }
 
@@ -887,12 +894,13 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
     ...(ownerEmail !== undefined ? { ownerEmail } : {}),
     ...(source !== undefined ? { source } : {}),
     ...(noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
     hasMailSourceFlags,
   }
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]"
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const mailFlags = extractMailSourceFlags(afterAgent, usageText)
   if (mailFlags.rest.length > 1) throw new Error(usageText)
@@ -907,6 +915,7 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
     ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
     ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
     ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(mailFlags.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
   }
 }
 
@@ -949,7 +958,7 @@ function parseMailCommand(args: string[]): OuroCliCommand {
 
 function parseAccountCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
-  const usageText = "Usage: ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source]"
+  const usageText = "Usage: ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
   if (sub !== "ensure") {
     throw new Error(usageText)
   }
@@ -962,6 +971,7 @@ function parseAccountCommand(args: string[]): OuroCliCommand {
     ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
     ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
     ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
+    ...(mailFlags.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
   }
 }
 

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.471",
+      "changes": [
+        "`ouro account ensure` and `ouro connect mail` can now repair hosted Mail Control registry/vault drift with `--rotate-missing-mail-keys`, storing freshly returned one-time private keys in the owning agent vault without printing them.",
+        "Hosted Mail setup now detects missing private key material before writing partial runtime config, rotates only the missing native mailbox and/or delegated source keys, and preserves source separation for native agent mail versus delegated human mail.",
+        "Agent Mail setup and recovery docs now teach hosted key rotation explicitly, including that rotation repairs future mail access but cannot decrypt mail already encrypted to a lost private key."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.470",
       "changes": [
         "Agent Mail native sending now enforces autonomy policy, confirmation fallback, recipient/rate limits, delegated send-as-human refusal, audit records, and kill switch state.",

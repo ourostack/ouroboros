@@ -3648,6 +3648,12 @@ interface HostedMailControlEnsureResponse {
   blobStore?: unknown
 }
 
+interface HostedMissingMailKeys {
+  keyIds: string[]
+  rotateMailbox: boolean
+  rotateSourceGrant: boolean
+}
+
 function hostedMailControlConfig(config: RuntimeCredentialConfig): HostedMailControlConfig | null {
   const workSubstrate = isPlainRecord(config.workSubstrate) ? config.workSubstrate : undefined
   if (!workSubstrate || stringField(workSubstrate, "mode") !== "hosted") return null
@@ -3691,6 +3697,23 @@ function requiredHostedKeyIds(body: HostedMailControlEnsureResponse): string[] {
     .filter((keyId) => keyId.length > 0)
 }
 
+function hostedMissingMailKeys(body: HostedMailControlEnsureResponse, keys: Record<string, string>): HostedMissingMailKeys {
+  const mailbox = isPlainRecord(body.mailbox) ? body.mailbox : undefined
+  const sourceGrant = isPlainRecord(body.sourceGrant) ? body.sourceGrant : undefined
+  const mailboxKeyId = mailbox ? stringField(mailbox, "keyId") : ""
+  const sourceKeyId = sourceGrant ? stringField(sourceGrant, "keyId") : ""
+  const missingMailbox = mailboxKeyId.length > 0 && !keys[mailboxKeyId]
+  const missingSourceGrant = sourceKeyId.length > 0 && !keys[sourceKeyId]
+  return {
+    keyIds: [
+      ...(missingMailbox ? [mailboxKeyId] : []),
+      ...(missingSourceGrant ? [sourceKeyId] : []),
+    ],
+    rotateMailbox: missingMailbox,
+    rotateSourceGrant: missingSourceGrant,
+  }
+}
+
 function assertHostedPrivateKeys(input: {
   agent: string
   keys: Record<string, string>
@@ -3698,14 +3721,37 @@ function assertHostedPrivateKeys(input: {
 }): void {
   for (const keyId of input.requiredKeyIds) {
     if (input.keys[keyId]) continue
-    throw new Error(`hosted Mail Control references private mail key ${keyId}, but it was not returned and is not present in ${input.agent}'s vault runtime/config. Repair requires a fresh Mail Control one-time key response or key rotation.`)
+    throw new Error(`hosted Mail Control references private mail key ${keyId}, but it was not returned and is not present in ${input.agent}'s vault runtime/config. Repair requires a fresh Mail Control one-time key response or rerunning setup with --rotate-missing-mail-keys.`)
   }
+}
+
+async function requestHostedMailControl(input: {
+  fetchImpl: typeof fetch
+  config: HostedMailControlConfig
+  path: "/v1/mailboxes/ensure" | "/v1/mailboxes/rotate-keys"
+  payload: Record<string, unknown>
+  label: "ensure" | "key rotation"
+}): Promise<HostedMailControlEnsureResponse> {
+  const response = await input.fetchImpl(`${input.config.url}${input.path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${input.config.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(input.payload),
+  })
+  const body = await response.json() as HostedMailControlEnsureResponse
+  if (!response.ok || body.ok === false) {
+    throw new Error(`hosted Mail Control ${input.label} failed (${response.status}): ${body.error ?? response.statusText}`)
+  }
+  return body
 }
 
 interface MailSourceSetupInput {
   ownerEmail?: string
   source?: string
   noDelegatedSource?: boolean
+  rotateMissingMailKeys?: boolean
 }
 
 async function promptDelegatedMailSource(deps: OuroCliDeps, input: MailSourceSetupInput = {}): Promise<{ ownerEmail: string; source: string }> {
@@ -3727,7 +3773,7 @@ async function promptDelegatedMailSource(deps: OuroCliDeps, input: MailSourceSet
 
 async function ensureAgentMailroom(
   agent: string,
-  input: { ownerEmail: string; source: string },
+  input: { ownerEmail: string; source: string; rotateMissingMailKeys?: boolean },
   deps: OuroCliDeps,
   progressLabel: string,
 ): Promise<MailroomSetupOutcome> {
@@ -3760,38 +3806,52 @@ async function ensureAgentMailroom(
     if (hostedConfig) {
       progress.updateDetail("calling hosted Mail Control")
       const fetchImpl = deps.fetchImpl ?? fetch
-      const response = await fetchImpl(`${hostedConfig.url}/v1/mailboxes/ensure`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${hostedConfig.token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          agentId: agent,
-          ...(input.ownerEmail ? { ownerEmail: input.ownerEmail } : {}),
-          ...(input.source ? { source: input.source } : {}),
-        }),
-      })
-      const body = await response.json() as HostedMailControlEnsureResponse
-      if (!response.ok || body.ok === false) {
-        throw new Error(`hosted Mail Control ensure failed (${response.status}): ${body.error ?? response.statusText}`)
+      const basePayload = {
+        agentId: agent,
+        ...(input.ownerEmail ? { ownerEmail: input.ownerEmail } : {}),
+        ...(input.source ? { source: input.source } : {}),
       }
-      const publicRegistry = requiredResponseRecord(body.publicRegistry, "publicRegistry")
-      const blobStore = requiredResponseRecord(body.blobStore, "blobStore")
-      mailboxAddress = typeof body.mailboxAddress === "string" && body.mailboxAddress.trim()
-        ? body.mailboxAddress.trim()
-        : requiredResponseText(requiredResponseRecord(body.mailbox, "mailbox"), "canonicalAddress", "mailboxAddress")
-      sourceAlias = typeof body.sourceAlias === "string" && body.sourceAlias.trim() ? body.sourceAlias.trim() : null
-      const generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
+      let body = await requestHostedMailControl({
+        fetchImpl,
+        config: hostedConfig,
+        path: "/v1/mailboxes/ensure",
+        payload: basePayload,
+        label: "ensure",
+      })
+      let generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
       const privateKeys = {
         ...mailroomPrivateKeys(existingMailroom),
         ...generatedPrivateKeys,
+      }
+      const missingKeys = hostedMissingMailKeys(body, privateKeys)
+      if (missingKeys.keyIds.length > 0 && input.rotateMissingMailKeys) {
+        progress.updateDetail("rotating missing hosted mail keys")
+        body = await requestHostedMailControl({
+          fetchImpl,
+          config: hostedConfig,
+          path: "/v1/mailboxes/rotate-keys",
+          payload: {
+            ...basePayload,
+            rotateMailbox: missingKeys.rotateMailbox,
+            rotateSourceGrant: missingKeys.rotateSourceGrant,
+            reason: "missing private mail keys in agent vault",
+          },
+          label: "key rotation",
+        })
+        generatedPrivateKeys = responsePrivateKeys(body.generatedPrivateKeys)
+        Object.assign(privateKeys, generatedPrivateKeys)
       }
       assertHostedPrivateKeys({
         agent,
         keys: privateKeys,
         requiredKeyIds: requiredHostedKeyIds(body),
       })
+      const publicRegistry = requiredResponseRecord(body.publicRegistry, "publicRegistry")
+      const blobStore = requiredResponseRecord(body.blobStore, "blobStore")
+      mailboxAddress = typeof body.mailboxAddress === "string" && body.mailboxAddress.trim()
+        ? body.mailboxAddress.trim()
+        : requiredResponseText(requiredResponseRecord(body.mailbox, "mailbox"), "canonicalAddress", "mailboxAddress")
+      sourceAlias = typeof body.sourceAlias === "string" && body.sourceAlias.trim() ? body.sourceAlias.trim() : null
       mode = "hosted"
       registryPath = null
       storePath = null
@@ -3892,7 +3952,10 @@ async function executeConnectMail(agent: string, deps: OuroCliDeps, input: MailS
     ],
   })
   const setup = await promptDelegatedMailSource(deps, input)
-  const outcome = await ensureAgentMailroom(agent, setup, deps, "connect mail")
+  const outcome = await ensureAgentMailroom(agent, {
+    ...setup,
+    ...(input.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }, deps, "connect mail")
   return writeCapabilityOutcome(deps, {
     subtitle: `${agent}'s Mail sense is configured.`,
     summary: `Agent Mail is ready for ${agent}.`,
@@ -3962,7 +4025,10 @@ async function executeAccountEnsure(
     ],
   })
   const setup = await promptDelegatedMailSource(deps, command)
-  const outcome = await ensureAgentMailroom(command.agent, setup, deps, "account ensure")
+  const outcome = await ensureAgentMailroom(command.agent, {
+    ...setup,
+    ...(command.rotateMissingMailKeys ? { rotateMissingMailKeys: true } : {}),
+  }, deps, "account ensure")
   return writeCapabilityOutcome(deps, {
     subtitle: `${command.agent}'s work substrate account is configured.`,
     summary: `Ouro work substrate is ready for ${command.agent}.`,

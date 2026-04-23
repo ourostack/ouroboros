@@ -237,6 +237,8 @@ const HOSTED_MAIL_CONTROL_TOKEN = "hosted-control-secret"
 const HOSTED_BLOB_ACCOUNT_URL = "https://stourotest.blob.core.windows.net"
 const HOSTED_NATIVE_KEY = "hosted-native-private-key"
 const HOSTED_SOURCE_KEY = "hosted-source-private-key"
+const HOSTED_ROTATED_NATIVE_KEY = "hosted-rotated-native-private-key"
+const HOSTED_ROTATED_SOURCE_KEY = "hosted-rotated-source-private-key"
 
 function writeHostedWorkSubstrateConfig(agentName: string, mailroom?: Record<string, unknown>): void {
   writeRuntimeConfig(agentName, {
@@ -277,6 +279,18 @@ function expectHostedEnsureRequest(
   expectedBody: Record<string, unknown>,
 ): void {
   expect(fetchRequestUrl(input)).toBe(`${HOSTED_MAIL_CONTROL_URL}/v1/mailboxes/ensure`)
+  expect(init?.method).toBe("POST")
+  expect(fetchHeader(init, "authorization")).toBe(`Bearer ${HOSTED_MAIL_CONTROL_TOKEN}`)
+  expect(fetchHeader(init, "content-type")).toBe("application/json")
+  expect(JSON.parse(String(init?.body))).toEqual(expectedBody)
+}
+
+function expectHostedRotateRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  expectedBody: Record<string, unknown>,
+): void {
+  expect(fetchRequestUrl(input)).toBe(`${HOSTED_MAIL_CONTROL_URL}/v1/mailboxes/rotate-keys`)
   expect(init?.method).toBe("POST")
   expect(fetchHeader(init, "authorization")).toBe(`Bearer ${HOSTED_MAIL_CONTROL_TOKEN}`)
   expect(fetchHeader(init, "content-type")).toBe("application/json")
@@ -326,6 +340,45 @@ function hostedEnsureResponse(overrides: Partial<Record<string, unknown>> = {}):
     },
     ...overrides,
   }
+}
+
+function hostedRotateResponse(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return hostedEnsureResponse({
+    addedMailbox: false,
+    addedSourceGrant: false,
+    rotatedMailbox: true,
+    rotatedSourceGrant: true,
+    generatedPrivateKeys: {
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+      mail_slugger_hey_rotated: HOSTED_ROTATED_SOURCE_KEY,
+    },
+    mailbox: {
+      agentId: "slugger",
+      mailboxId: "mailbox_slugger",
+      canonicalAddress: "slugger@ouro.bot",
+      keyId: "mail_slugger_native_rotated",
+      defaultPlacement: "screener",
+    },
+    sourceGrant: {
+      grantId: "grant_slugger_hey_9f8b26a4",
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      keyId: "mail_slugger_hey_rotated",
+      defaultPlacement: "imbox",
+      enabled: true,
+    },
+    publicRegistry: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+      blob: "registry/mailroom.json",
+      domain: "ouro.bot",
+      revision: "1:1:900",
+    },
+    ...overrides,
+  })
 }
 
 function installDefaultCapabilityFetchMock(): void {
@@ -1138,6 +1191,14 @@ describe("provider CLI command parsing", () => {
       ownerEmail: "ari@mendelow.me",
       source: "hey",
     })
+    expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "mail",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      rotateMissingMailKeys: true,
+    })
     expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
       kind: "connect",
       agent: "Slugger",
@@ -1164,6 +1225,13 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       ownerEmail: "ari@mendelow.me",
       source: "hey",
+    })
+    expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey", "--rotate-missing-mail-keys"])).toEqual({
+      kind: "account.ensure",
+      agent: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      rotateMissingMailKeys: true,
     })
     expect(parseOuroCommand(["account", "ensure", "--agent", "Slugger", "--no-delegated-source"])).toEqual({
       kind: "account.ensure",
@@ -1671,8 +1739,146 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       detectMode: () => "production",
-    }))).rejects.toThrow("mail_slugger_hey")
+    }))).rejects.toThrow("--rotate-missing-mail-keys")
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("rotates missing hosted mail keys only when explicitly requested", async () => {
+    emitTestEvent("provider cli hosted mail control rotates missing keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-rotate-missing-keys-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-rotate-missing-keys-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {},
+    })
+    fetchMock
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedEnsureRequest(input, init, {
+          agentId: "Slugger",
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+        })
+        return mockJsonResponse(hostedEnsureResponse({
+          addedMailbox: false,
+          addedSourceGrant: false,
+          generatedPrivateKeys: {},
+        }))
+      })
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedRotateRequest(input, init, {
+          agentId: "Slugger",
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+          rotateMailbox: true,
+          rotateSourceGrant: true,
+          reason: "missing private mail keys in agent vault",
+        })
+        return mockJsonResponse(hostedRotateResponse())
+      })
+
+    const result = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+      "--rotate-missing-mail-keys",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain(HOSTED_ROTATED_NATIVE_KEY)
+    expect(result).not.toContain(HOSTED_ROTATED_SOURCE_KEY)
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.registryRevision).toBe("1:1:900")
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+      mail_slugger_hey_rotated: HOSTED_ROTATED_SOURCE_KEY,
+    })
+  })
+
+  it("rotates a missing native hosted key through connect mail without creating a delegated source", async () => {
+    emitTestEvent("provider cli hosted mail control rotates native key through connect")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-rotate-native-connect-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-rotate-native-connect-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {},
+    })
+    fetchMock
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedEnsureRequest(input, init, {
+          agentId: "Slugger",
+        })
+        return mockJsonResponse(hostedEnsureResponse({
+          addedMailbox: false,
+          addedSourceGrant: false,
+          sourceAlias: undefined,
+          sourceGrant: undefined,
+          generatedPrivateKeys: {},
+        }))
+      })
+      .mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+        expectHostedRotateRequest(input, init, {
+          agentId: "Slugger",
+          rotateMailbox: true,
+          rotateSourceGrant: false,
+          reason: "missing private mail keys in agent vault",
+        })
+        return mockJsonResponse(hostedRotateResponse({
+          rotatedSourceGrant: false,
+          sourceAlias: undefined,
+          sourceGrant: undefined,
+          generatedPrivateKeys: {
+            mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+          },
+          publicRegistry: {
+            kind: "azure-blob",
+            azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+            container: "mailroom",
+            blob: "registry/mailroom.json",
+            domain: "ouro.bot",
+            revision: "1:0:901",
+          },
+        }))
+      })
+
+    const result = await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+      "--rotate-missing-mail-keys",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result).toContain("Agent Mail connected for Slugger")
+    expect(result).not.toContain("Delegated alias:")
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(mailroom.sourceAlias).toBeNull()
+    expect(mailroom.registryRevision).toBe("1:0:901")
+    expect(mailroom.privateKeys).toEqual({
+      mail_slugger_native_rotated: HOSTED_ROTATED_NATIVE_KEY,
+    })
   })
 
   it("fails hosted Mail setup before network calls when the control token is missing", async () => {
@@ -1915,6 +2121,33 @@ describe("provider CLI command execution", () => {
       now: () => Date.parse(NOW),
       detectMode: () => "production",
     }))).rejects.toThrow("publicRegistry")
+    expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
+  })
+
+  it("rejects hosted Mail Control responses missing the mailbox record before storing partial config", async () => {
+    emitTestEvent("provider cli hosted mail control missing mailbox")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-missing-mailbox-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-missing-mailbox-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockResolvedValueOnce(mockJsonResponse(hostedEnsureResponse({
+      mailboxAddress: undefined,
+      mailbox: undefined,
+      sourceAlias: undefined,
+      sourceGrant: undefined,
+      generatedPrivateKeys: {},
+    })))
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--no-delegated-source",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("mailbox")
     expect(readRuntimeSecret("Slugger").config.mailroom).toBeUndefined()
   })
 

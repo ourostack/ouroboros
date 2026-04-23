@@ -47,6 +47,14 @@ Then the agent runs the work substrate command itself:
 ouro account ensure --agent <agent> --owner-email <email> --source hey
 ```
 
+If hosted Mail Control already has public key ids that the owning agent vault does not have, the agent should rerun setup with explicit key rotation:
+
+```sh
+ouro account ensure --agent <agent> --owner-email <email> --source hey --rotate-missing-mail-keys
+```
+
+This is a recovery action, not the normal setup path. It asks hosted Mail Control to rotate only the missing mailbox/source public keys and returns fresh one-time private keys for the agent vault. Rotation cannot recover mail already encrypted to a lost private key; it only makes future mail decryptable again.
+
 For native-only mail:
 
 ```sh
@@ -72,7 +80,7 @@ ouro doctor
 
 Use `ouro status` to confirm the named agent shows Mail as ready/running. `ouro doctor` is installation-wide today; do not invent an agent-scoped doctor flag.
 
-Use `ouro connect mail --agent <agent> --owner-email <email> --source hey` when repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`. Use `--no-delegated-source` when repairing native-only mail.
+Use `ouro connect mail --agent <agent> --owner-email <email> --source hey` when repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`. Use `--no-delegated-source` when repairing native-only mail and `--rotate-missing-mail-keys` only when hosted key ids are present but the matching private keys are absent from the agent vault.
 
 ## Slugger Signup
 
@@ -149,7 +157,7 @@ The import stores delegated HEY mail under the agent's encrypted Mailroom store.
 
 ## Live Inbound Mail
 
-Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`. In production, the agent vault `runtime/config` item carries `workSubstrate.mode: "hosted"` plus `workSubstrate.mailControl.url` and a bearer `token`; setup then calls hosted Mail Control, stores the one-time private keys it returns, records hosted Blob coordinates, and refuses to claim success if a hosted mailbox/source key id is missing from the vault. Without hosted work-substrate config, setup stays explicit local development and writes a local registry/cache under the bundle. External delivery still needs a production ingress host and human-confirmed DNS/MX.
+Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`. In production, the agent vault `runtime/config` item carries `workSubstrate.mode: "hosted"` plus `workSubstrate.mailControl.url` and a bearer `token`; setup then calls hosted Mail Control, stores the one-time private keys it returns, records hosted Blob coordinates, and refuses to claim success if a hosted mailbox/source key id is missing from the vault. If the one-time response was lost, `--rotate-missing-mail-keys` calls the hosted rotation endpoint for the missing public key ids and stores the newly returned private keys. Without hosted work-substrate config, setup stays explicit local development and writes a local registry/cache under the bundle. External delivery still needs a production ingress host and human-confirmed DNS/MX.
 
 Hosted service code now lives in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate):
 
@@ -313,6 +321,7 @@ Human/UI check, guided by the agent:
 For the full recovery map, use the repo path `docs/agent-mail-recovery.md` ([Agent Mail Recovery](agent-mail-recovery.md)).
 
 - `AUTH_REQUIRED:mailroom`: unlock or repair the agent vault if prompted, then the agent should run `ouro account ensure --agent <agent> --owner-email <email> --source hey` or `ouro connect mail --agent <agent> --owner-email <email> --source hey`.
+- Hosted key drift: if setup says hosted Mail Control references private key ids that are absent from `runtime/config`, rerun with `--rotate-missing-mail-keys` and record that rotation cannot recover mail already encrypted to a lost private key.
 - Missing `registryPath` or `storePath`: the agent should rerun `ouro connect mail --agent <agent> --owner-email <email> --source hey` after vault unlock.
 - No Mail sense: confirm `senses.mail.enabled = true` in `agent.json`, then `ouro up`.
 - Screener body leakage: stop and fix; Screener lists must show sender/context, not message bodies.

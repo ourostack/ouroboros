@@ -16,6 +16,7 @@ describe("agent mail setup documentation contract", () => {
 
     expect(guide).toContain("ouro account ensure --agent <agent>")
     expect(guide).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey")
+    expect(guide).toContain("ouro account ensure --agent <agent> --owner-email <email> --source hey --rotate-missing-mail-keys")
     expect(guide).toContain("ouro account ensure --agent <agent> --no-delegated-source")
     expect(guide).toContain("ouro connect mail --agent <agent>")
     expect(guide).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
@@ -110,6 +111,8 @@ describe("agent mail setup documentation contract", () => {
       "DNS/MX drift",
       "HEY forwarding missing or stale",
       "hosted registry/vault key drift",
+      "ouro account ensure --rotate-missing-mail-keys",
+      "rotation cannot recover mail already encrypted to a lost private key",
       "Blob reader or decryption failure",
       "delivery event missing",
       "autonomy kill switch",
