@@ -2443,11 +2443,34 @@ describe("provider CLI command execution", () => {
     resetRuntimeCredentialConfigCache()
     await expect(runOuroCli(command, deps)).rejects.toThrow("missing mailroom config for Slugger")
 
-    writeRuntimeConfig("Slugger", { mailroom: { mailboxAddress: "slugger@ouro.bot" } })
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
     resetRuntimeCredentialConfigCache()
     await expect(runOuroCli(command, deps)).rejects.toThrow("missing registryPath/storePath")
 
-    writeRuntimeConfig("Slugger", { mailroom: { registryPath: path.join(mailStateDir, "missing.json"), storePath: mailStateDir } })
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    await expect(runOuroCli(command, deps)).rejects.toThrow("missing hosted registry coordinates")
+
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath: path.join(mailStateDir, "missing.json"),
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
     resetRuntimeCredentialConfigCache()
     await expect(runOuroCli(command, deps)).rejects.toThrow("no such file")
   })

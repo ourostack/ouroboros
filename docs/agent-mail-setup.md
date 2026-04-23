@@ -155,6 +155,10 @@ ouro mail import-mbox --file <path-to-hey.mbox> --owner-email ari@mendelow.me --
 
 The import stores delegated HEY mail under the agent's encrypted Mailroom store. Archive imports are historical backfill: each imported message keeps MBOX provenance, `sourceFreshThrough` records the newest dated message in the export, and the import suppresses Screener wakeups so old mail does not arrive as a fresh attention storm. Reads remain explicit and access-logged through `mail_recent`, `mail_search`, and `mail_thread`.
 
+`ouro mail import-mbox` now works against both local-development Mailrooms and hosted Mailrooms. In hosted mode it reads the public registry from the configured Blob coordinates in `runtime/config`, streams the archive from disk instead of loading the whole file into memory, and writes messages one by one into the encrypted store. Re-running the same import is safe: existing messages dedupe, `sourceFreshThrough` is recomputed from the archive, and an interrupted large import can be resumed by running the same command again.
+
+Important HEY nuance: a single HEY browser login can expose multiple linked accounts or addresses, but export/download and forwarding are still account-scoped operations. Do not assume that exporting or enabling forwarding for `arimendelow@hey.com` also covers `ari@mendelow.me` or another linked address. Track each HEY account-level export and forwarding confirmation as its own feeder step, then unify them only at the delegated-source lens when the owner/source provenance is truly the same.
+
 ## Live Inbound Mail
 
 Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`. In production, the agent vault `runtime/config` item carries `workSubstrate.mode: "hosted"` plus `workSubstrate.mailControl.url` and a bearer `token`; setup then calls hosted Mail Control, stores the one-time private keys it returns, records hosted Blob coordinates, and refuses to claim success if a hosted mailbox/source key id is missing from the vault. If the one-time response was lost, `--rotate-missing-mail-keys` calls the hosted rotation endpoint for the missing public key ids and stores the newly returned private keys. Without hosted work-substrate config, setup stays explicit local development and writes a local registry/cache under the bundle. External delivery still needs a production ingress host and human-confirmed DNS/MX.
@@ -197,6 +201,7 @@ Slugger drives the browser-automation portion when browser MCP is available. The
 
 - In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias verified by the agent.
 - Prefer a HEY setup that still leaves critical mail accessible in HEY itself. HEY notes that forwarding can miss spam-classified mail and can be affected by mail-authentication forwarding behavior.
+- For linked HEY accounts, confirm forwarding separately for each account/address that should feed the delegated source. One linked account showing the other in the HEY switcher does not mean forwarding or export state is shared.
 
 Agent step:
 

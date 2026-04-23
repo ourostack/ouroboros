@@ -1,3 +1,4 @@
+import * as fs from "node:fs"
 import * as path from "node:path"
 import { BlobServiceClient } from "@azure/storage-blob"
 import { DefaultAzureCredential } from "@azure/identity"
@@ -6,6 +7,7 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { AzureBlobMailroomStore } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
+import type { MailroomRegistry } from "./core"
 import type { MailAutonomyPolicy } from "./core"
 
 export interface MailroomRuntimeConfig {
@@ -14,6 +16,9 @@ export interface MailroomRuntimeConfig {
   storePath?: string
   azureAccountUrl?: string
   azureContainer?: string
+  registryAzureAccountUrl?: string
+  registryContainer?: string
+  registryBlob?: string
   azureManagedIdentityClientId?: string
   smtpPort?: number
   httpPort?: number
@@ -71,6 +76,9 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
   const storePath = textField(value, "storePath")
   const azureAccountUrl = textField(value, "azureAccountUrl")
   const azureContainer = textField(value, "azureContainer")
+  const registryAzureAccountUrl = textField(value, "registryAzureAccountUrl")
+  const registryContainer = textField(value, "registryContainer")
+  const registryBlob = textField(value, "registryBlob")
   const azureManagedIdentityClientId = textField(value, "azureManagedIdentityClientId")
   const smtpPort = numberField(value, "smtpPort")
   const httpPort = numberField(value, "httpPort")
@@ -86,6 +94,9 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
     ...(storePath ? { storePath } : {}),
     ...(azureAccountUrl ? { azureAccountUrl } : {}),
     ...(azureContainer ? { azureContainer } : {}),
+    ...(registryAzureAccountUrl ? { registryAzureAccountUrl } : {}),
+    ...(registryContainer ? { registryContainer } : {}),
+    ...(registryBlob ? { registryBlob } : {}),
     ...(azureManagedIdentityClientId ? { azureManagedIdentityClientId } : {}),
     ...(smtpPort !== undefined ? { smtpPort } : {}),
     ...(httpPort !== undefined ? { httpPort } : {}),
@@ -97,19 +108,22 @@ export function parseMailroomConfig(value: unknown): MailroomRuntimeConfig | nul
   }
 }
 
+function createBlobCredential(config: MailroomRuntimeConfig): DefaultAzureCredential {
+  return config.azureManagedIdentityClientId
+    ? new DefaultAzureCredential({ managedIdentityClientId: config.azureManagedIdentityClientId })
+    : new DefaultAzureCredential()
+}
+
 function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): {
   store: MailroomStore
   storeKind: MailroomReaderStoreKind
   storeLabel: string
 } {
   if (config.azureAccountUrl) {
-    const credential = config.azureManagedIdentityClientId
-      ? new DefaultAzureCredential({ managedIdentityClientId: config.azureManagedIdentityClientId })
-      : new DefaultAzureCredential()
     const containerName = config.azureContainer ?? "mailroom"
     return {
       store: new AzureBlobMailroomStore({
-        serviceClient: new BlobServiceClient(config.azureAccountUrl, credential),
+        serviceClient: new BlobServiceClient(config.azureAccountUrl, createBlobCredential(config)),
         containerName,
       }),
       storeKind: "azure-blob",
@@ -123,6 +137,26 @@ function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): 
     storeKind: "file",
     storeLabel: storePath,
   }
+}
+
+export async function readMailroomRegistry(config: MailroomRuntimeConfig): Promise<MailroomRegistry> {
+  if (config.registryPath) {
+    return JSON.parse(fs.readFileSync(config.registryPath, "utf-8")) as MailroomRegistry
+  }
+
+  const registryAzureAccountUrl = config.registryAzureAccountUrl ?? config.azureAccountUrl
+  const registryContainer = config.registryContainer ?? config.azureContainer ?? "mailroom"
+  const registryBlob = config.registryBlob
+  if (!registryAzureAccountUrl || !registryBlob) {
+    throw new Error("mailroom config is missing registryPath or hosted registry coordinates")
+  }
+
+  const serviceClient = new BlobServiceClient(registryAzureAccountUrl, createBlobCredential(config))
+  const blobClient = serviceClient.getContainerClient(registryContainer).getBlockBlobClient(registryBlob)
+  if (!await blobClient.exists()) {
+    throw new Error(`mailroom registry blob not found: ${registryAzureAccountUrl}/${registryContainer}/${registryBlob}`)
+  }
+  return JSON.parse((await blobClient.downloadToBuffer()).toString("utf-8")) as MailroomRegistry
 }
 
 export function resolveMailroomReader(agentName: string = getAgentName()): MailroomReaderResolution {

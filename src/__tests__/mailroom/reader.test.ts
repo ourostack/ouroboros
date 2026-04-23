@@ -14,6 +14,9 @@ describe("mailroom reader", () => {
       mailboxAddress: "slugger@ouro.bot",
       registryPath: "/tmp/registry.json",
       storePath: "/tmp/mailroom",
+      registryAzureAccountUrl: "https://registry.blob.core.windows.net",
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
       smtpPort: 2525,
       httpPort: 8080,
       host: "0.0.0.0",
@@ -36,6 +39,9 @@ describe("mailroom reader", () => {
       mailboxAddress: "slugger@ouro.bot",
       registryPath: "/tmp/registry.json",
       storePath: "/tmp/mailroom",
+      registryAzureAccountUrl: "https://registry.blob.core.windows.net",
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
       smtpPort: 2525,
       httpPort: 8080,
       host: "0.0.0.0",
@@ -139,5 +145,52 @@ describe("mailroom reader", () => {
       storeLabel: "https://mail.blob.core.windows.net/proof",
     }))
     expect(credentialOptions).toEqual([null])
+  })
+
+  it("reads hosted public registry blobs when no local registry path is present", async () => {
+    const credentialOptions: unknown[] = []
+    const registryJson = {
+      schemaVersion: 1,
+      domain: "ouro.bot",
+      mailboxes: [{ agentId: "slugger", mailboxId: "mailbox_slugger", canonicalAddress: "slugger@ouro.bot", keyId: "mail_slugger", publicKeyPem: "pem", defaultPlacement: "screener" }],
+      sourceGrants: [],
+    }
+
+    vi.doMock("@azure/identity", () => ({
+      DefaultAzureCredential: class {
+        constructor(options?: unknown) {
+          credentialOptions.push(options ?? null)
+        }
+      },
+    }))
+    vi.doMock("@azure/storage-blob", () => ({
+      BlobServiceClient: class {
+        getContainerClient(containerName: string) {
+          expect(containerName).toBe("mailroom")
+          return {
+            getBlockBlobClient(blobName: string) {
+              expect(blobName).toBe("registry/mailroom.json")
+              return {
+                exists: async () => true,
+                downloadToBuffer: async () => Buffer.from(`${JSON.stringify(registryJson)}\n`, "utf-8"),
+              }
+            },
+          }
+        }
+      },
+    }))
+
+    const { readMailroomRegistry } = await import("../../mailroom/reader")
+
+    await expect(readMailroomRegistry({
+      mailboxAddress: "slugger@ouro.bot",
+      azureAccountUrl: "https://mail.blob.core.windows.net",
+      azureManagedIdentityClientId: "client-id",
+      registryAzureAccountUrl: "https://registry.blob.core.windows.net",
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+      privateKeys: { mail_slugger_primary: "secret" },
+    })).resolves.toEqual(registryJson)
+    expect(credentialOptions).toEqual([{ managedIdentityClientId: "client-id" }])
   })
 })

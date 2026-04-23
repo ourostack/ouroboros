@@ -63,8 +63,8 @@ import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-versio
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
-import { FileMailroomStore } from "../../mailroom/file-store"
-import { importMboxToStore } from "../../mailroom/mbox-import"
+import { importMboxFileToStore } from "../../mailroom/mbox-import"
+import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader } from "../../mailroom/reader"
 
 import type {
   OuroCliCommand,
@@ -4082,28 +4082,43 @@ async function executeMailImportMbox(
       progress.end()
       throw new Error(`cannot read Mailroom config from ${runtime.itemPath}: ${runtime.error}`)
     }
-    const mailroom = runtime.config.mailroom
-    if (!mailroom || typeof mailroom !== "object" || Array.isArray(mailroom)) {
+    const mailroom = parseMailroomConfig(runtime.config.mailroom)
+    if (!mailroom) {
       progress.end()
       throw new Error(`missing mailroom config for ${command.agent}; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
     }
-    const registryPath = stringField(mailroom as Record<string, unknown>, "registryPath")
-    const storePath = stringField(mailroom as Record<string, unknown>, "storePath")
-    if (!registryPath || !storePath) {
+    const hosted = Boolean(mailroom.azureAccountUrl)
+    if (hosted) {
+      const registryAzureAccountUrl = mailroom.registryAzureAccountUrl?.trim() ?? ""
+      const registryBlob = mailroom.registryBlob?.trim() ?? ""
+      if (!registryAzureAccountUrl || !registryBlob) {
+        progress.end()
+        throw new Error(`mailroom config for ${command.agent} is missing hosted registry coordinates; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+      }
+    } else {
+      const registryPath = mailroom.registryPath?.trim() ?? ""
+      const storePath = mailroom.storePath?.trim() ?? ""
+      if (!registryPath || !storePath) {
+        progress.end()
+        throw new Error(`mailroom config for ${command.agent} is missing registryPath/storePath; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+      }
+    }
+
+    const resolved = resolveMailroomReader(command.agent)
+    if (!resolved.ok) {
       progress.end()
-      throw new Error(`mailroom config for ${command.agent} is missing registryPath/storePath; agent-runnable repair: 'ouro connect mail --agent ${command.agent}'`)
+      throw new Error(resolved.error)
     }
 
     progress.updateDetail("reading registry and MBOX")
-    const registry = JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
+    const registry = await readMailroomRegistry(resolved.config)
     const filePath = path.resolve(command.filePath)
-    const rawMbox = fs.readFileSync(filePath)
     progress.updateDetail("importing delegated mail")
-    const result = await importMboxToStore({
+    const result = await importMboxFileToStore({
       registry,
-      store: new FileMailroomStore({ rootDir: storePath }),
+      store: resolved.store,
       agentId: command.agent,
-      rawMbox,
+      filePath,
       ownerEmail: command.ownerEmail,
       source: command.source,
     })

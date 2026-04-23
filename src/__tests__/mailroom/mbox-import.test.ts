@@ -4,7 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore } from "../../mailroom/file-store"
-import { importMboxToStore, splitMboxMessages } from "../../mailroom/mbox-import"
+import { importMboxFileToStore, importMboxToStore, splitMboxMessages } from "../../mailroom/mbox-import"
 
 const tempRoots: string[] = []
 
@@ -106,6 +106,40 @@ describe("mailroom mbox import", () => {
     })
     expect(withoutFrom.imported).toBe(1)
     expect(withoutFrom.messages[0].envelope.mailFrom).toBe("")
+  })
+
+  it("streams MBOX files into a delegated source grant without loading the whole archive into memory", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: tempDir() })
+    const mboxPath = path.join(tempDir(), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, sampleMbox())
+
+    const imported = await importMboxFileToStore({
+      registry,
+      store,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      importedAt: new Date("2024-01-03T00:00:00Z"),
+    })
+
+    expect(imported).toEqual(expect.objectContaining({
+      scanned: 2,
+      imported: 2,
+      duplicates: 0,
+      sourceFreshThrough: null,
+    }))
+    expect(imported.messages).toEqual([])
+    const decrypted = decryptMessages(await store.listMessages({ agentId: "slugger", compartmentKind: "delegated", source: "hey" }), keys)
+    expect(decrypted.map((message) => message.private.subject).sort()).toEqual([
+      "First exported message",
+      "Second exported message",
+    ])
   })
 
   it("records HEY archive freshness/provenance and keeps historical imports out of attention", async () => {

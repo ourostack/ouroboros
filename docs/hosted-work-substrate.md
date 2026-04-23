@@ -28,6 +28,8 @@ This harness keeps:
 
 Production account setup is controlled by the agent vault `runtime/config` item. When `workSubstrate.mode` is `hosted`, the harness reads `workSubstrate.mailControl.url` plus its bearer token, calls `POST /v1/mailboxes/ensure`, merges returned one-time private keys with existing vault-held keys, verifies every returned public mailbox/source key id is present, and stores hosted Blob reader coordinates on `mailroom`. If public hosted key ids are present but the matching private keys are missing from the vault, setup fails unless the agent explicitly passes `--rotate-missing-mail-keys`, which calls the hosted key-rotation endpoint and stores the fresh one-time keys. Rotation cannot recover already encrypted mail for the lost key. When hosted config is absent, `ouro connect mail` remains an explicit local-development setup and writes local registry/store paths instead of pretending to be production.
 
+`ouro mail import-mbox` follows the same boundary. In local mode it reads the local registry/store paths. In hosted mode it reads the public registry from the configured Blob coordinates, streams the archive from disk into the encrypted Blob-backed Mailroom, and dedupes safely on rerun so large interrupted imports can be resumed without turning the whole archive into one transaction.
+
 ## Website
 
 Website and marketing updates are intentionally deferred. Treat the hosted repo docs as the source of truth for product boundary language until a dedicated website pass happens.
