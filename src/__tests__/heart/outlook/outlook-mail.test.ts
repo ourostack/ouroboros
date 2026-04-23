@@ -240,6 +240,68 @@ describe("Outlook mail reader", () => {
       .toEqual(["source:alpha", "source:zulu"])
   })
 
+  it("keeps delegated source folders owner-scoped when two humans use the same provider source", async () => {
+    const storePath = tempDir()
+    const ari = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const jamie = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "jamie@example.com",
+      source: "hey",
+    })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    await ingestRawMailToStore({
+      registry: ari.registry,
+      store,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: [ari.registry.sourceGrants[0].aliasAddress],
+      },
+      rawMime: Buffer.from([
+        "From: Ari <ari@mendelow.me>",
+        `To: ${ari.registry.sourceGrants[0].aliasAddress}`,
+        "Subject: Ari HEY",
+        "",
+        "Ari HEY body.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T18:30:00.000Z"),
+    })
+    await ingestRawMailToStore({
+      registry: jamie.registry,
+      store,
+      envelope: {
+        mailFrom: "jamie@example.com",
+        rcptTo: [jamie.registry.sourceGrants[0].aliasAddress],
+      },
+      rawMime: Buffer.from([
+        "From: Jamie <jamie@example.com>",
+        `To: ${jamie.registry.sourceGrants[0].aliasAddress}`,
+        "Subject: Jamie HEY",
+        "",
+        "Jamie HEY body.",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T19:00:00.000Z"),
+    })
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        storePath,
+        privateKeys: { ...ari.keys, ...jamie.keys },
+      },
+    })
+
+    const mailbox = await readMailView("slugger")
+    expect(mailbox.status).toBe("ready")
+    expect(mailbox.folders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source:hey:ari@mendelow.me", label: "HEY / ari@mendelow.me", count: 1 }),
+      expect.objectContaining({ id: "source:hey:jamie@example.com", label: "HEY / jamie@example.com", count: 1 }),
+    ]))
+    expect(mailbox.folders).not.toContainEqual(expect.objectContaining({ id: "source:hey", count: 2 }))
+  })
+
   it("exposes the full read-only mailbox workbench: Screener, recovery drawers, provenance, drafts, and sent mail", async () => {
     const storePath = tempDir()
     const sinkPath = path.join(storePath, "outbound-sink.jsonl")

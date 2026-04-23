@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
+import * as mailroomCore from "../../mailroom/core"
 import {
   buildStoredMailMessage,
   decryptMailPayload,
@@ -140,6 +141,51 @@ describe("mailroom core", () => {
     expect(await store.listAccessLog("nobody")).toEqual([])
     expect(await store.updateMessagePlacement("mail_missing", "discarded")).toBeNull()
     expect(await store.listMailDecisions("nobody")).toEqual([])
+  })
+
+  it("describes mailbox provenance in product terms shared with the hosted protocol", async () => {
+    const describeMailProvenance = (mailroomCore as unknown as {
+      describeMailProvenance?: (message: unknown) => unknown
+    }).describeMailProvenance
+    expect(describeMailProvenance).toBeTypeOf("function")
+    if (!describeMailProvenance) return
+
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const native = resolveMailAddress(registry, "slugger@ouro.bot")!
+    const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")!
+    const nativeMessage = buildStoredMailMessage({
+      resolved: native,
+      envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: Buffer.from("From: Friend <friend@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Native\r\n\r\nbody"),
+    }).message
+    const delegatedMessage = buildStoredMailMessage({
+      resolved: delegated,
+      envelope: { mailFrom: "ari@mendelow.me", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: Delegated\r\n\r\nbody"),
+    }).message
+
+    expect(describeMailProvenance(nativeMessage)).toEqual({
+      mailboxRole: "agent-native-mailbox",
+      mailboxLabel: "slugger@ouro.bot (native agent mail)",
+      agentId: "slugger",
+      ownerEmail: null,
+      source: null,
+      recipient: "slugger@ouro.bot",
+      sendAsHumanAllowed: false,
+    })
+    expect(describeMailProvenance(delegatedMessage)).toEqual({
+      mailboxRole: "delegated-human-mailbox",
+      mailboxLabel: "ari@mendelow.me / hey delegated to slugger",
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      recipient: "me.mendelow.ari.slugger@ouro.bot",
+      sendAsHumanAllowed: false,
+    })
   })
 
   it("covers defensive registry, attachment, and native imbox paths", async () => {

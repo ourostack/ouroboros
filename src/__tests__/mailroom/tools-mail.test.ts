@@ -233,7 +233,7 @@ describe("mail tools", () => {
   it("lists, searches, opens, and audits bounded mail reads", async () => {
     setAgentName("slugger")
     const storePath = tempDir()
-    await seedMail(storePath)
+    const seeded = await seedMail(storePath)
 
     const recent = await tool("mail_recent").handler({ scope: "delegated", reason: "triage" }, trustedContext())
     expect(recent).toContain("Breakfast logistics")
@@ -259,6 +259,18 @@ describe("mail tools", () => {
     expect(accessLog).toContain("mail_recent")
     expect(accessLog).toContain("mail_search")
     expect(accessLog).toContain("mail_thread")
+    expect(accessLog).toContain("delegated human mailbox: ari@mendelow.me / hey")
+
+    const rawAccessLog = await seeded.store.listAccessLog("slugger")
+    expect(rawAccessLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageId,
+        mailboxRole: "delegated-human-mailbox",
+        compartmentKind: "delegated",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      }),
+    ]))
   })
 
   it("keeps delegated human mail family-only while still treating native mail as the agent's sense", async () => {

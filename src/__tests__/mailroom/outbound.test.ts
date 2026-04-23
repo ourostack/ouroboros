@@ -52,6 +52,10 @@ describe("mail outbound confirmed send", () => {
     expect(draft).toEqual(expect.objectContaining({
       id: expect.stringMatching(/^draft_/),
       status: "draft",
+      mailboxRole: "agent-native-mailbox",
+      sendAuthority: "agent-native",
+      ownerEmail: null,
+      source: null,
       from: "slugger@ouro.bot",
       to: ["ari@example.com"],
       subject: "Travel check",
@@ -81,6 +85,10 @@ describe("mail outbound confirmed send", () => {
     expect(sent).toEqual(expect.objectContaining({
       id: draft.id,
       status: "sent",
+      mailboxRole: "agent-native-mailbox",
+      sendAuthority: "agent-native",
+      ownerEmail: null,
+      source: null,
       sentAt: expect.any(String),
       transport: "local-sink",
     }))

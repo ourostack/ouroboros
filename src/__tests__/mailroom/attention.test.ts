@@ -225,6 +225,18 @@ describe("mail screener attention", () => {
 
     expect(result.queued).toHaveLength(2)
     expect(result.queued.map((entry) => entry.candidateId)).toEqual(["candidate_mail_display", "candidate_mail_later"])
+    expect(result.queued[0]).toEqual(expect.objectContaining({
+      mailboxRole: "delegated-human-mailbox",
+      compartmentKind: "delegated",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }))
+    expect(result.queued[1]).toEqual(expect.objectContaining({
+      mailboxRole: "agent-native-mailbox",
+      compartmentKind: "native",
+      ownerEmail: null,
+      source: null,
+    }))
     expect(result.state.notifiedCandidateIds).toEqual(["candidate_mail_display", "candidate_mail_later"])
     const bodies = pendingBodies(pendingDir).join("\n\n")
     expect(bodies).toContain("sender: Travel Desk <travel@example.com>")
