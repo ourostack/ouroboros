@@ -232,6 +232,102 @@ function mockJsonResponse(body: unknown, init: { ok?: boolean; status?: number; 
   } as Response
 }
 
+const HOSTED_MAIL_CONTROL_URL = "https://mail-control.ouro.test"
+const HOSTED_MAIL_CONTROL_TOKEN = "hosted-control-secret"
+const HOSTED_BLOB_ACCOUNT_URL = "https://stourotest.blob.core.windows.net"
+const HOSTED_NATIVE_KEY = "hosted-native-private-key"
+const HOSTED_SOURCE_KEY = "hosted-source-private-key"
+
+function writeHostedWorkSubstrateConfig(agentName: string, mailroom?: Record<string, unknown>): void {
+  writeRuntimeConfig(agentName, {
+    workSubstrate: {
+      mode: "hosted",
+      mailControl: {
+        url: HOSTED_MAIL_CONTROL_URL,
+        token: HOSTED_MAIL_CONTROL_TOKEN,
+      },
+    },
+    ...(mailroom ? { mailroom } : {}),
+  })
+}
+
+function fetchRequestUrl(input: RequestInfo | URL): string {
+  return typeof input === "string"
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url
+}
+
+function fetchHeader(init: RequestInit | undefined, key: string): string | undefined {
+  const headers = init?.headers
+  if (!headers) return undefined
+  if (headers instanceof Headers) return headers.get(key) ?? undefined
+  if (Array.isArray(headers)) {
+    const match = headers.find(([name]) => name.toLowerCase() === key.toLowerCase())
+    return match?.[1]
+  }
+  const record = headers as Record<string, string>
+  return record[key] ?? record[key.toLowerCase()] ?? record[key.toUpperCase()]
+}
+
+function expectHostedEnsureRequest(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  expectedBody: Record<string, unknown>,
+): void {
+  expect(fetchRequestUrl(input)).toBe(`${HOSTED_MAIL_CONTROL_URL}/v1/mailboxes/ensure`)
+  expect(init?.method).toBe("POST")
+  expect(fetchHeader(init, "authorization")).toBe(`Bearer ${HOSTED_MAIL_CONTROL_TOKEN}`)
+  expect(fetchHeader(init, "content-type")).toBe("application/json")
+  expect(JSON.parse(String(init?.body))).toEqual(expectedBody)
+}
+
+function hostedEnsureResponse(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    ok: true,
+    mailboxAddress: "slugger@ouro.bot",
+    sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+    addedMailbox: true,
+    addedSourceGrant: true,
+    generatedPrivateKeys: {
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    },
+    mailbox: {
+      agentId: "slugger",
+      mailboxId: "mailbox_slugger",
+      canonicalAddress: "slugger@ouro.bot",
+      keyId: "mail_slugger_native",
+      defaultPlacement: "screener",
+    },
+    sourceGrant: {
+      grantId: "grant_slugger_hey_9f8b26a4",
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      aliasAddress: "me.mendelow.ari.slugger@ouro.bot",
+      keyId: "mail_slugger_hey",
+      defaultPlacement: "imbox",
+      enabled: true,
+    },
+    publicRegistry: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+      blob: "registry/mailroom.json",
+      domain: "ouro.bot",
+      revision: "1:1:777",
+    },
+    blobStore: {
+      kind: "azure-blob",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      container: "mailroom",
+    },
+    ...overrides,
+  }
+}
+
 function installDefaultCapabilityFetchMock(): void {
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -1297,6 +1393,171 @@ describe("provider CLI command execution", () => {
     const thirdRegistry = JSON.parse(fs.readFileSync(firstRegistryPath, "utf-8")) as { mailboxes: Array<Record<string, unknown>>; sourceGrants: Array<Record<string, unknown>> }
     expect(thirdMailroom.privateKeys).toEqual(secondMailroom.privateKeys)
     expect(thirdRegistry.sourceGrants).toHaveLength(1)
+  })
+
+  it("uses hosted Mail Control for production account setup and stores returned Blob coordinates", async () => {
+    emitTestEvent("provider cli hosted mail control account ensure")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-account-ensure-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-account-ensure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger")
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse())
+    })
+
+    const result = await runOuroCli([
+      "account",
+      "ensure",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(result).toContain("Ouro work substrate ready for Slugger")
+    expect(result).toContain(`Hosted Mail Control: ${HOSTED_MAIL_CONTROL_URL}`)
+    expect(result).toContain(`Blob store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
+    expect(result).toContain("private mail keys were not printed")
+    expect(result).not.toContain(HOSTED_NATIVE_KEY)
+    expect(result).not.toContain(HOSTED_SOURCE_KEY)
+    const stored = readRuntimeSecret("Slugger")
+    expect(stored.config.workSubstrate).toEqual(expect.objectContaining({
+      mode: "hosted",
+    }))
+    expect(stored.config.mailroom).toEqual(expect.objectContaining({
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      registryAzureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+      registryDomain: "ouro.bot",
+      registryRevision: "1:1:777",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+        mail_slugger_hey: HOSTED_SOURCE_KEY,
+      },
+    }))
+    expect(fs.existsSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom", "registry.json"))).toBe(false)
+    expect(readAgentConfig(bundlesRoot, "Slugger").senses).toMatchObject({
+      mail: { enabled: true },
+    })
+  })
+
+  it("preserves vault-held hosted mail keys when Mail Control returns no new secrets", async () => {
+    emitTestEvent("provider cli hosted mail control preserves keys")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-preserve-keys-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-preserve-keys-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const privateKeys = {
+      mail_slugger_native: HOSTED_NATIVE_KEY,
+      mail_slugger_hey: HOSTED_SOURCE_KEY,
+    }
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      registryRevision: "1:1:700",
+      privateKeys,
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse({
+        addedMailbox: false,
+        addedSourceGrant: false,
+        generatedPrivateKeys: {},
+        publicRegistry: {
+          kind: "azure-blob",
+          azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+          container: "mailroom",
+          blob: "registry/mailroom.json",
+          domain: "ouro.bot",
+          revision: "1:1:778",
+        },
+      }))
+    })
+
+    await runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))
+
+    const mailroom = readRuntimeSecret("Slugger").config.mailroom as Record<string, unknown>
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mailroom.privateKeys).toEqual(privateKeys)
+    expect(mailroom.registryRevision).toBe("1:1:778")
+  })
+
+  it("reports hosted registry and vault drift when Mail Control no longer has a missing one-time key", async () => {
+    emitTestEvent("provider cli hosted mail control drift")
+    const bundlesRoot = makeTempDir("provider-cli-hosted-drift-bundles")
+    const homeDir = makeTempDir("provider-cli-hosted-drift-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeHostedWorkSubstrateConfig("Slugger", {
+      mode: "hosted",
+      mailboxAddress: "slugger@ouro.bot",
+      sourceAlias: "me.mendelow.ari.slugger@ouro.bot",
+      azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+      azureContainer: "mailroom",
+      privateKeys: {
+        mail_slugger_native: HOSTED_NATIVE_KEY,
+      },
+    })
+    fetchMock.mockImplementationOnce(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expectHostedEnsureRequest(input, init, {
+        agentId: "Slugger",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      })
+      return mockJsonResponse(hostedEnsureResponse({
+        addedMailbox: false,
+        addedSourceGrant: false,
+        generatedPrivateKeys: {},
+      }))
+    })
+
+    await expect(runOuroCli([
+      "connect",
+      "mail",
+      "--agent",
+      "Slugger",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      now: () => Date.parse(NOW),
+      detectMode: () => "production",
+    }))).rejects.toThrow("mail_slugger_hey")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("ensures the agent work substrate account through one command", async () => {
