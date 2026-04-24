@@ -65,6 +65,16 @@ import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
 import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader } from "../../mailroom/reader"
+import { getInnerDialogPendingDir, queuePendingMessage } from "../../mind/pending"
+import {
+  completeBackgroundOperation,
+  failBackgroundOperation,
+  markBackgroundOperationRunning,
+  readBackgroundOperation,
+  startBackgroundOperation,
+  updateBackgroundOperation,
+  type BackgroundOperationRecord,
+} from "../background-operations"
 
 import type {
   OuroCliCommand,
@@ -4071,12 +4081,232 @@ function stringField(record: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value.trim() : ""
 }
 
+interface TrackedMailOperation {
+  record: BackgroundOperationRecord
+  running: (summary: string, detail?: string, progress?: { current?: number; total?: number; unit?: string }) => void
+  update: (summary: string, detail?: string, progress?: { current?: number; total?: number; unit?: string }) => void
+  succeed: (summary: string, detail: string, result: Record<string, unknown>) => Promise<void>
+  fail: (error: unknown, summary: string, detail: string, remediation: string[]) => Promise<void>
+}
+
+function cliNowIso(deps: OuroCliDeps): string {
+  return new Date(deps.now?.() ?? Date.now()).toISOString()
+}
+
+function makeBackgroundOperationId(kind: "mail.import-mbox" | "mail.backfill-indexes"): string {
+  const prefix = kind === "mail.import-mbox" ? "op_mail_import" : "op_mail_backfill"
+  return `${prefix}_${randomUUID().slice(0, 8)}`
+}
+
+function notifyMailOperation(
+  agentName: string,
+  record: BackgroundOperationRecord & { detail: string },
+  deps: OuroCliDeps,
+): Promise<void> {
+  const lines = [
+    "[Background Operation]",
+    `${record.title} ${record.status === "failed" ? "failed" : "finished"}.`,
+    `operation: ${record.id}`,
+    `status: ${record.status}`,
+    `summary: ${record.summary}`,
+    `detail: ${record.detail}`,
+    ...(record.error?.message ? [`error: ${record.error.message}`] : []),
+    ...(record.remediation && record.remediation.length > 0 ? ["", "next steps:", ...record.remediation.map((step) => `- ${step}`)] : []),
+    "",
+    "Use query_active_work for the live background-work view before drilling into mail details.",
+  ]
+  queuePendingMessage(getInnerDialogPendingDir(agentName), {
+    from: "mailroom",
+    friendId: "self",
+    channel: "inner",
+    key: "dialog",
+    content: lines.join("\n"),
+    timestamp: deps.now?.() ?? Date.now(),
+    mode: "reflect",
+  })
+  return deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
+    .then(() => undefined)
+    .catch(() => undefined)
+}
+
+function ensureTrackedMailOperation(input: {
+  agentName: string
+  deps: OuroCliDeps
+  operationId?: string
+  kind: "mail.import-mbox" | "mail.backfill-indexes"
+  title: string
+  queuedSummary: string
+  spec?: Record<string, unknown>
+}): TrackedMailOperation | null {
+  if (!input.operationId) return null
+  const operationId = input.operationId
+  const agentRoot = providerCliAgentRoot({ agent: input.agentName }, input.deps)
+  const existing = readBackgroundOperation({
+    agentName: input.agentName,
+    agentRoot,
+    id: operationId,
+  })
+  const record = existing ?? startBackgroundOperation({
+    agentName: input.agentName,
+    agentRoot,
+    id: operationId,
+    kind: input.kind,
+    title: input.title,
+    summary: input.queuedSummary,
+    createdAt: cliNowIso(input.deps),
+    ...(input.spec ? { spec: input.spec } : {}),
+  })
+  return {
+    record,
+    running: (summary, detail, progress) => {
+      markBackgroundOperationRunning({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        startedAt: cliNowIso(input.deps),
+        summary,
+        ...(detail ? { detail } : {}),
+        ...(progress ? { progress } : {}),
+      })
+    },
+    update: (summary, detail, progress) => {
+      updateBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        summary,
+        updatedAt: cliNowIso(input.deps),
+        ...(detail ? { detail } : {}),
+        ...(progress ? { progress } : {}),
+      })
+    },
+    succeed: async (summary, detail, result) => {
+      const completed = completeBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        finishedAt: cliNowIso(input.deps),
+        summary,
+        detail,
+        result,
+      })
+      await notifyMailOperation(input.agentName, { ...completed, detail }, input.deps)
+    },
+    fail: async (error, summary, detail, remediation) => {
+      const failed = failBackgroundOperation({
+        agentName: input.agentName,
+        agentRoot,
+        id: operationId,
+        finishedAt: cliNowIso(input.deps),
+        summary,
+        detail,
+        error: error instanceof Error ? error.message : String(error),
+        remediation,
+      })
+      await notifyMailOperation(input.agentName, { ...failed, detail }, input.deps)
+    },
+  }
+}
+
+async function launchBackgroundMailCommand(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" | "mail.backfill-indexes" }>,
+  deps: OuroCliDeps,
+  args: string[],
+  title: string,
+  queuedSummary: string,
+  spec?: Record<string, unknown>,
+): Promise<string> {
+  const spawnBackgroundCli = deps.spawnBackgroundCli
+  if (!spawnBackgroundCli) {
+    throw new Error("background CLI launch is not available in this runtime")
+  }
+  const operationId = makeBackgroundOperationId(command.kind)
+  const agentRoot = providerCliAgentRoot({ agent: command.agent }, deps)
+  startBackgroundOperation({
+    agentName: command.agent,
+    agentRoot,
+    id: operationId,
+    kind: command.kind,
+    title,
+    summary: queuedSummary,
+    createdAt: cliNowIso(deps),
+    ...(spec ? { spec } : {}),
+  })
+  try {
+    await spawnBackgroundCli([process.argv[1]!, ...args, "--foreground", "--operation-id", operationId])
+  } catch (error) {
+    failBackgroundOperation({
+      agentName: command.agent,
+      agentRoot,
+      id: operationId,
+      finishedAt: cliNowIso(deps),
+      summary: `${title} could not be started`,
+      error: error instanceof Error ? error.message : String(error),
+      remediation: ["retry the command once the local runtime is healthy"],
+    })
+    throw error
+  }
+  const message = [
+    `Started background ${title} for ${command.agent}`,
+    `operation: ${operationId}`,
+    ...(spec ? Object.entries(spec).map(([key, value]) => `${key}: ${String(value)}`) : []),
+    `${command.agent} will be woken on failure or completion.`,
+    "Use query_active_work to check live progress.",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 async function executeMailImportMbox(
   command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
+  const filePath = path.resolve(command.filePath)
+  if (!command.foreground) {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`no such file: ${filePath}`)
+    }
+    return launchBackgroundMailCommand(
+      command,
+      deps,
+      [
+        "mail",
+        "import-mbox",
+        "--agent",
+        command.agent,
+        "--file",
+        filePath,
+        ...(command.ownerEmail ? ["--owner-email", command.ownerEmail] : []),
+        ...(command.source ? ["--source", command.source] : []),
+      ],
+      "mail import",
+      "queued delegated mail import",
+      {
+        filePath,
+        ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
+        ...(command.source ? { source: command.source } : {}),
+      },
+    )
+  }
   const progress = createHumanCommandProgress(deps, "mail import")
+  const trackedOperation = ensureTrackedMailOperation({
+    agentName: command.agent,
+    deps,
+    operationId: command.operationId,
+    kind: "mail.import-mbox",
+    title: "mail import",
+    queuedSummary: "queued delegated mail import",
+    spec: {
+      filePath,
+      ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
+      ...(command.source ? { source: command.source } : {}),
+    },
+  })
   try {
+    trackedOperation?.running("reading Mailroom config", `file: ${filePath}`, {
+      current: 0,
+      unit: "messages",
+    })
     progress.startPhase("reading Mailroom config")
     const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
     if (!runtime.ok) {
@@ -4112,9 +4342,10 @@ async function executeMailImportMbox(
     }
 
     progress.updateDetail("reading registry and MBOX")
+    trackedOperation?.update("reading registry and MBOX", `file: ${filePath}`)
     const registry = await readMailroomRegistry(resolved.config)
-    const filePath = path.resolve(command.filePath)
     progress.updateDetail("importing delegated mail")
+    trackedOperation?.update("importing delegated mail", `file: ${filePath}`)
     const result = await importMboxFileToStore({
       registry,
       store: resolved.store,
@@ -4122,6 +4353,16 @@ async function executeMailImportMbox(
       filePath,
       ownerEmail: command.ownerEmail,
       source: command.source,
+      onProgress: (importProgress) => {
+        trackedOperation?.update(
+          "importing delegated mail",
+          `scanned ${importProgress.scanned} messages`,
+          {
+            current: importProgress.scanned,
+            unit: "messages",
+          },
+        )
+      },
     })
     progress.completePhase("reading Mailroom config", "imported")
     progress.end()
@@ -4136,10 +4377,29 @@ async function executeMailImportMbox(
       "archive imports are historical; they do not create Screener wakeups.",
       "body reads remain explicit through mail_recent/mail_search/mail_thread and are access-logged.",
     ].join("\n")
+    await trackedOperation?.succeed(
+      "imported delegated mail archive",
+      `scanned ${result.scanned}; imported ${result.imported}; duplicates ${result.duplicates}`,
+      {
+        scanned: result.scanned,
+        imported: result.imported,
+        duplicates: result.duplicates,
+        sourceFreshThrough: result.sourceFreshThrough,
+      },
+    )
     deps.writeStdout(message)
     return message
   } catch (error) {
     progress.end()
+    await trackedOperation?.fail(
+      error,
+      "delegated mail import failed",
+      `file: ${filePath}`,
+      [
+        "fix the reported Mailroom or MBOX problem, then rerun the import",
+        "use query_active_work to confirm whether the operation has cleared",
+      ],
+    )
     throw error
   }
 }
@@ -4148,8 +4408,31 @@ async function executeMailBackfillIndexes(
   command: Extract<ResolvedOuroCliCommand, { kind: "mail.backfill-indexes" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
+  if (!command.foreground) {
+    return launchBackgroundMailCommand(
+      command,
+      deps,
+      [
+        "mail",
+        "backfill-indexes",
+        "--agent",
+        command.agent,
+      ],
+      "mail index repair",
+      "queued hosted mail index repair",
+    )
+  }
   const progress = createHumanCommandProgress(deps, "mail index repair")
+  const trackedOperation = ensureTrackedMailOperation({
+    agentName: command.agent,
+    deps,
+    operationId: command.operationId,
+    kind: "mail.backfill-indexes",
+    title: "mail index repair",
+    queuedSummary: "queued hosted mail index repair",
+  })
   try {
+    trackedOperation?.running("resolving Mailroom store")
     progress.startPhase("resolving Mailroom store")
     const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
     if (!runtime.ok) {
@@ -4169,16 +4452,37 @@ async function executeMailBackfillIndexes(
         `store: ${resolved.storeLabel}`,
         "This agent is using the local file Mailroom store, so recent mail reads do not depend on hosted blob indexes.",
       ].join("\n")
+      await trackedOperation?.succeed(
+        "hosted mail index repair not needed",
+        `store: ${resolved.storeLabel}`,
+        { indexed: 0, store: resolved.storeLabel, reason: "local-file-store" },
+      )
       deps.writeStdout(message)
       return message
     }
-    const store = resolved.store as { backfillMessageIndexes?: (agentId?: string) => Promise<number> }
+    const store = resolved.store as {
+      backfillMessageIndexes?: (
+        agentId?: string,
+        onProgress?: (progress: { scanned: number; indexed: number; failures: number; total: number }) => void,
+      ) => Promise<number>
+    }
     if (typeof store.backfillMessageIndexes !== "function") {
       progress.end()
       throw new Error(`hosted Mailroom store for ${command.agent} does not expose index backfill`)
     }
     progress.updateDetail("backfilling hosted message indexes")
-    const indexed = await store.backfillMessageIndexes(command.agent)
+    trackedOperation?.update("backfilling hosted message indexes")
+    const indexed = await store.backfillMessageIndexes(command.agent, (backfillProgress) => {
+      trackedOperation?.update(
+        "backfilling hosted message indexes",
+        `indexed ${backfillProgress.indexed} of ${backfillProgress.total}`,
+        {
+          current: backfillProgress.scanned,
+          total: backfillProgress.total,
+          unit: "blobs",
+        },
+      )
+    })
     progress.completePhase("resolving Mailroom store", "backfilled")
     progress.end()
     const message = [
@@ -4187,10 +4491,24 @@ async function executeMailBackfillIndexes(
       `indexed: ${indexed}`,
       "Safe to rerun. Existing index entries are rewritten in place.",
     ].join("\n")
+    await trackedOperation?.succeed(
+      "hosted mail index repair finished",
+      `indexed ${indexed} message indexes`,
+      { indexed, store: resolved.storeLabel },
+    )
     deps.writeStdout(message)
     return message
   } catch (error) {
     progress.end()
+    await trackedOperation?.fail(
+      error,
+      "hosted mail index repair failed",
+      "store resolution or blob backfill failed",
+      [
+        "rerun the hosted index repair to retry remaining blobs",
+        "if the same residue repeats, inspect the failed blob ids and timeouts",
+      ],
+    )
     throw error
   }
 }

@@ -339,12 +339,12 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
-    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
+    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
     example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
   },
   "mail backfill-indexes": {
     description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",
-    usage: "ouro mail backfill-indexes [--agent <name>]",
+    usage: "ouro mail backfill-indexes [--agent <name>] [--foreground]",
     example: "ouro mail backfill-indexes --agent slugger",
   },
   "provider refresh": {

@@ -151,6 +151,15 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function defaultSpawnBackgroundCli(argv: string[]): Promise<{ pid: number | null }> {
+  const child = spawn(process.execPath, argv, {
+    detached: true,
+    stdio: "ignore",
+  })
+  child.unref()
+  return Promise.resolve({ pid: child.pid ?? null })
+}
+
 function defaultFallbackPendingMessage(command: Extract<import("./daemon").DaemonCommand, { kind: "message.send" }>): string {
   const inboxDir = path.join(getAgentBundlesRoot(), `${command.to}.ouro`, "inbox")
   const pendingPath = path.join(inboxDir, "pending.jsonl")
@@ -550,6 +559,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     readHealthUpdatedAt: defaultReadHealthUpdatedAt,
     readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
     sleep: defaultSleep,
+    spawnBackgroundCli: defaultSpawnBackgroundCli,
     now: () => Date.now(),
     updateCheckTimeoutMs: CLI_UPDATE_CHECK_TIMEOUT_MS,
     startupPollIntervalMs: 250,

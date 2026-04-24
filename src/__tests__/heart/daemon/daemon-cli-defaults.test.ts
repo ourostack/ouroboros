@@ -100,6 +100,62 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("uses detached default background CLI spawning", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: 54321,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: 54321,
+      })
+      expect(spawn).toHaveBeenCalledWith(process.execPath, ["mail", "backfill-indexes", "--agent", "Slugger"], {
+        detached: true,
+        stdio: "ignore",
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
+  it("returns a null pid when detached background launch does not expose one", async () => {
+    vi.resetModules()
+
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({
+      pid: undefined,
+      unref,
+    }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await expect(deps.spawnBackgroundCli?.(["mail", "backfill-indexes", "--agent", "Slugger"])).resolves.toEqual({
+        pid: null,
+      })
+      expect(unref).toHaveBeenCalledOnce()
+    } finally {
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
   it("persists a launch agent plist on darwin via default boot persistence", async () => {
     vi.resetModules()
 

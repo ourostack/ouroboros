@@ -97,8 +97,8 @@ export function usage(): string {
     "  ouro auth [--agent <name>] [--provider <provider>]",
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
-    "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]",
-    "  ouro mail backfill-indexes [--agent <name>]",
+    "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
+    "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
     "  ouro auth switch [--agent <name>] --provider <provider>",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
@@ -922,13 +922,28 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
 
 function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
-  const usageText = "Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>]\n       ouro mail backfill-indexes [--agent <name>]"
+  const usageText = "Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]"
   if (sub === "backfill-indexes") {
     const { agent, rest } = extractAgentFlag(subArgs)
-    if (rest.length > 0) throw new Error(usageText)
+    let foreground = false
+    let operationId: string | undefined
+    for (let i = 0; i < rest.length; i += 1) {
+      const token = rest[i]
+      if (token === "--foreground") {
+        foreground = true
+        continue
+      }
+      if (token === "--operation-id" && rest[i + 1]) {
+        operationId = rest[++i]
+        continue
+      }
+      throw new Error(usageText)
+    }
     return {
       kind: "mail.backfill-indexes",
       ...(agent ? { agent } : {}),
+      ...(foreground ? { foreground: true } : {}),
+      ...(operationId ? { operationId } : {}),
     }
   }
   if (sub !== "import-mbox") {
@@ -938,6 +953,8 @@ function parseMailCommand(args: string[]): OuroCliCommand {
   let filePath: string | undefined
   let ownerEmail: string | undefined
   let source: string | undefined
+  let foreground = false
+  let operationId: string | undefined
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i]
     if (token === "--file" && rest[i + 1]) {
@@ -952,6 +969,14 @@ function parseMailCommand(args: string[]): OuroCliCommand {
       source = rest[++i]
       continue
     }
+    if (token === "--foreground") {
+      foreground = true
+      continue
+    }
+    if (token === "--operation-id" && rest[i + 1]) {
+      operationId = rest[++i]
+      continue
+    }
     throw new Error(usageText)
   }
   if (!filePath) {
@@ -963,6 +988,8 @@ function parseMailCommand(args: string[]): OuroCliCommand {
     filePath,
     ...(ownerEmail ? { ownerEmail } : {}),
     ...(source ? { source } : {}),
+    ...(foreground ? { foreground: true } : {}),
+    ...(operationId ? { operationId } : {}),
   }
 }
 

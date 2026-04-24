@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.480",
+      "changes": [
+        "`ouro mail import-mbox` and `ouro mail backfill-indexes` now launch as durable background operations by default, so large delegated-mail imports and hosted index repairs no longer block ordinary conversation.",
+        "Mail background jobs now persist queued/running/succeeded/failed state with progress, show up in `query_active_work`, and wake the agent immediately on completion or failure with actionable remediation context.",
+        "The background-operation runtime and CLI lifecycle are covered back to a restored 100% statements/branches/functions/lines gate, including detached background spawn defaults, malformed persisted records, and non-Error failure paths."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.479",
       "changes": [
         "Hosted Outlook mailbox reads now stay on the visible recent slice instead of requesting 500 full hosted messages, so Slugger's live mailbox can load again after the large HEY archive import.",

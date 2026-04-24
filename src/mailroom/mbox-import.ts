@@ -23,6 +23,7 @@ export interface MboxImportInput {
 
 export interface MboxFileImportInput extends Omit<MboxImportInput, "rawMbox"> {
   filePath: string
+  onProgress?: (progress: { scanned: number; imported: number; duplicates: number }) => void
 }
 
 export interface MboxImportResult {
@@ -50,6 +51,7 @@ interface ImportParsedMessagesInput {
   collectMessages?: boolean
   sourceFreshThrough?: string | null
   maxConcurrency?: number
+  onProgress?: (progress: { scanned: number; imported: number; duplicates: number }) => void
 }
 
 export function splitMboxMessages(rawMbox: Buffer): Buffer[] {
@@ -265,6 +267,7 @@ async function importParsedMessagesToStore(input: ImportParsedMessagesInput): Pr
       if (input.collectMessages !== false) messages.push(result.message)
       if (result.created) imported += 1
       else duplicates += 1
+      input.onProgress?.({ scanned, imported, duplicates })
     })().finally(() => {
       inFlight.delete(task)
     })
@@ -274,6 +277,7 @@ async function importParsedMessagesToStore(input: ImportParsedMessagesInput): Pr
 
   for await (const parsedMessage of input.parsedMessages) {
     scanned += 1
+    input.onProgress?.({ scanned, imported, duplicates })
     enqueue(parsedMessage)
     if (inFlight.size >= maxConcurrency) {
       await Promise.race(inFlight)
@@ -363,5 +367,6 @@ export async function importMboxFileToStore(input: MboxFileImportInput): Promise
     collectMessages: false,
     sourceFreshThrough,
     maxConcurrency: 8,
+    onProgress: input.onProgress,
   })
 }

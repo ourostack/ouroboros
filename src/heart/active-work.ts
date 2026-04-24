@@ -10,6 +10,7 @@ import { isOpenObligation, isOpenObligationStatus, type Obligation, type Obligat
 import type { SessionActivityRecord } from "./session-activity"
 import { formatTargetSessionCandidates, type TargetSessionCandidate } from "./target-resolution"
 import { sanitizeKey } from "./config"
+import type { BackgroundOperationRecord } from "./background-operations"
 
 export type CenterOfGravityMode = "local-turn" | "inward-work" | "shared-work"
 
@@ -78,6 +79,7 @@ export interface ActiveWorkFrame {
     allOtherLiveSessions?: SessionActivityRecord[]
   }
   codingSessions: CodingSession[]
+  backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
   targetCandidates?: TargetSessionCandidate[]
@@ -94,6 +96,7 @@ interface BuildActiveWorkFrameInput {
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
   codingSessions?: CodingSession[]
+  backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
   taskBoard: BoardResult
@@ -706,6 +709,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       allOtherLiveSessions,
     },
     codingSessions: liveCodingSessions,
+    backgroundOperations: input.backgroundOperations ?? [],
     otherCodingSessions,
     pendingObligations,
     targetCandidates: input.targetCandidates ?? [],
@@ -836,6 +840,31 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
         lines.push(`  branch: ${id.branch ?? "unknown"} commit: ${id.commit ?? "unknown"} ${id.dirty ? "dirty" : "clean"} verification: ${id.verificationStatus}`)
       }
       /* v8 ignore stop */
+    }
+  }
+
+  const backgroundOperations = frame.backgroundOperations ?? []
+  if (backgroundOperations.length > 0) {
+    lines.push("")
+    lines.push("## background operations")
+    for (const operation of backgroundOperations) {
+      let line = `- [${operation.status}] ${operation.title}`
+      if (operation.summary.trim().length > 0) {
+        line += `: ${operation.summary}`
+      }
+      if (operation.detail?.trim()) {
+        line += `\n  ${operation.detail.trim()}`
+      }
+      if (operation.progress) {
+        const current = typeof operation.progress.current === "number" ? String(operation.progress.current) : "?"
+        const total = typeof operation.progress.total === "number" ? String(operation.progress.total) : null
+        const unit = operation.progress.unit?.trim() ? ` ${operation.progress.unit.trim()}` : ""
+        line += `\n  progress: ${total ? `${current}/${total}` : current}${unit}`
+      }
+      if (operation.error?.message?.trim()) {
+        line += `\n  error: ${operation.error.message.trim()}`
+      }
+      lines.push(line)
     }
   }
 

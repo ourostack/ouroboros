@@ -24,6 +24,7 @@ import {
 } from "../heart/session-transcript";
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
+import { listBackgroundOperations } from "../heart/background-operations";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
 import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
@@ -262,6 +263,11 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
       && obligation.origin.key === currentSession.key,
     )?.content ?? null
     : null
+  const backgroundOperations = listBackgroundOperations({
+    agentName: getAgentName(),
+    agentRoot,
+    limit: 5,
+  })
 
   return buildActiveWorkFrame({
     currentSession,
@@ -270,6 +276,7 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
     inner: readActiveWorkInnerState(),
     bridges,
     codingSessions,
+    backgroundOperations,
     otherCodingSessions,
     pendingObligations,
     taskBoard: (() => {

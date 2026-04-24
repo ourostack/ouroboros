@@ -1214,6 +1214,12 @@ describe("provider CLI command parsing", () => {
       ownerEmail: "ari@mendelow.me",
       source: "hey",
     })
+    expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox", "--foreground", "--operation-id", "op-123"])).toEqual({
+      kind: "mail.import-mbox",
+      filePath: "/tmp/hey.mbox",
+      foreground: true,
+      operationId: "op-123",
+    })
     expect(parseOuroCommand(["mail", "import-mbox", "--file", "/tmp/hey.mbox"])).toEqual({
       kind: "mail.import-mbox",
       filePath: "/tmp/hey.mbox",
@@ -1221,6 +1227,11 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["mail", "backfill-indexes", "--agent", "Slugger"])).toEqual({
       kind: "mail.backfill-indexes",
       agent: "Slugger",
+    })
+    expect(parseOuroCommand(["mail", "backfill-indexes", "--foreground", "--operation-id", "op-456"])).toEqual({
+      kind: "mail.backfill-indexes",
+      foreground: true,
+      operationId: "op-456",
     })
     expect(parseOuroCommand(["mail", "backfill-indexes"])).toEqual({
       kind: "mail.backfill-indexes",
@@ -2364,6 +2375,7 @@ describe("provider CLI command execution", () => {
       "import-mbox",
       "--agent",
       "Slugger",
+      "--foreground",
       "--file",
       mboxPath,
       "--owner-email",
@@ -2421,6 +2433,7 @@ describe("provider CLI command execution", () => {
       "import-mbox",
       "--agent",
       "Slugger",
+      "--foreground",
       "--file",
       mboxPath,
       "--owner-email",
@@ -2445,7 +2458,7 @@ describe("provider CLI command execution", () => {
     const mboxPath = path.join(mailStateDir, "hey.mbox")
     fs.writeFileSync(mboxPath, "", "utf-8")
     const deps = makeCliDeps(homeDir, bundlesRoot)
-    const command = ["mail", "import-mbox", "--agent", "Slugger", "--file", mboxPath]
+    const command = ["mail", "import-mbox", "--agent", "Slugger", "--foreground", "--file", mboxPath]
 
     await expect(runOuroCli(command, deps)).rejects.toThrow("cannot read Mailroom config")
 
@@ -2534,6 +2547,7 @@ describe("provider CLI command execution", () => {
       "import-mbox",
       "--agent",
       "Slugger",
+      "--foreground",
       "--file",
       mboxPath,
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic reader failure for coverage")
@@ -2575,6 +2589,7 @@ describe("provider CLI command execution", () => {
       "import-mbox",
       "--agent",
       "Slugger",
+      "--foreground",
       "--file",
       mboxPath,
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- hosted reader failure after coordinate validation")
@@ -2615,13 +2630,14 @@ describe("provider CLI command execution", () => {
       "backfill-indexes",
       "--agent",
       "Slugger",
+      "--foreground",
     ], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("Backfilled hosted mail indexes for Slugger")
     expect(result).toContain(`store: ${HOSTED_BLOB_ACCOUNT_URL}/mailroom`)
     expect(result).toContain("indexed: 16616")
     expect(refreshSpy).toHaveBeenCalledWith("Slugger", { preserveCachedOnFailure: true })
-    expect(backfillMessageIndexes).toHaveBeenCalledWith("Slugger")
+    expect(backfillMessageIndexes).toHaveBeenCalledWith("Slugger", expect.any(Function))
 
     refreshSpy.mockRestore()
     readerSpy.mockRestore()
@@ -2658,6 +2674,7 @@ describe("provider CLI command execution", () => {
       "backfill-indexes",
       "--agent",
       "Slugger",
+      "--foreground",
     ], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("Hosted mail index backfill not needed for Slugger")
@@ -2685,6 +2702,7 @@ describe("provider CLI command execution", () => {
       "backfill-indexes",
       "--agent",
       "Slugger",
+      "--foreground",
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow(
       "cannot read Mailroom config from vault:Slugger:runtime/config: no runtime credentials stored at vault:Slugger:runtime/config",
     )
@@ -2730,6 +2748,7 @@ describe("provider CLI command execution", () => {
       "backfill-indexes",
       "--agent",
       "Slugger",
+      "--foreground",
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("AUTH_REQUIRED:mailroom -- synthetic backfill failure")
 
     await expect(runOuroCli([
@@ -2737,10 +2756,538 @@ describe("provider CLI command execution", () => {
       "backfill-indexes",
       "--agent",
       "Slugger",
+      "--foreground",
     ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow("does not expose index backfill")
 
     refreshSpy.mockRestore()
     readerSpy.mockRestore()
+  })
+
+  it("starts MBOX imports as background operations by default", async () => {
+    emitTestEvent("provider cli mail import background launch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(result).toContain("Slugger will be woken on failure or completion")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+    expect(spawnBackgroundCli.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+      "--foreground",
+      "--operation-id",
+    ]))
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      kind: string
+      status: string
+      spec: Record<string, unknown>
+    }
+    expect(record.kind).toBe("mail.import-mbox")
+    expect(record.status).toBe("queued")
+    expect(record.spec).toEqual({
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+  })
+
+  it("fails fast when a background MBOX import file path does not exist", async () => {
+    emitTestEvent("provider cli mail import background missing file")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-missing-file-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-missing-file-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const missingPath = path.join(agentRoot(bundlesRoot, "Slugger"), "missing.mbox")
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 999 }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      missingPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      `no such file: ${missingPath}`,
+    )
+
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("explains when this runtime cannot launch background mail commands", async () => {
+    emitTestEvent("provider cli mail background unavailable")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-unavailable-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-unavailable-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))).rejects.toThrow(
+      "background CLI launch is not available in this runtime",
+    )
+  })
+
+  it("records a failed background launch when detached spawn throws", async () => {
+    emitTestEvent("provider cli mail background spawn failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-spawn-failure-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-spawn-failure-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => {
+      throw new Error("background spawn failed")
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      "background spawn failed",
+    )
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      status: string
+      summary: string
+      error?: { message: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.summary).toBe("mail import could not be started")
+    expect(record.error).toEqual({ message: "background spawn failed" })
+    expect(record.remediation).toEqual(["retry the command once the local runtime is healthy"])
+  })
+
+  it("records non-Error background launch failures without crashing the formatter", async () => {
+    emitTestEvent("provider cli mail background spawn failure string")
+    const bundlesRoot = makeTempDir("provider-cli-mail-background-spawn-failure-string-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-background-spawn-failure-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => {
+      throw "spawn broke"
+    })
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))).rejects.toThrow(
+      "spawn broke",
+    )
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      error?: { message: string }
+    }
+    expect(record.error).toEqual({ message: "spawn broke" })
+  })
+
+  it("wakes the agent when a tracked foreground MBOX import finishes", async () => {
+    emitTestEvent("provider cli mail import completion wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Status test",
+      "Message-ID: <status@example.com>",
+      "",
+      "Background operations should wake Slugger when they finish.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete.json"),
+      "utf-8",
+    )) as { status: string; result?: Record<string, unknown> }
+    expect(record.status).toBe("succeeded")
+    expect(record.result).toMatchObject({ imported: 1, duplicates: 0, scanned: 1 })
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("still completes a tracked foreground MBOX import when the inner wake send fails", async () => {
+    emitTestEvent("provider cli mail import completion wake degraded")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-degraded-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-degraded-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-degraded.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Wake degraded test",
+      "Message-ID: <wake-degraded@example.com>",
+      "",
+      "Import completion should still persist even if the wake ping fails.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => {
+      throw new Error("socket unavailable")
+    })
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_degraded",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete_degraded.json"),
+      "utf-8",
+    )) as { status: string }
+    expect(record.status).toBe("succeeded")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("records tracked foreground backfill failures and wakes the agent immediately", async () => {
+    emitTestEvent("provider cli mail backfill failure wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-operation-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-operation-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_operation_failure",
+      updatedAt: NOW,
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: {
+        backfillMessageIndexes: vi.fn(async () => {
+          throw new Error("hosted message index backfill incomplete after indexing 16583 message(s)")
+        }),
+      } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_backfill_fail",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow(
+      "hosted message index backfill incomplete after indexing 16583 message(s)",
+    )
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_backfill_fail.json"),
+      "utf-8",
+    )) as { status: string; error?: { message: string } }
+    expect(record.status).toBe("failed")
+    expect(record.error).toEqual({
+      message: "hosted message index backfill incomplete after indexing 16583 message(s)",
+    })
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+
+    refreshSpy.mockRestore()
+    readerSpy.mockRestore()
+  })
+
+  it("starts hosted mail index repair as a background operation by default", async () => {
+    emitTestEvent("provider cli mail backfill background launch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-background-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-background-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 54321 }))
+    const result = await runOuroCli([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail index repair for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+    expect(spawnBackgroundCli.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
+      "mail",
+      "backfill-indexes",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+    ]))
+
+    const operationsDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations")
+    const operationFiles = fs.readdirSync(operationsDir).filter((entry) => entry.endsWith(".json"))
+    expect(operationFiles).toHaveLength(1)
+    const record = JSON.parse(fs.readFileSync(path.join(operationsDir, operationFiles[0]!), "utf-8")) as {
+      kind: string
+      status: string
+      summary: string
+    }
+    expect(record.kind).toBe("mail.backfill-indexes")
+    expect(record.status).toBe("queued")
+    expect(record.summary).toBe("queued hosted mail index repair")
+  })
+
+  it("tracks successful hosted backfill progress and wakes the agent on completion", async () => {
+    emitTestEvent("provider cli mail backfill completion wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-backfill-success-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-backfill-success-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
+      ok: true,
+      itemPath: "vault:Slugger:runtime/config",
+      config: { mailroom: {} },
+      revision: "runtime_test_backfill_operation_success",
+      updatedAt: NOW,
+    })
+    const backfillMessageIndexes = vi.fn(async (_agentId?: string, onProgress?: (progress: {
+      scanned: number
+      indexed: number
+      failures: number
+      total: number
+    }) => void) => {
+      onProgress?.({
+        scanned: 10,
+        indexed: 7,
+        failures: 0,
+        total: 12,
+      })
+      return 12
+    })
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+      ok: true,
+      agentName: "Slugger",
+      config: {
+        mailboxAddress: "slugger@ouro.bot",
+        azureAccountUrl: HOSTED_BLOB_ACCOUNT_URL,
+        azureContainer: "mailroom",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+      store: { backfillMessageIndexes } as any,
+      storeKind: "azure-blob",
+      storeLabel: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      const result = await runOuroCli([
+        "mail",
+        "backfill-indexes",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_backfill_complete",
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+      expect(result).toContain("Backfilled hosted mail indexes for Slugger")
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_backfill_complete.json"),
+        "utf-8",
+      )) as { status: string; progress?: Record<string, unknown>; result?: Record<string, unknown> }
+      expect(record.status).toBe("succeeded")
+      expect(record.progress).toEqual({
+        current: 10,
+        total: 12,
+        unit: "blobs",
+      })
+      expect(record.result).toEqual({
+        indexed: 12,
+        store: `${HOSTED_BLOB_ACCOUNT_URL}/mailroom`,
+      })
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      refreshSpy.mockRestore()
+      readerSpy.mockRestore()
+    }
+  })
+
+  it("records non-Error tracked foreground import failures without losing wakeability", async () => {
+    emitTestEvent("provider cli mail import tracked failure string")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-string-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-string-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-string.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockImplementation(() => {
+      throw "reader exploded"
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_string",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("reader exploded")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_string.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        progress?: { current: number; unit: string }
+        error?: { message: string }
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.progress).toEqual({ current: 0, unit: "messages" })
+      expect(record.error).toEqual({ message: "reader exploded" })
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      readerSpy.mockRestore()
+    }
   })
 
   it("ouro use writes local provider state after a successful live check", async () => {

@@ -339,7 +339,10 @@ export class AzureBlobMailroomStore implements MailroomStore {
       .slice(0, filters.limit ?? 20)
   }
 
-  async backfillMessageIndexes(agentId?: string): Promise<number> {
+  async backfillMessageIndexes(
+    agentId?: string,
+    onProgress?: (progress: { scanned: number; indexed: number; failures: number; total: number }) => void,
+  ): Promise<number> {
     await this.ensureContainer()
     const messageBlobNames: string[] = []
     for await (const item of this.container.listBlobsFlat({ prefix: "messages/" })) {
@@ -347,6 +350,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     }
     let indexed = 0
     const failures: string[] = []
+    let scanned = 0
     let nextIndex = 0
     const worker = async () => {
       while (nextIndex < messageBlobNames.length) {
@@ -360,6 +364,9 @@ export class AzureBlobMailroomStore implements MailroomStore {
           indexed += 1
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error))
+        } finally {
+          scanned += 1
+          onProgress?.({ scanned, indexed, failures: failures.length, total: messageBlobNames.length })
         }
       }
     }
