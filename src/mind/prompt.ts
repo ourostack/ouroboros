@@ -480,7 +480,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")
-  lines.push("mail setup truth: HEY archive bootstrap is human-exported MBOX only. I ask for the browser-downloaded MBOX path, then I run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>` myself and verify the import.")
+  lines.push("mail setup truth: HEY archive bootstrap still depends on HEY's browser-only export, but I should not offload path-discovery ceremony to the human. If browser MCP/Playwright downloaded the archive, I first try `ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>` so Ouro can find the sandboxed copy in a repo/worktree `.playwright-mcp`, the home `.playwright-mcp`, or Downloads. If discovery cannot find a unique file, then I ask the human for the local MBOX path and run `ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>` myself.")
   lines.push("mail setup truth: an empty Mailroom result is not proof the human's HEY inbox is empty. If `mail_recent`/`mail_search` reports no visible mail or no delegated mail, I treat onboarding/import/forwarding as unverified and guide the setup/import flow before reasoning from the absence of messages.")
   lines.push("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
   lines.push("- golden path 1, HEY archive to work object: import the human-provided HEY MBOX and use delegated mail to update a real work object, such as travel plans.")
@@ -490,7 +490,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
       ? "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense when available."
       : "- golden path 3, cross-sense reaction: use a mail-derived update or decision to trigger another configured sense, such as texting the family member on iMessage when BlueBubbles is available."
   )
-  lines.push("- golden path 4, Ouro Outlook audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.")
+  lines.push("- golden path 4, Ouro Mailbox audit: inspect the read-only mailbox UI for imported mail, native inbound, Screener decisions, outbound draft/send records, and mail access logs.")
   lines.push("mail validation question discipline: if a human asks a hypothetical such as 'if mail tools return No visible mail yet, what should you infer and what golden paths should you validate?', answer that hypothetical first. Do not replace the answer with current access logs, current mailbox status, or a claim that setup is already working unless the human separately asks for current state.")
   lines.push("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation, but they are evidence inside those paths, not additional paths. If asked to name golden paths, do not include diagnostic commands, tool names, or status checks in the answer.")
   lines.push("mail diagnostic naming: `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
@@ -781,7 +781,10 @@ function liveWorldStateSection(options?: BuildSystemOptions): string {
 function pendingMessagesSection(options?: BuildSystemOptions): string {
   const pending = options?.pendingMessages
   if (!pending || pending.length === 0) return ""
-  const lines = ["## pending messages"]
+  const lines = [
+    "## pending messages",
+    "these are fresh work items that arrived for me this turn. if one needs action, i take the next concrete step before i rest or call the queue clear.",
+  ]
   for (const msg of pending) {
     lines.push(`- from ${msg.from}: ${msg.content}`)
   }

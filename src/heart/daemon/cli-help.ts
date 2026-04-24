@@ -94,9 +94,15 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro doctor",
     example: "ouro doctor",
   },
+  mailbox: {
+    category: "Agents",
+    description: "Show the agent's current mailbox overview",
+    usage: "ouro mailbox [--json]",
+    example: "ouro mailbox --json",
+  },
   outlook: {
     category: "Agents",
-    description: "Show the agent's current outlook",
+    description: "Deprecated alias for `ouro mailbox`",
     usage: "ouro outlook [--json]",
     example: "ouro outlook --json",
   },
@@ -196,7 +202,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Auth",
     description: "Import delegated mail and repair hosted Mailroom mailbox indexes",
     usage: "ouro mail <import-mbox|backfill-indexes> [--agent <name>]",
-    example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
+    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
     subcommands: ["import-mbox", "backfill-indexes"],
   },
   use: {
@@ -339,8 +345,8 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
-    usage: "ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
-    example: "ouro mail import-mbox --file ~/Downloads/hey.mbox --owner-email ari@mendelow.me --source hey --agent slugger",
+    usage: "ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
+    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
   },
   "mail backfill-indexes": {
     description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",

@@ -314,6 +314,15 @@ export interface RunAgentOptions {
   journalFiles?: import("../mind/prompt").JournalFileEntry[];
 }
 
+function hasFreshPendingWork(options?: RunAgentOptions): boolean {
+  const pendingMessages = options?.pendingMessages
+  if (!Array.isArray(pendingMessages)) return false
+  return pendingMessages.some((message) =>
+    typeof message?.content === "string"
+    && message.content.trim().length > 0,
+  )
+}
+
 export type RunAgentOutcome =
   | "settled"
   | "blocked"
@@ -1103,6 +1112,15 @@ export async function runAgent(
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
             messages.push(msg);
             const gateMessage = "you're holding thoughts someone is waiting for — surface them before you rest.";
+            messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            continue;
+          }
+
+          if (hasFreshPendingWork(options)) {
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
+            messages.push(msg);
+            const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             continue;

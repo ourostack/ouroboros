@@ -102,7 +102,7 @@ export function App() {
       <div className="flex h-screen items-center justify-center bg-ouro-void">
         <div className="text-center">
           <div className="mx-auto mb-4 h-4 w-4 animate-pulse rounded-full bg-ouro-glow shadow-[0_0_20px_theme(--color-ouro-glow)]" />
-          <p className="font-mono text-sm text-ouro-mist">Connecting to Outlook…</p>
+          <p className="font-mono text-sm text-ouro-mist">Connecting to Mailbox…</p>
         </div>
       </div>
     )
@@ -131,7 +131,7 @@ export function App() {
               <div className="h-3 w-3 shrink-0 rounded-full bg-ouro-glow shadow-[0_0_16px_theme(--color-ouro-glow)]" />
               <div className="min-w-0">
                 <p className="truncate font-display text-lg italic font-semibold text-ouro-bone">
-                  Ouro Outlook
+                  Ouro Mailbox
                 </p>
               </div>
             </div>

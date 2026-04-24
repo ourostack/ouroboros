@@ -42,7 +42,10 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("the next step is a tool-capable Ouro setup session or companion, not shifting CLI operation to the human")
     expect(guide).toContain("The agent runs agent-runnable commands itself")
     expect(guide).toContain("The agent verifies each step before asking for the next one")
-    expect(guide).toContain("Agent command after the human provides the file path")
+    expect(guide).toContain("Preferred agent command after a browser download")
+    expect(guide).toContain("The discovery path searches the current repo's `.playwright-mcp`")
+    expect(guide).toContain("Only if discovery cannot find a unique file")
+    expect(guide).toContain("Fallback agent command after the human provides the file path")
   })
 
   it("keeps native agent mail, delegated human mail, and trust provenance distinct", () => {
@@ -56,7 +59,7 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Delegated human mail requires family trust")
   })
 
-  it("documents Screener recovery, human-only external actions, and Outlook audit expectations", () => {
+  it("documents Screener recovery, human-only external actions, and Mailbox audit expectations", () => {
     const guide = readGuide()
 
     expect(guide).toContain("discard")
@@ -66,7 +69,7 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("Verify the current `ouro.bot` DNS/MX state")
     expect(guide).toContain("HEY browser export")
     expect(guide).toContain("confirmation=CONFIRM_SEND")
-    expect(guide).toContain("Ouro Outlook should feel like logging into the agent's mailbox")
+    expect(guide).toContain("Ouro Mailbox should feel like logging into the agent's mailbox")
     expect(guide).toContain("mail_access_log")
   })
 
@@ -110,6 +113,7 @@ describe("agent mail setup documentation contract", () => {
       "Human-required",
       "DNS/MX drift",
       "HEY forwarding missing or stale",
+      "daemon stopped or worker state stale",
       "hosted registry/vault key drift",
       "ouro account ensure --rotate-missing-mail-keys",
       "rotation cannot recover mail already encrypted to a lost private key",
@@ -118,6 +122,7 @@ describe("agent mail setup documentation contract", () => {
       "autonomy kill switch",
       "wrong mailbox provenance",
       "Do not parse vault item notes",
+      "Treat cached `runtime.json` files as hints, not truth.",
     ]) {
       expect(recovery).toContain(term)
     }

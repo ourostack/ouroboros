@@ -726,14 +726,16 @@ describe("buildSystem", () => {
     expect(result).toContain("ouro connect mail --agent <agent> --owner-email <email> --source hey")
     expect(result).toContain("--no-delegated-source")
     expect(result).toContain("docs/agent-mail-setup.md")
+    expect(result).toContain("ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>")
+    expect(result).toContain("If discovery cannot find a unique file")
     expect(result).toContain("ouro mail import-mbox --file <path> --owner-email <email> --source hey --agent <agent>")
-    expect(result).toContain("I run `ouro mail import-mbox")
+    expect(result).toContain("I should not offload path-discovery ceremony to the human")
     expect(result).toContain("do not invent `ouro doctor --agent <agent>`")
     expect(result).toContain("mail validation answer shape: when a human asks for Agent Mail golden paths, answer with only these four named paths before claiming setup works:")
     expect(result).toContain("golden path 1, HEY archive to work object")
     expect(result).toContain("golden path 2, native mail and Screener")
     expect(result).toContain("golden path 3, cross-sense reaction")
-    expect(result).toContain("golden path 4, Ouro Outlook audit")
+    expect(result).toContain("golden path 4, Ouro Mailbox audit")
     expect(result).toContain("mail validation question discipline: if a human asks a hypothetical")
     expect(result).toContain("answer that hypothetical first")
     expect(result).toContain("Do not replace the answer with current access logs")
@@ -4420,6 +4422,25 @@ describe("pendingMessagesSection (Unit 1.4)", () => {
     } as any))
     expect(result).toContain("- from inner-dialog: coding session finished")
     expect(result).toContain("- from bridge-1: Ari says hi")
+  })
+
+  it("pending messages section frames pending items as fresh work for this turn", async () => {
+    setupReadFileSync()
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("inner", {
+      pendingMessages: [
+        { from: "mailroom", content: "[Mail Import Ready]" },
+      ],
+    } as any))
+    expect(result).toContain("these are fresh work items that arrived for me this turn")
+    expect(result).toContain("before i rest")
   })
 
   it("pending messages section appears inside '# dynamic state for this turn' group", async () => {

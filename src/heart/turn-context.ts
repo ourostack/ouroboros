@@ -19,6 +19,7 @@ import type { DaemonHealthState } from "./daemon/daemon-health"
 import type { BundleMeta } from "../mind/bundle-manifest"
 import type { JournalFileEntry } from "../mind/prompt"
 import type { Channel } from "../mind/friends/types"
+import type { BackgroundOperationRecord } from "./background-operations"
 
 import * as fs from "fs"
 import * as path from "path"
@@ -40,6 +41,7 @@ import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
 import type { CodingSessionStatus } from "../repertoire/coding/types"
 import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./provider-visibility"
+import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -65,6 +67,8 @@ export interface TurnContext {
   codingSessions: CodingSession[]
   /** Live coding sessions owned by other sessions. */
   otherCodingSessions: CodingSession[]
+  /** Visible background operations, including ambient import readiness. */
+  backgroundOperations: BackgroundOperationRecord[]
   /** Inner dialog work state. */
   innerWorkState: InnerWorkState
   /** Task board snapshot. */
@@ -336,6 +340,15 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   /* v8 ignore stop */
   }
 
+  const backgroundOperations = listVisibleBackgroundOperations({
+    agentName,
+    agentRoot,
+    repoRoot: process.cwd(),
+    homeDir: process.env.HOME,
+    nowMs: Date.now(),
+    limit: 5,
+  })
+
   // Inner work state
   const innerWorkState = readInnerWorkState()
 
@@ -404,6 +417,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
       obligationCount: pendingObligations.length,
       bridgeCount: activeBridges.length,
       codingSessionCount: codingSessions.length,
+      backgroundOperationCount: backgroundOperations.length,
       episodeCount: recentEpisodes.length,
       providerLaneCount: providerVisibility.lanes.length,
     },
@@ -416,6 +430,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     pendingObligations,
     codingSessions,
     otherCodingSessions,
+    backgroundOperations,
     innerWorkState,
     taskBoard,
     returnObligations,

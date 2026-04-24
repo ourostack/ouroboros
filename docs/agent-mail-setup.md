@@ -1,6 +1,6 @@
 # Agent Mail Setup
 
-Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro work substrate account. It gives each agent a private `@ouro.bot` mailbox, optional delegated human-mail aliases, encrypted mail storage, explicit read tools, Screener decisions, confirmed outbound mail, and an Outlook mailbox surface.
+Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro work substrate account. It gives each agent a private `@ouro.bot` mailbox, optional delegated human-mail aliases, encrypted mail storage, explicit read tools, Screener decisions, confirmed outbound mail, and a Mailbox surface.
 
 Use this runbook when a human says something like: "Slugger, please set up email."
 
@@ -20,8 +20,8 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 
 ## Completion States
 
-- **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and Outlook read-only mailbox views.
-- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and Outlook.
+- **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and Mailbox read-only views.
+- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and the Mailbox UI.
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, verifying the Mail sense, and managing Screener decisions after family authorization.
 - **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the registrar, provider/browser auth, secret entry, and final autonomous-send enablement.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and new DNS/provider changes.
@@ -131,23 +131,41 @@ Do not send canned responses to strangers or discarded senders. Silence is norma
 
 ## HEY Archive Import
 
-HEY's official export path is browser-only. A human must export the archive, then give the agent the downloaded MBOX path.
+HEY's official export path is browser-only, but the agent should still own as much of the handoff as the tooling allows. The human performs the HEY export/download action in the browser. After that, the agent should first try to discover the downloaded archive itself before asking the human to spelunk for file paths.
 
 Agent-guided flow:
 
 1. The agent asks the human to open [HEY account settings](https://app.hey.com/accounts) in a desktop browser.
 2. The human uses **Export Your Data**.
 3. The human waits for HEY's download email.
-4. The human downloads the email archive MBOX and tells the agent the local file path.
-5. The agent imports and verifies the archive.
+4. The human or the agent's browser session downloads the email archive MBOX.
+5. The agent first tries autonomous discovery and import.
+6. Only if discovery cannot find a unique file does the human provide the local file path.
+7. The agent imports and verifies the archive.
 
-Agent command after the human provides the file path:
+Preferred agent command after a browser download:
+
+```sh
+ouro mail import-mbox --discover --owner-email <human-email> --source hey --agent <agent>
+```
+
+The discovery path searches the current repo's `.playwright-mcp`, worktree-local `.playwright-mcp` sandboxes (including common `_worktrees` pools and agent-owned workspaces), the home-directory `.playwright-mcp`, and `~/Downloads` for recent `.mbox` files. It prefers filenames that match the requested owner/source, including normalized Playwright names such as `HEY-emails-ari-mendelow-me.mbox`. If discovery finds more than one equally plausible export, it stops and asks for the path instead of guessing.
+
+Once a specific archive has already been imported successfully, the same file should stop surfacing as "mail import ready" and `ouro mail import-mbox --discover ...` should refuse to start it again until a newer export appears on disk.
+
+Fallback agent command after the human provides the file path:
 
 ```sh
 ouro mail import-mbox --file <path-to-hey.mbox> --owner-email <human-email> --source hey --agent <agent>
 ```
 
 For Slugger:
+
+```sh
+ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger
+```
+
+Fallback:
 
 ```sh
 ouro mail import-mbox --file <path-to-hey.mbox> --owner-email ari@mendelow.me --source hey --agent slugger
@@ -206,7 +224,7 @@ Slugger drives the browser-automation portion when browser MCP is available. The
 Agent step:
 
 - Report the exact delegated alias to the human.
-- After the human confirms forwarding, run a live test message and verify it appears in Ouro Outlook and `mail_recent`.
+- After the human confirms forwarding, run a live test message and verify it appears in Ouro Mailbox and `mail_recent`.
 - Do not change DNS, enable production MX, or claim live forwarding is active until the human confirms the HEY/DNS side.
 
 Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`. A wrong-target probe, especially one delivered to `slugger@ouro.bot`, is recoverable setup friction: Slugger should correct HEY to the delegated alias and must not import or label that probe as Ari's delegated HEY mail.
@@ -272,9 +290,9 @@ That binding does not make the referenced vault item an "ACS credential kind." I
 
 Do not enable autonomous native-agent sending without final explicit human confirmation.
 
-## Ouro Outlook
+## Ouro Mailbox
 
-Ouro Outlook should feel like logging into the agent's mailbox, not like a debug table.
+Ouro Mailbox should feel like logging into the agent's mailbox, not like a debug table.
 
 Expected UI:
 
@@ -284,7 +302,7 @@ Expected UI:
 - Screener section: waiting sender list and safe decision context.
 - Recovery drawer: retained discarded/quarantined messages for audit and remediation.
 - Access audit: recent `mail_*` reads, sends, and decisions.
-- Read-only controls for now; no send/delete/destructive controls in Outlook.
+- Read-only controls for now; no send/delete/destructive controls in Mailbox.
 
 ## Golden Path Validation
 
@@ -293,7 +311,7 @@ Before calling an Agent Mail rollout complete for an agent, verify these paths:
 1. Import a HEY MBOX and use delegated mail to update a real work object, such as travel plans.
 2. Send and receive native agent mail through Screener: unknown sender enters Screener, family authorizes allow/discard, future sender policy behaves correctly, and discarded mail remains recoverable.
 3. React to mail through another sense, for example text the family member on iMessage after an email decision or travel update.
-4. Audit the whole story in Ouro Outlook: imported mail, native inbound, Screener decisions, outbound draft/send records, and access logs.
+4. Audit the whole story in Ouro Mailbox: imported mail, native inbound, Screener decisions, outbound draft/send records, and access logs.
 
 ## Agent-Run Verification
 
@@ -316,7 +334,7 @@ Mail tools to exercise:
 
 Human/UI check, guided by the agent:
 
-- Open Ouro Outlook.
+- Open Ouro Mailbox.
 - Select the agent.
 - Open the Mailbox tab.
 - Confirm the mailbox appears as that agent's mailbox, with Imbox/Screener/source folders and no send/delete controls.
@@ -330,7 +348,7 @@ For the full recovery map, use the repo path `docs/agent-mail-recovery.md` ([Age
 - Missing `registryPath` or `storePath`: the agent should rerun `ouro connect mail --agent <agent> --owner-email <email> --source hey` after vault unlock.
 - No Mail sense: confirm `senses.mail.enabled = true` in `agent.json`, then `ouro up`.
 - Screener body leakage: stop and fix; Screener lists must show sender/context, not message bodies.
-- Expected mail missing: check Outlook Discarded/Quarantine, then `mail_screener`, then source-forwarding/DNS status.
+- Expected mail missing: check Mailbox Discarded/Quarantine, then `mail_screener`, then source-forwarding/DNS status.
 - HEY import missing messages: re-check the human-downloaded MBOX and import output counts.
 - Live mail missing: do not assume MX is active; verify the production ingress host and human-confirmed DNS/MX first.
 

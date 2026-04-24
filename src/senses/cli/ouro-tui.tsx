@@ -6,7 +6,7 @@
  *   Only the "live" area (current streaming + spinner + input) re-renders.
  *   This avoids the screen-clearing problem that broke the previous Ink attempt.
  *
- * Design language: ouroboros brand palette from ouroboros.bot / Outlook UI.
+ * Design language: ouroboros brand palette from ouroboros.bot / Mailbox UI.
  * ZERO business logic here — pure rendering from CliStore state.
  */
 import React, { useState, useRef, useEffect, useCallback } from "react"

@@ -3,6 +3,7 @@
 
 import * as fs from "fs"
 import * as path from "path"
+import { parseSessionEnvelope, projectProviderMessages } from "../session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { PendingMessage } from "../../mind/pending"
 
@@ -393,22 +394,51 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
     return []
   }
 
-  let data: { version: number; messages: Array<{ role: string; content?: unknown; tool_calls?: Array<{ function?: { name?: string } }> }> }
+  let parsedRaw: unknown
   try {
-    data = JSON.parse(raw)
+    parsedRaw = JSON.parse(raw)
   } catch {
     return []
   }
 
-  if (data.version !== 1 || !Array.isArray(data.messages)) return []
+  const legacyRecord = parsedRaw && typeof parsedRaw === "object"
+    ? parsedRaw as {
+      version?: number
+      messages?: Array<{
+        role: string
+        content?: unknown
+        tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+      }>
+    }
+    : null
+
+  const messages = legacyRecord?.version === 1 && Array.isArray(legacyRecord.messages)
+    ? legacyRecord.messages
+    : (() => {
+        const envelope = parseSessionEnvelope(parsedRaw, {
+          recordedAt: new Date().toISOString(),
+        })
+        if (!envelope) return null
+        return projectProviderMessages(envelope) as Array<{
+          role: string
+          content?: unknown
+          tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+        }>
+      })()
+
+  if (!messages) return []
+
+  const normalizedMessages = messages as Array<{
+    role: string
+    content?: unknown
+    tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>
+  }>
 
   const turns: ThoughtTurn[] = []
-  const messages = data.messages
-
   // Walk messages, pairing user → (tool calls) → assistant sequences
   let i = 0
-  while (i < messages.length) {
-    const msg = messages[i]
+  while (i < normalizedMessages.length) {
+    const msg = normalizedMessages[i]
     if (msg.role === "system") {
       i++
       continue
@@ -422,10 +452,10 @@ export function parseInnerDialogSession(sessionPath: string): ThoughtTurn[] {
     const classification = classifyTurn(userText)
 
     // Collect all messages until the next user message (or end)
-    const turnMessages: typeof messages = []
+    const turnMessages: typeof normalizedMessages = []
     let j = i + 1
-    while (j < messages.length && messages[j].role !== "user") {
-      turnMessages.push(messages[j])
+    while (j < normalizedMessages.length && normalizedMessages[j].role !== "user") {
+      turnMessages.push(normalizedMessages[j])
       j++
     }
 

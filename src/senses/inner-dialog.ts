@@ -199,20 +199,19 @@ export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessagePar
   const assistantText = contentToText(lastAssistant.content)
   if (!assistantText) return "no prior checkpoint recorded"
 
-  const explicitCheckpoint = assistantText
+  const cleanedLines = assistantText
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.replace(/<\/?think>/gi, "").trim())
+    .filter((line) => line.length > 0)
+
+  const explicitCheckpoint = cleanedLines
     .find((line) => /^checkpoint\s*:/i.test(line))
   if (explicitCheckpoint) {
     const parsed = explicitCheckpoint.replace(/^checkpoint\s*:\s*/i, "").trim()
     return parsed || "no prior checkpoint recorded"
   }
 
-  const firstLine = assistantText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0)
-  /* v8 ignore next -- unreachable: contentToText().trim() guarantees a non-empty line @preserve */
+  const firstLine = cleanedLines[0]
   if (!firstLine) return "no prior checkpoint recorded"
   if (firstLine.length <= 220) return firstLine
   return `${firstLine.slice(0, 217)}...`

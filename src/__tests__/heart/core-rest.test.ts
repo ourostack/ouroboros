@@ -339,6 +339,43 @@ describe("rest tool in runAgent", () => {
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("rest", expect.any(String), false)
   })
 
+  it("rest is rejected when fresh pending work arrived this turn", async () => {
+    vi.useFakeTimers()
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    mockCreate.mockReturnValueOnce(makeStream(restToolCallChunks()))
+    mockCreate.mockImplementation(() => {
+      const err: any = new Error("test fixture: stop loop")
+      err.status = 400
+      throw err
+    })
+
+    const callbacks = makeCallbacks()
+    const promise = runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      callbacks,
+      "inner",
+      undefined,
+      {
+        pendingMessages: [
+          { from: "mailroom", content: "[Mail Import Ready]\nA local MBOX archive is ready for delegated-mail backfill." },
+        ],
+        toolContext: {
+          currentSession: { friendId: "self", channel: "inner", key: "dialog" },
+          delegatedOrigins: [],
+        },
+      },
+    )
+    await vi.advanceTimersByTimeAsync(2100)
+    await vi.advanceTimersByTimeAsync(4100)
+    await vi.advanceTimersByTimeAsync(100)
+    await promise
+    vi.useRealTimers()
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("rest", expect.any(String), false)
+  })
+
   // ── Sole-call rejection ──────────────────────────────────
 
   it("rest is rejected in mixed call with other tools", async () => {

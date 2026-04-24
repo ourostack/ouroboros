@@ -524,6 +524,256 @@ describe("loadSession", () => {
     expect(result!.events).toHaveLength(2)
   })
 
+  it("does not inject relative-time annotations into live provider messages", async () => {
+    const { loadSession } = await import("../../mind/context")
+    const usage = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 150 }
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-24T03:00:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-24T03:00:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000002",
+            sequence: 2,
+            role: "assistant",
+            content: "hi back",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:01:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:01:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:01:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001", "evt-000002"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-04-24T03:01:00.000Z",
+        },
+        lastUsage: usage,
+        state: {
+          mustResolveBeforeHandoff: false,
+          lastFriendActivityAt: null,
+        },
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+    expect(result).not.toBeNull()
+    expect(result!.messages).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi back" },
+    ])
+  })
+
+  it("repairs projected sessions that contain duplicate system prompts", async () => {
+    const { loadSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        version: 2,
+        events: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "system",
+            content: "fresh system",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:00:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:00:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:00:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000002",
+            sequence: 2,
+            role: "user",
+            content: "hello",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: null,
+              authoredAtSource: "unknown",
+              observedAt: "2026-04-24T03:01:00.000Z",
+              observedAtSource: "ingest",
+              recordedAt: "2026-04-24T03:01:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000003",
+            sequence: 3,
+            role: "assistant",
+            content: "hi back",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:02:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:02:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:02:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+          {
+            id: "evt-000004",
+            sequence: 4,
+            role: "system",
+            content: "stale system",
+            name: null,
+            toolCallId: null,
+            toolCalls: [],
+            attachments: [],
+            time: {
+              authoredAt: "2026-04-24T03:03:00.000Z",
+              authoredAtSource: "local",
+              observedAt: "2026-04-24T03:03:00.000Z",
+              observedAtSource: "local",
+              recordedAt: "2026-04-24T03:03:00.000Z",
+              recordedAtSource: "save",
+            },
+            relations: {
+              replyToEventId: null,
+              threadRootEventId: null,
+              references: [],
+              toolCallId: null,
+              supersedesEventId: null,
+              redactsEventId: null,
+            },
+            provenance: {
+              captureKind: "live",
+              legacyVersion: null,
+              sourceMessageIndex: null,
+            },
+          },
+        ],
+        projection: {
+          eventIds: ["evt-000001", "evt-000002", "evt-000003", "evt-000004"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-04-24T03:03:00.000Z",
+        },
+        lastUsage: null,
+        state: {
+          mustResolveBeforeHandoff: false,
+          lastFriendActivityAt: null,
+        },
+      }),
+    )
+
+    const result = loadSession("/tmp/session.json")
+    expect(result).not.toBeNull()
+    expect(result!.messages).toEqual([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi back" },
+    ])
+  })
+
   it("returns canonical events alongside projected messages when loading a legacy v1 file", async () => {
     const { loadSession } = await import("../../mind/context")
     vi.mocked(fs.readFileSync).mockReturnValue(

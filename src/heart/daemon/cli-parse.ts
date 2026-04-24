@@ -90,7 +90,7 @@ export function usage(): string {
     "  ouro check [--agent <name>] --lane outward|inner",
     "  ouro repair [--agent <name>]",
     "  ouro provider refresh [--agent <name>]",
-    "  ouro outlook [--json]",
+    "  ouro mailbox [--json]",
     "  ouro -v|--version",
     "  ouro config model [--agent <name>] <model-name>",
     "  ouro config models [--agent <name>]",
@@ -922,7 +922,7 @@ function parseConnectCommand(args: string[]): OuroCliCommand {
 
 function parseMailCommand(args: string[]): OuroCliCommand {
   const [sub, ...subArgs] = args
-  const usageText = "Usage: ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]"
+  const usageText = "Usage: ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]\n       ouro mail backfill-indexes [--agent <name>] [--foreground]"
   if (sub === "backfill-indexes") {
     const { agent, rest } = extractAgentFlag(subArgs)
     let foreground = false
@@ -951,6 +951,7 @@ function parseMailCommand(args: string[]): OuroCliCommand {
   }
   const { agent, rest } = extractAgentFlag(subArgs)
   let filePath: string | undefined
+  let discover = false
   let ownerEmail: string | undefined
   let source: string | undefined
   let foreground = false
@@ -959,6 +960,10 @@ function parseMailCommand(args: string[]): OuroCliCommand {
     const token = rest[i]
     if (token === "--file" && rest[i + 1]) {
       filePath = rest[++i]
+      continue
+    }
+    if (token === "--discover") {
+      discover = true
       continue
     }
     if (token === "--owner-email" && rest[i + 1]) {
@@ -979,13 +984,14 @@ function parseMailCommand(args: string[]): OuroCliCommand {
     }
     throw new Error(usageText)
   }
-  if (!filePath) {
+  if ((filePath ? 1 : 0) + (discover ? 1 : 0) !== 1) {
     throw new Error(usageText)
   }
   return {
     kind: "mail.import-mbox",
     ...(agent ? { agent } : {}),
-    filePath,
+    ...(filePath ? { filePath } : {}),
+    ...(discover ? { discover: true } : {}),
     ...(ownerEmail ? { ownerEmail } : {}),
     ...(source ? { source } : {}),
     ...(foreground ? { foreground: true } : {}),
@@ -1466,7 +1472,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }
   }
-  if (head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
+  if (head === "mailbox" || head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
   if (head === "account") return parseAccountCommand(args.slice(1))

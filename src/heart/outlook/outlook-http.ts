@@ -105,7 +105,7 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
   emitNervesEvent({
     component: "daemon",
     event: "daemon.outlook_http_started",
-    message: "started Outlook HTTP server",
+    message: "started Mailbox HTTP server",
     meta: { origin },
   })
 
@@ -121,7 +121,7 @@ export async function startOutlookHttpServer(options: StartOutlookHttpServerOpti
       emitNervesEvent({
         component: "daemon",
         event: "daemon.outlook_http_stopped",
-        message: "stopped Outlook HTTP server",
+        message: "stopped Mailbox HTTP server",
         meta: { origin },
       })
     },

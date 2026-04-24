@@ -248,6 +248,22 @@ const cache = new Map()
       expect(result.exempt).toContain("src/heart/outlook/outlook-http-response.ts")
     })
 
+    it("exempts pure mail import discovery helpers whose callers own observability", () => {
+      const files = new Map<string, string[]>([
+        ["src/senses/mail.ts", ["senses:senses.mail_import_discovery_checked"]],
+      ])
+      const fileContents = new Map<string, string>([
+        ["src/senses/mail.ts", 'emitNervesEvent({ component: "senses", event: "senses.mail_import_discovery_checked" })'],
+        ["src/heart/mail-import-discovery.ts", "export function defaultMailImportDiscoveryDirs() { return [] }"],
+      ])
+
+      const result = checkFileCompleteness(files, fileContents)
+
+      expect(result.status).toBe("pass")
+      expect(result.missing).toHaveLength(0)
+      expect(result.exempt).toContain("src/heart/mail-import-discovery.ts")
+    })
+
     it("returns pass when all files have events or are exempt", () => {
       const files = new Map<string, string[]>([
         ["src/a.ts", ["x:y"]],

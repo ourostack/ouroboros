@@ -191,6 +191,27 @@ function normalizeContent(content: unknown): SessionEventContent {
     .map((part) => ({ ...part }))
 }
 
+const SYNTHETIC_TIMESTAMP_PREFIX_RE = /^(?:(?:\[(?:just now|-\d+[mhd])\])\s*)+/i
+
+function stripSyntheticTimestampPrefix(text: string): string {
+  return text.replace(SYNTHETIC_TIMESTAMP_PREFIX_RE, "")
+}
+
+function sanitizeConversationContent(
+  role: SessionEventRole,
+  content: SessionEventContent,
+): SessionEventContent {
+  if (role !== "user" && role !== "assistant") return content
+  if (typeof content === "string") return stripSyntheticTimestampPrefix(content)
+  if (!Array.isArray(content)) return content
+  return content.map((part) => {
+    if (part.type === "text" && typeof part.text === "string") {
+      return { ...part, text: stripSyntheticTimestampPrefix(part.text) }
+    }
+    return part
+  })
+}
+
 function normalizeToolCalls(rawToolCalls: unknown): SessionEventToolCall[] {
   if (!Array.isArray(rawToolCalls)) return []
   return rawToolCalls
@@ -226,11 +247,12 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
     tool_calls?: unknown
   }
   const role = normalizeRole(record.role)
+  const normalizedContent = sanitizeConversationContent(role, normalizeContent(record.content))
 
   if (role === "assistant") {
     return {
       role,
-      content: normalizeContent(record.content),
+      content: normalizedContent,
       name: typeof record.name === "string" ? record.name : null,
       toolCallId: null,
       toolCalls: normalizeToolCalls(record.tool_calls),
@@ -251,7 +273,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
 
   return {
     role,
-    content: normalizeContent(record.content) ?? "",
+    content: normalizedContent ?? "",
     name: typeof record.name === "string" ? record.name : null,
     toolCallId: null,
     toolCalls: [],
@@ -394,7 +416,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result.map(toProviderMessage)
 }
 
-function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+function repairToolCallSequences(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
   const normalized = messages.map(normalizeMessage)
   const validCallIds = new Set<string>()
   for (const msg of normalized) {
@@ -420,7 +442,80 @@ function stripOrphanedToolResults(messages: OpenAI.ChatCompletionMessageParam[])
     })
   }
 
+  let injected = 0
+  for (let i = 0; i < repaired.length; i++) {
+    const msg = repaired[i]!
+    if (msg.role !== "assistant" || msg.toolCalls.length === 0) continue
+
+    const resultIds = new Set<string>()
+    for (let j = i + 1; j < repaired.length; j++) {
+      const following = repaired[j]!
+      if (following.role === "tool" && following.toolCallId !== null) {
+        resultIds.add(following.toolCallId)
+        continue
+      }
+      if (following.role === "assistant" || following.role === "user") break
+    }
+
+    const missing = msg.toolCalls.filter((toolCall) => !resultIds.has(toolCall.id))
+    if (missing.length === 0) continue
+
+    const syntheticResults: NormalizedProviderMessage[] = missing.map((toolCall) => ({
+      role: "tool",
+      content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      name: null,
+      toolCallId: toolCall.id,
+      toolCalls: [],
+      hadToolCallsField: false,
+    }))
+    let insertAt = i + 1
+    while (insertAt < repaired.length && repaired[insertAt]!.role === "tool") insertAt++
+    repaired.splice(insertAt, 0, ...syntheticResults)
+    injected += syntheticResults.length
+  }
+
+  if (injected > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_orphan_tool_call_repair",
+      component: "mind",
+      message: "injected synthetic tool results for orphaned tool calls",
+      meta: { injected },
+    })
+  }
+
   return repaired.map(toProviderMessage)
+}
+
+function canonicalizeSystemMessageSequence(
+  messages: OpenAI.ChatCompletionMessageParam[],
+): OpenAI.ChatCompletionMessageParam[] {
+  const normalized = messages.map(normalizeMessage)
+  const firstSystemIndex = normalized.findIndex((msg) => msg.role === "system")
+  if (firstSystemIndex === -1) return normalized.map(toProviderMessage)
+
+  const extraSystemCount = normalized.filter((msg) => msg.role === "system").length - 1
+  if (firstSystemIndex === 0 && extraSystemCount === 0) {
+    return normalized.map(toProviderMessage)
+  }
+
+  const primarySystem = normalized[firstSystemIndex]!
+  const nonSystemMessages = normalized.filter((msg) => msg.role !== "system")
+  const repaired = [primarySystem, ...nonSystemMessages].map(toProviderMessage)
+
+  emitNervesEvent({
+    level: "info",
+    event: "mind.session_system_prompt_repair",
+    component: "mind",
+    message: "canonicalized session system prompt sequence",
+    meta: {
+      firstSystemIndex,
+      extraSystemCount,
+      finalMessageCount: repaired.length,
+    },
+  })
+
+  return repaired
 }
 
 export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
@@ -471,7 +566,9 @@ export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageP
       meta: { violations },
     })
   }
-  return migrateToolNames(stripOrphanedToolResults(repairSessionMessages(normalized.map(toProviderMessage))))
+  return canonicalizeSystemMessageSequence(
+    migrateToolNames(repairToolCallSequences(repairSessionMessages(normalized.map(toProviderMessage)))),
+  )
 }
 
 export function stampIngressTime(msg: OpenAI.ChatCompletionMessageParam): void {
@@ -737,11 +834,12 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       const time = event.time as Record<string, unknown> | undefined
       const relations = event.relations as Record<string, unknown> | undefined
       const provenance = event.provenance as Record<string, unknown> | undefined
+      const content = sanitizeConversationContent(role, normalizeContent(event.content))
       return {
         id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
         sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
         role,
-        content: normalizeContent(event.content),
+        content,
         name: typeof event.name === "string" ? event.name : null,
         toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
         toolCalls: normalizeToolCalls(event.toolCalls),

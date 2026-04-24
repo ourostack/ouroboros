@@ -369,6 +369,49 @@ function formatObligationContentNextAction(obligation: Obligation | null): strin
   return `work on "${content}" and bring back a concrete artifact`
 }
 
+function backgroundOperationPriority(operation: BackgroundOperationRecord): number {
+  switch (operation.status) {
+    case "failed": return 0
+    case "queued": return 1
+    case "running": return 2
+    case "succeeded": return 3
+  }
+}
+
+function selectPrimaryBackgroundOperation(frame: ActiveWorkFrame): BackgroundOperationRecord | null {
+  const operations = frame.backgroundOperations ?? []
+  if (operations.length === 0) return null
+  return [...operations].sort((left, right) => {
+    const priorityDiff = backgroundOperationPriority(left) - backgroundOperationPriority(right)
+    if (priorityDiff !== 0) return priorityDiff
+    return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  })[0] ?? null
+}
+
+function formatBackgroundOperationNextAction(operation: BackgroundOperationRecord): string {
+  if (operation.kind === "mail.import-discovered") {
+    return "inspect the import-ready archive and start the matching mail import"
+  }
+  if (operation.kind === "mail.import-mbox") {
+    switch (operation.status) {
+      case "failed":
+        return "inspect the failed mail import, fix the issue, and retry it"
+      case "queued":
+        return "let the queued mail import start; failure or completion will wake me, so i only re-check if i need status or it looks stalled"
+      case "running":
+        return "let the background mail import run; failure or completion will wake me, so i only check again if i need status or it looks stalled"
+      case "succeeded":
+        return "review the completed mail import and continue from the updated mailbox state; i only rerun if a newer archive appears"
+    }
+  }
+  switch (operation.status) {
+    case "failed": return `repair the failed ${operation.title} operation and retry it`
+    case "queued": return `let the queued ${operation.title} operation start, then re-check progress`
+    case "running": return `monitor the ${operation.title} operation and react when it changes`
+    case "succeeded": return `review the completed ${operation.title} operation and continue`
+  }
+}
+
 function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null): string | null {
   const obligationHasConcreteArtifact = Boolean(obligation?.currentArtifact?.trim())
     || obligation?.currentSurface?.kind === "merge"
@@ -394,6 +437,10 @@ function formatNextAction(frame: ActiveWorkFrame, obligation: Obligation | null)
   if (obligation?.nextAction?.trim()) return obligation.nextAction.trim()
   if (obligation) {
     return formatObligationContentNextAction(obligation) || "continue the active loop and bring the result back here"
+  }
+  const backgroundOperation = selectPrimaryBackgroundOperation(frame)
+  if (backgroundOperation) {
+    return formatBackgroundOperationNextAction(backgroundOperation)
   }
   if (frame.mustResolveBeforeHandoff) {
     return "finish what i started here before moving on"

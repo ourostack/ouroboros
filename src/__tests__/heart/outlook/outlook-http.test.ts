@@ -62,7 +62,7 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
   return {
     host: "127.0.0.1",
     getPort: () => 1234,
-    readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }),
+    readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 0 }),
     readAgentState: () => null,
     hooks,
     sse: { add: vi.fn() },
@@ -83,6 +83,8 @@ describe("outlook http", () => {
     expect(normalizeOutlookRequestPath()).toBe("/")
     expect(normalizeLegacyOutlookApiPath("/outlook/api")).toBe("/api")
     expect(normalizeLegacyOutlookApiPath("/outlook/api/agents/slugger")).toBe("/api/agents/slugger")
+    expect(normalizeLegacyOutlookApiPath("/mailbox/api")).toBe("/api")
+    expect(normalizeLegacyOutlookApiPath("/mailbox/api/agents/slugger")).toBe("/api/agents/slugger")
     expect(normalizeLegacyOutlookApiPath("/api/machine")).toBe("/api/machine")
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "outlook-static-"))
@@ -296,7 +298,7 @@ describe("outlook http", () => {
 
     const agentResponse = createMockResponse()
     createOutlookHttpRequestHandler(createRouteOptions({
-      readAgentState: () => ({ agentName: "slugger", productName: "Ouro Outlook" }),
+      readAgentState: () => ({ agentName: "slugger", productName: "Ouro Mailbox" }),
     }))(createMockRequest("/api/agents/slugger"), agentResponse)
     expect(agentResponse.statusCode).toBe(200)
     expect(JSON.parse(agentResponse.body.toString("utf8"))).toEqual(expect.objectContaining({ agentName: "slugger" }))
@@ -375,18 +377,18 @@ describe("outlook http", () => {
       host: "127.0.0.1",
       port: 0,
       readMachineState: () => ({
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentCount: 1,
       }),
       readAgentState: (agentName: string) => (
         agentName === "slugger"
-          ? { agentName: "slugger", productName: "Ouro Outlook" }
+          ? { agentName: "slugger", productName: "Ouro Mailbox" }
           : null
       ),
       readAgentView: (agentName: string) => (
         agentName === "slugger"
           ? {
-              productName: "Ouro Outlook",
+              productName: "Ouro Mailbox",
               interactionModel: "read-only",
               viewer: { kind: "human", innerDetail: "summary" },
               agent: { agentName: "slugger" },
@@ -402,7 +404,7 @@ describe("outlook http", () => {
     expect([200, 404]).toContain(rootResponse.status)
 
     const machine = await fetch(`${server.origin}/outlook/api/machine`).then((response) => response.json())
-    expect(machine).toEqual(expect.objectContaining({ productName: "Ouro Outlook" }))
+    expect(machine).toEqual(expect.objectContaining({ productName: "Ouro Mailbox" }))
 
     const agent = await fetch(`${server.origin}/outlook/api/agents/slugger`).then((response) => response.json())
     expect(agent).toEqual(expect.objectContaining({
@@ -469,8 +471,8 @@ describe("outlook http", () => {
           },
           mood: "calm",
           entrypoints: [
-            { kind: "web", label: "Open Outlook", target: "http://127.0.0.1:4310/outlook" },
-            { kind: "cli", label: "CLI JSON", target: "ouro outlook --json" },
+            { kind: "web", label: "Open Mailbox", target: "http://127.0.0.1:4310/outlook" },
+            { kind: "cli", label: "CLI JSON", target: "ouro mailbox --json" },
           ],
         },
         agents: [
@@ -503,23 +505,30 @@ describe("outlook http", () => {
       host: "127.0.0.1",
       port: 0,
       readMachineState: () => ({
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentCount: 1,
       }),
       readAgentState: () => null,
     })
 
-    // /outlook redirects to /
+    // /outlook and /mailbox redirect to /
     const redirectResponse = await fetch(`${server.origin}/outlook`, { redirect: "manual" })
     expect(redirectResponse.status).toBe(301)
     expect(redirectResponse.headers.get("location")).toBe("/")
+    const mailboxRedirect = await fetch(`${server.origin}/mailbox`, { redirect: "manual" })
+    expect(mailboxRedirect.status).toBe(301)
+    expect(mailboxRedirect.headers.get("location")).toBe("/")
 
     // Unknown API route should still 404
     const apiResponse = await fetch(`${server.origin}/outlook/api/agents/test/nope`)
     expect(apiResponse.status).toBe(404)
+    const mailboxApiResponse = await fetch(`${server.origin}/mailbox/api/agents/test/nope`)
+    expect(mailboxApiResponse.status).toBe(404)
     // Non-API routes get SPA fallback if built, or 404 otherwise
     const spaResponse = await fetch(`${server.origin}/outlook/nope`)
     expect([200, 404]).toContain(spaResponse.status)
+    const mailboxSpaResponse = await fetch(`${server.origin}/mailbox/nope`)
+    expect([200, 404]).toContain(mailboxSpaResponse.status)
 
     await server.stop()
   })
@@ -527,12 +536,12 @@ describe("outlook http", () => {
   it("uses the default direct-read hooks and SPA route fallback when no options are provided", async () => {
     vi.resetModules()
     const readOutlookMachineState = vi.fn(() => ({
-      productName: "Ouro Outlook",
+      productName: "Ouro Mailbox",
       agentCount: 1,
     }))
     const readOutlookAgentState = vi.fn((agentName: string) => (
       agentName === "slugger"
-        ? { agentName: "slugger", productName: "Ouro Outlook" }
+        ? { agentName: "slugger", productName: "Ouro Mailbox" }
         : null
     ))
 
@@ -568,7 +577,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentSessions: () => ({ totalCount: 3, activeCount: 2, staleCount: 1, items: [] }),
       readAgentTranscript: (_agent, friendId) => (
@@ -655,7 +664,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 0 }) as any,
       readAgentState: () => null,
       readAgentSessions: () => ({ totalCount: 0, activeCount: 0, staleCount: 0, items: [] }),
       readAgentTranscript: (_agent, friendId) => (
@@ -752,7 +761,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 0 }) as any,
       readAgentState: () => null,
     })
 
@@ -796,7 +805,7 @@ describe("outlook http", () => {
       host: "127.0.0.1",
       port: 0,
       readMachineState: () => ({
-        productName: "Ouro Outlook",
+        productName: "Ouro Mailbox",
         agentCount: 1,
       }),
       readAgentState: () => null,
@@ -805,7 +814,7 @@ describe("outlook http", () => {
     const res = await fetch(`${server.origin}/api/machine`)
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body).toEqual(expect.objectContaining({ productName: "Ouro Outlook" }))
+    expect(body).toEqual(expect.objectContaining({ productName: "Ouro Mailbox" }))
 
     await server.stop()
   })
@@ -816,11 +825,11 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentView: (name: string) =>
         name === "slugger"
-          ? { productName: "Ouro Outlook", interactionModel: "read-only", agent: { agentName: "slugger" } } as any
+          ? { productName: "Ouro Mailbox", interactionModel: "read-only", agent: { agentName: "slugger" } } as any
           : null,
     })
 
@@ -842,7 +851,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 0 }) as any,
       readAgentState: () => null,
     })
 
@@ -879,7 +888,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentSessions: () => ({ totalCount: 2, activeCount: 1, staleCount: 1, items: [] }),
       readAgentCoding: () => ({ totalCount: 1, activeCount: 1, blockedCount: 0, items: [] }),
@@ -914,7 +923,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 0 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 0 }) as any,
       readAgentState: () => null,
       readAgentSessions: () => ({ totalCount: 0, activeCount: 0, staleCount: 0, items: [] }),
       readAgentCoding: () => ({ totalCount: 0, activeCount: 0, blockedCount: 0, items: [] }),
@@ -948,7 +957,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentContinuity: () => mockContinuity,
     })
@@ -983,7 +992,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentOrientation: () => mockOrientation,
     })
@@ -1012,7 +1021,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentObligations: () => mockObligations,
     })
@@ -1038,7 +1047,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentChanges: () => mockChanges,
     })
@@ -1059,7 +1068,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentSelfFix: () => mockSelfFix,
     })
@@ -1083,7 +1092,7 @@ describe("outlook http", () => {
     const server = await startOutlookHttpServer({
       host: "127.0.0.1",
       port: 0,
-      readMachineState: () => ({ productName: "Ouro Outlook", agentCount: 1 }) as any,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
       readAgentState: () => null,
       readAgentNoteDecisions: () => mockDecisions,
     })

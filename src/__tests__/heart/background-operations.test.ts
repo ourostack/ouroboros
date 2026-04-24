@@ -369,6 +369,92 @@ describe("background operations", () => {
     })).toEqual([newer])
   })
 
+  it("shows only the newest mail import record for the same archive/source binding", async () => {
+    const {
+      startBackgroundOperation,
+      failBackgroundOperation,
+      completeBackgroundOperation,
+      listBackgroundOperations,
+    } = await import("../../heart/background-operations")
+
+    const agentRoot = makeTempDir("background-operations-mail-import-collapse")
+    startBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_old_fail",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-23T23:20:00.000Z",
+      spec: {
+        filePath: "/tmp/HEY-emails-arimendelow@hey.com.mbox",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      },
+    })
+    const olderFailed = failBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_old_fail",
+      finishedAt: "2026-04-23T23:21:00.000Z",
+      summary: "delegated mail import failed",
+      detail: "file: /tmp/HEY-emails-arimendelow@hey.com.mbox",
+      error: "download messages/mail_old.json timed out after 20000ms",
+    })
+
+    startBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_new_success",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-23T23:22:00.000Z",
+      spec: {
+        filePath: "/tmp/HEY-emails-arimendelow@hey.com.mbox",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      },
+    })
+    const newerSucceeded = completeBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_new_success",
+      finishedAt: "2026-04-23T23:23:00.000Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 16616; imported 0; duplicates 16616",
+    })
+
+    startBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_primary_ready",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-23T23:24:00.000Z",
+      spec: {
+        filePath: "/tmp/HEY-emails-ari-mendelow-me.mbox",
+        ownerEmail: "ari@mendelow.me",
+        source: "hey",
+      },
+    })
+    const primaryReady = completeBackgroundOperation({
+      agentName: "slugger",
+      agentRoot,
+      id: "op_mail_import_primary_ready",
+      finishedAt: "2026-04-23T23:25:00.000Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 12; imported 12; duplicates 0",
+    })
+
+    expect(listBackgroundOperations({
+      agentName: "slugger",
+      agentRoot,
+    })).toEqual([primaryReady, newerSucceeded])
+    expect(olderFailed.status).toBe("failed")
+  })
+
   it("normalizes remediation lists when reading stored records", async () => {
     const { readBackgroundOperation } = await import("../../heart/background-operations")
 

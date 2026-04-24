@@ -4,6 +4,7 @@ coverage/
 .DS_Store
 manifest.zip
 manifest.*.zip
+ouro.bot-cli-*.tgz
 .azure/
 .claude/
 packages/outlook-ui/node_modules/

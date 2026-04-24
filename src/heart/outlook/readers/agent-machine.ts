@@ -123,19 +123,50 @@ function readTaskSummary(agentRoot: string): { summary: OutlookTaskSummary; issu
   }
 }
 
+const STALE_CODING_SURFACE_WINDOW_MS = 60 * 60 * 1000
+
+function buildLiveCodingSurfaceLabels(agentRoot: string): Set<string> {
+  return new Set(
+    readCodingSummary(agentRoot).items
+      .filter((item) => ACTIVE_CODING_STATUSES.has(item.status))
+      .map((item) => `${item.runner} ${item.id}`),
+  )
+}
+
+function normalizeObligationCurrentSurface(
+  currentSurface: OutlookObligationItem["currentSurface"],
+  updatedAt: string,
+  liveCodingSurfaceLabels: Set<string>,
+): OutlookObligationItem["currentSurface"] {
+  if (!currentSurface || currentSurface.kind !== "coding") return currentSurface
+
+  const liveLabel = currentSurface.label.trim()
+  if (!liveLabel) return null
+  if (liveCodingSurfaceLabels.has(liveLabel)) return currentSurface
+
+  const updatedAtMs = Date.parse(updatedAt)
+  const recentlyTouched = Number.isFinite(updatedAtMs)
+    && (Date.now() - updatedAtMs) <= STALE_CODING_SURFACE_WINDOW_MS
+  return recentlyTouched ? currentSurface : null
+}
+
 export function readObligationSummary(agentRoot: string): { items: OutlookObligationItem[] } {
+  const liveCodingSurfaceLabels = buildLiveCodingSurfaceLabels(agentRoot)
   const items = readPendingObligations(agentRoot)
-    .map((obligation) => ({
-      id: obligation.id,
-      status: obligation.status,
-      content: obligation.content,
-      updatedAt: obligation.updatedAt ?? obligation.createdAt,
-      nextAction: obligation.nextAction ?? null,
-      /* v8 ignore start */
-      origin: obligation.origin ?? null,
-      currentSurface: obligation.currentSurface ?? null,
-      /* v8 ignore stop */
-    }))
+    .map((obligation) => {
+      const updatedAt = obligation.updatedAt ?? obligation.createdAt
+      return {
+        id: obligation.id,
+        status: obligation.status,
+        content: obligation.content,
+        updatedAt,
+        nextAction: obligation.nextAction ?? null,
+        /* v8 ignore start */
+        origin: obligation.origin ?? null,
+        currentSurface: normalizeObligationCurrentSurface(obligation.currentSurface ?? null, updatedAt, liveCodingSurfaceLabels),
+        /* v8 ignore stop */
+      }
+    })
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 
   return { items }

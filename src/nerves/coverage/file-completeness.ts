@@ -63,6 +63,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "daemon/vault-items",
   // Shared utility modules: pure helpers consumed by modules that own observability.
   "arc/json-store",
+  "heart/mail-import-discovery",
   "repertoire/api-client",
   "repertoire/github-client",
   "mind/embedding-provider",

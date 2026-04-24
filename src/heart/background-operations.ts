@@ -139,6 +139,20 @@ function readRecord(filePath: string): BackgroundOperationRecord | null {
   }
 }
 
+function specText(spec: Record<string, unknown> | undefined, key: string): string {
+  const value = spec?.[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function visibleOperationKey(record: BackgroundOperationRecord): string | null {
+  if (record.kind !== "mail.import-mbox") return null
+  const filePath = specText(record.spec, "filePath")
+  if (!filePath) return null
+  const ownerEmail = specText(record.spec, "ownerEmail").toLowerCase()
+  const source = specText(record.spec, "source").toLowerCase()
+  return `${record.agentName.toLowerCase()}|${record.kind}|${filePath}|${ownerEmail}|${source}`
+}
+
 function writeRecord(locator: BackgroundOperationLocator, record: BackgroundOperationRecord): BackgroundOperationRecord {
   fs.mkdirSync(operationsDir(locator.agentName, locator.agentRoot), { recursive: true })
   fs.writeFileSync(operationPath(locator), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
@@ -176,12 +190,20 @@ export function listBackgroundOperations(input: {
   } catch {
     return []
   }
-  return entries
+  const records = entries
     .filter((entry) => entry.endsWith(".json"))
     .map((entry) => readRecord(path.join(dir, entry)))
     .filter((entry): entry is BackgroundOperationRecord => entry !== null)
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-    .slice(0, input.limit ?? 10)
+  const visibleKeys = new Set<string>()
+  const visible = records.filter((record) => {
+    const key = visibleOperationKey(record)
+    if (!key) return true
+    if (visibleKeys.has(key)) return false
+    visibleKeys.add(key)
+    return true
+  })
+  return visible.slice(0, input.limit ?? 10)
 }
 
 export function startBackgroundOperation(input: BackgroundOperationWriteInput): BackgroundOperationRecord {

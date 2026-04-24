@@ -468,7 +468,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   })
   // Propagate sync failure from pre-turn pull
   ctx.syncFailure = syncFailure
-  const { activeBridges, sessionActivity, pendingObligations, codingSessions, otherCodingSessions } = ctx
+  const { activeBridges, sessionActivity, pendingObligations, codingSessions, otherCodingSessions, backgroundOperations } = ctx
   const bridgeContext = formatBridgeContext(activeBridges) || undefined
   const activeWorkFrame = buildActiveWorkFrame({
     currentSession,
@@ -477,6 +477,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     inner: ctx.innerWorkState,
     bridges: activeBridges,
     codingSessions,
+    backgroundOperations,
     otherCodingSessions,
     pendingObligations,
     taskBoard: ctx.taskBoard,

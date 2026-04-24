@@ -8,7 +8,7 @@ describe("outlook types", () => {
   it("defines the canonical Outlook identity and release defaults", async () => {
     const mod = await import("../../../heart/outlook/outlook-types")
 
-    expect(mod.OUTLOOK_PRODUCT_NAME).toBe("Ouro Outlook")
+    expect(mod.OUTLOOK_PRODUCT_NAME).toBe("Ouro Mailbox")
     expect(mod.OUTLOOK_RELEASE_INTERACTION_MODEL).toBe("read-only")
     expect(mod.OUTLOOK_DEFAULT_INNER_VISIBILITY).toBe("summary")
   })

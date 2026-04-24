@@ -345,7 +345,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
   // ── Key-value overview ──
   const kvLine = (label: string, value: string) => `  ${teal(label.padEnd(11))} ${value}`
   lines.push(kvLine("Socket", ov.socketPath))
-  lines.push(kvLine("Outlook", ov.outlookUrl))
+  lines.push(kvLine("Mailbox", ov.outlookUrl))
   lines.push(kvLine("Health", `${statusDot(ov.health)} ${ov.health}`))
   lines.push(kvLine("Updated", ov.lastUpdated))
   lines.push("")

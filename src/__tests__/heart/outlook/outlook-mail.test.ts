@@ -134,7 +134,7 @@ describe("Outlook mail reader", () => {
           id: "access_outlook_mail_list",
           agentId: "slugger",
           tool: "outlook_mail_list",
-          reason: "outlook read-only mailbox",
+          reason: "mailbox read-only mailbox",
           accessedAt: "2026-04-23T00:00:00.000Z",
         })),
         listAccessLog: vi.fn(async () => []),
@@ -509,7 +509,7 @@ describe("Outlook mail reader", () => {
     }))
     expect(detail.message?.access).toEqual(expect.objectContaining({
       tool: "outlook_mail_message",
-      reason: "outlook read-only message body",
+      reason: "mailbox read-only message body",
     }))
   })
 

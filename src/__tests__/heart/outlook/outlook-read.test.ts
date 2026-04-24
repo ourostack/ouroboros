@@ -248,7 +248,7 @@ describe("outlook direct reads", () => {
       },
     })
 
-    expect(machine.productName).toBe("Ouro Outlook")
+    expect(machine.productName).toBe("Ouro Mailbox")
     expect(machine.agentCount).toBe(2)
     expect(machine.degraded.status).toBe("degraded")
     expect(machine.agents.map((agent) => agent.agentName)).toEqual(["alpha", "beta"])
@@ -2004,6 +2004,38 @@ describe("outlook deep readers", () => {
         fs.rmSync(tempHome, { recursive: true, force: true })
       }
     })
+
+    it("does not mislabel a stale dead coding surface as return-ready", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "arc", "obligations", "ob-stale-coding.json"), {
+        id: "ob-stale-coding",
+        status: "investigating",
+        content: "Finish the delegated mail import and bring the result back",
+        currentSurface: { kind: "coding", label: "claude coding-087" },
+        nextAction: "check the live session and continue",
+        createdAt: "2026-03-29T08:00:00.000Z",
+        updatedAt: "2026-03-29T08:05:00.000Z",
+      })
+
+      const view = readNeedsMeView("alpha", {
+        bundlesRoot,
+        now: () => new Date("2026-03-30T12:00:00.000Z"),
+      })
+
+      expect(view.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          urgency: "stale-delegation",
+          label: "Finish the delegated mail import and bring the result back",
+          detail: "investigating · next: check the live session and continue",
+        }),
+      ]))
+      expect(view.items.some((item) =>
+        item.label === "Finish the delegated mail import and bring the result back"
+        && item.urgency === "return-ready",
+      )).toBe(false)
+    })
   })
 
   describe("readOrientationView", () => {
@@ -2390,6 +2422,146 @@ describe("outlook deep readers", () => {
 
       expect(view.primaryId).toBe("ob-pending")
       expect(view.items.find((item) => item.id === "ob-unknown")?.isPrimary).toBe(false)
+    })
+
+    it("suppresses stale coding surfaces that are no longer backed by active coding", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-stale-coding-"))
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-stale.json"), {
+        id: "ob-stale",
+        status: "investigating",
+        content: "Bring back the mail import result",
+        currentSurface: { kind: "coding", label: "claude coding-087" },
+        createdAt: "2026-04-03T08:00:00Z",
+        updatedAt: "2026-04-03T08:05:00Z",
+      })
+
+      const view = readObligationDetailView(agentRoot)
+
+      expect(view.items.find((item) => item.id === "ob-stale")).toMatchObject({
+        currentSurface: null,
+      })
+    })
+
+    it("suppresses whitespace-only coding surface labels", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-blank-coding-"))
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-blank.json"), {
+        id: "ob-blank",
+        status: "investigating",
+        content: "Bring back the mail import result",
+        currentSurface: { kind: "coding", label: "   " },
+        createdAt: "2026-04-03T08:00:00Z",
+        updatedAt: "2026-04-03T08:05:00Z",
+      })
+
+      const view = readObligationDetailView(agentRoot)
+
+      expect(view.items.find((item) => item.id === "ob-blank")).toMatchObject({
+        currentSurface: null,
+      })
+    })
+
+    it("keeps a fresh coding surface visible while the handoff is still warm", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-fresh-coding-"))
+      const recentIso = new Date().toISOString()
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-fresh.json"), {
+        id: "ob-fresh",
+        status: "investigating",
+        content: "Bring back the mail import result",
+        currentSurface: { kind: "coding", label: "claude coding-088" },
+        createdAt: recentIso,
+        updatedAt: recentIso,
+      })
+
+      const view = readObligationDetailView(agentRoot)
+
+      expect(view.items.find((item) => item.id === "ob-fresh")).toMatchObject({
+        currentSurface: { kind: "coding", label: "claude coding-088" },
+      })
+    })
+
+    it("keeps a coding surface visible when it is still backed by an active coding session", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-live-coding-"))
+      writeCodingState(agentRoot, [buildCodingRecord()])
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-live.json"), {
+        id: "ob-live",
+        status: "investigating",
+        content: "Bring back the mail import result",
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+        createdAt: "2026-04-03T08:00:00Z",
+        updatedAt: "2026-04-03T08:05:00Z",
+      })
+
+      const view = readObligationDetailView(agentRoot)
+
+      expect(view.items.find((item) => item.id === "ob-live")).toMatchObject({
+        currentSurface: { kind: "coding", label: "codex coding-001" },
+      })
+    })
+
+    it("falls back to the raw obligation currentSurface when normalized summary omits that obligation", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-summary-fallback-"))
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-fallback.json"), {
+        id: "ob-fallback",
+        status: "pending",
+        content: "Fallback task",
+        currentSurface: { kind: "artifact", label: "deploy notes" },
+        createdAt: "2026-04-03T08:00:00Z",
+        updatedAt: "2026-04-03T08:05:00Z",
+      })
+
+      vi.resetModules()
+      vi.doMock("../../../heart/outlook/readers/agent-machine", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("../../../heart/outlook/readers/agent-machine")>()
+        return {
+          ...actual,
+          readObligationSummary: () => ({ items: [] }),
+        }
+      })
+
+      try {
+        const { readObligationDetailView: readWithFallback } = await import("../../../heart/outlook/readers/continuity-readers")
+        const view = readWithFallback(agentRoot)
+        expect(view.items[0]).toMatchObject({
+          id: "ob-fallback",
+          currentSurface: { kind: "artifact", label: "deploy notes" },
+        })
+      } finally {
+        vi.doUnmock("../../../heart/outlook/readers/agent-machine")
+        vi.resetModules()
+      }
+    })
+
+    it("falls back to null when normalized summary omits an obligation with no raw currentSurface", async () => {
+      agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "oblig-summary-null-fallback-"))
+      writeJson(path.join(agentRoot, "arc", "obligations", "ob-fallback-null.json"), {
+        id: "ob-fallback-null",
+        status: "pending",
+        content: "Fallback task",
+        currentSurface: null,
+        createdAt: "2026-04-03T08:00:00Z",
+        updatedAt: "2026-04-03T08:05:00Z",
+      })
+
+      vi.resetModules()
+      vi.doMock("../../../heart/outlook/readers/agent-machine", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("../../../heart/outlook/readers/agent-machine")>()
+        return {
+          ...actual,
+          readObligationSummary: () => ({ items: [] }),
+        }
+      })
+
+      try {
+        const { readObligationDetailView: readWithFallback } = await import("../../../heart/outlook/readers/continuity-readers")
+        const view = readWithFallback(agentRoot)
+        expect(view.items[0]).toMatchObject({
+          id: "ob-fallback-null",
+          currentSurface: null,
+        })
+      } finally {
+        vi.doUnmock("../../../heart/outlook/readers/agent-machine")
+        vi.resetModules()
+      }
     })
   })
 

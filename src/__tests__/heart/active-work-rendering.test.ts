@@ -347,6 +347,57 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(checkpoint).toContain("- next action: finish the coding pass and bring the result back here")
   })
 
+  it("frames running background mail imports as wake-driven work instead of a polling loop", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: null,
+      backgroundOperations: [
+        {
+          schemaVersion: 1,
+          id: "op-mail-import-1",
+          agentName: "slugger",
+          kind: "mail.import-mbox",
+          title: "mail import",
+          status: "running",
+          summary: "importing delegated mail",
+          detail: "scanned 500 messages",
+          progress: { current: 500, unit: "messages" },
+          createdAt: "2026-04-24T05:22:06.140Z",
+          startedAt: "2026-04-24T05:22:06.509Z",
+          updatedAt: "2026-04-24T05:22:30.000Z",
+        },
+      ],
+    }))
+
+    expect(result).toContain("## background operations")
+    expect(result).toContain("[running] mail import")
+    expect(result).toContain("- next action: let the background mail import run; failure or completion will wake me, so i only check again if i need status or it looks stalled")
+  })
+
+  it("frames completed background mail imports as state to review instead of work to rerun", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      currentSession: null,
+      backgroundOperations: [
+        {
+          schemaVersion: 1,
+          id: "op-mail-import-done",
+          agentName: "slugger",
+          kind: "mail.import-mbox",
+          title: "mail import",
+          status: "succeeded",
+          summary: "imported delegated mail archive",
+          detail: "scanned 28352; imported 28352; duplicates 0",
+          progress: { current: 28352, unit: "messages" },
+          createdAt: "2026-04-24T05:22:06.140Z",
+          startedAt: "2026-04-24T05:22:06.509Z",
+          updatedAt: "2026-04-24T05:51:02.787Z",
+          finishedAt: "2026-04-24T05:51:02.787Z",
+        },
+      ],
+    }))
+
+    expect(result).toContain("- next action: review the completed mail import and continue from the updated mailbox state; i only rerun if a newer archive appears")
+  })
+
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })

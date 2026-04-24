@@ -180,6 +180,8 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
+    expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "outlook" })
+    expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "outlook", json: true })
     expect(parseOuroCommand(["outlook"])).toEqual({ kind: "outlook" })
     expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "outlook", json: true })
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
@@ -1925,12 +1927,12 @@ describe("ouro CLI execution", () => {
     expect(deps.writeStdout).toHaveBeenCalledWith(expect.stringContaining("ouroboros daemon"))
   })
 
-  it("surfaces the Outlook URL from daemon status and can fetch JSON from the same seam", async () => {
+  it("surfaces the Mailbox URL from daemon status and can fetch JSON from the same seam", async () => {
     const fetchImpl = vi.fn(async (target: string | URL | Request) => ({
       ok: true,
       status: 200,
-      json: async () => ({ productName: "Ouro Outlook", agentCount: 1 }),
-      text: async () => JSON.stringify({ productName: "Ouro Outlook", agentCount: 1 }, null, 2),
+      json: async () => ({ productName: "Ouro Mailbox", agentCount: 1 }),
+      text: async () => JSON.stringify({ productName: "Ouro Mailbox", agentCount: 1 }, null, 2),
     }))
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -1961,12 +1963,12 @@ describe("ouro CLI execution", () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     }
 
-    const urlResult = await runOuroCli(["outlook"], deps)
+    const urlResult = await runOuroCli(["mailbox"], deps)
     expect(urlResult).toContain("http://127.0.0.1:4310/outlook")
 
-    const jsonResult = await runOuroCli(["outlook", "--json"], deps)
+    const jsonResult = await runOuroCli(["mailbox", "--json"], deps)
     expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4310/outlook/api/machine")
-    expect(jsonResult).toContain("\"productName\": \"Ouro Outlook\"")
+    expect(jsonResult).toContain("\"productName\": \"Ouro Mailbox\"")
   })
 
   it("renders overview defaults when daemon status omits optional overview fields", async () => {
@@ -1996,7 +1998,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("unavailable")
     expect(result).toContain("Socket")
     expect(result).toContain("Health")
-    expect(result).toContain("Outlook")
+    expect(result).toContain("Mailbox")
     // With no sync rows, the Git Sync section is omitted entirely (matches Senses/Workers)
     expect(result).not.toContain("Git Sync")
   })
@@ -2236,7 +2238,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("/bluebubbles-webhook")
     expect(result).toContain("inner-dialog")
     expect(result).toContain("restarts: 0")
-    expect(result).toContain("Outlook")
+    expect(result).toContain("Mailbox")
     expect(result).toContain("http://127.0.0.1:4310/outlook")
   })
 
@@ -7807,6 +7809,61 @@ describe("ouro thoughts CLI execution", () => {
     const calls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0])
     expect(calls.some((c: string) => c.includes("following"))).toBe(true)
     expect(result).toContain("boot")
+  })
+})
+
+describe("ouro inner CLI execution", () => {
+  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
+    return {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
+      ...overrides,
+    }
+  }
+
+  const cleanup: string[] = []
+
+  afterAll(() => {
+    while (cleanup.length > 0) {
+      const entry = cleanup.pop()
+      if (entry) fs.rmSync(entry, { recursive: true, force: true })
+    }
+  })
+
+  it("reads runtime state from the canonical self/inner/dialog session path", async () => {
+    const tempBundle = fs.mkdtempSync(path.join(os.tmpdir(), "inner-status-bundle-"))
+    cleanup.push(tempBundle)
+
+    fs.mkdirSync(path.join(tempBundle, "state", "sessions", "self", "inner"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "habits"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "journal"), { recursive: true })
+    fs.writeFileSync(
+      path.join(tempBundle, "state", "sessions", "self", "inner", "runtime.json"),
+      JSON.stringify({
+        status: "idle",
+        reason: "heartbeat",
+        lastCompletedAt: "2026-03-26T10:25:00.000Z",
+      }, null, 2),
+      "utf-8",
+    )
+    fs.writeFileSync(
+      path.join(tempBundle, "habits", "heartbeat.md"),
+      ["---", "title: heartbeat", "cadence: 30m", "status: active", "---", "", "check in"].join("\n"),
+      "utf-8",
+    )
+
+    const deps = makeDeps({ agentBundleRoot: tempBundle })
+    const result = await runOuroCli(["inner", "--agent", "test"], deps)
+
+    expect(result).toContain("status: idle")
+    expect(result).toContain("last turn:")
+    expect(result).not.toContain("status: unknown")
   })
 })
 

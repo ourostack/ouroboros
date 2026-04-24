@@ -120,8 +120,8 @@ export function buildOutlookMachineView(input: {
       totals,
       mood: deriveMood(input.machine, input.daemon),
       entrypoints: [
-        { kind: "web", label: "Open Outlook", target: input.daemon.outlookUrl },
-        { kind: "cli", label: "CLI JSON", target: "ouro outlook --json" },
+        { kind: "web", label: "Open Mailbox", target: input.daemon.outlookUrl },
+        { kind: "cli", label: "CLI JSON", target: "ouro mailbox --json" },
       ],
     },
     agents,
@@ -198,7 +198,7 @@ export function buildOutlookAgentView(input: {
   viewer?: OutlookViewer
 }): OutlookAgentView {
   /* v8 ignore next */
-  emitNervesEvent({ component: "daemon", event: "daemon.outlook_view_agent", message: `building outlook view for ${input.agent.agentName}`, meta: { agent: input.agent.agentName } })
+  emitNervesEvent({ component: "daemon", event: "daemon.outlook_view_agent", message: `building mailbox view for ${input.agent.agentName}`, meta: { agent: input.agent.agentName } })
   const viewer = normalizeViewer(input.viewer)
 
   return {

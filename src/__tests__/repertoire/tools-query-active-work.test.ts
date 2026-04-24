@@ -96,7 +96,7 @@ const listCodingSessionsMock = vi.fn(() => [
     originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
   },
 ])
-const listBackgroundOperationsMock = vi.fn(() => [])
+const listVisibleBackgroundOperationsMock = vi.fn(() => [])
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -202,8 +202,8 @@ vi.mock("../../repertoire/coding", () => ({
   })),
 }))
 
-vi.mock("../../heart/background-operations", () => ({
-  listBackgroundOperations: listBackgroundOperationsMock,
+vi.mock("../../heart/mail-import-discovery", () => ({
+  listVisibleBackgroundOperations: listVisibleBackgroundOperationsMock,
 }))
 
 describe("query_active_work tool", () => {
@@ -288,8 +288,8 @@ describe("query_active_work tool", () => {
         originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat:any;-;ari@mendelow.me" },
       },
     ])
-    listBackgroundOperationsMock.mockReset()
-    listBackgroundOperationsMock.mockImplementation(() => [])
+    listVisibleBackgroundOperationsMock.mockReset()
+    listVisibleBackgroundOperationsMock.mockImplementation(() => [])
   })
 
   it("is registered in baseToolDefinitions", async () => {
@@ -483,7 +483,7 @@ describe("query_active_work tool", () => {
   })
 
   it("reports whole-self status including active background operations", async () => {
-    listBackgroundOperationsMock.mockReturnValue([
+    listVisibleBackgroundOperationsMock.mockReturnValue([
       {
         schemaVersion: 1,
         id: "op_mail_import_1",

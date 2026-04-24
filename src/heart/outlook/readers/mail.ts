@@ -279,7 +279,7 @@ function emitMailRead(agentName: string, mode: "list" | "message", status: Outlo
   emitNervesEvent({
     component: "heart",
     event: "heart.outlook_mail_read",
-    message: "reading Outlook mail surface",
+    message: "reading Mailbox mail surface",
     meta: { agentName, mode, status },
   })
 }
@@ -306,7 +306,7 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
     await resolved.store.recordAccess({
       agentId: agentName,
       tool: "outlook_mail_list",
-      reason: "outlook read-only mailbox",
+      reason: "mailbox read-only mailbox",
     })
     const accessLog = accessEntries(await resolved.store.listAccessLog(agentName))
     emitMailRead(agentName, "list", "ready")
@@ -362,7 +362,7 @@ export async function readMailMessageView(agentName: string, messageId: string):
       agentId: agentName,
       messageId,
       tool: "outlook_mail_message",
-      reason: "outlook read-only message body",
+      reason: "mailbox read-only message body",
       ...accessProvenance(decrypted),
     })
     const body = decrypted.private.text.length > OUTLOOK_MAIL_BODY_LIMIT

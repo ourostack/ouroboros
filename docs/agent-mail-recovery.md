@@ -22,14 +22,16 @@ Current production proof state as of April 23, 2026:
 | Failure mode | Agent-runnable | Human-required | Body-safe evidence |
 | --- | --- | --- | --- |
 | DNS/MX drift | Check hosted operations docs, inspect the latest DNS workflow artifacts, and ask the substrate repo workflow to run backup/plan/verify before any apply. | Registrar/API credential access must be in the agent vault; intentional cutover or outbound provider-auth record changes need human confirmation. | DNS answers, provider record ids, plan diff, no secret headers. |
-| HEY forwarding missing or stale | Check `mail_recent`, `mail_screener`, source-state records, and Ouro Outlook source folders for the delegated alias. Treat wrong-target probes to `slugger@ouro.bot` as recoverable setup friction. | HEY browser login, MFA, CAPTCHA, forwarding/extension changes, and final forwarding confirmation. | Target alias, observed recipient, message id, forwarding status. |
+| HEY forwarding missing or stale | Check `mail_recent`, `mail_screener`, source-state records, and Ouro Mailbox source folders for the delegated alias. Treat wrong-target probes to `slugger@ouro.bot` as recoverable setup friction. | HEY browser login, MFA, CAPTCHA, forwarding/extension changes, and final forwarding confirmation. | Target alias, observed recipient, message id, forwarding status. |
 | HEY linked account only partially onboarded | Check which HEY account/address produced the last export and the last forwarding proof. Treat one HEY login showing multiple linked accounts as shared auth, not shared onboarding state. | Password re-entry, export start, or forwarding confirmation may still be required for the specific HEY account that has not been proven yet. | HEY account address, delegated alias, `sourceFreshThrough`, forwarding status, proof message id. |
+| already-imported archive keeps reappearing as ready | Check recent background operations and the archive file's mtime. A successfully imported archive should stop surfacing as ambient import-ready work unless the file on disk is newer than the last successful import record. | None for the steady-state case. Human action is only needed when HEY has produced a genuinely newer export that should be imported. | Operation id, archive path, recorded `fileModifiedAt`, latest success timestamp. |
+| daemon stopped or worker state stale | Start with `ouro status` and `ouro doctor`, not cached `runtime.json` alone. If the daemon is down or the worker pid is missing, run `ouro up`, then re-check Mail sense health, worker liveness, and recent runtime log events. | None unless the restart reveals a real provider/browser auth problem that truly needs human action. | Daemon tombstone reason/time, live worker pid, latest runtime log event, `ouro status` output. |
 | hosted registry/vault key drift | Run `ouro account ensure --agent <agent> --owner-email <email> --source hey` or `ouro connect mail --agent <agent> --owner-email <email> --source hey`; the command calls hosted Mail Control when `workSubstrate.mode` is `hosted`. If the ensure response names key ids absent from the vault, rerun with `ouro account ensure --rotate-missing-mail-keys` or `ouro connect mail --rotate-missing-mail-keys` so the harness rotates only the missing hosted keys and stores the fresh one-time private keys. | rotation cannot recover mail already encrypted to a lost private key; it only makes future mail decryptable. Human/provider help may still be needed if old messages matter. | Mailbox/source key ids, ensure/rotation counts, hosted Blob coordinates, no private keys. |
 | Blob reader or decryption failure | Run `ouro status`, `ouro doctor`, then rerun `ouro connect mail` after vault unlock if Mailroom config is missing. Check `AUTH_REQUIRED:mailroom` messages and missing-key warnings. `mail_recent`, `mail_search`, and `mail_thread` should keep working around undecryptable records and name only body-safe message/key ids. | Human may need to unlock or repair the owning agent vault. Mail already encrypted to a lost key needs that exact old key restored; rotation only repairs future mail. | Runtime item path, key id, Blob account/container, sanitized error or warning. |
-| delivery event missing | Inspect Sent in Ouro Outlook, `mail_access_log`, outbound provider ids, and hosted Event Grid/Event Grid subscription status from the substrate runbook. `submitted` is not final delivery. | Provider console or ACS domain verification may need human/provider access. | Provider message id, Event Grid event id, canonical outcome, safe provider status. |
+| delivery event missing | Inspect Sent in Ouro Mailbox, `mail_access_log`, outbound provider ids, and hosted Event Grid/Event Grid subscription status from the substrate runbook. `submitted` is not final delivery. | Provider console or ACS domain verification may need human/provider access. | Provider message id, Event Grid event id, canonical outcome, safe provider status. |
 | autonomy kill switch | Inspect `mailroom.autonomousSendPolicy`; if disabled or `killSwitch` is true, autonomous sends must fall back to `CONFIRM_SEND`. Test with a low-risk draft before changing policy. | Human explicitly approves autonomous-send enablement, allowed recipients/domains, recipient/rate limits, and kill switch changes. | Policy id, decision code, fallback, recipient list/count. |
-| wrong mailbox provenance | Compare recipient, `mailboxRole`, `compartmentKind`, `ownerEmail`, and `source` in `mail_recent`, `mail_thread`, `mail_access_log`, and Outlook. Stop if Ari's mail appears as Slugger's native correspondence. | Human confirms ambiguous owner/source grants. | Message id, recipient, mailbox role, source label, owner email. |
-| discarded/quarantined recovery | Use Outlook recovery drawers, `mail_screener`, `mail_decide restore`, and `mail_access_log` to explain or restore retained mail. | Family-authorized human decides sender/source policy changes. | Previous/next placement, actor, reason, retained drawer counts. |
+| wrong mailbox provenance | Compare recipient, `mailboxRole`, `compartmentKind`, `ownerEmail`, and `source` in `mail_recent`, `mail_thread`, `mail_access_log`, and Ouro Mailbox. Stop if Ari's mail appears as Slugger's native correspondence. | Human confirms ambiguous owner/source grants. | Message id, recipient, mailbox role, source label, owner email. |
+| discarded/quarantined recovery | Use Mailbox recovery drawers, `mail_screener`, `mail_decide restore`, and `mail_access_log` to explain or restore retained mail. | Family-authorized human decides sender/source policy changes. | Previous/next placement, actor, reason, retained drawer counts. |
 
 ## Operator Posture
 
@@ -43,7 +45,7 @@ Agent-runnable:
 - `mail_recent`
 - `mail_screener`
 - `mail_access_log`
-- Ouro Outlook inspection
+- Ouro Mailbox inspection
 
 Human-required:
 
@@ -53,6 +55,8 @@ Human-required:
 - Final approval for autonomous native-agent sending.
 
 Do not parse vault item notes. Notes are for human/agent orientation. If a recovery workflow needs machine-readable facts such as a credential item path, driver, resource allowlist, endpoint, or secret field name, those facts belong in explicit config or a workflow binding.
+
+Treat cached `runtime.json` files as hints, not truth. Live daemon/worker state comes from `ouro status`, `ouro doctor`, and the current process/runtime logs.
 
 When a mailbox contains messages encrypted to a missing old private key, do not let that single record collapse the whole mailbox read. Treat the warning as recovery evidence, continue with decryptable messages, and only ask for human help if the old message itself matters enough to hunt for the old key.
 

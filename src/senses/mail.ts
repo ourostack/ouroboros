@@ -2,9 +2,12 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import type { AddressInfo } from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, getRepoRoot } from "../heart/identity"
 import { refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
-import { getInnerDialogPendingDir } from "../mind/pending"
+import { getInnerDialogPendingDir, queuePendingMessage } from "../mind/pending"
+import { requestInnerWake } from "../heart/daemon/socket-client"
+import { listBackgroundOperations } from "../heart/background-operations"
+import { listAmbientMailImportOperations } from "../heart/mail-import-discovery"
 import { scanMailScreenerAttention } from "../mailroom/attention"
 import { resolveMailroomReader, type MailroomReaderResolution } from "../mailroom/reader"
 import { startMailroomIngress, type MailroomIngressServers, type MailroomSmtpIngressOptions } from "../mailroom/smtp-ingress"
@@ -41,6 +44,18 @@ export interface MailSenseAppOptions {
   startIngress?: (options: MailroomSmtpIngressOptions & { smtpPort: number; httpPort: number; host?: string }) => MailroomIngressServers
   setIntervalFn?: (callback: () => void, ms: number) => unknown
   clearIntervalFn?: (timer: unknown) => void
+}
+
+interface MailImportDiscoveryState {
+  schemaVersion: 1
+  lastNotifiedFingerprint: string | null
+  updatedAt: string
+}
+
+interface MailImportDiscoveryScanResult {
+  queued: boolean
+  fingerprint: string | null
+  candidatePaths: string[]
 }
 
 function readRegistry(registryPath: string): MailroomRegistry {
@@ -88,6 +103,10 @@ function attentionStatePath(agentName: string): string {
   return path.join(getAgentRoot(agentName), "state", "senses", "mail", "attention.json")
 }
 
+function importDiscoveryStatePath(agentName: string): string {
+  return path.join(getAgentRoot(agentName), "state", "senses", "mail", "import-discovery.json")
+}
+
 function writeRuntimeState(filePath: string, state: MailSenseRuntimeState): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
@@ -97,6 +116,120 @@ function writeRuntimeState(filePath: string, state: MailSenseRuntimeState): void
     message: "mail sense runtime state written",
     meta: { agentName: state.agentName, status: state.status, lastQueuedCount: state.lastQueuedCount },
   })
+}
+
+function emptyImportDiscoveryState(updatedAt: string): MailImportDiscoveryState {
+  return {
+    schemaVersion: 1,
+    lastNotifiedFingerprint: null,
+    updatedAt,
+  }
+}
+
+function readImportDiscoveryState(filePath: string, updatedAt: string): MailImportDiscoveryState {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Partial<MailImportDiscoveryState>
+    return {
+      schemaVersion: 1,
+      lastNotifiedFingerprint: typeof parsed.lastNotifiedFingerprint === "string" && parsed.lastNotifiedFingerprint.trim().length > 0
+        ? parsed.lastNotifiedFingerprint
+        : null,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : updatedAt,
+    }
+  } catch {
+    return emptyImportDiscoveryState(updatedAt)
+  }
+}
+
+function writeImportDiscoveryState(filePath: string, state: MailImportDiscoveryState): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+}
+
+function renderImportDiscoveryContent(candidatePaths: string[]): string {
+  return [
+    "[Mail Import Ready]",
+    "A local MBOX archive is ready for delegated-mail backfill.",
+    "This may live in a worktree-local Playwright sandbox rather than ~/Downloads.",
+    "",
+    "recent candidates:",
+    ...candidatePaths.map((candidatePath) => `- ${candidatePath}`),
+    "",
+    "If this matches an expected mailbox backfill, run `ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>` first so Ouro can pick the matching archive or report ambiguity.",
+  ].join("\n")
+}
+
+export async function scanMailImportDiscoveryAttention(input: {
+  agentName: string
+  pendingDir?: string
+  statePath?: string
+  now?: () => number
+}): Promise<MailImportDiscoveryScanResult> {
+  const nowMs = input.now?.() ?? Date.now()
+  const updatedAt = new Date(nowMs).toISOString()
+  const statePath = input.statePath ?? importDiscoveryStatePath(input.agentName)
+  const pendingDir = input.pendingDir ?? getInnerDialogPendingDir(input.agentName)
+  const state = readImportDiscoveryState(statePath, updatedAt)
+  const existingOperations = listBackgroundOperations({
+    agentName: input.agentName,
+    agentRoot: getAgentRoot(input.agentName),
+    limit: 10,
+  })
+  const discovered = listAmbientMailImportOperations({
+    agentName: input.agentName,
+    agentRoot: getAgentRoot(input.agentName),
+    existingOperations,
+    repoRoot: getRepoRoot(),
+    homeDir: process.env.HOME,
+    nowMs,
+  })[0] ?? null
+  const fingerprint = typeof discovered?.spec?.fingerprint === "string" && discovered.spec.fingerprint.trim().length > 0
+    ? discovered.spec.fingerprint
+    : null
+  const candidatePaths = stringArray(discovered?.spec?.candidatePaths)
+  const shouldQueue = Boolean(discovered && fingerprint && fingerprint !== state.lastNotifiedFingerprint)
+
+  if (shouldQueue) {
+    queuePendingMessage(pendingDir, {
+      from: "mailroom",
+      friendId: "self",
+      channel: "mail",
+      key: "import-ready",
+      content: renderImportDiscoveryContent(candidatePaths),
+      timestamp: nowMs,
+      mode: "reflect",
+    })
+    await requestInnerWake(input.agentName).catch(() => undefined)
+  }
+
+  writeImportDiscoveryState(statePath, {
+    schemaVersion: 1,
+    lastNotifiedFingerprint: shouldQueue ? fingerprint : state.lastNotifiedFingerprint,
+    updatedAt,
+  })
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.mail_import_discovery_scanned",
+    message: "mail import discovery scanned",
+    meta: {
+      agentName: input.agentName,
+      queued: shouldQueue,
+      candidateCount: candidatePaths.length,
+      fingerprint,
+    },
+  })
+
+  return {
+    queued: shouldQueue,
+    fingerprint,
+    candidatePaths,
+  }
 }
 
 function closeServer(server: { close(callback: () => void): unknown }): Promise<void> {
@@ -141,35 +274,23 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
   const activeHttpPort = () => ingress ? serverPort(ingress.health) : null
   const runtimePath = runtimeStatePath(options.agentName)
   const attentionPath = attentionStatePath(options.agentName)
+  const importDiscoveryPath = importDiscoveryStatePath(options.agentName)
   let lastScanAt: string | null = null
   let lastQueuedCount = 0
 
   const scan = async () => {
+    const scanStartedAt = new Date(now()).toISOString()
+    let queuedCount = 0
+
     try {
-      const scanStartedAt = new Date(now()).toISOString()
-      const result = await scanMailScreenerAttention({
+      const screener = await scanMailScreenerAttention({
         agentName: options.agentName,
         store: resolved.store,
         pendingDir: getInnerDialogPendingDir(options.agentName),
         statePath: attentionPath,
         now,
       })
-      lastScanAt = scanStartedAt
-      lastQueuedCount = result.queued.length
-      writeRuntimeState(runtimePath, {
-        schemaVersion: 1,
-        agentName: options.agentName,
-        status: "running",
-        mailboxAddress: resolved.config.mailboxAddress,
-        smtpPort: activeSmtpPort(),
-        httpPort: activeHttpPort(),
-        host,
-        storeKind: resolved.storeKind,
-        storeLabel: resolved.storeLabel,
-        lastScanAt,
-        lastQueuedCount,
-        updatedAt: new Date(now()).toISOString(),
-      })
+      queuedCount += screener.queued.length
     } catch (error) {
       emitNervesEvent({
         level: "error",
@@ -179,6 +300,43 @@ export async function startMailSenseApp(options: MailSenseAppOptions): Promise<M
         meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
       })
     }
+
+    try {
+      const importDiscovery = await scanMailImportDiscoveryAttention({
+        agentName: options.agentName,
+        pendingDir: getInnerDialogPendingDir(options.agentName),
+        statePath: importDiscoveryPath,
+        now,
+      })
+      if (importDiscovery.queued) {
+        queuedCount += 1
+      }
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.mail_import_discovery_scan_error",
+        message: "mail import discovery scan failed",
+        meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+      })
+    }
+
+    lastScanAt = scanStartedAt
+    lastQueuedCount = queuedCount
+    writeRuntimeState(runtimePath, {
+      schemaVersion: 1,
+      agentName: options.agentName,
+      status: "running",
+      mailboxAddress: resolved.config.mailboxAddress,
+      smtpPort: activeSmtpPort(),
+      httpPort: activeHttpPort(),
+      host,
+      storeKind: resolved.storeKind,
+      storeLabel: resolved.storeLabel,
+      lastScanAt,
+      lastQueuedCount,
+      updatedAt: new Date(now()).toISOString(),
+    })
   }
 
   await scan()

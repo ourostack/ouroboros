@@ -41,7 +41,7 @@ type AgentViewOverrides = {
 
 function makeAgentView(overrides: AgentViewOverrides = {}): OutlookAgentView {
   const base: OutlookAgentView = {
-    productName: "Ouro Outlook",
+    productName: "Ouro Mailbox",
     interactionModel: "read-only",
     viewer: { kind: "human", innerDetail: "summary" },
     agent: {
@@ -572,7 +572,7 @@ describe("Outlook deep-tab live refresh", () => {
             htmlAvailable: false,
             bodyTruncated: false,
             attachments: [],
-            access: { tool: "outlook_mail_message", reason: "outlook read-only message body", accessedAt: "2026-04-21T17:00:00.000Z" },
+            access: { tool: "outlook_mail_message", reason: "mailbox read-only message body", accessedAt: "2026-04-21T17:00:00.000Z" },
           },
           accessLog: [],
           error: null,

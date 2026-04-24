@@ -127,6 +127,11 @@ vi.mock("../../mind/prompt", () => ({
   readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
 }))
 
+const mockListVisibleBackgroundOperations = vi.fn().mockReturnValue([])
+vi.mock("../../heart/mail-import-discovery", () => ({
+  listVisibleBackgroundOperations: (...args: any[]) => mockListVisibleBackgroundOperations(...args),
+}))
+
 const mockExistsSync = vi.fn().mockReturnValue(false)
 const mockReadFileSync = vi.fn().mockImplementation((filePath: string) => {
   // Bundle-meta.json should not exist by default — throw to simulate missing file
@@ -191,6 +196,7 @@ describe("buildTurnContext", () => {
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
     mockReadHealth.mockReturnValue(null)
     mockReadJournalFiles.mockReturnValue([])
+    mockListVisibleBackgroundOperations.mockReturnValue([])
     mockReadInnerDialogRawData.mockReturnValue({
       pendingMessages: [],
       turns: [],
@@ -222,6 +228,7 @@ describe("buildTurnContext", () => {
     expect(ctx.pendingObligations).toEqual([])
     expect(ctx.codingSessions).toEqual([])
     expect(ctx.otherCodingSessions).toEqual([])
+    expect(ctx.backgroundOperations).toEqual([])
     expect(ctx.innerWorkState.status).toBe("idle")
     expect(ctx.innerWorkState.hasPending).toBe(false)
     expect(ctx.taskBoard.compact).toBe("")
@@ -253,6 +260,31 @@ describe("buildTurnContext", () => {
         }),
       }),
     )
+  })
+
+  it("includes visible background operations in the returned context", async () => {
+    mockListVisibleBackgroundOperations.mockReturnValue([
+      {
+        schemaVersion: 1,
+        id: "ambient_mail_import_ready",
+        agentName: "test-agent",
+        kind: "mail.import-discovered",
+        title: "mail import ready",
+        status: "queued",
+        summary: "recent MBOX archive ready for import",
+        createdAt: "2026-04-23T20:08:17.000Z",
+        updatedAt: "2026-04-23T20:08:17.000Z",
+      },
+    ])
+
+    const ctx = await buildTurnContext(makeInput())
+
+    expect(ctx.backgroundOperations).toEqual([
+      expect.objectContaining({
+        id: "ambient_mail_import_ready",
+        kind: "mail.import-discovered",
+      }),
+    ])
   })
 
   it("populates bridges from bridge manager", async () => {

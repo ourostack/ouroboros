@@ -431,7 +431,7 @@ function ReadingPane({ detail }: { detail: OutlookMailMessageView }) {
         <pre className="whitespace-pre-wrap break-words font-body text-sm leading-7 text-[#26352a]">
           {message.text || "(no text body)"}
         </pre>
-        {message.bodyTruncated && <p className="mt-4 text-xs text-[#687062]">Body truncated in Outlook.</p>}
+        {message.bodyTruncated && <p className="mt-4 text-xs text-[#687062]">Body truncated in Mailbox.</p>}
         <div className="mt-6 grid gap-3 border-t border-[#cbd8c8] pt-4 text-xs text-[#687062] md:grid-cols-2">
           <p><span className="font-medium text-[#172018]">Read reason:</span> {message.access.reason}</p>
           <p><span className="font-medium text-[#172018]">Read at:</span> {new Date(message.access.accessedAt).toLocaleString()}</p>

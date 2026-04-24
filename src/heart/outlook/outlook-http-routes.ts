@@ -51,7 +51,7 @@ export function createOutlookHttpRequestHandler(options: OutlookHttpRouteOptions
       return
     }
 
-    if (pathname === "/outlook") {
+    if (pathname === "/outlook" || pathname === "/mailbox") {
       response.writeHead(301, { location: "/" })
       response.end()
       return

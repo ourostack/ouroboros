@@ -69,12 +69,14 @@ import { queuePendingMessage } from "../../mind/pending"
 import {
   completeBackgroundOperation,
   failBackgroundOperation,
+  listBackgroundOperations,
   markBackgroundOperationRunning,
   readBackgroundOperation,
   startBackgroundOperation,
   updateBackgroundOperation,
   type BackgroundOperationRecord,
 } from "../background-operations"
+import { discoverMailImportFilePath } from "../mail-import-discovery"
 import { listSessionActivity } from "../session-activity"
 import { listTargetSessionCandidates } from "../target-resolution"
 
@@ -4114,6 +4116,9 @@ async function notifyMailOperation(
     `detail: ${record.detail}`,
     ...(record.error?.message ? [`error: ${record.error.message}`] : []),
     ...(record.remediation && record.remediation.length > 0 ? ["", "next steps:", ...record.remediation.map((step) => `- ${step}`)] : []),
+    ...(record.kind === "mail.import-mbox" && record.status === "succeeded"
+      ? ["", "do not rerun the same archive unless a newer export appears."]
+      : []),
     "",
     "Use query_active_work for the live background-work view before drilling into mail details.",
   ]
@@ -4300,21 +4305,127 @@ async function launchBackgroundMailCommand(
     `operation: ${operationId}`,
     ...(spec ? Object.entries(spec).map(([key, value]) => `${key}: ${String(value)}`) : []),
     `${command.agent} will be woken on failure or completion.`,
-    "Use query_active_work to check live progress.",
+    "Use query_active_work only when a live status check is actually needed.",
   ].join("\n")
   deps.writeStdout(message)
   return message
+}
+
+function buildMailImportOperationSpec(filePath: string, ownerEmail?: string, source?: string): Record<string, unknown> {
+  const stats = fs.statSync(filePath)
+  return {
+    filePath,
+    ...(ownerEmail ? { ownerEmail } : {}),
+    ...(source ? { source } : {}),
+    fileSizeBytes: stats.size,
+    fileModifiedAt: new Date(stats.mtimeMs).toISOString(),
+  }
+}
+
+function matchingMailImportOperation(
+  record: BackgroundOperationRecord,
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  filePath: string,
+): boolean {
+  if (record.kind !== "mail.import-mbox") return false
+  if ((record.spec?.filePath ?? null) !== filePath) return false
+  const expectedOwnerEmail = command.ownerEmail?.trim() ?? ""
+  const expectedSource = command.source?.trim() ?? ""
+  const recordOwnerEmail = typeof record.spec?.ownerEmail === "string" ? record.spec.ownerEmail.trim() : ""
+  const recordSource = typeof record.spec?.source === "string" ? record.spec.source.trim() : ""
+  return recordOwnerEmail === expectedOwnerEmail && recordSource === expectedSource
+}
+
+function latestComparableOperationTimestamp(record: BackgroundOperationRecord): number | null {
+  const candidates = [record.finishedAt, record.updatedAt]
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue
+    const parsed = Date.parse(candidate)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function duplicateMailImportMessage(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  filePath: string,
+  record: BackgroundOperationRecord,
+): string {
+  const lines = [
+    `Background mail import already ${record.status === "succeeded" ? "completed" : record.status} for ${command.agent}`,
+    `operation: ${record.id}`,
+    `filePath: ${filePath}`,
+    ...(command.ownerEmail ? [`ownerEmail: ${command.ownerEmail}`] : []),
+    ...(command.source ? [`source: ${command.source}`] : []),
+    `summary: ${record.summary}`,
+    ...(record.detail ? [`detail: ${record.detail}`] : []),
+  ]
+  if (record.status === "succeeded") {
+    lines.push("This archive has not changed since that import. Download a newer export before rerunning.")
+  } else {
+    lines.push(`${command.agent} will be woken on failure or completion.`)
+  }
+  return lines.join("\n")
+}
+
+function findExistingMailImportOperation(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  deps: OuroCliDeps,
+  filePath: string,
+): BackgroundOperationRecord | null {
+  const agentRoot = providerCliAgentRoot({ agent: command.agent }, deps)
+  const currentFileMtimeMs = fs.statSync(filePath).mtimeMs
+  const operations = listBackgroundOperations({ agentName: command.agent, agentRoot, limit: 50 })
+  for (const record of operations) {
+    if (!matchingMailImportOperation(record, command, filePath)) continue
+    if (record.status === "queued" || record.status === "running") {
+      return record
+    }
+    if (record.status === "succeeded") {
+      const recordTimestamp = latestComparableOperationTimestamp(record)
+      if (recordTimestamp !== null && currentFileMtimeMs <= recordTimestamp) {
+        return record
+      }
+    }
+  }
+  return null
+}
+
+export function resolveMailImportFilePath(
+  command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
+  deps: OuroCliDeps,
+): string {
+  if (command.filePath) {
+    return path.resolve(command.filePath)
+  }
+  if (!command.discover) {
+    throw new Error("mail import requires either --file <path> or --discover")
+  }
+  return discoverMailImportFilePath({
+    agentName: command.agent,
+    ownerEmail: command.ownerEmail,
+    source: command.source,
+    repoRoot: path.resolve(deps.getRepoCwd?.() ?? process.cwd()),
+    homeDir: deps.homeDir ?? os.homedir(),
+  })
 }
 
 async function executeMailImportMbox(
   command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
-  const filePath = path.resolve(command.filePath)
+  const filePath = resolveMailImportFilePath(command, deps)
   if (!command.foreground) {
     if (!fs.existsSync(filePath)) {
       throw new Error(`no such file: ${filePath}`)
     }
+    const duplicate = findExistingMailImportOperation(command, deps, filePath)
+    if (duplicate) {
+      const message = duplicateMailImportMessage(command, filePath, duplicate)
+      deps.writeStdout(message)
+      return message
+    }
+    const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
     return launchBackgroundMailCommand(
       command,
       deps,
@@ -4330,14 +4441,11 @@ async function executeMailImportMbox(
       ],
       "mail import",
       "queued delegated mail import",
-      {
-        filePath,
-        ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
-        ...(command.source ? { source: command.source } : {}),
-      },
+      spec,
     )
   }
   const progress = createHumanCommandProgress(deps, "mail import")
+  const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
   const trackedOperation = ensureTrackedMailOperation({
     agentName: command.agent,
     deps,
@@ -4345,11 +4453,7 @@ async function executeMailImportMbox(
     kind: "mail.import-mbox",
     title: "mail import",
     queuedSummary: "queued delegated mail import",
-    spec: {
-      filePath,
-      ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
-      ...(command.source ? { source: command.source } : {}),
-    },
+    spec,
   })
   try {
     trackedOperation?.running("reading Mailroom config", `file: ${filePath}`, {
@@ -4416,6 +4520,7 @@ async function executeMailImportMbox(
     progress.completePhase("reading Mailroom config", "imported")
     progress.end()
     const message = [
+      ...(command.discover ? [`Discovered MBOX: ${filePath}`] : []),
       `Imported MBOX for ${command.agent}`,
       `file: ${filePath}`,
       `grant: ${result.sourceGrant.grantId} (${result.sourceGrant.source}; ${result.sourceGrant.ownerEmail})`,
@@ -7561,15 +7666,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */
   if (command.kind === "inner.status") {
     try {
-      const agentRoot = getAgentRoot(command.agent)
+      const agentRoot = deps.agentBundleRoot ?? getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
-      const { sessionPath: getSessionPath } = await import("../config")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
       const { listActiveReturnObligations } = await import("../../arc/obligations")
 
       // Read runtime state
-      const innerSessionPath = getSessionPath("inner-dialog", "inner", "session")
+      const innerSessionPath = getInnerDialogSessionPath(agentRoot)
       const runtimeJsonPath = path.join(path.dirname(innerSessionPath), "runtime.json")
       let runtimeState: import("./inner-status").InnerRuntimeState | null = null
       try {

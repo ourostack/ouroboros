@@ -23,6 +23,8 @@ export function normalizeOutlookRequestPath(urlValue = "/"): string {
 export function normalizeLegacyOutlookApiPath(pathname: string): string {
   if (pathname.startsWith("/outlook/api/")) return pathname.slice("/outlook".length)
   if (pathname === "/outlook/api") return "/api"
+  if (pathname.startsWith("/mailbox/api/")) return pathname.slice("/mailbox".length)
+  if (pathname === "/mailbox/api") return "/api"
   return pathname
 }
 

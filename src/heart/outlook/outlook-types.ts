@@ -10,7 +10,7 @@ import type { SessionEvent } from "../session-events"
 export type { UsageData } from "../../nerves/observation"
 export type { SessionEvent } from "../session-events"
 
-export const OUTLOOK_PRODUCT_NAME = "Ouro Outlook" as const
+export const OUTLOOK_PRODUCT_NAME = "Ouro Mailbox" as const
 export const OUTLOOK_RELEASE_INTERACTION_MODEL = "read-only" as const
 export const OUTLOOK_DEFAULT_INNER_VISIBILITY = "summary" as const
 export const OUTLOOK_DEFAULT_PORT = 6876 as const

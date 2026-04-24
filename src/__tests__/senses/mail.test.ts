@@ -6,7 +6,21 @@ import { provisionMailboxRegistry } from "../../mailroom/core"
 import { FileMailroomStore, ingestRawMailToStore, type MailroomStore } from "../../mailroom/file-store"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import { resetIdentity } from "../../heart/identity"
-import { startMailSenseApp } from "../../senses/mail"
+import { scanMailImportDiscoveryAttention, startMailSenseApp } from "../../senses/mail"
+
+const mockRequestInnerWake = vi.fn(async () => null)
+
+vi.mock("../../heart/daemon/socket-client", () => ({
+  requestInnerWake: (...args: any[]) => mockRequestInnerWake(...args),
+}))
+
+vi.mock("../../heart/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/identity")>()
+  return {
+    ...actual,
+    getRepoRoot: () => path.join(process.env.HOME ?? os.homedir(), "repo"),
+  }
+})
 
 const tempRoots: string[] = []
 const originalHome = process.env.HOME
@@ -34,6 +48,7 @@ afterEach(() => {
   else process.env.HOME = originalHome
   resetIdentity()
   resetRuntimeCredentialConfigCache()
+  mockRequestInnerWake.mockReset()
   vi.restoreAllMocks()
   for (const dir of tempRoots.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -171,6 +186,187 @@ describe("mail sense runtime", () => {
     await new Promise((resolve) => setImmediate(resolve))
     await app.stop()
     expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the process alive when mail import discovery scanning fails", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+
+    vi.resetModules()
+    vi.doMock("../../heart/mail-import-discovery", () => ({
+      listAmbientMailImportOperations: () => {
+        throw "discovery boom"
+      },
+    }))
+
+    try {
+      const { startMailSenseApp: isolatedStartMailSenseApp } = await import("../../senses/mail")
+      const close = vi.fn((callback: () => void) => callback())
+      const fakeServer = (port: number) => ({
+        address: () => ({ address: "127.0.0.1", family: "IPv4", port }),
+        close,
+      })
+      const app = await isolatedStartMailSenseApp({
+        agentName: "slugger",
+        now: () => 1_777_000_000_000,
+        refreshRuntime: async () => ({
+          ok: true,
+          itemPath: "vault:slugger:runtime/config",
+          config: {},
+          revision: "test",
+          updatedAt: new Date(0).toISOString(),
+        }),
+        resolveReader: () => ({
+          ok: true,
+          agentName: "slugger",
+          config: {
+            mailboxAddress: "slugger@ouro.bot",
+            registryPath,
+            privateKeys: { key: "secret" },
+          },
+          store: {
+            listScreenerCandidates: async () => [],
+          } as unknown as MailroomStore,
+          storeKind: "file",
+          storeLabel: "fake",
+        }),
+        startIngress: () => ({
+          smtp: fakeServer(2525),
+          health: fakeServer(8080),
+        }) as never,
+        setIntervalFn: () => "timer",
+        clearIntervalFn: vi.fn(),
+      })
+
+      expect(readJson<{ status: string; lastQueuedCount: number }>(app.runtimeStatePath)).toEqual(expect.objectContaining({
+        status: "running",
+        lastQueuedCount: 0,
+      }))
+
+      await app.stop()
+      expect(close).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.doUnmock("../../heart/mail-import-discovery")
+      vi.resetModules()
+    }
+  })
+
+  it("uses default import-discovery paths and repairs malformed saved timestamps", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const repoRoot = path.join(homeRoot, "repo")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const statePath = path.join(agentRoot, "state", "senses", "mail", "import-discovery.json")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(path.dirname(statePath), { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    fs.writeFileSync(statePath, `${JSON.stringify({
+      schemaVersion: 1,
+      lastNotifiedFingerprint: "older-fingerprint",
+      updatedAt: 42,
+    }, null, 2)}\n`, "utf-8")
+
+    const result = await scanMailImportDiscoveryAttention({ agentName: "slugger" })
+
+    expect(result.queued).toBe(true)
+    expect(result.candidatePaths).toEqual([mboxPath])
+    expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+    expect(readJson<{ lastNotifiedFingerprint: string; updatedAt: string }>(statePath)).toEqual(expect.objectContaining({
+      lastNotifiedFingerprint: expect.stringContaining(mboxPath),
+      updatedAt: expect.any(String),
+    }))
+  })
+
+  it("keeps discovery queueing alive when requestInnerWake rejects", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const repoRoot = path.join(homeRoot, "repo")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    mockRequestInnerWake.mockRejectedValueOnce(new Error("socket unavailable"))
+
+    const result = await scanMailImportDiscoveryAttention({ agentName: "slugger" })
+
+    expect(result.queued).toBe(true)
+    expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+  })
+
+  it("keeps the process alive when mail import discovery scanning throws an Error instance", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+
+    vi.resetModules()
+    vi.doMock("../../heart/mail-import-discovery", () => ({
+      listAmbientMailImportOperations: () => {
+        throw new Error("discovery boom")
+      },
+    }))
+
+    try {
+      const { startMailSenseApp: isolatedStartMailSenseApp } = await import("../../senses/mail")
+      const close = vi.fn((callback: () => void) => callback())
+      const fakeServer = (port: number) => ({
+        address: () => ({ address: "127.0.0.1", family: "IPv4", port }),
+        close,
+      })
+      const app = await isolatedStartMailSenseApp({
+        agentName: "slugger",
+        now: () => 1_777_000_000_000,
+        refreshRuntime: async () => ({
+          ok: true,
+          itemPath: "vault:slugger:runtime/config",
+          config: {},
+          revision: "test",
+          updatedAt: new Date(0).toISOString(),
+        }),
+        resolveReader: () => ({
+          ok: true,
+          agentName: "slugger",
+          config: {
+            mailboxAddress: "slugger@ouro.bot",
+            registryPath,
+            privateKeys: { key: "secret" },
+          },
+          store: {
+            listScreenerCandidates: async () => [],
+          } as unknown as MailroomStore,
+          storeKind: "file",
+          storeLabel: "fake",
+        }),
+        startIngress: () => ({
+          smtp: fakeServer(2525),
+          health: fakeServer(8080),
+        }) as never,
+        setIntervalFn: () => "timer",
+        clearIntervalFn: vi.fn(),
+      })
+
+      expect(readJson<{ status: string; lastQueuedCount: number }>(app.runtimeStatePath)).toEqual(expect.objectContaining({
+        status: "running",
+        lastQueuedCount: 0,
+      }))
+
+      await app.stop()
+      expect(close).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.doUnmock("../../heart/mail-import-discovery")
+      vi.resetModules()
+    }
   })
 
   it("fails fast when runtime mail config is unavailable or missing registryPath", async () => {
@@ -323,7 +519,12 @@ describe("mail sense runtime", () => {
     expect(startIngress).not.toHaveBeenCalled()
     expect(app.smtpPort).toBeNull()
     expect(app.httpPort).toBeNull()
-    expect(fs.existsSync(app.runtimeStatePath)).toBe(false)
+    expect(fs.existsSync(app.runtimeStatePath)).toBe(true)
+    expect(readJson<{ status: string; storeKind: string; lastQueuedCount: number; lastScanAt: string | null }>(app.runtimeStatePath)).toEqual(expect.objectContaining({
+      status: "running",
+      storeKind: "azure-blob",
+      lastQueuedCount: 0,
+    }))
 
     await app.stop()
     const runtime = readJson<{ status: string; storeKind: string; lastQueuedCount: number; lastScanAt: string | null }>(app.runtimeStatePath)
@@ -331,7 +532,7 @@ describe("mail sense runtime", () => {
       status: "stopped",
       storeKind: "azure-blob",
       lastQueuedCount: 0,
-      lastScanAt: null,
+      lastScanAt: expect.any(String),
     }))
   })
 
@@ -440,6 +641,78 @@ describe("mail sense runtime", () => {
     expect(store.listScreenerCandidates).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(store.listScreenerCandidates).toHaveBeenCalledTimes(2)
+    await app.stop()
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  it("queues and wakes inner attention once when a fresh worktree-local MBOX archive appears", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const registryPath = path.join(agentRoot, "state", "mailroom", "registry.json")
+    const sandboxDir = path.join(homeRoot, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true })
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    let intervalCallback: (() => void) | undefined
+    const close = vi.fn((callback: () => void) => callback())
+    const fakeServer = (port: number) => ({
+      address: () => ({ address: "127.0.0.1", family: "IPv4", port }),
+      close,
+    })
+    const store = {
+      listScreenerCandidates: vi.fn(async () => []),
+    } as unknown as MailroomStore
+
+    const app = await startMailSenseApp({
+      agentName: "slugger",
+      now: () => 1_777_000_000_000,
+      refreshRuntime: async () => ({
+        ok: true,
+        itemPath: "vault:slugger:runtime/config",
+        config: {},
+        revision: "test",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      resolveReader: () => ({
+        ok: true,
+        agentName: "slugger",
+        config: {
+          mailboxAddress: "slugger@ouro.bot",
+          registryPath,
+          privateKeys: { key: "secret" },
+          attentionIntervalMs: 5_000,
+        },
+        store,
+        storeKind: "file",
+        storeLabel: "timer",
+      }),
+      startIngress: () => ({
+        smtp: fakeServer(2525),
+        health: fakeServer(8080),
+      }) as never,
+      setIntervalFn: (callback) => {
+        intervalCallback = callback
+        return "timer"
+      },
+      clearIntervalFn: vi.fn(),
+    })
+
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("slugger")
+    const firstPassBodies = pendingBodies(agentRoot)
+    expect(firstPassBodies).toHaveLength(1)
+    expect(firstPassBodies[0]).toContain("[Mail Import Ready]")
+    expect(firstPassBodies[0]).toContain(mboxPath)
+
+    intervalCallback?.()
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(mockRequestInnerWake).toHaveBeenCalledTimes(1)
+    expect(pendingBodies(agentRoot)).toHaveLength(1)
+
     await app.stop()
     expect(close).toHaveBeenCalledTimes(2)
   })

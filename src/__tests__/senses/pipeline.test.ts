@@ -228,6 +228,7 @@ function defaultTurnContext() {
     pendingObligations: [] as any[],
     codingSessions: [] as any[],
     otherCodingSessions: [] as any[],
+    backgroundOperations: [] as any[],
     innerWorkState: {
       status: "idle" as const,
       hasPending: false,

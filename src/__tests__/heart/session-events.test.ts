@@ -309,6 +309,90 @@ describe("session events", () => {
     expect(parsed?.events[0]?.attachments).toEqual(["attachment:one", "attachment:two"])
   })
 
+  it("strips synthetic relative-time prefixes from parsed user and assistant events", async () => {
+    const { parseSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+
+    const parsed = parseSessionEnvelope({
+      version: 2,
+      events: [
+        {
+          id: "evt-000001",
+          sequence: 1,
+          role: "user",
+          content: "[just now] [-34m] hello",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: "2026-04-24T03:00:00.000Z",
+            observedAtSource: "ingest",
+            recordedAt: "2026-04-24T03:00:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+        {
+          id: "evt-000002",
+          sequence: 2,
+          role: "assistant",
+          content: "[just now] reply",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-04-24T03:01:00.000Z",
+            authoredAtSource: "local",
+            observedAt: "2026-04-24T03:01:00.000Z",
+            observedAtSource: "local",
+            recordedAt: "2026-04-24T03:01:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-000001", "evt-000002"],
+        trimmed: false,
+        maxTokens: null,
+        contextMargin: null,
+        inputTokens: null,
+        projectedAt: "2026-04-24T03:01:00.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }, {
+      recordedAt: "2026-04-24T03:01:00.000Z",
+      fileMtimeAt: "2026-04-24T03:01:00.000Z",
+    })
+
+    expect(parsed?.events[0]?.content).toBe("hello")
+    expect(parsed?.events[1]?.content).toBe("reply")
+    expect(projectProviderMessages(parsed!)).toEqual([
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "reply" },
+    ])
+  })
+
   it("drops malformed lastUsage payloads instead of preserving partial numeric garbage", async () => {
     const { parseSessionEnvelope } = await import("../../heart/session-events")
 
@@ -417,10 +501,259 @@ describe("session events", () => {
         tool_call_id: "",
       },
       {
+        role: "tool",
+        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+        tool_call_id: "tc-custom",
+      },
+      {
         role: "user",
         content: "",
         name: "Ari",
       },
+    ])
+  })
+
+  it("canonicalizes duplicate system prompts down to one leading system message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+      { role: "system", content: "stale system" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ])
+  })
+
+  it("injects synthetic tool results for assistant tool calls missing their outputs", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "user", content: "next" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      },
+      { role: "user", content: "next" },
+    ])
+  })
+
+  it("stops synthetic tool-result backfill at the next assistant message", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      },
+      { role: "assistant", content: "moving on" },
+      { role: "tool", tool_call_id: "call-1", content: "late result" },
+    ])
+  })
+
+  it("stops collecting tool results once a later assistant message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "assistant", content: "starting a fresh thought" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      },
+      { role: "assistant", content: "starting a fresh thought" },
+    ])
+  })
+
+  it("stops collecting tool results once a later user message begins a new turn", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      { role: "user", content: "new question" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+          {
+            id: "call-2",
+            type: "function",
+            function: { name: "query_session", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+      {
+        role: "tool",
+        tool_call_id: "call-2",
+        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      },
+      { role: "user", content: "new question" },
+    ])
+  })
+
+  it("keeps collecting tool results across non-turn messages that are neither assistant nor user", async () => {
+    const { sanitizeProviderMessages } = await import("../../heart/session-events")
+
+    const sanitized = sanitizeProviderMessages([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "system", content: "mid-stream metadata" },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
+    ] as any)
+
+    expect(sanitized).toEqual([
+      { role: "system", content: "fresh system" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_active_work", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "active work" },
     ])
   })
 

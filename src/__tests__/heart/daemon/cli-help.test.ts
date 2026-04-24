@@ -25,7 +25,7 @@ describe("COMMAND_REGISTRY", () => {
   it("contains all top-level commands from parseOuroCommand", () => {
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
-      "doctor", "outlook", "whoami", "config", "changelog", "chat", "msg", "task",
+      "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg", "task",
       "reminder", "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
     ]
@@ -243,7 +243,7 @@ describe("getCommandHelp()", () => {
     const result = getCommandHelp("mail import-mbox")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro mail import-mbox --file <path>")
+    expect(result).toContain("ouro mail import-mbox (--file <path>|--discover)")
     expect(result).toContain("--owner-email <email>")
   })
 })

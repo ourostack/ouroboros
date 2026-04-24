@@ -111,6 +111,7 @@ import {
   runOuroCli,
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
+import { resolveMailImportFilePath } from "../../../heart/daemon/cli-exec"
 import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
 import * as sessionActivity from "../../../heart/session-activity"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
@@ -1248,6 +1249,12 @@ describe("provider CLI command parsing", () => {
       kind: "mail.import-mbox",
       filePath: "/tmp/hey.mbox",
     })
+    expect(parseOuroCommand(["mail", "import-mbox", "--discover", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
+      kind: "mail.import-mbox",
+      discover: true,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
     expect(parseOuroCommand(["mail", "backfill-indexes", "--agent", "Slugger"])).toEqual({
       kind: "mail.backfill-indexes",
       agent: "Slugger",
@@ -1295,6 +1302,7 @@ describe("provider CLI command parsing", () => {
     expect(() => parseOuroCommand(["mail"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "status"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--file"])).toThrow("ouro mail import-mbox")
+    expect(() => parseOuroCommand(["mail", "import-mbox", "--discover", "--file", "/tmp/hey.mbox"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "import-mbox", "--owner-email", "ari@mendelow.me"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["mail", "backfill-indexes", "extra"])).toThrow("ouro mail import-mbox")
     expect(() => parseOuroCommand(["account"])).toThrow("ouro account ensure")
@@ -2418,6 +2426,195 @@ describe("provider CLI command execution", () => {
     expect(fs.readdirSync(path.join(mailStateDir, "messages")).some((name) => name.endsWith(".json"))).toBe(true)
   })
 
+  it("discovers a recent HEY export in Playwright download sandboxes and imports it", async () => {
+    emitTestEvent("provider cli mail import discover playwright sandbox")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Sat Apr 20 12:00:00 2026",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Primary HEY export",
+      "Message-ID: <primary@example.com>",
+      "Date: Mon, 20 Apr 2026 12:00:00 -0700",
+      "",
+      "Sandboxed browser export.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))
+
+    expect(result).toContain(`Discovered MBOX: ${mboxPath}`)
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(result).toContain("imported: 1")
+  })
+
+  it("fails with candidate guidance when MBOX discovery is ambiguous", async () => {
+    emitTestEvent("provider cli mail import discover ambiguous")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-ambiguous-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-ambiguous-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-ambiguous-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+  })
+
+  it("fails clearly when no MBOX can be discovered", async () => {
+    emitTestEvent("provider cli mail import discover missing")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-discover-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-discover-missing-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-discover-missing-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).rejects.toThrow("could not discover an MBOX file")
+  })
+
+  it("guards against malformed direct mail-import commands without a file or discovery mode", () => {
+    emitTestEvent("provider cli mail import malformed direct command")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-malformed-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-malformed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    expect(() => resolveMailImportFilePath({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+    } as any, makeCliDeps(homeDir, bundlesRoot))).toThrow("mail import requires either --file <path> or --discover")
+  })
+
+  it("falls back to process cwd and os.homedir when discovery deps omit explicit roots", () => {
+    emitTestEvent("provider cli mail import discover fallback roots")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-fallback-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-fallback-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const mboxPath = path.join(downloadsDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const originalCwd = process.cwd()
+    const originalHome = process.env.HOME
+    process.chdir(repoRoot)
+    process.env.HOME = homeDir
+
+    try {
+      expect(resolveMailImportFilePath({
+        kind: "mail.import-mbox",
+        agent: "Slugger",
+        discover: true,
+      } as any, makeCliDeps(homeDir, bundlesRoot, {
+        homeDir: undefined,
+        getRepoCwd: undefined,
+      }))).toBe(mboxPath)
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME
+      } else {
+        process.env.HOME = originalHome
+      }
+      process.chdir(originalCwd)
+    }
+  })
+
+  it("falls back to recency when discovery hints do not match the exported filename", () => {
+    emitTestEvent("provider cli mail import discover hint mismatch")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-hint-mismatch-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-hint-mismatch-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-hint-mismatch-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    const olderPath = path.join(sandboxDir, "mail-export-older.mbox")
+    const newerPath = path.join(sandboxDir, "mail-export-newer.mbox")
+    fs.writeFileSync(olderPath, "", "utf-8")
+    fs.writeFileSync(newerPath, "", "utf-8")
+    const olderTime = new Date("2026-04-24T03:07:00.000Z")
+    const newerTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(olderPath, olderTime, olderTime)
+    fs.utimesSync(newerPath, newerTime, newerTime)
+
+    expect(resolveMailImportFilePath({
+      kind: "mail.import-mbox",
+      agent: "Slugger",
+      discover: true,
+      ownerEmail: "someone@example.com",
+      source: "imap",
+    } as any, makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+    }))).toBe(newerPath)
+  })
+
   it("reports unknown source freshness when an imported MBOX has no dated messages", async () => {
     emitTestEvent("provider cli mail import mbox unknown freshness")
     const bundlesRoot = makeTempDir("provider-cli-mail-import-unknown-freshness-bundles")
@@ -2811,6 +3008,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Started background mail import for Slugger")
     expect(result).toContain("Slugger will be woken on failure or completion")
+    expect(result).toContain("Use query_active_work only when a live status check is actually needed.")
     expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
     expect(spawnBackgroundCli.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([
       "mail",
@@ -2837,11 +3035,13 @@ describe("provider CLI command execution", () => {
     }
     expect(record.kind).toBe("mail.import-mbox")
     expect(record.status).toBe("queued")
-    expect(record.spec).toEqual({
+    expect(record.spec).toEqual(expect.objectContaining({
       filePath: mboxPath,
       ownerEmail: "ari@mendelow.me",
       source: "hey",
-    })
+      fileSizeBytes: 0,
+    }))
+    expect(typeof record.spec?.fileModifiedAt).toBe("string")
   })
 
   it("fails fast when a background MBOX import file path does not exist", async () => {
@@ -2865,6 +3065,466 @@ describe("provider CLI command execution", () => {
     )
 
     expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("does not start a duplicate background MBOX import when the same archive already succeeded", async () => {
+    emitTestEvent("provider cli mail import background duplicate success")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-success-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-success-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.utimesSync(mboxPath, new Date("2026-04-24T05:40:00.000Z"), new Date("2026-04-24T05:40:00.000Z"))
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Background mail import already completed for Slugger")
+    expect(result).toContain("This archive has not changed since that import.")
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("allows rerunning a completed background MBOX import when the prior success has no comparable timestamp", async () => {
+    emitTestEvent("provider cli mail import background duplicate invalid timestamp")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-invalid-timestamp-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-invalid-timestamp-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done_invalid",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_done_invalid",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const recordPath = path.join(
+      agentRoot(bundlesRoot, "Slugger"),
+      "state",
+      "background-operations",
+      "op_mail_import_done_invalid.json",
+    )
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf-8")) as Record<string, unknown>
+    record.updatedAt = "not-a-date"
+    delete record.finishedAt
+    fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`, "utf-8")
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+  })
+
+  it("ignores mismatched or failed prior imports before reporting a running duplicate, and omits missing detail lines", async () => {
+    emitTestEvent("provider cli mail import duplicate matching filters")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-filters-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-filters-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning, failBackgroundOperation } = await import("../../../heart/background-operations")
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_other_owner",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:40:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "other@example.com", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_other_owner",
+      startedAt: "2026-04-24T05:40:01.000Z",
+      summary: "importing other delegated mail",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_failed",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:45:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    failBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_failed",
+      finishedAt: "2026-04-24T05:46:00.000Z",
+      summary: "delegated mail import failed",
+      detail: "temporary failure",
+      error: new Error("temporary failure"),
+      remediation: ["retry import"],
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running_match",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:50:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running_match",
+      startedAt: "2026-04-24T05:50:01.000Z",
+      summary: "importing delegated mail",
+    })
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("operation: op_mail_import_running_match")
+    expect(result).not.toContain("detail:")
+  })
+
+  it("ignores non-mail, mismatched path, and mismatched owner/source records before accepting a matching duplicate without owner/source lines", async () => {
+    emitTestEvent("provider cli mail import duplicate matching branches")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-branches-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-branches-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    const otherPath = path.join(agentRoot(bundlesRoot, "Slugger"), "other-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.writeFileSync(otherPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning } = await import("../../../heart/background-operations")
+    for (const record of [
+      {
+        id: "op_not_mail",
+        kind: "mail.backfill-indexes",
+        spec: { filePath: mboxPath },
+      },
+      {
+        id: "op_other_path",
+        kind: "mail.import-mbox",
+        spec: { filePath: otherPath },
+      },
+      {
+        id: "op_other_owner",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath, ownerEmail: "other@example.com" },
+      },
+      {
+        id: "op_other_source",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath, source: "imap" },
+      },
+      {
+        id: "op_match",
+        kind: "mail.import-mbox",
+        spec: { filePath: mboxPath },
+      },
+    ]) {
+      startBackgroundOperation({
+        agentName: "Slugger",
+        agentRoot: agentRoot(bundlesRoot, "Slugger"),
+        id: record.id,
+        kind: record.kind as any,
+        title: "mail import",
+        summary: "queued delegated mail import",
+        createdAt: "2026-04-24T05:40:00.000Z",
+        spec: record.spec,
+      })
+      markBackgroundOperationRunning({
+        agentName: "Slugger",
+        agentRoot: agentRoot(bundlesRoot, "Slugger"),
+        id: record.id,
+        startedAt: "2026-04-24T05:40:01.000Z",
+        summary: "importing delegated mail",
+      })
+    }
+
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("operation: op_match")
+    expect(result).not.toContain("ownerEmail:")
+    expect(result).not.toContain("source:")
+  })
+
+  it("does not start a duplicate background MBOX import when the same archive is already running", async () => {
+    emitTestEvent("provider cli mail import background duplicate running")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-running-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-running-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:55:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_running",
+      startedAt: "2026-04-24T05:55:01.000Z",
+      summary: "importing delegated mail",
+      detail: "scanned 500 messages",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Background mail import already running for Slugger")
+    expect(result).toContain("Slugger will be woken on failure or completion.")
+    expect(spawnBackgroundCli).not.toHaveBeenCalled()
+  })
+
+  it("starts a new background MBOX import when prior records are non-mail, spec-less, mismatched-path, or failed matches", async () => {
+    emitTestEvent("provider cli mail import duplicate non-matching records")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-duplicate-non-matching-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-duplicate-non-matching-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    const otherPath = path.join(agentRoot(bundlesRoot, "Slugger"), "other-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.writeFileSync(otherPath, "hello", "utf-8")
+
+    const { startBackgroundOperation, markBackgroundOperationRunning, failBackgroundOperation } = await import("../../../heart/background-operations")
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_not_mail",
+      kind: "mail.backfill-indexes",
+      title: "mail backfill",
+      summary: "repairing indexes",
+      createdAt: "2026-04-24T05:40:00.000Z",
+      spec: { filePath: mboxPath },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_not_mail",
+      startedAt: "2026-04-24T05:40:01.000Z",
+      summary: "repairing indexes",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_missing_spec",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:41:00.000Z",
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_missing_spec",
+      startedAt: "2026-04-24T05:41:01.000Z",
+      summary: "importing delegated mail without stored spec",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_other_path",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:42:00.000Z",
+      spec: { filePath: otherPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    markBackgroundOperationRunning({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_other_path",
+      startedAt: "2026-04-24T05:42:01.000Z",
+      summary: "importing other delegated mail",
+    })
+
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_failed_match",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:43:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    failBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_failed_match",
+      finishedAt: "2026-04-24T05:43:30.000Z",
+      summary: "delegated mail import failed",
+      detail: "temporary failure",
+      error: new Error("temporary failure"),
+      remediation: ["retry import"],
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
+  })
+
+  it("allows rerunning a background MBOX import when the archive file is newer than the prior success", async () => {
+    emitTestEvent("provider cli mail import background duplicate newer file")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-background-duplicate-newer-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-background-duplicate-newer-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mboxPath = path.join(agentRoot(bundlesRoot, "Slugger"), "hey-export.mbox")
+    fs.writeFileSync(mboxPath, "hello", "utf-8")
+    fs.utimesSync(mboxPath, new Date("2026-04-24T05:52:00.000Z"), new Date("2026-04-24T05:52:00.000Z"))
+
+    const { startBackgroundOperation, completeBackgroundOperation } = await import("../../../heart/background-operations")
+    startBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_old",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      summary: "queued delegated mail import",
+      createdAt: "2026-04-24T05:39:00.000Z",
+      spec: { filePath: mboxPath, ownerEmail: "ari@mendelow.me", source: "hey" },
+    })
+    completeBackgroundOperation({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      id: "op_mail_import_old",
+      finishedAt: "2026-04-24T05:51:02.787Z",
+      summary: "imported delegated mail archive",
+      detail: "scanned 28352; imported 28352; duplicates 0",
+    })
+
+    const spawnBackgroundCli = vi.fn(async () => ({ pid: 43210 }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { spawnBackgroundCli } as Partial<OuroCliDeps>))
+
+    expect(result).toContain("Started background mail import for Slugger")
+    expect(spawnBackgroundCli).toHaveBeenCalledTimes(1)
   })
 
   it("explains when this runtime cannot launch background mail commands", async () => {
