@@ -412,7 +412,27 @@ export class AzureBlobMailroomStore implements MailroomStore {
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
     await this.ensureContainer()
     const { message, rawPayload, candidate } = await buildStoredMailMessage(input)
-    const existing = await downloadJson<StoredMailMessage>(this.messageBlob(message.id), this.blobOperationTimeoutMs)
+    const messageBlob = this.messageBlob(message.id)
+    let existing: StoredMailMessage | null = null
+    try {
+      existing = await downloadJson<StoredMailMessage>(messageBlob, this.blobOperationTimeoutMs)
+    } catch (error) {
+      if (isRetryableBlobDownloadError(error) && await messageBlob.exists().catch(() => false)) {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.mail_blob_store_dedupe_degraded",
+          message: "azure blob mailroom store treated an unreadable existing message as a duplicate",
+          meta: {
+            id: message.id,
+            agentId: message.agentId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        })
+        return { created: false, message }
+      }
+      throw error
+    }
     if (existing) {
       await this.putMessageIndex(existing)
       emitNervesEvent({

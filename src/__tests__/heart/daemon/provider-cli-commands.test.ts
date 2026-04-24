@@ -112,6 +112,7 @@ import {
   type OuroCliDeps,
 } from "../../../heart/daemon/daemon-cli"
 import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
+import * as sessionActivity from "../../../heart/session-activity"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
 import type {
   ProviderCredentialPool,
@@ -147,6 +148,29 @@ function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
   cleanup.push(dir)
   return dir
+}
+
+function writeJson(filePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
+}
+
+function readPendingMessages(
+  agentRootPath: string,
+  friendId: string,
+  channel: string,
+  key: string,
+): Array<{ content: string }> {
+  const pendingDir = path.join(agentRootPath, "state", "pending", friendId, channel, key)
+  if (!fs.existsSync(pendingDir)) return []
+  return fs.readdirSync(pendingDir)
+    .filter((entry) => entry.endsWith(".json"))
+    .sort()
+    .map((entry) => JSON.parse(fs.readFileSync(path.join(pendingDir, entry), "utf-8")) as { content: string })
+}
+
+function recentIso(minutesAgo: number): string {
+  return new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
 }
 
 function okCredentialPool(agentName: string, pool: ProviderCredentialPool): ProviderCredentialPoolReadResult {
@@ -2937,6 +2961,25 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-bundles")
     const homeDir = makeTempDir("provider-cli-mail-import-operation-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-mcp.json"), {
+      id: "friend-mcp",
+      name: "Dev Tool User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "friends", "friend-phone.json"), {
+      id: "friend-phone",
+      name: "Phone User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-mcp", "mcp", "session-1.json"), {
+      state: { lastFriendActivityAt: recentIso(5) },
+      messages: [{ role: "user", content: "keep me posted here" }],
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-phone", "bluebubbles", "chat-any.json"), {
+      state: { lastFriendActivityAt: recentIso(1) },
+      messages: [{ role: "user", content: "text me if anything breaks" }],
+    })
     const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
     fs.mkdirSync(mailStateDir, { recursive: true })
     const provisioned = provisionMailboxRegistry({
@@ -2992,6 +3035,82 @@ describe("provider CLI command execution", () => {
     expect(record.status).toBe("succeeded")
     expect(record.result).toMatchObject({ imported: 1, duplicates: 0, scanned: 1 })
     expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-1")
+    expect(mcpPending).toHaveLength(1)
+    expect(mcpPending[0]?.content).toContain("[Background Operation]")
+    expect(mcpPending[0]?.content).toContain("mail import finished.")
+    expect(mcpPending[0]?.content).toContain("operation: op_mail_import_complete")
+    expect(readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")).toEqual([])
+  })
+
+  it("falls back to the freshest outward target when no MCP session is live", async () => {
+    emitTestEvent("provider cli mail import completion fallback wake")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-fallback-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-phone.json"), {
+      id: "friend-phone",
+      name: "Phone User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-phone", "bluebubbles", "chat-any.json"), {
+      state: { lastFriendActivityAt: recentIso(1) },
+      messages: [{ role: "user", content: "text me if mail work changes" }],
+    })
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-fallback.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Fallback wake test",
+      "Message-ID: <fallback-status@example.com>",
+      "",
+      "Completion notices should land in the best available outward queue.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_fallback",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const phonePending = readPendingMessages(sluggerRoot, "friend-phone", "bluebubbles", "chat-any")
+    expect(phonePending).toHaveLength(1)
+    expect(phonePending[0]?.content).toContain("mail import finished.")
+    expect(phonePending[0]?.content).toContain("operation: op_mail_import_complete_fallback")
   })
 
   it("still completes a tracked foreground MBOX import when the inner wake send fails", async () => {
@@ -3057,11 +3176,87 @@ describe("provider CLI command execution", () => {
     expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
   })
 
+  it("still completes a tracked foreground MBOX import when outward notification resolution fails", async () => {
+    emitTestEvent("provider cli mail import completion target-resolution degraded")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-target-resolution-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-target-resolution-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const provisioned = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisioned.registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: provisioned.keys,
+      },
+    })
+    const mboxPath = path.join(mailStateDir, "hey-target-resolution-degraded.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From ari@mendelow.me Thu Apr 20 12:00:00 2026",
+      "Date: Thu, 20 Apr 2026 12:00:00 -0700",
+      "From: Ari <ari@mendelow.me>",
+      "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+      "Subject: Target resolution degraded test",
+      "Message-ID: <target-resolution-degraded@example.com>",
+      "",
+      "Import completion should persist even if outward notification routing explodes.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const activitySpy = vi.spyOn(sessionActivity, "listSessionActivity").mockImplementation(() => {
+      throw new Error("session scan unavailable")
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+    const result = await runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_complete_target_resolution_degraded",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))
+
+    expect(result).toContain("Imported MBOX for Slugger")
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_complete_target_resolution_degraded.json"),
+      "utf-8",
+    )) as { status: string }
+    expect(record.status).toBe("succeeded")
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+
+    activitySpy.mockRestore()
+  })
+
   it("records tracked foreground backfill failures and wakes the agent immediately", async () => {
     emitTestEvent("provider cli mail backfill failure wake")
     const bundlesRoot = makeTempDir("provider-cli-mail-backfill-operation-bundles")
     const homeDir = makeTempDir("provider-cli-mail-backfill-operation-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    const sluggerRoot = agentRoot(bundlesRoot, "Slugger")
+    writeJson(path.join(sluggerRoot, "friends", "friend-mcp.json"), {
+      id: "friend-mcp",
+      name: "Dev Tool User",
+      trustLevel: "friend",
+    })
+    writeJson(path.join(sluggerRoot, "state", "sessions", "friend-mcp", "mcp", "session-2.json"), {
+      state: { lastFriendActivityAt: recentIso(2) },
+      messages: [{ role: "user", content: "watch the repair" }],
+    })
 
     const refreshSpy = vi.spyOn(runtimeCredentials, "refreshRuntimeCredentialConfig").mockResolvedValue({
       ok: true,
@@ -3110,6 +3305,11 @@ describe("provider CLI command execution", () => {
       message: "hosted message index backfill incomplete after indexing 16583 message(s)",
     })
     expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    const mcpPending = readPendingMessages(sluggerRoot, "friend-mcp", "mcp", "session-2")
+    expect(mcpPending).toHaveLength(1)
+    expect(mcpPending[0]?.content).toContain("mail index repair failed.")
+    expect(mcpPending[0]?.content).toContain("hosted mail index repair failed")
+    expect(mcpPending[0]?.content).toContain("hosted message index backfill incomplete after indexing 16583 message(s)")
 
     refreshSpy.mockRestore()
     readerSpy.mockRestore()

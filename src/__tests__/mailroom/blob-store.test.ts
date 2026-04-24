@@ -385,6 +385,196 @@ describe("AzureBlobMailroomStore", () => {
     ])
   })
 
+  it("treats unreadable existing message blobs as duplicates during import reruns", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    for (const name of [...serviceClient.container.blobs.keys()]) {
+      if (name.startsWith("message-index/slugger/") && name.endsWith(`__${created.message.id}.json`)) {
+        serviceClient.container.blobs.delete(name)
+      }
+    }
+    resetBlobCounters(serviceClient.container)
+
+    const duplicateState = serviceClient.container.blobs.get(`messages/${created.message.id}.json`)
+    if (!duplicateState) throw new Error("expected duplicate blob state")
+    duplicateState.downloadFailuresRemaining = 4
+    duplicateState.downloadFailureMessage = "download messages/existing.json timed out after 20000ms"
+
+    const duplicate = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    expect(duplicate.created).toBe(false)
+    expect(duplicate.message.id).toBe(created.message.id)
+    expect(duplicateState.downloads).toBe(2)
+    expect([...serviceClient.container.blobs.keys()].some((name) => {
+      return name.startsWith("message-index/slugger/") && name.endsWith(`__${created.message.id}.json`)
+    })).toBe(false)
+  })
+
+  it("still throws when an existing duplicate blob fails with a non-retryable read error", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    const duplicateState = serviceClient.container.blobs.get(`messages/${created.message.id}.json`)
+    if (!duplicateState) throw new Error("expected duplicate blob state")
+    duplicateState.downloadFailuresRemaining = 1
+    duplicateState.downloadFailureMessage = "permission denied"
+
+    await expect(store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })).rejects.toThrow("permission denied")
+    expect(duplicateState.downloads).toBe(1)
+  })
+
+  it("treats retryable raw existence failures as degraded duplicates when the blob is confirmed on retry", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+    let existsCalls = 0
+    serviceClient.container.getBlockBlobClient = ((name: string) => {
+      const blob = originalGetBlockBlobClient(name)
+      if (name !== `messages/${created.message.id}.json`) return blob
+      return {
+        ...blob,
+        name,
+        exists: async () => {
+          existsCalls += 1
+          if (existsCalls === 1) throw "socket closed early"
+          return true
+        },
+        downloadToBuffer: blob.downloadToBuffer.bind(blob),
+      }
+    }) as typeof serviceClient.container.getBlockBlobClient
+
+    const duplicate = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    expect(duplicate.created).toBe(false)
+    expect(duplicate.message.id).toBe(created.message.id)
+    expect(existsCalls).toBe(2)
+  })
+
+  it("still throws retryable duplicate read errors when confirming blob existence also fails", async () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const store = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+    const { registry } = provisionMailboxRegistry({ agentId: "slugger" })
+    const resolved = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!resolved) throw new Error("expected slugger mailbox")
+
+    const created = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+
+    const originalGetBlockBlobClient = serviceClient.container.getBlockBlobClient.bind(serviceClient.container)
+    let existsCalls = 0
+    serviceClient.container.getBlockBlobClient = ((name: string) => {
+      const blob = originalGetBlockBlobClient(name)
+      if (name !== `messages/${created.message.id}.json`) return blob
+      return {
+        ...blob,
+        name,
+        exists: async () => {
+          existsCalls += 1
+          if (existsCalls === 1) return true
+          throw new Error("existence probe timed out")
+        },
+        downloadToBuffer: async () => {
+          throw new Error("socket closed early")
+        },
+      }
+    }) as typeof serviceClient.container.getBlockBlobClient
+
+    await expect(store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })).rejects.toThrow("socket closed early")
+    expect(existsCalls).toBe(2)
+  })
+
   it("lists recent hosted mail by walking message indexes instead of downloading the whole mailbox", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({

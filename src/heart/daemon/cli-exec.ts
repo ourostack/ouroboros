@@ -65,7 +65,7 @@ import { postTurnPush } from "../sync"
 import { ensureMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
 import { importMboxFileToStore } from "../../mailroom/mbox-import"
 import { parseMailroomConfig, readMailroomRegistry, resolveMailroomReader } from "../../mailroom/reader"
-import { getInnerDialogPendingDir, queuePendingMessage } from "../../mind/pending"
+import { queuePendingMessage } from "../../mind/pending"
 import {
   completeBackgroundOperation,
   failBackgroundOperation,
@@ -75,6 +75,8 @@ import {
   updateBackgroundOperation,
   type BackgroundOperationRecord,
 } from "../background-operations"
+import { listSessionActivity } from "../session-activity"
+import { listTargetSessionCandidates } from "../target-resolution"
 
 import type {
   OuroCliCommand,
@@ -4098,7 +4100,7 @@ function makeBackgroundOperationId(kind: "mail.import-mbox" | "mail.backfill-ind
   return `${prefix}_${randomUUID().slice(0, 8)}`
 }
 
-function notifyMailOperation(
+async function notifyMailOperation(
   agentName: string,
   record: BackgroundOperationRecord & { detail: string },
   deps: OuroCliDeps,
@@ -4115,18 +4117,65 @@ function notifyMailOperation(
     "",
     "Use query_active_work for the live background-work view before drilling into mail details.",
   ]
-  queuePendingMessage(getInnerDialogPendingDir(agentName), {
+  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
+  const content = lines.join("\n")
+  queuePendingMessage(path.join(agentRoot, "state", "pending", "self", "inner", "dialog"), {
     from: "mailroom",
     friendId: "self",
     channel: "inner",
     key: "dialog",
-    content: lines.join("\n"),
+    content,
     timestamp: deps.now?.() ?? Date.now(),
     mode: "reflect",
   })
-  return deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
+  await queueMailOperationTargetNotification(agentName, content, deps).catch(() => undefined)
+  await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: agentName } as DaemonCommand)
     .then(() => undefined)
     .catch(() => undefined)
+}
+
+async function queueMailOperationTargetNotification(
+  agentName: string,
+  content: string,
+  deps: OuroCliDeps,
+): Promise<void> {
+  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
+  const friendsDir = path.join(agentRoot, "friends")
+  const sessionsDir = path.join(agentRoot, "state", "sessions")
+  const mcpTarget = listSessionActivity({
+    sessionsDir,
+    friendsDir,
+    agentName,
+  }).find((candidate) => candidate.channel === "mcp")
+  if (mcpTarget) {
+    queuePendingMessage(path.join(agentRoot, "state", "pending", mcpTarget.friendId, mcpTarget.channel, mcpTarget.key), {
+      from: "mailroom",
+      friendId: mcpTarget.friendId,
+      channel: mcpTarget.channel,
+      key: mcpTarget.key,
+      content,
+      timestamp: deps.now?.() ?? Date.now(),
+      mode: "relay",
+    })
+    return
+  }
+  const candidates = await listTargetSessionCandidates({
+    sessionsDir,
+    friendsDir,
+    agentName,
+    friendStore: new FileFriendStore(friendsDir),
+  })
+  const target = candidates.find((candidate) => candidate.delivery.mode !== "blocked")
+  if (!target) return
+  queuePendingMessage(path.join(agentRoot, "state", "pending", target.friendId, target.channel, target.key), {
+    from: "mailroom",
+    friendId: target.friendId,
+    channel: target.channel,
+    key: target.key,
+    content,
+    timestamp: deps.now?.() ?? Date.now(),
+    mode: "relay",
+  })
 }
 
 function ensureTrackedMailOperation(input: {

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.482",
+      "changes": [
+        "Tracked mail imports and hosted mail index repairs now queue completion and failure notices into the live MCP session when one exists, so `check_response` learns about background mail work immediately instead of silently showing no pending messages.",
+        "When no MCP session is live, background mail-operation notices now fall back cleanly to the freshest non-blocked outward session instead of depending on inner-dialog-only wakeups.",
+        "Hosted Blob duplicate checks now treat unreadable already-existing message blobs as degraded duplicates during import reruns, preventing large delegated HEY archive backfills from crashing on a transient duplicate-read timeout while keeping the `ouro.bot` wrapper version-synced for the release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.481",
       "changes": [
         "Hosted Blob message downloads now retry once on transient timeout or socket-close failures, so rerunning a delegated HEY archive import does not die on the first flaky duplicate-check read.",
