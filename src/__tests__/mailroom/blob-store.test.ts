@@ -11,6 +11,8 @@ interface FakeBlobState {
   deletes: number
   stall?: boolean
   downloadDelayMs?: number
+  downloadFailuresRemaining?: number
+  downloadFailureMessage?: string
 }
 
 class FakeBlockBlobClient {
@@ -34,6 +36,10 @@ class FakeBlockBlobClient {
     this.container.activeDownloads += 1
     this.container.maxConcurrentDownloads = Math.max(this.container.maxConcurrentDownloads, this.container.activeDownloads)
     try {
+      if (state.downloadFailuresRemaining && state.downloadFailuresRemaining > 0) {
+        state.downloadFailuresRemaining -= 1
+        throw new Error(state.downloadFailureMessage ?? "synthetic download failure")
+      }
       if (state.stall) {
         await new Promise<never>((_resolve, reject) => {
           options?.abortSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true })
@@ -168,6 +174,23 @@ describe("AzureBlobMailroomStore", () => {
     expect([...serviceClient.container.blobs.keys()].some((name) => {
       return name.startsWith("message-index/slugger/") && name.endsWith(`__${created.message.id}.json`)
     })).toBe(true)
+
+    const duplicateState = serviceClient.container.blobs.get(`messages/${created.message.id}.json`)
+    if (!duplicateState) throw new Error("expected duplicate blob state")
+    duplicateState.downloadFailuresRemaining = 1
+    duplicateState.downloadFailureMessage = "socket closed early"
+    const duplicateAfterRetry = await store.putRawMessage({
+      resolved,
+      envelope: {
+        mailFrom: "ari@mendelow.me",
+        rcptTo: ["slugger@ouro.bot"],
+      },
+      rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: slugger@ouro.bot\r\nSubject: Blob proof\r\n\r\nHello from Blob.\r\n"),
+      receivedAt: new Date("2024-01-01T00:00:00Z"),
+    })
+    expect(duplicateAfterRetry.created).toBe(false)
+    expect(duplicateAfterRetry.message.id).toBe(created.message.id)
+    expect(duplicateState.downloads).toBe(3)
 
     const second = await store.putRawMessage({
       resolved,

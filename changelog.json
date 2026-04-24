@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.481",
+      "changes": [
+        "Hosted Blob message downloads now retry once on transient timeout or socket-close failures, so rerunning a delegated HEY archive import does not die on the first flaky duplicate-check read.",
+        "Azure Blob mail-store coverage now locks the real duplicate-dedupe retry path that failed in production, keeping historical import reruns resilient while preserving bounded timeout behavior for genuinely stalled blobs.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper stay version-synced for the hosted mail import retry hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.480",
       "changes": [
         "`ouro mail import-mbox` and `ouro mail backfill-indexes` now launch as durable background operations by default, so large delegated-mail imports and hosted index repairs no longer block ordinary conversation.",

@@ -21,6 +21,7 @@ const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
 const MESSAGE_INDEX_SORT_WIDTH = 13
 const MESSAGE_INDEX_NO_SOURCE = "~"
 const DEFAULT_BLOB_OPERATION_TIMEOUT_MS = 20_000
+const DEFAULT_BLOB_DOWNLOAD_ATTEMPTS = 2
 const DEFAULT_MESSAGE_FETCH_CONCURRENCY = 20
 const DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY = 8
 const MESSAGE_LIST_SCAN_CONCURRENCY = 32
@@ -112,16 +113,30 @@ function normalizeBlobOperationError(action: "download" | "upload", blob: { name
   return new Error(`${action} ${blobClientName(blob)} failed: ${message}`)
 }
 
+function isRetryableBlobDownloadError(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  return message.includes("timed out") ||
+    message.includes("abort") ||
+    message.includes("econnreset") ||
+    message.includes("etimedout") ||
+    message.includes("socket closed")
+}
+
 async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
   if (!await blob.exists()) return null
-  try {
-    const buffer = await withBlobOperationTimeout(timeoutMs, (abortSignal) => {
-      return blob.downloadToBuffer(undefined, undefined, { abortSignal })
-    })
-    return JSON.parse(buffer.toString("utf-8")) as T
-  } catch (error) {
-    throw normalizeBlobOperationError("download", blob, timeoutMs, error)
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= DEFAULT_BLOB_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const buffer = await withBlobOperationTimeout(timeoutMs, (abortSignal) => {
+        return blob.downloadToBuffer(undefined, undefined, { abortSignal })
+      })
+      return JSON.parse(buffer.toString("utf-8")) as T
+    } catch (error) {
+      lastError = error
+      if (attempt >= DEFAULT_BLOB_DOWNLOAD_ATTEMPTS || !isRetryableBlobDownloadError(error)) break
+    }
   }
+  throw normalizeBlobOperationError("download", blob, timeoutMs, lastError)
 }
 
 async function uploadJson(blob: UploadBlobClientLike, value: unknown, timeoutMs: number): Promise<void> {
