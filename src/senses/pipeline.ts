@@ -27,8 +27,10 @@ import {
   formatCredentialProvenanceLabel,
   handleFailoverReply,
   runMachineProviderFailoverInventory,
+  validateFailoverSwitchCandidate,
   type FailoverAction,
   type FailoverContext,
+  type FailoverSwitchValidationResult,
 } from "../heart/provider-failover"
 import { readProviderState, writeProviderState, type ProviderLane } from "../heart/provider-state"
 import { deriveTempo } from "../heart/tempo"
@@ -89,7 +91,34 @@ function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): {
   return { provider: fallback.provider, model: fallback.model }
 }
 
-function writeFailoverProviderStateSwitch(agentName: string, action: Extract<FailoverAction, { action: "switch" }>): void {
+type FailoverSwitchOutcome =
+  | { ok: true }
+  | { ok: false; refused: true; classification: import("../heart/core").ProviderErrorClassification; message: string }
+
+/**
+ * Apply an agent-driven failover switch to provider state, but only after
+ * re-pinging the candidate. The inventory ping that produced the candidate
+ * may be stale by the time the agent replies — without this preflight, a
+ * "switch to <provider>" reply can move the lane onto an unreachable provider.
+ *
+ * Returns:
+ *   { ok: true }              — preflight passed, state mutated
+ *   { ok: false, refused }    — preflight failed, state untouched, caller should
+ *                                surface the refusal to the agent
+ * Throws on disk errors only (caught by caller as before).
+ */
+async function writeFailoverProviderStateSwitch(
+  agentName: string,
+  action: Extract<FailoverAction, { action: "switch" }>,
+): Promise<FailoverSwitchOutcome> {
+  const validation: FailoverSwitchValidationResult = await validateFailoverSwitchCandidate(
+    agentName,
+    { provider: action.provider, model: action.model },
+  )
+  if (!validation.ok) {
+    return { ok: false, refused: true, classification: validation.classification, message: validation.message }
+  }
+
   const agentRoot = getAgentRoot(agentName)
   const stateResult = readProviderState(agentRoot)
   if (!stateResult.ok) {
@@ -118,11 +147,41 @@ function writeFailoverProviderStateSwitch(agentName: string, action: Extract<Fai
     lanes,
     readiness,
   })
+  return { ok: true }
 }
 
 function formatFailoverSwitchLabel(action: Extract<FailoverAction, { action: "switch" }>): string {
   const provenance = formatCredentialProvenanceLabel(action)
   return `${action.provider} (${action.model}${provenance ? `; ${provenance}` : ""})`
+}
+
+/**
+ * Build the operational refusal context message handed back to the agent when
+ * a failover switch is rejected by the preflight ping. Slugger-tested format:
+ * lead with the refusal + reason, restate the lane that's still standing, then
+ * list remaining ready alternatives so the next turn doesn't have to re-enter
+ * discovery mode.
+ */
+function buildFailoverSwitchRefusedMessage(
+  pendingContext: FailoverContext,
+  refusedAction: Extract<FailoverAction, { action: "switch" }>,
+  refusal: { classification: import("../heart/core").ProviderErrorClassification; message: string },
+): string {
+  const refusedLabel = formatFailoverSwitchLabel(refusedAction)
+  const remaining = pendingContext.readyProviders.filter((candidate) => candidate.provider !== refusedAction.provider)
+  const alternativesLine = remaining.length > 0
+    ? `available verified alternatives right now: ${remaining.map((c) => `${c.provider} (${c.model})`).join(", ")}.`
+    : "no other verified alternatives are ready right now."
+  const nextMove = remaining.length > 0
+    ? `next move: reply "switch to <provider>" picking one of the alternatives above, or tell the user you cannot continue and why.`
+    : `next move: ask the operator to repair credentials for ${refusedAction.provider} (or another provider), or tell the user you cannot continue and why.`
+  return [
+    `[provider switch refused: tried to switch ${refusedAction.lane} lane to ${refusedLabel}.`,
+    `reason: preflight ping failed (${refusal.classification}: ${refusal.message}).`,
+    `current lane unchanged: ${pendingContext.currentProvider} / ${pendingContext.currentModel} on the ${pendingContext.currentLane} lane.`,
+    alternativesLine,
+    nextMove + "]",
+  ].join(" ")
 }
 
 
@@ -278,10 +337,9 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     const failoverAgentName = pendingContext.agentName
     input.failoverState.pending = null // always clear before acting
     if (failoverAction.action === "switch") {
-      let switchSucceeded = false
+      let switchOutcome: FailoverSwitchOutcome | null = null
       try {
-        writeFailoverProviderStateSwitch(failoverAgentName, failoverAction)
-        switchSucceeded = true
+        switchOutcome = await writeFailoverProviderStateSwitch(failoverAgentName, failoverAction)
       /* v8 ignore start -- defensive: write failure during provider switch @preserve */
       } catch (switchError) {
         emitNervesEvent({
@@ -293,8 +351,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         })
       }
       /* v8 ignore stop */
-      /* v8 ignore next -- false branch: write-failure fallthrough @preserve */
-      if (switchSucceeded) {
+      if (switchOutcome?.ok) {
         emitNervesEvent({
           component: "senses",
           event: "senses.failover_switch",
@@ -317,6 +374,28 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           content: `[provider switch: ${pendingContext.errorSummary}. switched ${failoverAction.lane} lane to ${newProviderLabel}. your conversation history is intact — respond to the user's last message.]`,
         }]
         input.switchedProvider = failoverAction.provider
+      } else if (switchOutcome && !switchOutcome.ok) {
+        // Preflight refused the switch — the candidate provider is not actually
+        // reachable right now. Keep the existing lane intact and tell the agent
+        // what happened so it can pick something else next turn.
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.failover_switch_refused",
+          message: `refused failover switch of ${failoverAction.lane} lane to ${failoverAction.provider}: ${switchOutcome.message}`,
+          meta: {
+            agentName: failoverAgentName,
+            lane: failoverAction.lane,
+            provider: failoverAction.provider,
+            model: failoverAction.model,
+            classification: switchOutcome.classification,
+            error: switchOutcome.message,
+          },
+        })
+        input.messages = [{
+          role: "user" as const,
+          content: buildFailoverSwitchRefusedMessage(pendingContext, failoverAction, switchOutcome),
+        }]
       }
       // Switch failed OR succeeded — either way, fall through to normal processing.
     }
