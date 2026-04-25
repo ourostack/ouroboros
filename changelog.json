@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.485",
+      "changes": [
+        "Session JSON storage no longer accumulates duplicate event ids when two writers race for the same session — `parseSessionEnvelope` now dedupes on read (last-occurrence-wins) so existing corrupted sessions self-heal on the next save, `buildCanonicalSessionEnvelope` assigns the next sequence as `max(existing) + 1` instead of `events.length + 1` so pruning gaps cannot collide, and `deferPostTurnPersist` serializes per-`sessPath` through an in-process queue so concurrent BlueBubbles webhooks for the same chat (or CLI postTurn racing the inner-dialog turn for the same MCP session) cannot interleave their writes.",
+        "Auto-created BlueBubbles group friends are now marked with a `notes.autoCreatedGroup` flag at resolver time, and the trust gate's family-member bypass surfaces a one-time inner-pending notice the first time messages route through an unacknowledged stranger-trust group so the agent can label, rename, or dismiss the relationship before activity accumulates invisibly.",
+        "Inner-dialog worker now caps consecutive `instinct` follow-on turns at `MAX_CONSECUTIVE_INSTINCT_TURNS = 3` to break self-sustaining loops where a tool that writes to the inner-dialog pending dir during a turn would otherwise re-fire the worker indefinitely; externally-queued messages reset the counter so legitimate cascading follow-ups still run, and a new `senses.inner_dialog_worker_instinct_loop_capped` event surfaces when the cap fires."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.484",
       "changes": [
         "Agent-driven failover (the `switch to <provider>` reply path) now re-pings the candidate provider before mutating provider state. If credentials are missing or the ping fails, the active lane is left untouched, a `senses.failover_switch_refused` event is emitted, and the agent receives an operational refusal context message naming the lane it is still standing on plus the verified alternatives that remain so the next turn does not re-enter discovery mode."

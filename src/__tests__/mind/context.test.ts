@@ -1486,6 +1486,96 @@ describe("deferPostTurnPersist return value", () => {
   })
 })
 
+describe("deferPostTurnPersist concurrency", () => {
+  // Real corruption was found in slugger.ouro/state/sessions where two BB
+  // webhooks for the same chat racing through deferPostTurnPersist each loaded
+  // the envelope, both computed the same `events.length + 1` next sequence,
+  // and wrote events with colliding ids ("evt-000130" appearing 3x). The
+  // serialization queue must prevent that even when both calls fire on the
+  // same tick for the same sessPath.
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.mkdirSync).mockReset()
+    vi.mocked(fs.existsSync).mockReset()
+  })
+
+  it("serializes concurrent deferPostTurnPersist calls for the same sessPath, leaving no duplicate ids", async () => {
+    const sessPath = "/tmp/concurrent-session.json"
+    // Mock fs as an in-memory store so the second call sees the first call's writes.
+    let onDisk: string | null = null
+    vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
+      if (p === sessPath && onDisk !== null) return onDisk as any
+      throw new Error("ENOENT")
+    })
+    vi.mocked(fs.writeFileSync).mockImplementation((p: any, contents: any) => {
+      if (p === sessPath) onDisk = contents as string
+    })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+
+    const turnOne: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+    ]
+    const turnTwo: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "world" },
+      { role: "user", content: "second turn" },
+      { role: "assistant", content: "second answer" },
+    ]
+    const preparedOne = postTurnTrim(turnOne)
+    const preparedTwo = postTurnTrim(turnTwo)
+
+    // Fire both at once, same sessPath, no awaits between.
+    const [eventsOne, eventsTwo] = await Promise.all([
+      deferPostTurnPersist(sessPath, preparedOne),
+      deferPostTurnPersist(sessPath, preparedTwo),
+    ])
+
+    // Both calls return event arrays with no internal duplicates.
+    const idsOne = eventsOne.map((e) => e.id)
+    const idsTwo = eventsTwo.map((e) => e.id)
+    expect(new Set(idsOne).size).toBe(idsOne.length)
+    expect(new Set(idsTwo).size).toBe(idsTwo.length)
+
+    // The final on-disk envelope has no duplicate ids either.
+    expect(onDisk).not.toBeNull()
+    const written = JSON.parse(onDisk!) as { events: { id: string }[] }
+    const writtenIds = written.events.map((e) => e.id)
+    expect(new Set(writtenIds).size).toBe(writtenIds.length)
+  })
+
+  it("does not deadlock subsequent calls when one persist throws", async () => {
+    const sessPath = "/tmp/deadlock-session.json"
+    let writeCalls = 0
+    vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error("ENOENT") })
+    vi.mocked(fs.writeFileSync).mockImplementation(() => {
+      writeCalls += 1
+      if (writeCalls === 1) throw new Error("disk failure on first call")
+    })
+
+    const { deferPostTurnPersist, postTurnTrim } = await import("../../mind/context")
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "u" },
+      { role: "assistant", content: "a" },
+    ]
+    const prepared = postTurnTrim(messages)
+    const failing = deferPostTurnPersist(sessPath, prepared)
+    const recovering = deferPostTurnPersist(sessPath, prepared)
+
+    const [first, second] = await Promise.all([failing, recovering])
+    // First throws -> empty array. Second runs and returns real events.
+    expect(first).toEqual([])
+    expect(second.length).toBeGreaterThan(0)
+    expect(writeCalls).toBe(2)
+  })
+})
+
 describe("mind observability instrumentation", () => {
   it("trimMessages emits mind step lifecycle events", async () => {
     vi.resetModules()

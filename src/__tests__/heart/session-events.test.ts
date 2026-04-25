@@ -2225,4 +2225,95 @@ describe("session events", () => {
       try { fs.rmdirSync(tmpDir) } catch { /* */ }
     })
   })
+
+  describe("duplicate-event-id self-healing", () => {
+    // Real corruption found in slugger.ouro/state/sessions: concurrent writers
+    // each loaded the envelope, both computed the same `events.length + 1`
+    // sequence, and wrote events with colliding ids. parseSessionEnvelope
+    // must collapse those to a single per-id entry, last-occurrence-wins, so
+    // the next save heals the file and downstream replay does not see the
+    // same outbound message twice.
+    it("collapses duplicate event ids on parse, keeping the last occurrence", async () => {
+      const { parseSessionEnvelope } = await import("../../heart/session-events")
+      const stamp = "2026-04-25T07:00:00.000Z"
+      const baseEvent = (id: string, content: string, role: string = "assistant") => ({
+        id,
+        sequence: parseInt(id.replace("evt-", ""), 10),
+        role,
+        content,
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: stamp, recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      })
+      const parsed = parseSessionEnvelope({
+        version: 2,
+        events: [
+          baseEvent("evt-000130", "first version of evt-130"),
+          baseEvent("evt-000131", "evt-131 only copy"),
+          baseEvent("evt-000130", "second version of evt-130"),
+          baseEvent("evt-000132", "evt-132 only copy"),
+          baseEvent("evt-000130", "third version of evt-130"),
+        ],
+        projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: stamp },
+      })
+
+      expect(parsed).not.toBeNull()
+      const ids = parsed!.events.map((e) => e.id)
+      expect(ids).toEqual(["evt-000131", "evt-000132", "evt-000130"])
+      const evt130 = parsed!.events.find((e) => e.id === "evt-000130")
+      // last-occurrence-wins: the third version is the survivor
+      expect((evt130!.content as { type: string; text: string }[])?.[0]?.text ?? evt130!.content).toContain("third version")
+    })
+
+    it("buildCanonicalSessionEnvelope assigns the next sequence as max(existing)+1, not events.length+1", async () => {
+      const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+
+      // Existing envelope after self-heal: 3 events with sequences 1, 2, 130.
+      // The naive `events.length + 1` would produce sequence 4 (collision once
+      // we hit existing sequence 4 in the future). The robust max(...)+1 must
+      // produce 131 instead.
+      const existing = {
+        version: 2 as const,
+        events: [
+          { id: "evt-000001", sequence: 1, role: "user" as const, content: "u1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "a1", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+          { id: "evt-000130", sequence: 130, role: "assistant" as const, content: "a-late", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local" as const, observedAt: null, observedAtSource: "local" as const, recordedAt: "2026-04-25T00:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
+        ],
+        projection: { eventIds: ["evt-000001", "evt-000002", "evt-000130"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: "2026-04-25T00:00:00.000Z" },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+
+      const previousMessages = [
+        { role: "user" as const, content: "u1" },
+        { role: "assistant" as const, content: "a1" },
+        { role: "assistant" as const, content: "a-late" },
+      ] as OpenAI.ChatCompletionMessageParam[]
+
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        ...previousMessages,
+        { role: "user", content: "u-fresh" },
+      ]
+
+      const result = buildCanonicalSessionEnvelope({
+        existing,
+        previousMessages,
+        currentMessages,
+        trimmedMessages: currentMessages,
+        recordedAt: "2026-04-25T00:01:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      const newEvent = result.envelope.events.find((e) => (e.content as { type: string; text: string }[])?.[0]?.text === "u-fresh" || e.content === "u-fresh")
+      expect(newEvent).toBeDefined()
+      expect(newEvent!.sequence).toBe(131)
+      expect(newEvent!.id).toBe("evt-000131")
+    })
+  })
 })

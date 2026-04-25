@@ -357,6 +357,37 @@ function makeEventId(sequence: number): string {
   return `evt-${String(sequence).padStart(6, "0")}`
 }
 
+/**
+ * Collapse duplicate event ids to a single entry, last-occurrence-wins.
+ *
+ * Concurrent writers in older versions of postTurnPersist could each load the
+ * envelope, compute `events.length + 1` for the next sequence, and both write
+ * an event with the same id. The duplicates would persist in the saved JSON
+ * and confuse downstream replay (the same outbound message could appear to
+ * have been sent twice from the agent's perspective without the agent knowing
+ * it sent it). We dedupe defensively on every load so corrupted sessions
+ * self-heal on the next save and so any future race produces a consistent
+ * view.
+ */
+function dedupeEventsByIdLastWins(events: SessionEvent[]): SessionEvent[] {
+  // Index id → last position so we can preserve original order while
+  // collapsing duplicates to their final occurrence.
+  const lastIndexById = new Map<string, number>()
+  for (let i = 0; i < events.length; i++) {
+    lastIndexById.set(events[i]!.id, i)
+  }
+  return events.filter((event, index) => lastIndexById.get(event.id) === index)
+}
+
+/**
+ * The next sequence to assign for a freshly-built event. Uses max(existing
+ * sequences) + 1 rather than `events.length + 1` so that gaps from earlier
+ * pruning, archive replay, or self-heal dedup never produce a colliding id.
+ */
+function nextEventSequence(existing: SessionEvent[]): number {
+  return existing.reduce((max, event) => Math.max(max, event.sequence), 0) + 1
+}
+
 export function validateSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
   const violations: string[] = []
   let prevNonToolRole: string | null = null
@@ -827,7 +858,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
     return null
   }
 
-  const events = record.events
+  const rawEvents = record.events
     .filter((event): event is Record<string, unknown> => event != null && typeof event === "object")
     .map((event, index) => {
       const role = normalizeRole(event.role)
@@ -867,6 +898,13 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
         },
       } satisfies SessionEvent
     })
+
+  // Self-heal duplicate event ids that may have been written by concurrent
+  // writers in older harness versions. Last-occurrence-wins by id (later
+  // entries in the persisted file are the more recent state for that id).
+  // We preserve the original document order otherwise, so projection.eventIds
+  // still resolves predictably.
+  const events = dedupeEventsByIdLastWins(rawEvents)
 
   const projection = record.projection as Record<string, unknown>
 
@@ -1000,10 +1038,12 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
       currentEventIds.push(previousProjectionIds[i]!)
     } else {
       if (!isSystem) nonSystemSeen++
-      // Create a new event
+      // Create a new event. Use nextEventSequence(events) instead of
+      // `events.length + 1` so that any gap (from pruning, archive replay,
+      // or self-heal dedup) cannot collide with an existing id.
       const event = buildEventFromMessage(
         currentMessages[i]!,
-        events.length + 1,
+        nextEventSequence(events),
         options.recordedAt,
         "live",
         null,

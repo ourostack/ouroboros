@@ -103,6 +103,96 @@ function writeInnerPendingNotice(
   fs.writeFileSync(filePath, JSON.stringify(payload), "utf-8")
 }
 
+const ACKNOWLEDGED_GROUPS_FILENAME = "acknowledged-auto-groups.json"
+
+interface AcknowledgedGroupsState {
+  [friendId: string]: { surfacedAt: string }
+}
+
+function acknowledgedGroupsPath(bundleRoot: string): string {
+  return path.join(bundleRoot, "state", ACKNOWLEDGED_GROUPS_FILENAME)
+}
+
+function loadAcknowledgedGroupsState(bundleRoot: string): AcknowledgedGroupsState {
+  try {
+    const raw = fs.readFileSync(acknowledgedGroupsPath(bundleRoot), "utf-8")
+    if (!raw.trim()) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+    return parsed as AcknowledgedGroupsState
+  } catch {
+    return {}
+  }
+}
+
+function persistAcknowledgedGroupsState(bundleRoot: string, state: AcknowledgedGroupsState): void {
+  const target = acknowledgedGroupsPath(bundleRoot)
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, `${JSON.stringify(state, null, 2)}\n`, "utf-8")
+}
+
+/**
+ * For BlueBubbles group chats that were auto-created at stranger trust (no
+ * explicit operator/agent action ever bound the harness to this group), the
+ * gate's family-member bypass would otherwise let messages flow through
+ * silently and the agent would accumulate a session it has no mental model
+ * for. Surface the relationship as an inner-pending notice exactly once so
+ * the agent can categorize / rename / dismiss the group on its next turn.
+ *
+ * Returns true if a notice was written so callers can emit a telemetry event.
+ */
+function maybeSurfaceAutoCreatedGroup(input: TrustGateInput, bundleRoot: string, nowIso: string): boolean {
+  // Caller guarantees isGroupChat = true (only invoked from the family-member
+  // bypass branch); skip a redundant guard here.
+  if (input.friend.trustLevel !== "stranger") return false
+  if (!input.friend.notes?.["autoCreatedGroup"]) return false
+  // loadAcknowledgedGroupsState is defensive (its own try/catch returns {})
+  // so we don't wrap it in another try here.
+  const state = loadAcknowledgedGroupsState(bundleRoot)
+  if (state[input.friend.id]) return false
+
+  const noticeContent =
+    `New BlueBubbles group "${input.friend.name}" became active without explicit acknowledgment. ` +
+    `It was auto-created at stranger trust the first time a message routed through it. ` +
+    `If you recognize the group, label or rename it (and consider promoting trust); if not, you can leave it as a stranger group or rename it for clarity. ` +
+    `external id: ${input.externalId}; friend id: ${input.friend.id}.`
+
+  try {
+    writeInnerPendingNotice(bundleRoot, noticeContent, nowIso)
+    persistAcknowledgedGroupsState(bundleRoot, {
+      ...state,
+      [input.friend.id]: { surfacedAt: nowIso },
+    })
+    emitNervesEvent({
+      level: "info",
+      component: "senses",
+      event: "senses.trust_gate_group_acknowledgment_surfaced",
+      message: "auto-created group surfaced for agent acknowledgment",
+      meta: {
+        friendId: input.friend.id,
+        friendName: input.friend.name,
+        externalId: input.externalId,
+        provider: input.provider,
+      },
+    })
+    return true
+  /* v8 ignore start -- defensive: surfacing failure must not block the gate decision @preserve */
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.trust_gate_error",
+      message: "failed to surface auto-created group for acknowledgment",
+      meta: {
+        friendId: input.friend.id,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return false
+  }
+  /* v8 ignore stop */
+}
+
 export function enforceTrustGate(input: TrustGateInput): TrustGateResult {
   const { senseType } = input
 
@@ -118,8 +208,18 @@ export function enforceTrustGate(input: TrustGateInput): TrustGateResult {
 
   // Open senses (BlueBubbles/iMessage) — enforce trust rules
 
-  // Group chat with a family member present — allow regardless of trust level
+  // Group chat with a family member present — allow regardless of trust level.
+  // BUT if this is an auto-created stranger group (the harness picked it up
+  // silently via the family-member shortcut and the agent never explicitly
+  // acknowledged it), surface a one-time inner-pending notice so the agent
+  // gets a chance to categorize / rename / dismiss the relationship instead
+  // of accumulating activity invisibly.
   if (input.isGroupChat && input.groupHasFamilyMember) {
+    /* v8 ignore start -- defaults shared with the rest of the gate; tested via the stranger-trust path */
+    const bundleRoot = input.bundleRoot ?? getAgentRoot()
+    const nowIso = (input.now ?? (() => new Date()))().toISOString()
+    /* v8 ignore stop */
+    maybeSurfaceAutoCreatedGroup(input, bundleRoot, nowIso)
     return { allowed: true }
   }
 

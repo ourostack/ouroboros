@@ -395,4 +395,81 @@ describe("inner-dialog-worker", () => {
       expect(lastRun).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
     })
   })
+
+  describe("instinct-loop cap (rest-detection backstop)", () => {
+    // Real harness friction: a tool that writes to the inner-dialog pending
+    // dir during a turn (e.g. a surface tool routing a response) puts the
+    // worker into a self-sustaining loop where the next turn's drain produces
+    // another write, ad infinitum. The cap breaks the loop after a small
+    // number of consecutive instinct turns without external input.
+    it("caps consecutive instinct chaining when hasPendingWork keeps returning true", async () => {
+      // Always say "fresh work arrived" — simulates the self-sustaining write.
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      // Heartbeat turn (1) + 3 instinct follow-ups + cap = 4 total turns
+      expect(runTurn).toHaveBeenCalledTimes(4)
+      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
+      for (let i = 1; i <= 3; i++) {
+        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "instinct" }))
+      }
+      // Cap event was emitted exactly once
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      expect(capEvents).toHaveLength(1)
+      expect(capEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({
+          consecutiveInstinctTurns: 3,
+          cap: 3,
+          lastReason: "instinct",
+        }),
+      }))
+    })
+
+    it("counts the initial instinct entry against the cap", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("instinct")
+
+      // Initial instinct counts as 1, plus 2 follow-ups, then cap fires
+      expect(runTurn).toHaveBeenCalledTimes(3)
+    })
+
+    it("resets the instinct counter when an externally-queued message arrives between turns", async () => {
+      const runTurn = vi.fn().mockImplementation(async () => {
+        // Simulate an external poke arriving during the first turn's runtime.
+        if (runTurn.mock.calls.length === 1) {
+          void worker.handleMessage({ type: "poke", taskId: "external-poke" })
+        }
+      })
+      const hasPendingWork = vi.fn().mockReturnValue(true)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      // Sequence: heartbeat (1) → poke arrived (queued) → poke runs as instinct (counter resets to 1)
+      // → 2 more instinct via hasPendingWork → cap at 3 instinct chain
+      // Total turns: 1 (heartbeat) + 1 (poke) + 2 (chained instinct) = 4
+      expect(runTurn).toHaveBeenCalledTimes(4)
+      // The second turn was the externally-poked one
+      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ reason: "instinct", taskId: "external-poke" }))
+    })
+
+    it("does not cap when no follow-on work is detected (single happy-path turn)", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
+      expect(capEvents).toHaveLength(0)
+    })
+  })
 })

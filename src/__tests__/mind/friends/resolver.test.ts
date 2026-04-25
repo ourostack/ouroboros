@@ -437,4 +437,61 @@ describe("FriendResolver", () => {
       }))
     })
   })
+
+  describe("auto-create marks BlueBubbles group friends so the trust gate can surface them", () => {
+    it("marks an auto-created stranger group friend with notes.autoCreatedGroup", async () => {
+      const store = createMockStore(undefined, true) // hasAnyFriends true → not first imprint, so trust = stranger
+      ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+
+      const resolver = new FriendResolver(store, {
+        provider: "imessage-handle",
+        externalId: "group:any;+;abc123",
+        displayName: "Consciousness TBD",
+        channel: "bluebubbles",
+      })
+
+      await resolver.resolve()
+
+      const persisted = (store.put as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as FriendRecord
+      expect(persisted.trustLevel).toBe("stranger")
+      expect(persisted.notes?.autoCreatedGroup).toEqual(expect.objectContaining({ value: "true" }))
+      expect(persisted.notes?.autoCreatedGroup).toEqual(expect.objectContaining({ savedAt: expect.any(String) }))
+      expect(persisted.notes?.name).toEqual(expect.objectContaining({ value: "Consciousness TBD" }))
+    })
+
+    it("does NOT mark non-group iMessage friends with autoCreatedGroup", async () => {
+      const store = createMockStore(undefined, true)
+      ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+
+      const resolver = new FriendResolver(store, {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        displayName: "Ari",
+        channel: "bluebubbles",
+      })
+
+      await resolver.resolve()
+
+      const persisted = (store.put as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as FriendRecord
+      expect(persisted.notes?.autoCreatedGroup).toBeUndefined()
+    })
+
+    it("does NOT mark a first-imprint group friend (which becomes family-trust primary)", async () => {
+      const store = createMockStore(undefined, false) // hasAnyFriends false → first imprint
+      ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+
+      const resolver = new FriendResolver(store, {
+        provider: "imessage-handle",
+        externalId: "group:any;+;first-group",
+        displayName: "Some Group",
+        channel: "bluebubbles",
+      })
+
+      await resolver.resolve()
+
+      const persisted = (store.put as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as FriendRecord
+      expect(persisted.trustLevel).toBe("family")
+      expect(persisted.notes?.autoCreatedGroup).toBeUndefined()
+    })
+  })
 })

@@ -363,8 +363,42 @@ export function postTurnPersist(
 }
 
 /**
- * Deferred persist: same as postTurnPersist but runs on the next event loop tick.
- * Returns a promise that resolves when the persist completes.
+ * Per-sessPath serialization queue. Without this, two concurrent
+ * `deferPostTurnPersist` calls (e.g. two BlueBubbles webhooks for the same
+ * chat firing back-to-back, or a CLI postTurn racing the inner-dialog turn
+ * for the same MCP session) would each load the envelope, both compute the
+ * same "next sequence", and write events with colliding ids. The session
+ * file would silently accumulate duplicates and replay would diverge from
+ * what was actually sent on the wire.
+ *
+ * The queue is in-process only — it does not protect against multiple Node
+ * processes writing to the same file. The dedup-on-load behaviour in
+ * parseSessionEnvelope keeps cross-process races from leaving permanent
+ * corruption; this serializer just keeps the common (single-process) case
+ * race-free in the first place.
+ */
+const sessionPersistQueues = new Map<string, Promise<unknown>>()
+
+function enqueueSessionPersist<T>(sessPath: string, fn: () => Promise<T>): Promise<T> {
+  const previous = sessionPersistQueues.get(sessPath) ?? Promise.resolve()
+  // Chain on the previous tail. fn runs whether previous resolved or rejected,
+  // so one failed turn cannot block subsequent turns on the same session.
+  const next: Promise<T> = previous.then(fn, fn)
+  // Save a swallowed-rejection sentinel as the new tail so the next caller's
+  // `previous.then(fn, fn)` sees a clean resolution; the original `next` still
+  // propagates rejection to its own caller as expected.
+  /* v8 ignore start -- the swallow only matters when fn rejects, which is the failure path covered separately */
+  const sentinel = next.then(() => undefined, () => undefined)
+  /* v8 ignore stop */
+  sessionPersistQueues.set(sessPath, sentinel)
+  return next
+}
+
+/**
+ * Deferred persist: same as postTurnPersist but runs on the next event loop
+ * tick AND serializes against any other deferred persist for the same
+ * sessPath, so concurrent turns cannot race and produce duplicate event ids
+ * in the saved session.
  */
 export function deferPostTurnPersist(
   sessPath: string,
@@ -372,7 +406,7 @@ export function deferPostTurnPersist(
   usage?: UsageData,
   state?: SessionContinuityState,
 ): Promise<SessionEvent[]> {
-  return new Promise((resolve) => {
+  return enqueueSessionPersist(sessPath, () => new Promise<SessionEvent[]>((resolve) => {
     setImmediate(() => {
       try {
         const events = postTurnPersist(sessPath, prepared, usage, state)
@@ -388,7 +422,7 @@ export function deferPostTurnPersist(
         resolve([])
       }
     })
-  })
+  }))
 }
 
 export function deleteSession(filePath: string): void {

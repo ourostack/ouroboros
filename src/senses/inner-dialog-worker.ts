@@ -30,6 +30,21 @@ interface QueueEntry {
   habitName?: string
 }
 
+/**
+ * Cap on consecutive `instinct` follow-on turns triggered by `hasPendingWork()`
+ * with no externally-queued work in between. Without this cap, a turn that
+ * writes anything back into the inner-dialog pending dir as a side effect of
+ * processing (e.g. a surface tool routing a response) puts the worker into
+ * a self-sustaining loop where the next turn's drain produces another write,
+ * and so on. Real workflows rarely chain more than 2–3 instinct turns; an
+ * external trigger (habit, poke, chat) resets the counter so legitimate
+ * follow-on work is unaffected.
+ *
+ * Three feels right: legitimate cascading follow-ups (e.g. processing a
+ * batch of delegated returns) get through; a true self-loop caps fast.
+ */
+export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
+
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
   hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
@@ -48,6 +63,7 @@ export function createInnerDialogWorker(
       let nextReason = reason
       let nextTaskId = taskId
       let nextHabitName = habitName
+      let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       do {
         try {
@@ -77,17 +93,37 @@ export function createInnerDialogWorker(
           }
         }
 
-        // Drain queue first
+        // Drain queue first. Externally-queued work resets the instinct cap
+        // because a real outside trigger arrived between turns.
         if (queue.length > 0) {
           const next = queue.shift()!
           nextReason = next.reason
           nextTaskId = next.taskId
           nextHabitName = next.habitName
+          consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue
         }
 
-        // Then check hasPendingWork fallback
+        // Then check hasPendingWork fallback. This is the loop site: any
+        // tool that writes to the inner-dialog pending dir during a turn
+        // would cause hasPendingWork() to be true here, producing a
+        // self-sustaining "instinct" loop with no external input. Cap it.
         if (hasPendingWork()) {
+          if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
+            emitNervesEvent({
+              level: "warn",
+              component: "senses",
+              event: "senses.inner_dialog_worker_instinct_loop_capped",
+              message: "inner dialog worker stopped chaining instinct turns; pending work remains for next external trigger",
+              meta: {
+                consecutiveInstinctTurns,
+                cap: MAX_CONSECUTIVE_INSTINCT_TURNS,
+                lastReason: nextReason,
+              },
+            })
+            break
+          }
+          consecutiveInstinctTurns += 1
           nextReason = "instinct"
           nextTaskId = undefined
           nextHabitName = undefined
