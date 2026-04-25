@@ -3,7 +3,7 @@ import { getGithubCopilotConfig, type GithubCopilotProviderConfig } from "../con
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem, TurnResult } from "../streaming";
-import { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
+import { streamChatCompletion, streamResponsesApi, toResponsesInput, toResponsesTools, truncateResponsesFunctionCallOutput } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
 
@@ -111,7 +111,7 @@ export function createGithubCopilotProviderRuntime(model: string, config: Github
     },
     appendToolOutput(callId: string, output: string): void {
       if (!nativeInput) return;
-      nativeInput.push({ type: "function_call_output", call_id: callId, output });
+      nativeInput.push({ type: "function_call_output", call_id: callId, output: truncateResponsesFunctionCallOutput(output) });
     },
     async streamTurn(request: ProviderTurnRequest): Promise<TurnResult> {
       if (!nativeInput) this.resetTurnState(request.messages);

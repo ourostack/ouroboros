@@ -94,6 +94,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // consumed by server readers and the UI. Outlook read/render modules own
   // the observability for these projections.
   "heart/outlook/outlook-types",
+  // Mail search relevance scorer: pure heuristic function (regex + counter
+  // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
+  // observability via senses.mail_search_cache_upserted and friends.
+  "mailroom/search-relevance",
   // Outlook HTTP helper modules: route/static/transport/hook seams are
   // dispatched by outlook-http.ts, whose server lifecycle owns observability.
   "heart/outlook/outlook-http-transport",

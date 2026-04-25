@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.486",
+      "changes": [
+        "Mail convergence pass 1-5 hardens hosted-mail truth surfaces under live HEY ingest: import truth + audit resilience, accurate archive freshness and identity surfaces, sharper recovery and archive truth, delegated search resilience, and natural anchor-list retrieval; imported archive content is now searched on parsed message text rather than raw archive bytes so quoted-printable / HTML-heavy booking mail is reachable.",
+        "`mail_search` now ranks by booking-aware relevance instead of pure recency. Score signals weight query-term hits by field (subject +6 / from +4 / body +2), booking-intent tokens (`booking confirmation`, `your stay`, e-ticket, etc.), confirmation-number-shaped tokens, currency amounts, and known travel-sender domains; recency stays as a tiebreaker. Recall is unchanged — noise still appears in results, just below the decisive message. Each rendered result also surfaces a `matched on:` line listing fields, booking signals, status (confirmed / cancelled / changed / refunded / etc.), confirmation token, amount, dates, attachment count, and sender hint, so the agent can triage without paying for a body open.",
+        "BlueBubbles sense no longer sticks in `error` status when a single message is permanently unrecoverable. `upstreamStatus` now tracks upstream health and pending work only — per-cycle recovery failures stay informational in `detail` for transparency without contradicting `ouro doctor`'s healthy verdict, so a malformed payload that fails repairEvent on every retry can no longer brick the visible sense state until operator intervention.",
+        "Heart streaming caps oversized Responses-API `function_call_output` history items both when rebuilding provider input from session history and when appending fresh tool output mid-turn, preventing a giant tool result on resume from blowing the model context."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.485",
       "changes": [
         "Session JSON storage no longer accumulates duplicate event ids when two writers race for the same session — `parseSessionEnvelope` now dedupes on read (last-occurrence-wins) so existing corrupted sessions self-heal on the next save, `buildCanonicalSessionEnvelope` assigns the next sequence as `max(existing) + 1` instead of `events.length + 1` so pruning gaps cannot collide, and `deferPostTurnPersist` serializes per-`sessPath` through an in-process queue so concurrent BlueBubbles webhooks for the same chat (or CLI postTurn racing the inner-dialog turn for the same MCP session) cannot interleave their writes.",

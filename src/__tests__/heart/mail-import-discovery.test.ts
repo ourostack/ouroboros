@@ -127,8 +127,18 @@ describe("mail import discovery", () => {
       expect.objectContaining({
         kind: "mail.import-discovered",
         title: "mail import ready",
+        detail: expect.stringContaining("browser sandbox (.playwright-mcp)"),
         spec: expect.objectContaining({
           candidatePaths: [mboxPath],
+          newestCandidateOriginKind: "playwright-sandbox",
+          newestCandidateOriginLabel: "browser sandbox (.playwright-mcp)",
+          candidateDescriptors: [
+            expect.objectContaining({
+              path: mboxPath,
+              originKind: "playwright-sandbox",
+              originLabel: "browser sandbox (.playwright-mcp)",
+            }),
+          ],
         }),
       }),
     ])

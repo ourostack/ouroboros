@@ -4,9 +4,11 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore } from "../../mailroom/file-store"
-import { importMboxFileToStore, importMboxToStore, splitMboxMessages } from "../../mailroom/mbox-import"
+import { resetMailSearchCacheForTests } from "../../mailroom/search-cache"
+import { cacheMatchingMailSearchDocumentsFromMboxFile, importMboxFileToStore, importMboxToStore, splitMboxMessages } from "../../mailroom/mbox-import"
 
 const tempRoots: string[] = []
+const originalHome = process.env.HOME
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-mail-mbox-"))
@@ -33,6 +35,9 @@ function sampleMbox(): Buffer {
 }
 
 afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME
+  else process.env.HOME = originalHome
+  resetMailSearchCacheForTests()
   for (const dir of tempRoots.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -140,6 +145,162 @@ describe("mailroom mbox import", () => {
       "First exported message",
       "Second exported message",
     ])
+  })
+
+  it("caches matching delegated search documents from an MBOX file in newest-first order", async () => {
+    process.env.HOME = tempDir()
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const mboxPath = path.join(tempDir(), "hey-export-search-cache.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From first@example.com Thu Apr 04 09:00:00 2026",
+      "From: First <first@example.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Basel update A",
+      "Date: Thu, 04 Apr 2026 09:00:00 -0700",
+      "",
+      "Travel update A for Basel.",
+      "From second@example.com Fri Apr 05 10:00:00 2026",
+      "From: Second <second@example.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Basel update B",
+      "Date: Fri, 05 Apr 2026 10:00:00 -0700",
+      "",
+      "Travel update B for Basel.",
+      "",
+    ].join("\n"), "utf-8")
+
+    const cached = await cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      queryTerms: ["travel update"],
+      limit: 5,
+    })
+
+    expect(cached).toHaveLength(2)
+    expect(cached.map((entry) => entry.subject)).toEqual([
+      "Basel update B",
+      "Basel update A",
+    ])
+  })
+
+  it("finds a later exact booking hit without materializing earlier noise messages", async () => {
+    process.env.HOME = tempDir()
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const mboxPath = path.join(tempDir(), "hey-export-late-booking-hit.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From noise@example.com Thu Apr 04 09:00:00 2026",
+      "From: Noise <noise@example.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Noise before the real hit",
+      "Date: Thu, 04 Apr 2026 09:00:00 -0700",
+      "",
+      `This is a large unrelated message ${"x".repeat(50_000)}.`,
+      "From aerlingus@example.com Fri Apr 05 10:00:00 2026",
+      "From: Aer Lingus <support@aerlingus.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Aer Lingus Confirmation - Booking Ref: 24LEBB",
+      "Date: Fri, 05 Apr 2026 10:00:00 -0700",
+      "",
+      "Booking Reference: 24LEBB",
+      "",
+    ].join("\n"), "utf-8")
+
+    const cached = await cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      queryTerms: ["24lebb"],
+      limit: 5,
+    })
+
+    expect(cached).toHaveLength(1)
+    expect(cached[0]).toEqual(expect.objectContaining({
+      subject: "Aer Lingus Confirmation - Booking Ref: 24LEBB",
+      source: "hey",
+      ownerEmail: "ari@mendelow.me",
+    }))
+  })
+
+  it("returns early when archive-search terms are empty or limit is zero", async () => {
+    process.env.HOME = tempDir()
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const mboxPath = path.join(tempDir(), "hey-export-empty-search.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From first@example.com Thu Apr 04 09:00:00 2026",
+      "From: First <first@example.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Basel update A",
+      "",
+      "Travel update A for Basel.",
+      "",
+    ].join("\n"), "utf-8")
+
+    await expect(cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      queryTerms: [],
+      limit: 5,
+    })).resolves.toEqual([])
+
+    await expect(cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      queryTerms: ["basel"],
+      limit: 0,
+    })).resolves.toEqual([])
+  })
+
+  it("filters out raw archive prefilter false positives that do not survive parsed search text", async () => {
+    process.env.HOME = tempDir()
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const mboxPath = path.join(tempDir(), "hey-export-prefilter-false-positive.mbox")
+    fs.writeFileSync(mboxPath, [
+      "From trace@example.com Thu Apr 04 09:00:00 2026",
+      "From: Trace <trace@example.com>",
+      "To: Ari <ari@mendelow.me>",
+      "Subject: Basel update",
+      "X-Trace: 24LEBB",
+      "",
+      "This body never mentions the booking code.",
+      "",
+    ].join("\n"), "utf-8")
+
+    await expect(cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: "slugger",
+      filePath: mboxPath,
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+      queryTerms: ["24lebb"],
+      limit: 5,
+    })).resolves.toEqual([])
   })
 
   it("parses folded plain From headers while streaming file-backed MBOX imports", async () => {

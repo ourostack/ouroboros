@@ -4150,6 +4150,384 @@ describe("provider CLI command execution", () => {
     }
   })
 
+  it("classifies ambiguous tracked discovery failures so query_active_work can explain the repair", async () => {
+    emitTestEvent("provider cli mail import tracked ambiguity failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-ari.mendelow.me-copy.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:08:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_ambiguity",
+      "--discover",
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+      sendCommand,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_ambiguity.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe("mode: discover; owner: ari@mendelow.me; source: hey")
+    expect(record.failure).toEqual({
+      class: "archive-ambiguity",
+      retryDisposition: "fix-before-retry",
+      hint: "more than one plausible archive matches this import request",
+    })
+    expect(record.remediation).toEqual([
+      "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
+      "retry after confirming which archive is the intended one",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("keeps tracked discovery failure detail compact when no owner/source hints were supplied", async () => {
+    emitTestEvent("provider cli mail import tracked ambiguity failure without hints")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-home")
+    const repoRoot = makeTempDir("provider-cli-mail-import-operation-failure-ambiguity-no-hints-repo")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    const downloadsDir = path.join(homeDir, "Downloads")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.mkdirSync(downloadsDir, { recursive: true })
+    const first = path.join(sandboxDir, "HEY-emails-one.mbox")
+    const second = path.join(downloadsDir, "HEY-emails-two.mbox")
+    fs.writeFileSync(first, "", "utf-8")
+    fs.writeFileSync(second, "", "utf-8")
+    const sameTime = new Date("2026-04-24T03:10:00.000Z")
+    fs.utimesSync(first, sameTime, sameTime)
+    fs.utimesSync(second, sameTime, sameTime)
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_ambiguity_no_hints",
+      "--discover",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      getRepoCwd: () => repoRoot,
+      sendCommand,
+    }))).rejects.toThrow("multiple candidate MBOX files found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_ambiguity_no_hints.json"),
+      "utf-8",
+    )) as {
+      detail?: string
+      failure?: { class?: string }
+    }
+    expect(record.detail).toBe("mode: discover")
+    expect(record.failure?.class).toBe("archive-ambiguity")
+  })
+
+  it("classifies tracked archive-access failures when Mailroom reads hit permission problems", async () => {
+    emitTestEvent("provider cli mail import tracked archive access failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-access-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-access-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-access.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const registrySpy = vi.spyOn(mailroomReader, "readMailroomRegistry").mockRejectedValue(new Error("permission denied"))
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_access",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("permission denied")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_access.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        failure?: { class?: string; retryDisposition?: string; hint?: string }
+        remediation?: string[]
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.failure).toEqual({
+        class: "archive-access",
+        retryDisposition: "fix-before-retry",
+        hint: "the archive or backing store could not be read with current filesystem permissions",
+      })
+      expect(record.remediation).toEqual([
+        "repair filesystem access to the archive or backing store, then rerun the import",
+        "retry after confirming the path is readable by Ouro",
+      ])
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      registrySpy.mockRestore()
+    }
+  })
+
+  it("classifies tracked source-grant-missing failures so imports explain the repair", async () => {
+    emitTestEvent("provider cli mail import tracked source grant missing failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-source-grant-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-source-grant-missing-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-source-grant-missing.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_source_grant_missing",
+      "--file",
+      mboxPath,
+      "--owner-email",
+      "ari@mendelow.me",
+      "--source",
+      "hey",
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("No enabled Mailroom source grant found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_source_grant_missing.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe(`file: ${mboxPath}`)
+    expect(record.failure).toEqual({
+      class: "source-grant-missing",
+      retryDisposition: "fix-before-retry",
+      hint: "the requested owner/source lane is not provisioned yet",
+    })
+    expect(record.remediation).toEqual([
+      "create or repair the delegated source grant for the intended owner/source, then rerun the import",
+      "confirm the import is pointed at the intended owner/source before retrying",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("classifies tracked source-grant ambiguity failures when imports need narrower owner/source hints", async () => {
+    emitTestEvent("provider cli mail import tracked source grant ambiguity failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-source-grant-ambiguity-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-source-grant-ambiguity-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const first = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const second = provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari+work@mendelow.me",
+      source: "gmail",
+    })
+    const registry = {
+      ...first.registry,
+      sourceGrants: [
+        ...first.registry.sourceGrants,
+        second.registry.sourceGrants[0]!,
+      ],
+    }
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: first.keys,
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-source-grant-ambiguity.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    await expect(runOuroCli([
+      "mail",
+      "import-mbox",
+      "--agent",
+      "Slugger",
+      "--foreground",
+      "--operation-id",
+      "op_mail_import_fail_source_grant_ambiguity",
+      "--file",
+      mboxPath,
+    ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("Multiple source grants found")
+
+    const record = JSON.parse(fs.readFileSync(
+      path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_source_grant_ambiguity.json"),
+      "utf-8",
+    )) as {
+      status: string
+      detail?: string
+      failure?: { class?: string; retryDisposition?: string; hint?: string }
+      remediation?: string[]
+    }
+    expect(record.status).toBe("failed")
+    expect(record.detail).toBe(`file: ${mboxPath}`)
+    expect(record.failure).toEqual({
+      class: "source-grant-ambiguous",
+      retryDisposition: "fix-before-retry",
+      hint: "more than one source grant matches; the import needs a narrower owner/source target",
+    })
+    expect(record.remediation).toEqual([
+      "rerun the import with explicit --owner-email and/or --source hints",
+      "confirm which delegated lane should receive this archive before retrying",
+    ])
+    expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+  })
+
+  it("classifies tracked transient import failures as retry-safe", async () => {
+    emitTestEvent("provider cli mail import tracked transient failure")
+    const bundlesRoot = makeTempDir("provider-cli-mail-import-operation-failure-transient-bundles")
+    const homeDir = makeTempDir("provider-cli-mail-import-operation-failure-transient-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mailStateDir = path.join(agentRoot(bundlesRoot, "Slugger"), "state", "mailroom")
+    fs.mkdirSync(mailStateDir, { recursive: true })
+    const registryPath = path.join(mailStateDir, "registry.json")
+    fs.writeFileSync(registryPath, `${JSON.stringify(provisionMailboxRegistry({
+      agentId: "Slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    }).registry, null, 2)}\n`, "utf-8")
+    writeRuntimeConfig("Slugger", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        registryPath,
+        storePath: mailStateDir,
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    resetRuntimeCredentialConfigCache()
+    const mboxPath = path.join(mailStateDir, "tracked-failure-transient.mbox")
+    fs.writeFileSync(mboxPath, "", "utf-8")
+
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockImplementation(() => {
+      throw new Error("socket closed early")
+    })
+    const sendCommand = vi.fn(async () => ({ ok: true, message: "ok" }))
+
+    try {
+      await expect(runOuroCli([
+        "mail",
+        "import-mbox",
+        "--agent",
+        "Slugger",
+        "--foreground",
+        "--operation-id",
+        "op_mail_import_fail_transient",
+        "--file",
+        mboxPath,
+      ], makeCliDeps(homeDir, bundlesRoot, { sendCommand }))).rejects.toThrow("socket closed early")
+
+      const record = JSON.parse(fs.readFileSync(
+        path.join(agentRoot(bundlesRoot, "Slugger"), "state", "background-operations", "op_mail_import_fail_transient.json"),
+        "utf-8",
+      )) as {
+        status: string
+        detail?: string
+        failure?: { class?: string; retryDisposition?: string; hint?: string }
+        remediation?: string[]
+      }
+      expect(record.status).toBe("failed")
+      expect(record.detail).toBe(`file: ${mboxPath}`)
+      expect(record.failure).toEqual({
+        class: "transient-storage-read",
+        retryDisposition: "retry-safe",
+        hint: "likely transient hosted read failure",
+      })
+      expect(record.remediation).toEqual([
+        "retry the import from the same archive after the transient storage/network issue clears",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ])
+      expect(sendCommand).toHaveBeenCalledWith("/tmp/test-socket", { kind: "inner.wake", agent: "Slugger" })
+    } finally {
+      readerSpy.mockRestore()
+    }
+  })
+
+
   it("ouro use writes local provider state after a successful live check", async () => {
     emitTestEvent("provider cli use writes provider state")
     const bundlesRoot = makeTempDir("provider-cli-bundles")

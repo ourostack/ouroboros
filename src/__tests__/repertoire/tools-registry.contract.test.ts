@@ -128,6 +128,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("mail_thread");
     expect(names).toContain("mail_screener");
     expect(names).toContain("mail_decide");
+    expect(names).toContain("mail_status");
     expect(names).toContain("mail_compose");
     expect(names).toContain("mail_send");
     expect(names).toContain("mail_access_log");
@@ -188,7 +189,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 66 tools total including Mailroom, outbound mail, attachment, and image recovery tools
-    expect(names).toHaveLength(66);
+    // Exact count: 67 tools total including Mailroom status, outbound mail, attachment, and image recovery tools
+    expect(names).toHaveLength(67);
   });
 });

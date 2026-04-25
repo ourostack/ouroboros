@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { provisionMailboxRegistry } from "../../mailroom/core"
-import { decryptMessages, FileMailroomStore } from "../../mailroom/file-store"
+import { decryptMessages, FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { importMboxToStore } from "../../mailroom/mbox-import"
 import { extractTravelFactsFromMail } from "../../mailroom/travel-extract"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
@@ -21,6 +21,16 @@ function tempDir(): string {
 
 function fixtureMbox(): Buffer {
   return fs.readFileSync(path.join(__dirname, "..", "fixtures", "hey-travel-export.mbox"))
+}
+
+function rawMail(input: { from: string; to: string; subject: string; body: string }): Buffer {
+  return Buffer.from([
+    `From: ${input.from}`,
+    `To: ${input.to}`,
+    `Subject: ${input.subject}`,
+    "",
+    input.body,
+  ].join("\r\n"))
 }
 
 function tool(name: string) {
@@ -130,6 +140,23 @@ describe("HEY MBOX golden path", () => {
       },
     })
 
+    const delegatedAlias = registry.sourceGrants[0]?.aliasAddress
+    expect(delegatedAlias).toBeTruthy()
+    for (let index = 0; index < 250; index += 1) {
+      await ingestRawMailToStore({
+        registry,
+        store,
+        envelope: { mailFrom: `newsletter-${index}@updates.example.com`, rcptTo: [delegatedAlias!] },
+        rawMime: rawMail({
+          from: `Updates ${index} <newsletter-${index}@updates.example.com>`,
+          to: delegatedAlias!,
+          subject: `Fresh unrelated update ${index}`,
+          body: `This is unrelated delegated mail ${index}.`,
+        }),
+        receivedAt: new Date(`2026-04-22T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}:00.000Z`),
+      })
+    }
+
     await expect(tool("mail_search").handler({
       query: "LHR",
       scope: "delegated",
@@ -155,9 +182,27 @@ describe("HEY MBOX golden path", () => {
     expect(body).toContain("body (untrusted external content):")
     expect(body).toContain("Confirmation code: LDN42A")
 
+    const disjunction = await tool("mail_search").handler({
+      query: "missing-token OR LDN42A OR nothing-here",
+      scope: "delegated",
+      source: "hey",
+      reason: "recover travel search with OR terms",
+    }, familyContext())
+    expect(disjunction).toContain("Flight to London confirmed")
+
+    const commaSeparatedAnchors = await tool("mail_search").handler({
+      query: "missing-token, LDN42A, nothing-here",
+      scope: "delegated",
+      source: "hey",
+      reason: "recover travel search with anchor list",
+    }, familyContext())
+    expect(commaSeparatedAnchors).toContain("Flight to London confirmed")
+
     const accessLog = await store.listAccessLog("slugger")
     expect(accessLog).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool: "mail_search", reason: "update Ari travel plan" }),
+      expect.objectContaining({ tool: "mail_search", reason: "recover travel search with OR terms" }),
+      expect.objectContaining({ tool: "mail_search", reason: "recover travel search with anchor list" }),
       expect.objectContaining({ tool: "mail_thread", reason: "extract travel confirmation for upcoming plan update" }),
     ]))
   })

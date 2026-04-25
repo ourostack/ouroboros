@@ -6,6 +6,7 @@ describe("mail tool registration and trust boundaries", () => {
   it("registers Mailroom tools in the main agent tool repertoire", () => {
     const toolNames = baseToolDefinitions.map((definition) => definition.tool.function.name)
     expect(toolNames).toEqual(expect.arrayContaining([
+      "mail_status",
       "mail_recent",
       "mail_search",
       "mail_thread",

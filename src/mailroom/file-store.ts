@@ -20,6 +20,7 @@ import {
   type MailScreenerCandidateStatus,
   type StoredMailMessage,
 } from "./core"
+import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument } from "./search-cache"
 
 export interface MailAccessLogEntry {
   id: string
@@ -35,6 +36,8 @@ export interface MailAccessLogEntry {
   source?: string | null
   accessedAt: string
 }
+
+export type MailAccessLogListing = MailAccessLogEntry[] & { malformedEntriesSkipped?: number }
 
 export interface MailListFilters {
   agentId: string
@@ -73,7 +76,7 @@ export interface MailroomStore {
   getMailOutbound(id: string): Promise<MailOutboundRecord | null>
   listMailOutbound(agentId: string): Promise<MailOutboundRecord[]>
   recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry>
-  listAccessLog(agentId: string): Promise<MailAccessLogEntry[]>
+  listAccessLog(agentId: string): Promise<MailAccessLogListing>
 }
 
 export interface FileMailroomStoreOptions {
@@ -82,6 +85,10 @@ export interface FileMailroomStoreOptions {
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true })
+}
+
+function applyOptionalLimit<T>(items: T[], limit: number | undefined): T[] {
+  return typeof limit === "number" ? items.slice(0, limit) : items
 }
 
 function readJson<T>(filePath: string): T | null {
@@ -185,9 +192,10 @@ export class FileMailroomStore implements MailroomStore {
     receivedAt?: Date
     classification?: MailClassification
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
-    const { message, rawPayload, candidate } = await buildStoredMailMessage(input)
+    const { message, rawPayload, privateEnvelope, candidate } = await buildStoredMailMessage(input)
     const existing = readJson<StoredMailMessage>(this.messagePath(message.id))
     if (existing) {
+      upsertMailSearchCacheDocument(existing, privateEnvelope)
       emitNervesEvent({
         component: "senses",
         event: "senses.mail_store_dedupe",
@@ -198,6 +206,7 @@ export class FileMailroomStore implements MailroomStore {
     }
     writeJson(this.rawPath(message.rawObject), rawPayload)
     writeJson(this.messagePath(message.id), message)
+    upsertMailSearchCacheDocument(message, privateEnvelope)
     if (candidate) {
       writeJson(this.candidatePath(candidate.id), candidate)
     }
@@ -231,14 +240,14 @@ export class FileMailroomStore implements MailroomStore {
       .filter((message) => filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true)
       .filter((message) => sourceMatchesFilter(message.source, filters.source))
       .sort(compareNewestFirst)
-      .slice(0, filters.limit ?? 20)
+    const limited = applyOptionalLimit(messages, filters.limit)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_store_messages_listed",
       message: "mailroom store listed messages",
-      meta: { agentId: filters.agentId, count: messages.length },
+      meta: { agentId: filters.agentId, count: limited.length },
     })
-    return messages
+    return limited
   }
 
   async updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null> {
@@ -254,6 +263,7 @@ export class FileMailroomStore implements MailroomStore {
     }
     const updated: StoredMailMessage = { ...message, placement }
     writeJson(this.messagePath(id), updated)
+    syncMailSearchCacheMetadata(updated)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_store_message_placement_updated",
@@ -405,7 +415,7 @@ export class FileMailroomStore implements MailroomStore {
     return complete
   }
 
-  async listAccessLog(agentId: string): Promise<MailAccessLogEntry[]> {
+  async listAccessLog(agentId: string): Promise<MailAccessLogListing> {
     const filePath = this.accessLogPath(agentId)
     if (!fs.existsSync(filePath)) {
       emitNervesEvent({
@@ -416,15 +426,33 @@ export class FileMailroomStore implements MailroomStore {
       })
       return []
     }
-    const entries = fs.readFileSync(filePath, "utf-8")
+    const lines = fs.readFileSync(filePath, "utf-8")
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as MailAccessLogEntry)
+    const entries = [] as MailAccessLogListing
+    let malformedEntriesSkipped = 0
+    for (const line of lines) {
+      try {
+        entries.push(JSON.parse(line) as MailAccessLogEntry)
+      } catch {
+        malformedEntriesSkipped += 1
+      }
+    }
+    if (malformedEntriesSkipped > 0) {
+      entries.malformedEntriesSkipped = malformedEntriesSkipped
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.mail_access_log_malformed_lines_skipped",
+        message: "skipped malformed file-backed mail access log lines",
+        meta: { agentId, malformedEntriesSkipped },
+      })
+    }
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_access_log_listed",
       message: "mail access log listed",
-      meta: { agentId, count: entries.length },
+      meta: { agentId, count: entries.length, malformedEntriesSkipped },
     })
     return entries
   }

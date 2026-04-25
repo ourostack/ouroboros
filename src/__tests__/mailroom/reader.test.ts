@@ -228,4 +228,65 @@ describe("mailroom reader", () => {
       privateKeys: { mail_slugger_primary: "secret" },
     })).rejects.toThrow("mailroom registry blob not found: https://registry.blob.core.windows.net/mailroom/registry/missing.json")
   })
+
+  it("writes hosted registry blobs when no local registry path is present", async () => {
+    const uploads: Array<{ contentType: string | undefined; body: string }> = []
+
+    vi.doMock("@azure/storage-blob", () => ({
+      BlobServiceClient: class {
+        getContainerClient(containerName: string) {
+          expect(containerName).toBe("mailroom")
+          return {
+            getBlockBlobClient(blobName: string) {
+              expect(blobName).toBe("registry/mailroom.json")
+              return {
+                upload: async (body: string | Buffer, _byteLength: number, options?: { blobHTTPHeaders?: { blobContentType?: string } }) => {
+                  uploads.push({
+                    contentType: options?.blobHTTPHeaders?.blobContentType,
+                    body: Buffer.isBuffer(body) ? body.toString("utf-8") : body,
+                  })
+                },
+              }
+            },
+          }
+        }
+      },
+    }))
+
+    const { writeMailroomRegistry } = await import("../../mailroom/reader")
+    const registry = {
+      schemaVersion: 1,
+      domain: "ouro.bot",
+      mailboxes: [{ agentId: "slugger", mailboxId: "mailbox_slugger", canonicalAddress: "slugger@ouro.bot", keyId: "mail_slugger", publicKeyPem: "pem", defaultPlacement: "screener" }],
+      sourceGrants: [],
+      senderPolicies: [],
+    }
+
+    await expect(writeMailroomRegistry({
+      mailboxAddress: "slugger@ouro.bot",
+      registryAzureAccountUrl: "https://registry.blob.core.windows.net",
+      registryContainer: "mailroom",
+      registryBlob: "registry/mailroom.json",
+      privateKeys: { mail_slugger_primary: "secret" },
+    }, registry as any)).resolves.toBeUndefined()
+
+    expect(uploads).toEqual([{
+      contentType: "application/json; charset=utf-8",
+      body: `${JSON.stringify(registry, null, 2)}\n`,
+    }])
+  })
+
+  it("rejects hosted registry writes when runtime config omits hosted registry coordinates", async () => {
+    const { writeMailroomRegistry } = await import("../../mailroom/reader")
+
+    await expect(writeMailroomRegistry({
+      mailboxAddress: "slugger@ouro.bot",
+      privateKeys: { mail_slugger_primary: "secret" },
+    }, {
+      schemaVersion: 1,
+      domain: "ouro.bot",
+      mailboxes: [],
+      sourceGrants: [],
+    } as any)).rejects.toThrow("mailroom config is missing registryPath or hosted registry coordinates")
+  })
 })

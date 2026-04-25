@@ -278,10 +278,116 @@ describe("mail sense runtime", () => {
     expect(result.queued).toBe(true)
     expect(result.candidatePaths).toEqual([mboxPath])
     expect(pendingBodies(agentRoot)[0]).toContain(mboxPath)
+    expect(pendingBodies(agentRoot)[0]).toContain("browser sandbox (.playwright-mcp)")
     expect(readJson<{ lastNotifiedFingerprint: string; updatedAt: string }>(statePath)).toEqual(expect.objectContaining({
       lastNotifiedFingerprint: expect.stringContaining(mboxPath),
       updatedAt: expect.any(String),
     }))
+  })
+
+  it("renders legacy import-ready candidates when descriptor metadata is absent", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const legacyMboxPath = path.join(homeRoot, "legacy", "HEY-emails-ari-mendelow-me.mbox")
+
+    vi.resetModules()
+    vi.doMock("../../heart/mail-import-discovery", () => ({
+      listAmbientMailImportOperations: () => [{
+        schemaVersion: 1,
+        id: "op_mail_import_discovered_legacy",
+        agentName: "slugger",
+        kind: "mail.import-discovered",
+        title: "mail import ready",
+        status: "pending",
+        summary: "legacy archive discovered",
+        createdAt: "2026-04-24T18:00:00.000Z",
+        updatedAt: "2026-04-24T18:00:00.000Z",
+        spec: {
+          fingerprint: `legacy:${legacyMboxPath}`,
+          candidatePaths: [legacyMboxPath],
+        },
+      }],
+    }))
+
+    try {
+      const { scanMailImportDiscoveryAttention: isolatedScanMailImportDiscoveryAttention } = await import("../../senses/mail")
+      const result = await isolatedScanMailImportDiscoveryAttention({
+        agentName: "slugger",
+        now: () => 1_777_000_000_000,
+      })
+
+      expect(result).toEqual({
+        queued: true,
+        fingerprint: `legacy:${legacyMboxPath}`,
+        candidatePaths: [legacyMboxPath],
+      })
+      expect(pendingBodies(agentRoot)[0]).toContain(`- ${legacyMboxPath}`)
+      expect(pendingBodies(agentRoot)[0]).not.toContain("[filesystem]")
+    } finally {
+      vi.doUnmock("../../heart/mail-import-discovery")
+      vi.resetModules()
+    }
+  })
+
+  it("normalizes partial legacy descriptor metadata for import-ready messages", async () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const agentRoot = path.join(homeRoot, "AgentBundles", "slugger.ouro")
+    const downloadsPath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me.mbox")
+    const filesystemPath = path.join(homeRoot, "archives", "ari-backfill.mbox")
+
+    vi.resetModules()
+    vi.doMock("../../heart/mail-import-discovery", () => ({
+      listAmbientMailImportOperations: () => [{
+        schemaVersion: 1,
+        id: "op_mail_import_discovered_descriptor_legacy",
+        agentName: "slugger",
+        kind: "mail.import-discovered",
+        title: "mail import ready",
+        status: "pending",
+        summary: "legacy descriptor archive discovered",
+        createdAt: "2026-04-24T18:05:00.000Z",
+        updatedAt: "2026-04-24T18:05:00.000Z",
+        spec: {
+          fingerprint: "legacy:descriptor",
+          candidatePaths: [downloadsPath, filesystemPath],
+          candidateDescriptors: [
+            {
+              path: 42,
+              originKind: "playwright-sandbox",
+              originLabel: "browser sandbox (.playwright-mcp)",
+            },
+            {
+              path: downloadsPath,
+              originKind: "downloads",
+              originLabel: 99,
+            },
+            {
+              path: filesystemPath,
+              originKind: { nested: true },
+              originLabel: null,
+            },
+          ],
+        },
+      }],
+    }))
+
+    try {
+      const { scanMailImportDiscoveryAttention: isolatedScanMailImportDiscoveryAttention } = await import("../../senses/mail")
+      await isolatedScanMailImportDiscoveryAttention({
+        agentName: "slugger",
+        now: () => 1_777_000_000_000,
+      })
+
+      const pending = pendingBodies(agentRoot)[0]
+      expect(pending).toContain(`- [downloads] ${downloadsPath}`)
+      expect(pending).toContain(`- [filesystem] ${filesystemPath}`)
+      expect(pending).not.toContain("browser sandbox (.playwright-mcp)] 42")
+    } finally {
+      vi.doUnmock("../../heart/mail-import-discovery")
+      vi.resetModules()
+    }
   })
 
   it("keeps discovery queueing alive when requestInnerWake rejects", async () => {

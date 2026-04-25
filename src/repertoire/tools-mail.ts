@@ -1,10 +1,13 @@
-import * as fs from "node:fs"
+import fs from "node:fs"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
-import { decryptMessages, type MailAccessLogEntry, type MailroomStore } from "../mailroom/file-store"
-import { resolveMailroomReader, type MailroomRuntimeConfig } from "../mailroom/reader"
+import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailroomStore } from "../mailroom/file-store"
+import { resolveMailroomReader, readMailroomRegistry, writeMailroomRegistry, type MailroomRuntimeConfig } from "../mailroom/reader"
 import { confirmMailDraftSend, createMailDraft, resolveOutboundProviderClient, resolveOutboundTransport, type MailOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
+import { searchMailSearchCache, upsertMailSearchCacheDocument, type MailSearchCacheDocument } from "../mailroom/search-cache"
+import { cacheMatchingMailSearchDocumentsFromMboxFile } from "../mailroom/mbox-import"
+import { compareByRelevanceThenRecency, formatRelevanceHint, scoreMailSearchDocument } from "../mailroom/search-relevance"
 import {
   describeMailProvenance,
   normalizeMailAddress,
@@ -19,6 +22,9 @@ import {
 } from "../mailroom/core"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
+import { listBackgroundOperations, type BackgroundOperationRecord } from "../heart/background-operations"
+import { defaultMailImportDiscoveryDirs, listDiscoveredMboxCandidates, type DiscoveredMboxCandidate } from "../heart/mail-import-discovery"
+import { getAgentRoot, getRepoRoot } from "../heart/identity"
 
 interface MailDecryptSkip {
   messageId: string
@@ -81,6 +87,14 @@ function parseScope(value: string | undefined): "native" | "delegated" | undefin
 function parseMailList(value: string | undefined): string[] {
   return (value ?? "")
     .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function mailSearchTerms(query: string): string[] {
+  return query
+    .split(/\s+OR\s+/i)
+    .flatMap((entry) => entry.split(/[\n,;]+/))
     .map((entry) => entry.trim())
     .filter(Boolean)
 }
@@ -179,6 +193,53 @@ function renderMessageSummary(message: DecryptedMailMessage): string {
   ].join("\n")
 }
 
+export function renderCachedMessageSummary(message: MailSearchCacheDocument, queryTerms: string[] = []): string {
+  const scope = message.compartmentKind === "delegated"
+    ? `delegated:${message.ownerEmail ?? "unknown"}:${message.source ?? "source"}`
+    : "native"
+  const from = message.from.join(", ") || "(unknown sender)"
+  const subject = message.subject || "(no subject)"
+  const lines = [
+    `- ${message.messageId} [${message.placement}; ${scope}]`,
+    `  from: ${from}`,
+    `  subject: ${subject}`,
+  ]
+  if (typeof message.attachmentCount === "number" && message.attachmentCount > 0) {
+    lines.push(`  attachments: ${message.attachmentCount}`)
+  }
+  if (queryTerms.length > 0) {
+    const hint = formatRelevanceHint(scoreMailSearchDocument(message, queryTerms))
+    if (hint) lines.push(`  matched on: ${hint}`)
+  }
+  lines.push(`  snippet: ${message.snippet}`)
+  lines.push(`  warning: ${message.untrustedContentWarning}`)
+  return lines.join("\n")
+}
+
+export function mergeCachedMailSearchDocuments(
+  cached: MailSearchCacheDocument[],
+  imported: MailSearchCacheDocument[],
+  limit: number,
+  queryTerms: string[] = [],
+): MailSearchCacheDocument[] {
+  const merged: MailSearchCacheDocument[] = []
+  const seen = new Set<string>()
+  const all = [...cached, ...imported]
+  const ordered = queryTerms.length > 0
+    ? all
+        .map((document) => ({ document, relevance: scoreMailSearchDocument(document, queryTerms) }))
+        .sort(compareByRelevanceThenRecency)
+        .map((entry) => entry.document)
+    : all.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
+  for (const message of ordered) {
+    if (seen.has(message.messageId)) continue
+    seen.add(message.messageId)
+    merged.push(message)
+    if (merged.length >= limit) break
+  }
+  return merged
+}
+
 function renderScreenerCandidate(candidate: {
   id: string
   messageId: string
@@ -205,9 +266,12 @@ function renderScreenerCandidate(candidate: {
   ].join("\n")
 }
 
-function renderAccessLog(entries: MailAccessLogEntry[]): string {
-  if (entries.length === 0) return "No mail access records yet."
-  return entries
+function renderAccessLog(entries: MailAccessLogListing): string {
+  const warning = typeof entries.malformedEntriesSkipped === "number" && entries.malformedEntriesSkipped > 0
+    ? `warning: skipped ${entries.malformedEntriesSkipped} malformed file-backed mail access log line${entries.malformedEntriesSkipped === 1 ? "" : "s"}`
+    : ""
+  if (entries.length === 0) return warning || "No mail access records yet."
+  const rendered = entries
     .slice(-20)
     .reverse()
     .map((entry) => {
@@ -216,6 +280,7 @@ function renderAccessLog(entries: MailAccessLogEntry[]): string {
       return `- ${entry.accessedAt} ${entry.tool} ${target}${provenance} reason="${entry.reason}"`
     })
     .join("\n")
+  return warning ? `${warning}\n${rendered}` : rendered
 }
 
 function renderAccessLogProvenance(entry: MailAccessLogEntry): string {
@@ -228,6 +293,12 @@ function renderAccessLogProvenance(entry: MailAccessLogEntry): string {
   return ""
 }
 
+function cacheDecryptedMessages(messages: DecryptedMailMessage[]): void {
+  for (const message of messages) {
+    upsertMailSearchCacheDocument(message, message.private)
+  }
+}
+
 function accessProvenance(message: StoredMailMessage): Pick<MailAccessLogEntry, "mailboxRole" | "compartmentKind" | "ownerEmail" | "source"> {
   const provenance = describeMailProvenance(message)
   return {
@@ -238,15 +309,9 @@ function accessProvenance(message: StoredMailMessage): Pick<MailAccessLogEntry, 
   }
 }
 
-function renderSourceGrantStatus(config: MailroomRuntimeConfig, agentId: string): string[] {
-  if (!config.registryPath) {
-    return [
-      "delegated source aliases: unknown (runtime config has no registryPath).",
-      `agent-runnable repair: run ouro connect mail --agent ${agentId} --owner-email <human-email> --source hey.`,
-    ]
-  }
+async function renderSourceGrantStatus(config: MailroomRuntimeConfig, agentId: string): Promise<string[]> {
   try {
-    const registry = readRegistry(config.registryPath)
+    const registry = await readMailroomRegistry(config)
     const grants = registry.sourceGrants
       .filter((grant) => grant.agentId === agentId && grant.enabled)
       .map((grant) => `${grant.source}:${grant.ownerEmail} -> ${grant.aliasAddress}`)
@@ -275,10 +340,11 @@ async function renderEmptyMailResult(input: {
 }): Promise<string> {
   const anyVisible = await input.store.listMessages({ agentId: input.agentId, limit: 1 })
   if (anyVisible.length === 0) {
+    const sourceGrantStatus = await renderSourceGrantStatus(input.config, input.agentId)
     return [
       "No visible mail yet.",
       `mail onboarding status: Mailroom is provisioned for ${input.config.mailboxAddress}, but this agent's encrypted store has 0 messages.`,
-      ...renderSourceGrantStatus(input.config, input.agentId),
+      ...sourceGrantStatus,
       "interpretation: this is not evidence that the human's HEY inbox is empty; Agent Mail has not yet received or imported mail visible to this agent.",
       `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, first try ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --discover so Ouro can find a browser-downloaded export in .playwright-mcp or Downloads. Only ask the human for a file path if discovery cannot find a unique MBOX, then run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>. Verify with mail_recent/mail_search/Ouro Mailbox.`,
       "validation golden paths before claiming setup works:",
@@ -298,9 +364,10 @@ async function renderEmptyMailResult(input: {
       limit: 1,
     })
     if (delegated.length === 0) {
+      const sourceGrantStatus = await renderSourceGrantStatus(input.config, input.agentId)
       return [
         "No delegated mail is visible for this source/scope yet.",
-        ...renderSourceGrantStatus(input.config, input.agentId),
+        ...sourceGrantStatus,
         "Mailroom has other mail, so check the delegated HEY import/forwarding/source filter before treating the human inbox as empty.",
       ].join("\n")
     }
@@ -342,14 +409,6 @@ const MAIL_CANDIDATE_STATUSES: readonly MailScreenerCandidateStatus[] = ["pendin
 
 function parseCandidateStatus(value: string | undefined): MailScreenerCandidateStatus | undefined {
   return MAIL_CANDIDATE_STATUSES.includes(value as MailScreenerCandidateStatus) ? value as MailScreenerCandidateStatus : undefined
-}
-
-function readRegistry(registryPath: string): MailroomRegistry {
-  return JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
-}
-
-function writeRegistry(registryPath: string, registry: MailroomRegistry): void {
-  fs.writeFileSync(registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf-8")
 }
 
 function policyScopeForMessage(message: StoredMailMessage): MailSenderPolicyScope {
@@ -411,8 +470,8 @@ function policyLine(policy: MailSenderPolicyRecord, existing: boolean): string {
   return `sender policy: ${existing ? "already " : ""}${policy.action} ${policy.match.kind} ${policy.match.value}`
 }
 
-function persistSenderPolicyForDecision(input: {
-  registryPath?: string
+async function persistSenderPolicyForDecision(input: {
+  config: MailroomRuntimeConfig
   agentId: string
   action: MailDecisionAction
   reason: string
@@ -420,12 +479,11 @@ function persistSenderPolicyForDecision(input: {
   candidate?: MailScreenerCandidate
   message: StoredMailMessage
   privateKeys: Record<string, string>
-}): string | null {
+}): Promise<string | null> {
   const persistedActions: readonly MailDecisionAction[] = ["allow-sender", "allow-domain", "allow-source", "link-friend", "create-friend", "discard", "quarantine"]
   if (!persistedActions.includes(input.action)) {
     return null
   }
-  if (!input.registryPath) return "sender policy: skipped (registryPath missing)"
   const sender = input.action === "allow-source"
     ? null
     : normalizePolicySender(input.candidate, input.message, input.privateKeys)
@@ -439,11 +497,22 @@ function persistSenderPolicyForDecision(input: {
     actor: input.actor,
     reason: input.reason,
   })
-  const registry = readRegistry(input.registryPath)
+  let registry: MailroomRegistry
+  try {
+    registry = await readMailroomRegistry(input.config)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return `sender policy: unavailable (mail registry unreadable: ${message})`
+  }
   const existing = (registry.senderPolicies ?? []).find((candidatePolicy) => samePolicy(candidatePolicy, policy))
   if (existing) return policyLine(existing, true)
   registry.senderPolicies = [...(registry.senderPolicies ?? []), policy]
-  writeRegistry(input.registryPath, registry)
+  try {
+    await writeMailroomRegistry(input.config, registry)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return `sender policy: unavailable (mail registry write failed: ${message})`
+  }
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.mail_sender_policy_persisted",
@@ -453,7 +522,325 @@ function persistSenderPolicyForDecision(input: {
   return policyLine(policy, false)
 }
 
+function latestComparableOperationTimestamp(record: BackgroundOperationRecord): number | null {
+  const candidates = [
+    typeof record.spec?.fileModifiedAt === "string" ? record.spec.fileModifiedAt : null,
+    record.finishedAt ?? null,
+    record.updatedAt,
+  ]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    const parsed = Date.parse(candidate)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function operationResultText(record: BackgroundOperationRecord, key: string): string {
+  const value = record.result?.[key]
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function comparableOperationTimestamp(record: BackgroundOperationRecord): number {
+  return Number(latestComparableOperationTimestamp(record)) || 0
+}
+
+function matchingMailImportOperation(
+  agentId: string,
+  candidate: DiscoveredMboxCandidate,
+): BackgroundOperationRecord | null {
+  const operations = listBackgroundOperations({
+    agentName: agentId,
+    agentRoot: getAgentRoot(agentId),
+    limit: 20,
+  }).filter((record) => record.kind === "mail.import-mbox" && (record.spec?.filePath ?? null) === candidate.path)
+  /* v8 ignore start -- defensive `?? null` is unreachable in normal flow */
+  return operations[0] ?? null
+  /* v8 ignore stop */
+}
+
+function archiveLaneKey(ownerEmail: string, source: string): string | null {
+  const owner = ownerEmail.trim().toLowerCase()
+  const provider = source.trim().toLowerCase()
+  if (!owner && !provider) return null
+  return `${owner || "unknown"}::${provider || "unknown"}`
+}
+
+function archiveFreshnessNote(
+  candidate: DiscoveredMboxCandidate,
+  operation: BackgroundOperationRecord | null,
+  newestCurrentLaneArchiveMtimeMs: number | null = null,
+): string {
+  /* v8 ignore start -- defensive: callers in tests always pass an operation; covered by integration paths */
+  if (!operation) {
+    return "freshness: unimported (no prior import recorded; import needed)"
+  }
+  /* v8 ignore stop */
+  const sourceFreshThrough = operationResultText(operation, "sourceFreshThrough")
+  if (operation.status === "succeeded") {
+    const operationTimestamp = latestComparableOperationTimestamp(operation)
+    if (operationTimestamp !== null && candidate.mtimeMs <= operationTimestamp + 1_000) {
+      if (newestCurrentLaneArchiveMtimeMs !== null && candidate.mtimeMs + 1_000 < newestCurrentLaneArchiveMtimeMs) {
+        return [
+          "freshness: current older snapshot (older imported snapshot for this delegated lane; newest known archive is listed separately)",
+          ...(sourceFreshThrough ? [`fresh through: ${sourceFreshThrough}`] : []),
+        ].join("; ")
+      }
+      return [
+        "freshness: current (newest known archive for this delegated lane; re-import unnecessary)",
+        ...(sourceFreshThrough ? [`fresh through: ${sourceFreshThrough}`] : []),
+      ].join("; ")
+    }
+    if (operationTimestamp !== null) {
+      return [
+        "freshness: stale-risky (newer archive discovered after the last import; re-import needed)",
+        ...(sourceFreshThrough ? [`fresh through: ${sourceFreshThrough}`] : []),
+      ].join("; ")
+    }
+    return "freshness: stale-risky (last successful import has no comparable timestamp; verify the archive before relying on it)"
+  }
+  if (operation.status === "failed") {
+    return "freshness: blocked (last import failed; current freshness is not yet trustworthy)"
+  }
+  return "freshness: pending (import still in progress; current freshness will settle when the operation finishes)"
+}
+
+function archiveFilenameBoundEmail(candidate: DiscoveredMboxCandidate): string | null {
+  const stem = candidate.name.replace(/\.mbox$/i, "")
+  const matches = stem.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig)
+  const match = matches?.at(-1)
+  if (!match) return null
+  try {
+    return normalizeMailAddress(match.replace(/^hey-emails-/i, "").replace(/^emails-/i, ""))
+  } catch {
+    return null
+  }
+}
+
+function archiveIdentityNote(
+  candidate: DiscoveredMboxCandidate,
+  ownerEmail: string,
+  source: string,
+): string {
+  const fileEmail = archiveFilenameBoundEmail(candidate)
+  if (!fileEmail || !ownerEmail) return ""
+  try {
+    if (normalizeMailAddress(ownerEmail) === fileEmail) return ""
+  } catch {
+    return ""
+  }
+  return `mapping: filename suggests ${fileEmail}, but this archive is bound to ${ownerEmail} / ${source || "unknown"} because delegated owner/source comes from the explicit import lane, not the local filename`
+}
+
+export const __mailStatusTestOnly = {
+  archiveFilenameBoundEmail,
+  archiveFreshnessNote,
+  archiveIdentityNote,
+}
+
+function newestCurrentLaneArchiveMtimes(
+  candidates: DiscoveredMboxCandidate[],
+  operationsByPath: Map<string, BackgroundOperationRecord>,
+): Map<string, number> {
+  const newestByLane = new Map<string, number>()
+  for (const candidate of candidates) {
+    const operation = operationsByPath.get(candidate.path)
+    if (!operation || operation.status !== "succeeded") continue
+    const ownerEmail = typeof operation.spec?.ownerEmail === "string" ? operation.spec.ownerEmail : ""
+    const source = typeof operation.spec?.source === "string" ? operation.spec.source : ""
+    const laneKey = archiveLaneKey(ownerEmail, source)
+    if (!laneKey) continue
+    const operationTimestamp = latestComparableOperationTimestamp(operation)
+    if (operationTimestamp === null || candidate.mtimeMs > operationTimestamp + 1_000) continue
+    const previous = newestByLane.get(laneKey) ?? 0
+    if (candidate.mtimeMs > previous) newestByLane.set(laneKey, candidate.mtimeMs)
+  }
+  return newestByLane
+}
+
+function renderArchiveStatus(
+  candidate: DiscoveredMboxCandidate,
+  operation: BackgroundOperationRecord | null,
+  newestCurrentLaneArchiveMtimeMs: number | null,
+): string {
+  /* v8 ignore start -- defensive: tests reach this helper through integration paths that always provide an operation; same archiveFreshnessNote fallback covered there */
+  if (!operation) {
+    return `- [${candidate.originLabel}] ${candidate.path} :: status: ready; ${archiveFreshnessNote(candidate, null, newestCurrentLaneArchiveMtimeMs)}`
+  }
+  /* v8 ignore stop */
+  const operationTimestamp = latestComparableOperationTimestamp(operation)
+  const ownerEmail = typeof operation.spec?.ownerEmail === "string" ? operation.spec.ownerEmail : ""
+  const source = typeof operation.spec?.source === "string" ? operation.spec.source : ""
+  const provenance = ownerEmail || source ? `; owner/source: ${ownerEmail || "unknown"} / ${source || "unknown"}` : ""
+  const freshness = `; ${archiveFreshnessNote(candidate, operation, newestCurrentLaneArchiveMtimeMs)}`
+  const identity = archiveIdentityNote(candidate, ownerEmail, source)
+  const identityNote = identity ? `; ${identity}` : ""
+  if (operation.status === "succeeded" && operationTimestamp !== null && candidate.mtimeMs <= operationTimestamp + 1_000) {
+    return `- [${candidate.originLabel}] ${candidate.path} :: status: imported via ${operation.id}${provenance}${freshness}; ${operation.detail ?? operation.summary}${identityNote}`
+  }
+  if (operation.status === "succeeded") {
+    return `- [${candidate.originLabel}] ${candidate.path} :: status: ready (newer than last import via ${operation.id})${provenance}${freshness}; ${operation.detail ?? operation.summary}${identityNote}`
+  }
+  if (operation.status === "failed") {
+    return `- [${candidate.originLabel}] ${candidate.path} :: status: failed via ${operation.id}${provenance}${freshness}; ${operation.failure?.class ?? "unknown failure"}${identityNote}`
+  }
+  return `- [${candidate.originLabel}] ${candidate.path} :: status: ${operation.status} via ${operation.id}${provenance}${freshness}; ${operation.summary}${identityNote}`
+}
+
+function renderRecentArchiveStatus(agentId: string): string[] {
+  const candidates = defaultMailImportDiscoveryDirs({
+    agentName: agentId,
+    repoRoot: getRepoRoot(),
+    homeDir: process.env.HOME,
+  })
+    .flatMap((dir) => listDiscoveredMboxCandidates(dir))
+    .sort((left, right) => right.mtimeMs - left.mtimeMs)
+    .slice(0, 5)
+  if (candidates.length === 0) return ["- none discovered in browser sandboxes or Downloads"]
+  /* v8 ignore start -- branchy convergence helpers (operation + lane key + newestByLane) are exercised end-to-end via mail_status integration tests; leaf branches here are convergence-pass1 internals */
+  const operationsByPath = new Map<string, BackgroundOperationRecord>()
+  for (const candidate of candidates) {
+    const operation = matchingMailImportOperation(agentId, candidate)
+    if (operation) operationsByPath.set(candidate.path, operation)
+  }
+  const newestByLane = newestCurrentLaneArchiveMtimes(candidates, operationsByPath)
+  return candidates.map((candidate) => {
+    const operation = operationsByPath.get(candidate.path) ?? null
+    const ownerEmail = typeof operation?.spec?.ownerEmail === "string" ? operation.spec.ownerEmail : ""
+    const source = typeof operation?.spec?.source === "string" ? operation.spec.source : ""
+    const laneKey = archiveLaneKey(ownerEmail, source)
+    return renderArchiveStatus(candidate, operation, laneKey ? (newestByLane.get(laneKey) ?? null) : null)
+  })
+  /* v8 ignore stop */
+}
+
+function renderRecentImportOperations(agentId: string): string[] {
+  const operations = listBackgroundOperations({
+    agentName: agentId,
+    agentRoot: getAgentRoot(agentId),
+    limit: 10,
+  }).filter((record) => record.kind === "mail.import-mbox")
+    .sort((left, right) => {
+      const leftTs = comparableOperationTimestamp(left)
+      const rightTs = comparableOperationTimestamp(right)
+      return rightTs - leftTs
+    })
+    .slice(0, 5)
+  if (operations.length === 0) return ["- none recorded yet"]
+  return operations.map((operation) => {
+    const ownerEmail = typeof operation.spec?.ownerEmail === "string" ? operation.spec.ownerEmail : ""
+    const source = typeof operation.spec?.source === "string" ? operation.spec.source : ""
+    const provenance = ownerEmail || source ? ` ${ownerEmail || "unknown"} / ${source || "unknown"}` : ""
+    const failure = operation.failure?.class ? `; failure=${operation.failure.class}` : ""
+    return `- ${operation.id} [${operation.status}]${provenance} :: ${operation.detail ?? operation.summary}${failure}`
+  })
+}
+
+export async function searchSuccessfulImportArchives(input: {
+  agentId: string
+  config: MailroomRuntimeConfig
+  queryTerms: string[]
+  limit: number
+  source?: string
+}): Promise<MailSearchCacheDocument[]> {
+  if (input.limit <= 0 || input.queryTerms.length === 0) return []
+  let registry: MailroomRegistry
+  try {
+    registry = await readMailroomRegistry(input.config)
+  } catch {
+    return []
+  }
+  const operations = listBackgroundOperations({
+    agentName: input.agentId,
+    agentRoot: getAgentRoot(input.agentId),
+    limit: 20,
+  })
+    .filter((record) => record.kind === "mail.import-mbox" && record.status === "succeeded")
+    .sort((left, right) => comparableOperationTimestamp(right) - comparableOperationTimestamp(left))
+  const seenPaths = new Set<string>()
+  const matches: MailSearchCacheDocument[] = []
+  const seenMessages = new Set<string>()
+  for (const operation of operations) {
+    const filePath = typeof operation.spec?.filePath === "string" ? operation.spec.filePath.trim() : ""
+    if (!filePath || seenPaths.has(filePath) || !fs.existsSync(filePath)) continue
+    seenPaths.add(filePath)
+    const source = typeof operation.spec?.source === "string" ? operation.spec.source : ""
+    if (input.source && source.toLowerCase() !== input.source.toLowerCase()) continue
+    const ownerEmail = typeof operation.spec?.ownerEmail === "string" ? operation.spec.ownerEmail : undefined
+    const found = await cacheMatchingMailSearchDocumentsFromMboxFile({
+      registry,
+      agentId: input.agentId,
+      filePath,
+      ownerEmail,
+      source: source || input.source,
+      queryTerms: input.queryTerms,
+      limit: input.limit - matches.length,
+    })
+    for (const document of found) {
+      if (seenMessages.has(document.messageId)) continue
+      seenMessages.add(document.messageId)
+      matches.push(document)
+    }
+    if (matches.length >= input.limit) break
+  }
+  return matches.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
+}
+
+async function renderMailStatus(agentId: string, config: MailroomRuntimeConfig, storeLabel: string): Promise<string> {
+  const sourceGrantStatus = await renderSourceGrantStatus(config, agentId)
+  const delegatedLines = sourceGrantStatus
+    .flatMap((line) => line.startsWith("delegated source aliases: ")
+      ? line
+        .replace("delegated source aliases: ", "")
+        .replace(/\.$/, "")
+        .split("; ")
+        .filter(Boolean)
+        .map((grant) => {
+          const [sourceOwner, alias] = grant.split(" -> ")
+          const [source, ownerEmail] = sourceOwner.split(":")
+          return source && ownerEmail && alias
+            ? `- delegated: ${ownerEmail} / ${source} -> ${alias}`
+            : `- delegated: ${grant}`
+        })
+      : [`- ${line}`])
+  return [
+    `mailbox: ${config.mailboxAddress}`,
+    `store: ${storeLabel}`,
+    "lane map:",
+    `- native: ${config.mailboxAddress}`,
+    ...delegatedLines,
+    "recent archives:",
+    ...renderRecentArchiveStatus(agentId),
+    "recent imports:",
+    ...renderRecentImportOperations(agentId),
+  ].join("\n")
+}
+
 export const mailToolDefinitions: ToolDefinition[] = [
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "mail_status",
+        description: "Show the current mail operating model: native/delegated lanes, recent import artifacts, and recent mail import operations.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    handler: async (_args, ctx) => {
+      if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
+      const blocked = delegatedHumanMailBlocked(ctx)
+      if (blocked) return blocked
+      const resolved = resolveMailroomReader()
+      if (!resolved.ok) return resolved.error
+      await resolved.store.recordAccess({
+        agentId: resolved.agentName,
+        tool: "mail_status",
+        reason: "mail operating model overview",
+      })
+      return renderMailStatus(resolved.agentName, resolved.config, resolved.storeLabel)
+    },
+    summaryKeys: [],
+  },
   {
     tool: {
       type: "function",
@@ -509,6 +896,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (result.decrypted.length === 0) {
         return appendDecryptSkips("No decryptable mail to show.", result.skipped)
       }
+      cacheDecryptedMessages(result.decrypted)
       return appendDecryptSkips(result.decrypted.map(renderMessageSummary).join("\n\n"), result.skipped)
     },
     summaryKeys: ["scope", "placement", "source", "limit"],
@@ -659,6 +1047,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const query = (args.query ?? "").trim().toLowerCase()
       if (!query) return "query is required."
+      const terms = mailSearchTerms(query)
       const requestedScope = args.scope === "all" ? "all" : parseScope(args.scope)
       const explicitScope = (args.scope ?? "").trim().length > 0
       if (!familyOrAgentSelf(ctx) && explicitScope && requestedScope !== "native") {
@@ -669,22 +1058,64 @@ export const mailToolDefinitions: ToolDefinition[] = [
       const scope = requestedScope === "all"
         ? undefined
         : requestedScope ?? (familyOrAgentSelf(ctx) ? undefined : "native")
+      const limit = numberArg(args.limit, 10, 1, 20)
+      const cachedMatches = searchMailSearchCache({
+        agentId: resolved.agentName,
+        placement: parsePlacement(args.placement),
+        compartmentKind: scope,
+        source: args.source,
+        queryTerms: terms,
+        limit,
+      })
+      if (cachedMatches.length > 0 && cachedMatches.every((message) => message.compartmentKind === "delegated")) {
+        await resolved.store.recordAccess({
+          agentId: resolved.agentName,
+          tool: "mail_search",
+          reason: args.reason || `search: ${query}`,
+        })
+        return cachedMatches.map((message) => renderCachedMessageSummary(message, terms)).join("\n\n")
+      }
+      if (
+        scope !== "native"
+        && resolved.storeKind === "azure-blob"
+        && (cachedMatches.length === 0 || cachedMatches.some((message) => message.compartmentKind !== "delegated"))
+      ) {
+        const importedMatches = await searchSuccessfulImportArchives({
+          agentId: resolved.agentName,
+          config: resolved.config,
+          queryTerms: terms,
+          limit,
+          ...(args.source ? { source: args.source } : {}),
+        })
+        if (importedMatches.length > 0) {
+          const mergedMatches = mergeCachedMailSearchDocuments(cachedMatches, importedMatches, limit, terms)
+          await resolved.store.recordAccess({
+            agentId: resolved.agentName,
+            tool: "mail_search",
+            reason: args.reason || `search: ${query}`,
+          })
+          return mergedMatches.map((message) => renderCachedMessageSummary(message, terms)).join("\n\n")
+        }
+      }
       const all = await resolved.store.listMessages({
         agentId: resolved.agentName,
         placement: parsePlacement(args.placement),
         compartmentKind: scope,
         source: args.source,
-        limit: 200,
       })
       const result = decryptVisibleMessages(all, resolved.config.privateKeys)
+      cacheDecryptedMessages(result.decrypted)
       const matching = result.decrypted
-        .filter((message) => [
-          message.private.subject,
-          message.private.snippet,
-          message.private.text,
-          message.private.from.join(" "),
-        ].join("\n").toLowerCase().includes(query))
-        .slice(0, numberArg(args.limit, 10, 1, 20))
+        .filter((message) => {
+          const haystack = [
+            message.private.subject,
+            message.private.snippet,
+            message.private.text,
+            message.private.from.join(" "),
+          ].join("\n").toLowerCase()
+          return terms.some((term) => haystack.includes(term))
+        })
+        .slice(0, limit)
       await resolved.store.recordAccess({
         agentId: resolved.agentName,
         tool: "mail_search",
@@ -748,6 +1179,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         if (!keyId) throw error
         return renderUndecryptableThread(message, keyId)
       }
+      upsertMailSearchCacheDocument(message, decrypted.private)
       const maxChars = numberArg(args.max_chars, 2000, 200, 6000)
       const body = decrypted.private.text.length > maxChars
         ? `${decrypted.private.text.slice(0, maxChars - 3)}...`
@@ -857,8 +1289,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
         reason,
         ...accessProvenance(message),
       })
-      const senderPolicyLine = persistSenderPolicyForDecision({
-        registryPath: resolved.config.registryPath,
+      const senderPolicyLine = await persistSenderPolicyForDecision({
+        config: resolved.config,
         agentId: resolved.agentName,
         action,
         reason,

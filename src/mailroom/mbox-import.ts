@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
+  buildStoredMailMessage,
   type MailClassification,
   normalizeMailAddress,
   resolveMailAddress,
@@ -10,6 +11,8 @@ import {
   type StoredMailMessage,
 } from "./core"
 import { type MailroomStore } from "./file-store"
+import { buildMailSearchCacheDocument, upsertMailSearchCacheDocument, type MailSearchCacheDocument } from "./search-cache"
+import { compareByRelevanceThenRecency, scoreMailSearchDocument } from "./search-relevance"
 
 export interface MboxImportInput {
   registry: MailroomRegistry
@@ -34,6 +37,16 @@ export interface MboxImportResult {
   duplicates: number
   sourceFreshThrough: string | null
   messages: StoredMailMessage[]
+}
+
+export interface SearchMboxFileInput {
+  registry: MailroomRegistry
+  agentId: string
+  filePath: string
+  ownerEmail?: string
+  source?: string
+  queryTerms: string[]
+  limit: number
 }
 
 interface ParsedMboxMessage {
@@ -230,6 +243,12 @@ function extractHeaderDate(rawMessage: Buffer, headerName: string): Date | undef
   return Number.isFinite(parsed.getTime()) ? parsed : undefined
 }
 
+function normalizeSearchTerms(queryTerms: string[]): string[] {
+  return queryTerms
+    .map((term) => term.trim().toLowerCase())
+    .filter((term) => term.length > 0)
+}
+
 function historicalImportClassification(resolvedPlacement: StoredMailMessage["placement"], sourceGrant: SourceGrantRecord): MailClassification {
   return {
     placement: resolvedPlacement,
@@ -369,4 +388,35 @@ export async function importMboxFileToStore(input: MboxFileImportInput): Promise
     maxConcurrency: 8,
     onProgress: input.onProgress,
   })
+}
+
+export async function cacheMatchingMailSearchDocumentsFromMboxFile(input: SearchMboxFileInput): Promise<MailSearchCacheDocument[]> {
+  const target = resolveImportTarget(input)
+  const queryTerms = normalizeSearchTerms(input.queryTerms)
+  if (queryTerms.length === 0 || input.limit <= 0) return []
+  const matches: MailSearchCacheDocument[] = []
+  for await (const rawMessage of streamMboxMessagesFromFile(input.filePath)) {
+    const parsedMessage = parseMboxMessage(rawMessage, target.sourceGrant)
+    const { message, privateEnvelope } = await buildStoredMailMessage({
+      resolved: target.resolved,
+      envelope: parsedMessage.envelope,
+      rawMime: parsedMessage.rawMessage,
+      receivedAt: parsedMessage.messageDate,
+      ingest: {
+        schemaVersion: 1,
+        kind: "mbox-import",
+        attentionSuppressed: true,
+      },
+      classification: historicalImportClassification(target.resolved.defaultPlacement, target.sourceGrant),
+    })
+    const document = buildMailSearchCacheDocument(message, privateEnvelope)
+    if (!queryTerms.some((term) => document.searchText.includes(term))) continue
+    upsertMailSearchCacheDocument(message, privateEnvelope)
+    matches.push(document)
+    if (matches.length >= input.limit) break
+  }
+  return matches
+    .map((document) => ({ document, relevance: scoreMailSearchDocument(document, queryTerms) }))
+    .sort(compareByRelevanceThenRecency)
+    .map((entry) => entry.document)
 }

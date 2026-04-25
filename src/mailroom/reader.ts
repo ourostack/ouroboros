@@ -159,6 +159,30 @@ export async function readMailroomRegistry(config: MailroomRuntimeConfig): Promi
   return JSON.parse((await blobClient.downloadToBuffer()).toString("utf-8")) as MailroomRegistry
 }
 
+export async function writeMailroomRegistry(config: MailroomRuntimeConfig, registry: MailroomRegistry): Promise<void> {
+  const serialized = `${JSON.stringify(registry, null, 2)}\n`
+  if (config.registryPath) {
+    fs.mkdirSync(path.dirname(config.registryPath), { recursive: true })
+    fs.writeFileSync(config.registryPath, serialized, "utf-8")
+    return
+  }
+
+  const registryAzureAccountUrl = config.registryAzureAccountUrl ?? config.azureAccountUrl
+  const registryContainer = config.registryContainer ?? config.azureContainer ?? "mailroom"
+  const registryBlob = config.registryBlob
+  if (!registryAzureAccountUrl || !registryBlob) {
+    throw new Error("mailroom config is missing registryPath or hosted registry coordinates")
+  }
+
+  const serviceClient = new BlobServiceClient(registryAzureAccountUrl, createBlobCredential(config))
+  const blobClient = serviceClient.getContainerClient(registryContainer).getBlockBlobClient(registryBlob)
+  await blobClient.upload(serialized, Buffer.byteLength(serialized), {
+    blobHTTPHeaders: {
+      blobContentType: "application/json; charset=utf-8",
+    },
+  })
+}
+
 export function resolveMailroomReader(agentName: string = getAgentName()): MailroomReaderResolution {
   const runtime = readRuntimeCredentialConfig(agentName)
   if (!runtime.ok) {

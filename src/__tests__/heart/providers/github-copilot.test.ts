@@ -68,11 +68,13 @@ const mockStreamChatCompletion = vi.fn()
 const mockStreamResponsesApi = vi.fn()
 const mockToResponsesInput = vi.fn().mockReturnValue({ instructions: "sys", input: [] })
 const mockToResponsesTools = vi.fn().mockReturnValue([])
+const mockTruncateResponsesFunctionCallOutput = vi.fn((output: string) => output)
 vi.mock("../../../heart/streaming", () => ({
   streamChatCompletion: (...args: any[]) => mockStreamChatCompletion(...args),
   streamResponsesApi: (...args: any[]) => mockStreamResponsesApi(...args),
   toResponsesInput: (...args: any[]) => mockToResponsesInput(...args),
   toResponsesTools: (...args: any[]) => mockToResponsesTools(...args),
+  truncateResponsesFunctionCallOutput: (...args: any[]) => mockTruncateResponsesFunctionCallOutput(...args),
 }))
 
 async function setAgentProvider(provider: string) {
@@ -109,6 +111,7 @@ beforeEach(async () => {
   mockStreamResponsesApi.mockReset()
   mockToResponsesInput.mockReset().mockReturnValue({ instructions: "sys", input: [] })
   mockToResponsesTools.mockReset().mockReturnValue([])
+  mockTruncateResponsesFunctionCallOutput.mockReset().mockImplementation((output: string) => output)
   const config = await import("../../../heart/config")
   config.resetConfigCache()
 })
@@ -307,6 +310,7 @@ describe("createGithubCopilotProviderRuntime", () => {
     runtime.resetTurnState([{ role: "user", content: "hi" }])
     expect(mockToResponsesInput).toHaveBeenCalled()
     runtime.appendToolOutput("call-1", "result")
+    expect(mockTruncateResponsesFunctionCallOutput).toHaveBeenCalledWith("result")
     expect(nativeInput).toContainEqual({ type: "function_call_output", call_id: "call-1", output: "result" })
   })
 

@@ -498,9 +498,23 @@ describe("query_active_work tool", () => {
           total: 16616,
           unit: "messages",
         },
+        failure: {
+          class: "transient-storage-read",
+          retryDisposition: "retry-safe",
+          hint: "likely transient hosted read failure",
+        },
+        spec: {
+          ownerEmail: "ari@mendelow.me",
+          source: "hey",
+          filePath: "/tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox",
+          fileOriginLabel: "browser sandbox (.playwright-mcp)",
+        },
         createdAt: "2026-04-23T22:40:00.000Z",
         startedAt: "2026-04-23T22:40:05.000Z",
         updatedAt: "2026-04-23T22:40:30.000Z",
+        remediation: [
+          "retry the import from the same archive after fixing the failure",
+        ],
       },
       {
         schemaVersion: 1,
@@ -530,9 +544,22 @@ describe("query_active_work tool", () => {
 
     expect(result).toContain("## background operations")
     expect(result).toContain("[running] mail import")
+    expect(result).toContain("operation: op_mail_import_1")
     expect(result).toContain("importing Ari's HEY archive")
     expect(result).toContain("scanned 500 of 16616 messages")
+    expect(result).toContain("file: /tmp/.playwright-mcp/HEY-emails-ari-mendelow-me.mbox")
+    expect(result).toContain("origin: browser sandbox (.playwright-mcp)")
+    expect(result).toContain("owner/source: ari@mendelow.me / hey")
+    expect(result).toContain("started: 2026-04-23T22:40:05.000Z")
+    expect(result).toContain("updated: 2026-04-23T22:40:30.000Z")
+    expect(result).toContain("failure class: transient-storage-read")
+    expect(result).toContain("retry: retry-safe")
+    expect(result).toContain("recovery: likely transient hosted read failure")
+    expect(result).toContain("recovery universe: transient dependency/read issue — safe to retry once storage/network answers again")
+    expect(result).toContain("retry the import from the same archive after fixing the failure")
     expect(result).toContain("[succeeded] mail import")
     expect(result).toContain("imported Ari's HEY archive")
+    expect(result).toContain("next: in flight — no action unless it stalls or i need live status")
+    expect(result).toContain("next: caught up — no rerun needed unless a newer archive appears")
   })
 })

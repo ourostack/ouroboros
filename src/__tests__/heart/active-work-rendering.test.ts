@@ -370,7 +370,7 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
 
     expect(result).toContain("## background operations")
     expect(result).toContain("[running] mail import")
-    expect(result).toContain("- next action: let the background mail import run; failure or completion will wake me, so i only check again if i need status or it looks stalled")
+    expect(result).toContain("- next action: in flight — no action unless it stalls or i need live status")
   })
 
   it("frames completed background mail imports as state to review instead of work to rerun", () => {
@@ -395,7 +395,60 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
       ],
     }))
 
-    expect(result).toContain("- next action: review the completed mail import and continue from the updated mailbox state; i only rerun if a newer archive appears")
+    expect(result).toContain("- next action: caught up — no rerun needed unless a newer archive appears")
+  })
+
+  it("classifies mail import recovery universes by operator-relevant repair shape", () => {
+    const cases = [
+      {
+        failureClass: "transient-storage-read",
+        expected: "recovery universe: transient dependency/read issue — safe to retry once storage/network answers again",
+      },
+      {
+        failureClass: "mailroom-auth",
+        expected: "recovery universe: mail auth/config issue — repair mail access or runtime config before retrying",
+      },
+      {
+        failureClass: "source-grant-missing",
+        expected: "recovery universe: delegated lane/registry issue — inspect owner/source linking before retrying",
+      },
+      {
+        failureClass: "archive-missing",
+        expected: "recovery universe: local archive/file issue — materialize or point at the right archive before retrying",
+      },
+      {
+        failureClass: "unknown-mail-import-failure",
+        expected: "recovery universe: unclassified import issue — inspect the recorded error before retrying",
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      const result = formatActiveWorkFrame(makeFrame({
+        currentSession: null,
+        backgroundOperations: [
+          {
+            schemaVersion: 1,
+            id: `op-${testCase.failureClass}`,
+            agentName: "slugger",
+            kind: "mail.import-mbox",
+            title: "mail import",
+            status: "failed",
+            summary: "mail import failed",
+            detail: "import failed",
+            createdAt: "2026-04-24T05:22:06.140Z",
+            updatedAt: "2026-04-24T05:24:00.000Z",
+            finishedAt: "2026-04-24T05:24:00.000Z",
+            failure: {
+              class: testCase.failureClass,
+              retryDisposition: "fix-before-retry",
+              hint: "repair guidance",
+            },
+          },
+        ],
+      }))
+
+      expect(result).toContain(testCase.expected)
+    }
   })
 
   it("emits nerves event reference", () => {

@@ -14,7 +14,8 @@ import {
   type MailScreenerCandidate,
   type StoredMailMessage,
 } from "./core"
-import type { MailAccessLogEntry, MailListFilters, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
+import type { MailAccessLogEntry, MailAccessLogListing, MailListFilters, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
+import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument } from "./search-cache"
 
 const MESSAGE_INDEX_PREFIX = "message-index"
 const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
@@ -65,6 +66,10 @@ function compareCandidatesNewestFirst(left: MailScreenerCandidate, right: MailSc
 
 function blobText(value: unknown): Buffer {
   return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf-8")
+}
+
+function applyOptionalLimit<T>(items: T[], limit: number | undefined): T[] {
+  return typeof limit === "number" ? items.slice(0, limit) : items
 }
 
 function positiveInteger(value: number | undefined, fallback: number): number {
@@ -315,7 +320,6 @@ export class AzureBlobMailroomStore implements MailroomStore {
       messageBlobNames.push(item.name)
     }
     const matches: StoredMailMessage[] = []
-    const limit = filters.limit ?? 20
     let nextIndex = 0
     const worker = async () => {
       while (nextIndex < messageBlobNames.length) {
@@ -325,13 +329,13 @@ export class AzureBlobMailroomStore implements MailroomStore {
         if (!message || !messageMatchesFilters(message, filters)) continue
         matches.push(message)
         matches.sort(compareNewestFirst)
-        if (matches.length > limit) matches.length = limit
+        if (typeof filters.limit === "number" && matches.length > filters.limit) matches.length = filters.limit
       }
     }
     await Promise.all(
       Array.from({ length: Math.min(MESSAGE_LIST_SCAN_CONCURRENCY, Math.max(messageBlobNames.length, 1)) }, async () => worker()),
     )
-    return matches.sort(compareNewestFirst).slice(0, limit)
+    return applyOptionalLimit(matches.sort(compareNewestFirst), filters.limit)
   }
 
   private async listMessagesFromIndexes(filters: MailListFilters): Promise<StoredMailMessage[] | null> {
@@ -342,16 +346,16 @@ export class AzureBlobMailroomStore implements MailroomStore {
       const parsed = parseMessageIndexBlobName(item.name)
       if (!parsed || !messageMatchesFilters(parsed, filters)) continue
       messageIds.push(parsed.id)
-      if (messageIds.length >= (filters.limit ?? 20)) break
+      if (typeof filters.limit === "number" && messageIds.length >= filters.limit) break
     }
     if (!sawIndex) return null
-    return (await mapWithConcurrency(messageIds, this.messageFetchConcurrency, async (id) => {
+    const messages = (await mapWithConcurrency(messageIds, this.messageFetchConcurrency, async (id) => {
       return downloadJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
     }))
       .filter((message): message is StoredMailMessage => message !== null)
       .filter((message) => messageMatchesFilters(message, filters))
       .sort(compareNewestFirst)
-      .slice(0, filters.limit ?? 20)
+    return applyOptionalLimit(messages, filters.limit)
   }
 
   async backfillMessageIndexes(
@@ -411,7 +415,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     classification?: MailClassification
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
     await this.ensureContainer()
-    const { message, rawPayload, candidate } = await buildStoredMailMessage(input)
+    const { message, rawPayload, privateEnvelope, candidate } = await buildStoredMailMessage(input)
     const messageBlob = this.messageBlob(message.id)
     let existing: StoredMailMessage | null = null
     try {
@@ -434,6 +438,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
       throw error
     }
     if (existing) {
+      upsertMailSearchCacheDocument(existing, privateEnvelope)
       await this.putMessageIndex(existing)
       emitNervesEvent({
         component: "senses",
@@ -446,6 +451,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await this.rawBlob(message.rawObject).uploadData(blobText(rawPayload))
     await this.messageBlob(message.id).uploadData(blobText(message))
     await this.putMessageIndex(message)
+    upsertMailSearchCacheDocument(message, privateEnvelope)
     if (candidate) {
       await this.candidateBlob(candidate.id).uploadData(blobText(candidate))
     }
@@ -504,6 +510,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await blob.uploadData(blobText(updated))
     await this.removeMessageIndex(message)
     await this.putMessageIndex(updated)
+    syncMailSearchCacheMetadata(updated)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_message_placement_updated",
@@ -662,10 +669,10 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return complete
   }
 
-  async listAccessLog(agentId: string): Promise<MailAccessLogEntry[]> {
+  async listAccessLog(agentId: string): Promise<MailAccessLogListing> {
     await this.ensureContainer()
     const entries = await downloadJson<MailAccessLogEntry[]>(this.accessLogBlob(agentId), this.blobOperationTimeoutMs)
-    const safeEntries = Array.isArray(entries) ? entries : []
+    const safeEntries = (Array.isArray(entries) ? entries : []) as MailAccessLogListing
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_access_log_listed",

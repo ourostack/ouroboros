@@ -44,6 +44,16 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("The agent verifies each step before asking for the next one")
     expect(guide).toContain("Preferred agent command after a browser download")
     expect(guide).toContain("The discovery path searches the current repo's `.playwright-mcp`")
+    expect(guide).toContain("browser sandbox (.playwright-mcp)")
+    expect(guide).toContain("query_active_work")
+    expect(guide).toContain("the exact operation id")
+    expect(guide).toContain("failure class")
+    expect(guide).toContain("retry")
+    expect(guide).toContain("recovery")
+    expect(guide).toContain("freshness: current")
+    expect(guide).toContain("freshness: current older snapshot")
+    expect(guide).toContain("freshness: stale-risky")
+    expect(guide).toContain("The delegated owner/source comes from the explicit import lane, not from the local filename")
     expect(guide).toContain("Only if discovery cannot find a unique file")
     expect(guide).toContain("Fallback agent command after the human provides the file path")
   })
@@ -62,6 +72,7 @@ describe("agent mail setup documentation contract", () => {
   it("documents Screener recovery, human-only external actions, and Mailbox audit expectations", () => {
     const guide = readGuide()
 
+    expect(guide).toContain("mail_status")
     expect(guide).toContain("discard")
     expect(guide).toContain("persist a discard policy for that sender")
     expect(guide).toContain("Discard does not reject, bounce, or return mail to sender")
@@ -71,6 +82,9 @@ describe("agent mail setup documentation contract", () => {
     expect(guide).toContain("confirmation=CONFIRM_SEND")
     expect(guide).toContain("Ouro Mailbox should feel like logging into the agent's mailbox")
     expect(guide).toContain("mail_access_log")
+    expect(guide).toContain("warning: skipped N malformed file-backed mail access log line(s)")
+    expect(guide).toContain("N mail message(s) could not be decrypted")
+    expect(guide).toContain("No matching mail.")
   })
 
   it("keeps HEY forwarding as a Slugger-managed browser workflow with explicit delegated alias recovery", () => {
@@ -110,10 +124,13 @@ describe("agent mail setup documentation contract", () => {
 
     for (const term of [
       "Agent-runnable",
+      "mail_status",
+      "import state is unclear",
       "Human-required",
       "DNS/MX drift",
       "HEY forwarding missing or stale",
       "daemon stopped or worker state stale",
+      "malformed file-backed access log",
       "hosted registry/vault key drift",
       "ouro account ensure --rotate-missing-mail-keys",
       "rotation cannot recover mail already encrypted to a lost private key",
@@ -121,6 +138,17 @@ describe("agent mail setup documentation contract", () => {
       "delivery event missing",
       "autonomy kill switch",
       "wrong mailbox provenance",
+      "failure class",
+      "retry",
+      "ready (newer than last import via <op>)",
+      "freshness: current",
+      "freshness: current older snapshot",
+      "freshness: stale-risky",
+      "owner/source mapping note",
+      "warning: skipped N malformed file-backed mail access log line(s)",
+      "mail message(s) could not be decrypted",
+      "No matching mail.",
+      "could not be decrypted",
       "Do not parse vault item notes",
       "Treat cached `runtime.json` files as hints, not truth.",
     ]) {

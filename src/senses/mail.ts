@@ -58,6 +58,12 @@ interface MailImportDiscoveryScanResult {
   candidatePaths: string[]
 }
 
+interface ImportDiscoveryCandidateDescriptor {
+  path: string
+  originKind?: string
+  originLabel?: string
+}
+
 function readRegistry(registryPath: string): MailroomRegistry {
   return JSON.parse(fs.readFileSync(registryPath, "utf-8")) as MailroomRegistry
 }
@@ -151,14 +157,32 @@ function stringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
 }
 
-function renderImportDiscoveryContent(candidatePaths: string[]): string {
+function candidateDescriptors(value: unknown): ImportDiscoveryCandidateDescriptor[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry) => ({
+      path: typeof entry.path === "string" ? entry.path : "",
+      originKind: typeof entry.originKind === "string" ? entry.originKind : undefined,
+      originLabel: typeof entry.originLabel === "string" ? entry.originLabel : undefined,
+    }))
+    .filter((entry) => entry.path.trim().length > 0)
+}
+
+function renderImportDiscoveryContent(
+  candidatePaths: string[],
+  descriptors: ImportDiscoveryCandidateDescriptor[],
+): string {
+  const renderedCandidates = descriptors.length > 0
+    ? descriptors.map((descriptor) => `- [${descriptor.originLabel ?? descriptor.originKind ?? "filesystem"}] ${descriptor.path}`)
+    : candidatePaths.map((candidatePath) => `- ${candidatePath}`)
   return [
     "[Mail Import Ready]",
     "A local MBOX archive is ready for delegated-mail backfill.",
     "This may live in a worktree-local Playwright sandbox rather than ~/Downloads.",
     "",
     "recent candidates:",
-    ...candidatePaths.map((candidatePath) => `- ${candidatePath}`),
+    ...renderedCandidates,
     "",
     "If this matches an expected mailbox backfill, run `ouro mail import-mbox --discover --owner-email <email> --source hey --agent <agent>` first so Ouro can pick the matching archive or report ambiguity.",
   ].join("\n")
@@ -192,6 +216,7 @@ export async function scanMailImportDiscoveryAttention(input: {
     ? discovered.spec.fingerprint
     : null
   const candidatePaths = stringArray(discovered?.spec?.candidatePaths)
+  const descriptors = candidateDescriptors(discovered?.spec?.candidateDescriptors)
   const shouldQueue = Boolean(discovered && fingerprint && fingerprint !== state.lastNotifiedFingerprint)
 
   if (shouldQueue) {
@@ -200,7 +225,7 @@ export async function scanMailImportDiscoveryAttention(input: {
       friendId: "self",
       channel: "mail",
       key: "import-ready",
-      content: renderImportDiscoveryContent(candidatePaths),
+      content: renderImportDiscoveryContent(candidatePaths, descriptors),
       timestamp: nowMs,
       mode: "reflect",
     })

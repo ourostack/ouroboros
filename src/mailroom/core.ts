@@ -745,7 +745,7 @@ export async function buildStoredMailMessage(input: {
   receivedAt?: Date
   ingest?: MailIngestProvenance
   classification?: MailClassification
-}): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload; candidate?: MailScreenerCandidate }> {
+}): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload; privateEnvelope: PrivateMailEnvelope; candidate?: MailScreenerCandidate }> {
   const parsed = await simpleParser(input.rawMime)
   const id = messageStorageId(input.envelope, input.rawMime)
   const text = parsed.text ?? ""
@@ -826,7 +826,7 @@ export async function buildStoredMailMessage(input: {
     message: "stored mail message envelope built",
     meta: { id, agentId: message.agentId, placement, compartmentKind: message.compartmentKind, candidate: candidate !== undefined },
   })
-  return { message, rawPayload, ...(candidate ? { candidate } : {}) }
+  return { message, rawPayload, privateEnvelope, ...(candidate ? { candidate } : {}) }
 }
 
 export function decryptStoredMailMessage(message: StoredMailMessage, privateKeys: Record<string, string>): DecryptedMailMessage {

@@ -4,7 +4,7 @@ import { getAgentName } from "../identity";
 import { emitNervesEvent } from "../../nerves/runtime";
 import type { ChannelCallbacks, ProviderCapability, ProviderErrorClassification, ProviderRuntime, ProviderTurnRequest } from "../core";
 import type { ResponseItem } from "../streaming";
-import { streamResponsesApi, toResponsesInput, toResponsesTools } from "../streaming";
+import { streamResponsesApi, toResponsesInput, toResponsesTools, truncateResponsesFunctionCallOutput } from "../streaming";
 import { getModelCapabilities } from "../model-capabilities";
 import { classifyHttpError } from "./error-classification";
 
@@ -166,7 +166,7 @@ export function createOpenAICodexProviderRuntime(model: string, codexConfig: Ope
     },
     appendToolOutput(callId: string, output: string): void {
       if (!nativeInput) return;
-      nativeInput.push({ type: "function_call_output", call_id: callId, output });
+      nativeInput.push({ type: "function_call_output", call_id: callId, output: truncateResponsesFunctionCallOutput(output) });
     },
     async streamTurn(request: ProviderTurnRequest) {
       if (!nativeInput) this.resetTurnState(request.messages);

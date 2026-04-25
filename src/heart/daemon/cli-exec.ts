@@ -4088,9 +4088,20 @@ function stringField(record: Record<string, unknown>, key: string): string {
 interface TrackedMailOperation {
   record: BackgroundOperationRecord
   running: (summary: string, detail?: string, progress?: { current?: number; total?: number; unit?: string }) => void
-  update: (summary: string, detail?: string, progress?: { current?: number; total?: number; unit?: string }) => void
+  update: (
+    summary: string,
+    detail?: string,
+    progress?: { current?: number; total?: number; unit?: string },
+    spec?: Record<string, unknown>,
+  ) => void
   succeed: (summary: string, detail: string, result: Record<string, unknown>) => Promise<void>
-  fail: (error: unknown, summary: string, detail: string, remediation: string[]) => Promise<void>
+  fail: (
+    error: unknown,
+    summary: string,
+    detail: string,
+    remediation: string[],
+    failure?: { class: string; retryDisposition?: "retry-safe" | "fix-before-retry" | "investigate-first"; hint?: string },
+  ) => Promise<void>
 }
 
 function cliNowIso(deps: OuroCliDeps): string {
@@ -4114,6 +4125,9 @@ async function notifyMailOperation(
     `status: ${record.status}`,
     `summary: ${record.summary}`,
     `detail: ${record.detail}`,
+    ...(record.failure?.class ? [`failure class: ${record.failure.class}`] : []),
+    ...(record.failure?.retryDisposition ? [`retry: ${record.failure.retryDisposition}`] : []),
+    ...(record.failure?.hint ? [`recovery: ${record.failure.hint}`] : []),
     ...(record.error?.message ? [`error: ${record.error.message}`] : []),
     ...(record.remediation && record.remediation.length > 0 ? ["", "next steps:", ...record.remediation.map((step) => `- ${step}`)] : []),
     ...(record.kind === "mail.import-mbox" && record.status === "succeeded"
@@ -4223,7 +4237,7 @@ function ensureTrackedMailOperation(input: {
         ...(progress ? { progress } : {}),
       })
     },
-    update: (summary, detail, progress) => {
+    update: (summary, detail, progress, spec) => {
       updateBackgroundOperation({
         agentName: input.agentName,
         agentRoot,
@@ -4232,6 +4246,7 @@ function ensureTrackedMailOperation(input: {
         updatedAt: cliNowIso(input.deps),
         ...(detail ? { detail } : {}),
         ...(progress ? { progress } : {}),
+        ...(spec ? { spec } : {}),
       })
     },
     succeed: async (summary, detail, result) => {
@@ -4246,7 +4261,7 @@ function ensureTrackedMailOperation(input: {
       })
       await notifyMailOperation(input.agentName, { ...completed, detail }, input.deps)
     },
-    fail: async (error, summary, detail, remediation) => {
+    fail: async (error, summary, detail, remediation, failure) => {
       const failed = failBackgroundOperation({
         agentName: input.agentName,
         agentRoot,
@@ -4255,6 +4270,7 @@ function ensureTrackedMailOperation(input: {
         summary,
         detail,
         error: error instanceof Error ? error.message : String(error),
+        ...(failure ? { failure } : {}),
         remediation,
       })
       await notifyMailOperation(input.agentName, { ...failed, detail }, input.deps)
@@ -4319,6 +4335,155 @@ function buildMailImportOperationSpec(filePath: string, ownerEmail?: string, sou
     ...(source ? { source } : {}),
     fileSizeBytes: stats.size,
     fileModifiedAt: new Date(stats.mtimeMs).toISOString(),
+  }
+}
+
+function classifyMailImportFailure(error: unknown): {
+  failure: {
+    class: string
+    retryDisposition?: "retry-safe" | "fix-before-retry" | "investigate-first"
+    hint?: string
+  }
+  remediation: string[]
+} {
+  const message = error instanceof Error ? error.message : String(error)
+  const normalized = message.toLowerCase()
+  if (normalized.includes("auth_required:mailroom") || normalized.includes("cannot read mailroom config")) {
+    return {
+      failure: {
+        class: "mailroom-auth",
+        retryDisposition: "fix-before-retry",
+        hint: "mailroom credentials or vault access are unavailable; unlock or repair mail auth first",
+      },
+      remediation: [
+        "unlock or repair the owning agent vault/runtime config, then rerun the import",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ],
+    }
+  }
+  if (
+    normalized.includes("missing mailroom config")
+    || normalized.includes("missing registrypath/storepath")
+    || normalized.includes("missing hosted registry coordinates")
+  ) {
+    return {
+      failure: {
+        class: "mailroom-config",
+        retryDisposition: "fix-before-retry",
+        hint: "mailroom runtime config is incomplete for this agent",
+      },
+      remediation: [
+        `rerun 'ouro connect mail --agent <agent>' or repair the stored mailroom runtime config`,
+        "retry the import only after the config repair is complete",
+      ],
+    }
+  }
+  if (normalized.includes("no enabled mailroom source grant found")) {
+    return {
+      failure: {
+        class: "source-grant-missing",
+        retryDisposition: "fix-before-retry",
+        hint: "the requested owner/source lane is not provisioned yet",
+      },
+      remediation: [
+        "create or repair the delegated source grant for the intended owner/source, then rerun the import",
+        "confirm the import is pointed at the intended owner/source before retrying",
+      ],
+    }
+  }
+  if (normalized.includes("multiple source grants found")) {
+    return {
+      failure: {
+        class: "source-grant-ambiguous",
+        retryDisposition: "fix-before-retry",
+        hint: "more than one source grant matches; the import needs a narrower owner/source target",
+      },
+      remediation: [
+        "rerun the import with explicit --owner-email and/or --source hints",
+        "confirm which delegated lane should receive this archive before retrying",
+      ],
+    }
+  }
+  if (normalized.includes("could not discover an mbox file")) {
+    return {
+      failure: {
+        class: "archive-discovery",
+        retryDisposition: "fix-before-retry",
+        hint: "no matching local archive was discovered in the known browser/download locations",
+      },
+      remediation: [
+        "check the recent browser/download artifact locations or pass --file with the exact archive path",
+        "retry only after the correct archive is visible locally",
+      ],
+    }
+  }
+  if (normalized.includes("multiple candidate mbox files found")) {
+    return {
+      failure: {
+        class: "archive-ambiguity",
+        retryDisposition: "fix-before-retry",
+        hint: "more than one plausible archive matches this import request",
+      },
+      remediation: [
+        "rerun with --file <path> or narrower owner/source hints so the archive choice is unambiguous",
+        "retry after confirming which archive is the intended one",
+      ],
+    }
+  }
+  if (normalized.includes("no such file:") || normalized.includes("enoent")) {
+    return {
+      failure: {
+        class: "archive-missing",
+        retryDisposition: "fix-before-retry",
+        hint: "the chosen archive path is not readable on disk anymore",
+      },
+      remediation: [
+        "re-check the local archive path or re-download the export before retrying",
+        "retry after the archive exists locally again",
+      ],
+    }
+  }
+  if (normalized.includes("permission denied") || normalized.includes("eacces") || normalized.includes("eperm")) {
+    return {
+      failure: {
+        class: "archive-access",
+        retryDisposition: "fix-before-retry",
+        hint: "the archive or backing store could not be read with current filesystem permissions",
+      },
+      remediation: [
+        "repair filesystem access to the archive or backing store, then rerun the import",
+        "retry after confirming the path is readable by Ouro",
+      ],
+    }
+  }
+  if (
+    normalized.includes("timed out")
+    || normalized.includes("socket closed early")
+    || normalized.includes("econnreset")
+    || normalized.includes("eai_again")
+  ) {
+    return {
+      failure: {
+        class: "transient-storage-read",
+        retryDisposition: "retry-safe",
+        hint: "likely transient hosted read failure",
+      },
+      remediation: [
+        "retry the import from the same archive after the transient storage/network issue clears",
+        "use query_active_work to confirm the failed operation has settled before retrying",
+      ],
+    }
+  }
+  return {
+    failure: {
+      class: "unknown-mail-import-failure",
+      retryDisposition: "investigate-first",
+      hint: "the import failed for a reason that does not match a known recovery class yet",
+    },
+    remediation: [
+      "inspect the recorded error and surrounding Mailroom/runtime state before retrying",
+      "retry only after the likely cause is understood or ruled out",
+    ],
   }
 }
 
@@ -4414,8 +4579,8 @@ async function executeMailImportMbox(
   command: Extract<ResolvedOuroCliCommand, { kind: "mail.import-mbox" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
-  const filePath = resolveMailImportFilePath(command, deps)
   if (!command.foreground) {
+    const filePath = resolveMailImportFilePath(command, deps)
     if (!fs.existsSync(filePath)) {
       throw new Error(`no such file: ${filePath}`)
     }
@@ -4445,7 +4610,7 @@ async function executeMailImportMbox(
     )
   }
   const progress = createHumanCommandProgress(deps, "mail import")
-  const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
+  let filePath: string | null = command.filePath ? path.resolve(command.filePath) : null
   const trackedOperation = ensureTrackedMailOperation({
     agentName: command.agent,
     deps,
@@ -4453,13 +4618,32 @@ async function executeMailImportMbox(
     kind: "mail.import-mbox",
     title: "mail import",
     queuedSummary: "queued delegated mail import",
-    spec,
+    spec: {
+      ...(filePath ? { filePath } : {}),
+      ...(command.ownerEmail ? { ownerEmail: command.ownerEmail } : {}),
+      ...(command.source ? { source: command.source } : {}),
+      ...(command.discover ? { discovery: true } : {}),
+    },
   })
   try {
+    trackedOperation?.running(
+      "resolving mail archive",
+      filePath ? `file: ${filePath}` : "mode: discover",
+      {
+        current: 0,
+        unit: "messages",
+      },
+    )
+    filePath = resolveMailImportFilePath(command, deps)
+    const spec = buildMailImportOperationSpec(filePath, command.ownerEmail, command.source)
     trackedOperation?.running("reading Mailroom config", `file: ${filePath}`, {
       current: 0,
       unit: "messages",
     })
+    trackedOperation?.update("reading Mailroom config", `file: ${filePath}`, {
+      current: 0,
+      unit: "messages",
+    }, spec)
     progress.startPhase("reading Mailroom config")
     const runtime = await refreshRuntimeCredentialConfig(command.agent, { preserveCachedOnFailure: true })
     if (!runtime.ok) {
@@ -4545,14 +4729,20 @@ async function executeMailImportMbox(
     return message
   } catch (error) {
     progress.end()
+    const classifiedFailure = classifyMailImportFailure(error)
+    const failureDetail = filePath
+      ? `file: ${filePath}`
+      : [
+          "mode: discover",
+          ...(command.ownerEmail ? [`owner: ${command.ownerEmail}`] : []),
+          ...(command.source ? [`source: ${command.source}`] : []),
+        ].join("; ")
     await trackedOperation?.fail(
       error,
       "delegated mail import failed",
-      `file: ${filePath}`,
-      [
-        "fix the reported Mailroom or MBOX problem, then rerun the import",
-        "use query_active_work to confirm whether the operation has cleared",
-      ],
+      failureDetail,
+      classifiedFailure.remediation,
+      classifiedFailure.failure,
     )
     throw error
   }

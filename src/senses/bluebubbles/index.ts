@@ -29,8 +29,13 @@ import {
   type BlueBubblesNormalizedMutation,
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
-import { hasRecordedBlueBubblesInbound, recordBlueBubblesInbound, type BlueBubblesInboundSource } from "./inbound-log"
+import {
+  listRecordedBlueBubblesInbound,
+  recordBlueBubblesInbound,
+  type BlueBubblesInboundSource,
+} from "./inbound-log"
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./mutation-log"
+import { hasProcessedBlueBubblesMessage, recordProcessedBlueBubblesMessage } from "./processed-log"
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
@@ -39,6 +44,7 @@ import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
 
 const bbFailoverStates = new Map<string, FailoverState>()
+const bbInFlightMessageGuids = new Set<string>()
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
@@ -106,6 +112,27 @@ export interface BlueBubblesHandleResult {
   notifiedAgent: boolean
   kind?: BlueBubblesNormalizedEvent["kind"]
   reason?: "from_me" | "mutation_state_only" | "already_processed" | "ignored"
+}
+
+function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string {
+  return `${sessionKey}:${messageGuid.trim()}`
+}
+
+function isBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+  if (!messageGuid.trim()) return false
+  return bbInFlightMessageGuids.has(blueBubblesMessageKey(sessionKey, messageGuid))
+}
+
+function beginBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+  if (!messageGuid.trim()) return true
+  const key = blueBubblesMessageKey(sessionKey, messageGuid)
+  if (bbInFlightMessageGuids.has(key)) return false
+  bbInFlightMessageGuids.add(key)
+  return true
+}
+
+function endBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): void {
+  bbInFlightMessageGuids.delete(blueBubblesMessageKey(sessionKey, messageGuid))
 }
 
 interface RuntimeDeps {
@@ -668,6 +695,7 @@ async function handleBlueBubblesNormalizedEvent(
   source: BlueBubblesInboundSource,
 ): Promise<BlueBubblesHandleResult> {
   const client = resolvedDeps.createClient()
+  const agentName = resolvedDeps.getAgentName()
   if (event.fromMe) {
     emitNervesEvent({
       component: "senses",
@@ -712,32 +740,66 @@ async function handleBlueBubblesNormalizedEvent(
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "mutation_state_only" }
   }
 
-  // ── Adapter setup: friend, session, content, callbacks ──────────
-
-  const store = resolvedDeps.createFriendStore()
-  const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
-  const baseContext = await resolver.resolve()
-  const context = { ...baseContext, isGroupChat: event.chat.isGroup }
-  const replyTarget = createReplyTargetController(event)
-
-  const friendId = context.friend.id
-  const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
-  try {
-    findObsoleteBlueBubblesThreadSessions(sessPath)
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "senses",
-      event: "senses.bluebubbles_thread_lane_cleanup_error",
-      message: "failed to inspect obsolete bluebubbles thread-lane sessions",
-      meta: {
-        sessionPath: sessPath,
-        reason: error instanceof Error ? error.message : String(error),
-      },
-    })
+  let ownsInFlightMessage = false
+  if (event.kind === "message") {
+    if (hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_recovery_skip",
+        message: "skipped bluebubbles message already marked as handled",
+        meta: {
+          messageGuid: event.messageGuid,
+          sessionKey: event.chat.sessionKey,
+          source,
+          dedupeReason: "processed",
+        },
+      })
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+    }
+    if (!beginBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.bluebubbles_recovery_skip",
+        message: "skipped bluebubbles message already in flight",
+        meta: {
+          messageGuid: event.messageGuid,
+          sessionKey: event.chat.sessionKey,
+          source,
+          dedupeReason: "in_flight",
+        },
+      })
+      return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
+    }
+    ownsInFlightMessage = true
   }
 
-  return withSharedTurnLock("bluebubbles", sessPath, async () => {
+  try {
+    // ── Adapter setup: friend, session, content, callbacks ──────────
+
+    const store = resolvedDeps.createFriendStore()
+    const resolver = resolvedDeps.createFriendResolver(store, resolveFriendParams(event))
+    const baseContext = await resolver.resolve()
+    const context = { ...baseContext, isGroupChat: event.chat.isGroup }
+    const replyTarget = createReplyTargetController(event)
+
+    const friendId = context.friend.id
+    const sessPath = resolvedDeps.sessionPath(friendId, "bluebubbles", event.chat.sessionKey)
+    try {
+      findObsoleteBlueBubblesThreadSessions(sessPath)
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_thread_lane_cleanup_error",
+        message: "failed to inspect obsolete bluebubbles thread-lane sessions",
+        meta: {
+          sessionPath: sessPath,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+
+    return await withSharedTurnLock("bluebubbles", sessPath, async () => {
     // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
     const existing = resolvedDeps.loadSession(sessPath)
     const mcpManager = await getSharedMcpManager() ?? undefined
@@ -747,23 +809,8 @@ async function handleBlueBubblesNormalizedEvent(
         : [{ role: "system", content: flattenSystemPrompt(await resolvedDeps.buildSystem("bluebubbles", {}, context)) }]
 
     if (event.kind === "message") {
-      const agentName = resolvedDeps.getAgentName()
-      if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.bluebubbles_recovery_skip",
-          message: "skipped bluebubbles message already recorded as handled",
-          meta: {
-            messageGuid: event.messageGuid,
-            sessionKey: event.chat.sessionKey,
-            source,
-          },
-        })
-        return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
-      }
-
-      // Record EARLY to prevent duplicate processing. BB webhooks can retry
-      // before the first turn completes — recording after the turn is too late.
+      // Record EARLY for audit and crash recovery. This is capture truth, not
+      // a claim that the agent turn completed successfully.
       const inboundSource: BlueBubblesInboundSource =
         source !== "webhook" && sessionLikelyContainsMessage(event, existing?.messages ?? sessionMessages)
           ? "recovery-bootstrap"
@@ -781,6 +828,7 @@ async function handleBlueBubblesNormalizedEvent(
             source,
           },
         })
+        recordProcessedBlueBubblesMessage(agentName, event, inboundSource, "session-bootstrap")
         return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
       }
     }
@@ -946,6 +994,9 @@ async function handleBlueBubblesNormalizedEvent(
             text: result.gateResult.autoReply,
           })
         }
+        if (event.kind === "message") {
+          recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
+        }
 
         return {
           handled: true,
@@ -956,6 +1007,9 @@ async function handleBlueBubblesNormalizedEvent(
 
       // Gate allowed — flush the agent's reply
       await callbacks.flush()
+      if (event.kind === "message") {
+        recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
+      }
 
       emitNervesEvent({
         component: "senses",
@@ -984,7 +1038,12 @@ async function handleBlueBubblesNormalizedEvent(
       /* v8 ignore stop */
       await callbacks.finish()
     }
-  })
+    })
+  } finally {
+    if (ownsInFlightMessage && event.kind === "message") {
+      endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+    }
+  }
 }
 
 export async function handleBlueBubblesEvent(
@@ -1033,9 +1092,16 @@ export async function handleBlueBubblesEvent(
   // the downstream `already_processed` path fires its observability events
   // and the caller sees a consistent return shape.
   const agentName = resolvedDeps.getAgentName()
+  // normalizeBlueBubblesEvent rejects guidless payloads, so duplicate handling
+  // only needs to discriminate between known processed, in-flight, or new.
+  const duplicateReason = hasProcessedBlueBubblesMessage(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+    ? "processed"
+    : isBlueBubblesMessageInFlight(normalized.chat.sessionKey, normalized.messageGuid)
+      ? "in_flight"
+      : null
   if (
     normalized.messageGuid
-    && hasRecordedBlueBubblesInbound(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+    && duplicateReason
   ) {
     emitNervesEvent({
       level: "warn",
@@ -1047,6 +1113,7 @@ export async function handleBlueBubblesEvent(
         sessionKey: normalized.chat.sessionKey,
         eventType: normalized.eventType,
         normalizedKind: normalized.kind,
+        dedupeReason: duplicateReason,
       },
     })
     return handleBlueBubblesNormalizedEvent(normalized, resolvedDeps, "webhook")
@@ -1072,7 +1139,7 @@ export interface BlueBubblesCatchUpResult {
 
 function countPendingRecoveryCandidates(agentName: string): number {
   return listBlueBubblesRecoveryCandidates(agentName)
-    .filter((entry) => !hasRecordedBlueBubblesInbound(agentName, entry.sessionKey, entry.messageGuid))
+    .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
     .length
 }
 
@@ -1108,16 +1175,23 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
 
   try {
     await client.checkHealth()
+    const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps)
     const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
     const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState)
-    const failed = recovery.failed + catchUp.failed
-    const recovered = recovery.recovered + catchUp.recovered
+    const failed = captured.failed + recovery.failed + catchUp.failed
+    const recovered = captured.recovered + recovery.recovered + catchUp.recovered
+    // upstreamStatus reflects whether BlueBubbles itself is healthy and we
+    // have unprocessed work (pendingRecoveryCount). Per-cycle recovery
+    // failures are noted in `detail` for transparency but do NOT flip the
+    // status to error: a single permanently-unrecoverable message would
+    // otherwise stick the sense in "error" forever, contradicting `ouro
+    // doctor` which only checks upstream reachability.
     writeBlueBubblesRuntimeState(agentName, {
-      upstreamStatus: recovery.pending > 0 || failed > 0 ? "error" : "ok",
-      detail: failed > 0
-        ? `recovery failures: ${failed}`
-        : recovery.pending > 0
-          ? `pending recovery: ${recovery.pending}`
+      upstreamStatus: recovery.pending > 0 ? "error" : "ok",
+      detail: recovery.pending > 0
+        ? `pending recovery: ${recovery.pending}`
+        : failed > 0
+          ? `${failed} message(s) unrecoverable this cycle; upstream ok`
           : catchUp.recovered > 0
             ? formatRecoveredCount(catchUp.recovered)
           : "upstream reachable",
@@ -1222,7 +1296,8 @@ export async function catchUpMissedBlueBubblesMessages(
     if (
       event.fromMe
       || event.timestamp < catchUpSince
-      || hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)
+      || hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
+      || isBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     ) {
       result.skipped++
       continue
@@ -1269,6 +1344,105 @@ export async function catchUpMissedBlueBubblesMessages(
   return result
 }
 
+export interface BlueBubblesCapturedRecoveryResult {
+  recovered: number
+  skipped: number
+  failed: number
+}
+
+function inboundEntryToRecoveryEvent(entry: ReturnType<typeof listRecordedBlueBubblesInbound>[number]): BlueBubblesNormalizedMessage {
+  const chatIdentifier = entry.chatIdentifier ?? extractChatIdentifierFromSessionKey(entry.sessionKey) ?? "unknown"
+  const normalizedSessionKey = normalizeBlueBubblesSessionKey(entry.sessionKey)
+  const chatGuid = entry.chatGuid ?? (normalizedSessionKey.startsWith("chat:") ? normalizedSessionKey.slice("chat:".length) : undefined)
+  const isGroup = normalizedSessionKey.includes("+;")
+  return {
+    kind: "message",
+    eventType: "new-message",
+    messageGuid: entry.messageGuid,
+    timestamp: parseTimestampMs(entry.recordedAt) ?? Date.now(),
+    fromMe: false,
+    sender: {
+      provider: "imessage-handle",
+      externalId: chatIdentifier,
+      rawId: chatIdentifier,
+      displayName: chatIdentifier,
+    },
+    chat: {
+      chatGuid,
+      chatIdentifier,
+      isGroup,
+      sessionKey: normalizedSessionKey,
+      sendTarget: chatGuid
+        ? { kind: "chat_guid", value: chatGuid }
+        : { kind: "chat_identifier", value: chatIdentifier },
+      participantHandles: [],
+    },
+    text: entry.textForAgent,
+    textForAgent: entry.textForAgent,
+    attachments: [],
+    hasPayloadData: false,
+    requiresRepair: true,
+  }
+}
+
+export async function recoverCapturedBlueBubblesInboundMessages(
+  deps: Partial<RuntimeDeps> = {},
+): Promise<BlueBubblesCapturedRecoveryResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const agentName = resolvedDeps.getAgentName()
+  const client = resolvedDeps.createClient()
+  const result: BlueBubblesCapturedRecoveryResult = { recovered: 0, skipped: 0, failed: 0 }
+  const seenMessageGuids = new Set<string>()
+
+  const candidates = listRecordedBlueBubblesInbound(agentName)
+    .filter((entry) => {
+      if (seenMessageGuids.has(entry.messageGuid)) return false
+      seenMessageGuids.add(entry.messageGuid)
+      return true
+    })
+    .sort((left, right) => (parseTimestampMs(left.recordedAt) ?? 0) - (parseTimestampMs(right.recordedAt) ?? 0))
+
+  for (const entry of candidates) {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid)
+      || isBlueBubblesMessageInFlight(entry.sessionKey, entry.messageGuid)
+    ) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const repaired = await client.repairEvent(inboundEntryToRecoveryEvent(entry))
+      if (repaired.kind !== "message") {
+        result.skipped++
+        continue
+      }
+
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source)
+      if (handled.reason === "already_processed") {
+        result.skipped++
+      } else {
+        result.recovered++
+      }
+    } catch (error) {
+      result.failed++
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.bluebubbles_capture_recovery_error",
+        message: "captured bluebubbles message recovery failed",
+        meta: {
+          messageGuid: entry.messageGuid,
+          sessionKey: entry.sessionKey,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  return result
+}
+
 export async function recoverMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
 ): Promise<BlueBubblesRecoveryResult> {
@@ -1278,7 +1452,10 @@ export async function recoverMissedBlueBubblesMessages(
   const result: BlueBubblesRecoveryResult = { recovered: 0, skipped: 0, pending: 0, failed: 0 }
 
   for (const candidate of listBlueBubblesRecoveryCandidates(agentName)) {
-    if (hasRecordedBlueBubblesInbound(agentName, candidate.sessionKey, candidate.messageGuid)) {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, candidate.sessionKey, candidate.messageGuid)
+      || isBlueBubblesMessageInFlight(candidate.sessionKey, candidate.messageGuid)
+    ) {
       result.skipped++
       continue
     }

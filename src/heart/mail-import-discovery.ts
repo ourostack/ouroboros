@@ -24,6 +24,8 @@ export interface DiscoveredMboxCandidate {
   path: string
   name: string
   mtimeMs: number
+  originKind: "playwright-sandbox" | "downloads" | "filesystem"
+  originLabel: string
 }
 
 export interface MailImportDiscoverySearchInput {
@@ -98,6 +100,27 @@ function listChildDirs(dir: string): string[] {
   }
 }
 
+function classifyDiscoveredMboxOrigin(dir: string): Pick<DiscoveredMboxCandidate, "originKind" | "originLabel"> {
+  const normalizedDir = path.resolve(dir)
+  const parts = normalizedDir.split(path.sep).filter(Boolean)
+  if (parts.includes(".playwright-mcp")) {
+    return {
+      originKind: "playwright-sandbox",
+      originLabel: "browser sandbox (.playwright-mcp)",
+    }
+  }
+  if (path.basename(normalizedDir) === "Downloads") {
+    return {
+      originKind: "downloads",
+      originLabel: "Downloads",
+    }
+  }
+  return {
+    originKind: "filesystem",
+    originLabel: "filesystem",
+  }
+}
+
 function findWorktreePools(rootDir: string, maxDepth: number): string[] {
   const seen = new Set<string>()
   const found: string[] = []
@@ -167,12 +190,19 @@ export function defaultMailImportDiscoveryDirs(input: MailImportDiscoverySearchI
 export function listDiscoveredMboxCandidates(dir: string): DiscoveredMboxCandidate[] {
   if (!fs.existsSync(dir)) return []
   try {
+    const origin = classifyDiscoveredMboxOrigin(dir)
     return fs.readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".mbox"))
       .map((entry) => {
         const candidatePath = path.join(dir, entry.name)
         const stat = fs.statSync(candidatePath)
-        return { path: candidatePath, name: entry.name, mtimeMs: stat.mtimeMs }
+        return {
+          path: candidatePath,
+          name: entry.name,
+          mtimeMs: stat.mtimeMs,
+          originKind: origin.originKind,
+          originLabel: origin.originLabel,
+        }
       })
   } catch {
     return []
@@ -257,7 +287,7 @@ function summarizeAmbientImportCandidates(
     : `${visibleCandidates.length} recent MBOX archives ready for import`
   const detailLines = [
     "recent candidates:",
-    ...visibleCandidates.map((candidate) => `- ${candidate.path}`),
+    ...visibleCandidates.map((candidate) => `- [${candidate.originLabel}] ${candidate.path}`),
     ...(hiddenCount > 0 ? [`- ...and ${hiddenCount} more recent archive${hiddenCount === 1 ? "" : "s"}`] : []),
     "next: if one matches an outstanding mail backfill, run `ouro mail import-mbox --discover` with owner/source hints so Ouro can select the right archive or report ambiguity.",
   ]
@@ -267,8 +297,16 @@ function summarizeAmbientImportCandidates(
     spec: {
       fingerprint: recentImportFingerprint(candidates),
       candidatePaths: visibleCandidates.map((candidate) => candidate.path),
+      candidateDescriptors: visibleCandidates.map((candidate) => ({
+        path: candidate.path,
+        originKind: candidate.originKind,
+        originLabel: candidate.originLabel,
+        modifiedAt: new Date(candidate.mtimeMs).toISOString(),
+      })),
       newestCandidatePath: visibleCandidates[0]?.path ?? null,
       newestCandidateMtime: visibleCandidates[0] ? new Date(visibleCandidates[0].mtimeMs).toISOString() : null,
+      newestCandidateOriginKind: visibleCandidates[0]?.originKind ?? null,
+      newestCandidateOriginLabel: visibleCandidates[0]?.originLabel ?? null,
     },
   }
 }

@@ -145,6 +145,7 @@ If BlueBubbles is enabled and attached on this machine:
 
 - `ouro status` should show `BlueBubbles` as `ready` or `running`
 - inbound iMessages should create or continue the correct chat trunk
+- the inbound sidecar under `state/senses/bluebubbles/inbound/` is capture truth, not completion truth; handled-message truth lives under `state/senses/bluebubbles/processed/`
 - typing and read behavior should feel immediate
 
 If BlueBubbles is enabled but not attached here, `ouro status` should show `not_attached`, not degrade daemon startup. Attach it with:

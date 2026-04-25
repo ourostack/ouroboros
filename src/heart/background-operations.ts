@@ -11,6 +11,12 @@ export interface BackgroundOperationProgress {
   unit?: string
 }
 
+export interface BackgroundOperationFailure {
+  class: string
+  retryDisposition?: "retry-safe" | "fix-before-retry" | "investigate-first"
+  hint?: string
+}
+
 export interface BackgroundOperationRecord {
   schemaVersion: 1
   id: string
@@ -28,6 +34,7 @@ export interface BackgroundOperationRecord {
   spec?: Record<string, unknown>
   result?: Record<string, unknown>
   error?: { message: string }
+  failure?: BackgroundOperationFailure
   remediation?: string[]
 }
 
@@ -49,6 +56,7 @@ interface BackgroundOperationUpdateInput extends BackgroundOperationLocator {
   summary?: string
   detail?: string
   progress?: BackgroundOperationProgress
+  spec?: Record<string, unknown>
   updatedAt?: string
 }
 
@@ -64,6 +72,7 @@ interface BackgroundOperationCompleteInput extends BackgroundOperationUpdateInpu
 interface BackgroundOperationFailInput extends BackgroundOperationUpdateInput {
   finishedAt: string
   error: string
+  failure?: BackgroundOperationFailure
   remediation?: string[]
 }
 
@@ -123,6 +132,20 @@ function normalizeRecord(record: Partial<BackgroundOperationRecord>): Background
   if (record.error && typeof record.error.message === "string" && record.error.message.trim().length > 0) {
     normalized.error = { message: record.error.message.trim() }
   }
+  if (record.failure && typeof record.failure === "object" && !Array.isArray(record.failure)) {
+    const failureClass = typeof record.failure.class === "string" ? record.failure.class.trim() : ""
+    const retryDisposition = record.failure.retryDisposition
+    const hint = typeof record.failure.hint === "string" ? record.failure.hint.trim() : ""
+    if (failureClass) {
+      normalized.failure = {
+        class: failureClass,
+        ...(retryDisposition === "retry-safe" || retryDisposition === "fix-before-retry" || retryDisposition === "investigate-first"
+          ? { retryDisposition }
+          : {}),
+        ...(hint ? { hint } : {}),
+      }
+    }
+  }
   if (Array.isArray(record.remediation)) {
     const remediation = record.remediation.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     if (remediation.length > 0) normalized.remediation = remediation
@@ -154,15 +177,19 @@ function visibleOperationKey(record: BackgroundOperationRecord): string | null {
 }
 
 function writeRecord(locator: BackgroundOperationLocator, record: BackgroundOperationRecord): BackgroundOperationRecord {
+  const normalized = normalizeRecord(record)
+  if (!normalized) {
+    throw new Error(`invalid background operation record: ${locator.id}`)
+  }
   fs.mkdirSync(operationsDir(locator.agentName, locator.agentRoot), { recursive: true })
-  fs.writeFileSync(operationPath(locator), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
+  fs.writeFileSync(operationPath(locator), `${JSON.stringify(normalized, null, 2)}\n`, "utf-8")
   emitNervesEvent({
     component: "engine",
     event: "engine.background_operation_written",
     message: "background operation state written",
-    meta: { agentName: locator.agentName, id: locator.id, kind: record.kind, status: record.status },
+    meta: { agentName: locator.agentName, id: locator.id, kind: normalized.kind, status: normalized.status },
   })
-  return record
+  return normalized
 }
 
 function requireRecord(locator: BackgroundOperationLocator): BackgroundOperationRecord {
@@ -243,6 +270,7 @@ export function updateBackgroundOperation(input: BackgroundOperationUpdateInput)
     summary: input.summary ?? current.summary,
     ...(input.detail ? { detail: input.detail } : {}),
     ...(normalizeProgress(input.progress) ? { progress: normalizeProgress(input.progress) } : {}),
+    ...(input.spec ? { spec: input.spec } : {}),
     updatedAt: input.updatedAt ?? current.updatedAt,
   })
 }
@@ -256,6 +284,9 @@ export function completeBackgroundOperation(input: BackgroundOperationCompleteIn
     ...(input.detail ? { detail: input.detail } : {}),
     ...(normalizeProgress(input.progress) ? { progress: normalizeProgress(input.progress) } : {}),
     ...(input.result ? { result: input.result } : {}),
+    error: undefined,
+    remediation: undefined,
+    failure: undefined,
     finishedAt: input.finishedAt,
     updatedAt: input.updatedAt ?? input.finishedAt,
   })
@@ -270,6 +301,7 @@ export function failBackgroundOperation(input: BackgroundOperationFailInput): Ba
     ...(input.detail ? { detail: input.detail } : {}),
     ...(normalizeProgress(input.progress) ? { progress: normalizeProgress(input.progress) } : {}),
     error: { message: input.error },
+    ...(input.failure ? { failure: input.failure } : {}),
     ...(input.remediation && input.remediation.length > 0 ? { remediation: input.remediation } : {}),
     finishedAt: input.finishedAt,
     updatedAt: input.updatedAt ?? input.finishedAt,
