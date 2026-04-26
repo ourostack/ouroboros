@@ -809,6 +809,30 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps group observe tool turns silent even when the engine emits observe callbacks", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("observe", { reason: "not for me" })
+      callbacks.onToolEnd("observe", "not for me", true)
+      return {
+        outcome: "observed",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1,
+          reasoning_tokens: 0,
+          total_tokens: 11,
+        },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
+
+    expect(mocks.markChatRead).not.toHaveBeenCalled()
+    expect(mocks.setTyping).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
   it("routes top-level and threaded DM turns into the same persisted chat trunk", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 

@@ -595,6 +595,16 @@ function createBlueBubblesCallbacks(
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
+      if (name === "observe") {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_tool_start",
+          message: "bluebubbles tool execution started",
+          meta: { name },
+        })
+        return
+      }
+
       // Tool activity is a reply commitment — start typing if not already
       if (!typingActive) startTypingNow()
       toolCallbacks.onToolStart(name, _args)
@@ -607,7 +617,9 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      toolCallbacks.onToolEnd(name, summary, success)
+      if (name !== "observe") {
+        toolCallbacks.onToolEnd(name, summary, success)
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
