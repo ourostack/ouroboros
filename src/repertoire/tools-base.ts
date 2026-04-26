@@ -20,6 +20,7 @@ import { stripeToolDefinitions } from "./tools-stripe";
 import { flightToolDefinitions } from "./tools-flight";
 import { attachmentToolDefinitions } from "./tools-attachments";
 import { mailToolDefinitions } from "./tools-mail"
+import { tripToolDefinitions } from "./tools-trip"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
 
@@ -100,6 +101,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...flightToolDefinitions,
   ...attachmentToolDefinitions,
   ...mailToolDefinitions,
+  ...tripToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

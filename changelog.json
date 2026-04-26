@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.489",
+      "changes": [
+        "Trip ledger Step 4 — harness-side trip tools land. Six new tools (`trip_ensure_ledger`, `trip_status`, `trip_get`, `trip_upsert`, `trip_attach_evidence`, `trip_new_id`) give the agent a private, encrypted, per-agent travel ledger backed by an RSA-OAEP-SHA256 + AES-256-GCM envelope. Ledger keypair lives at `state/trips/ledger.json`; encrypted records persist under `state/trips/records/<tripId>.json`. Tools are gated behind the same trust check as other private surfaces (only available to trusted callers) and validate `TripRecord` / `TripEvidence` shape before persisting. Vendor-copies the substrate trip-control types so the harness has no runtime dependency on a hosted ledger service yet, while keeping the on-disk format compatible for future migration."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.488",
       "changes": [
         "BlueBubbles group chats stay fully silent on `observe` turns. The engine emits `onToolStart(\"observe\")` / `onToolEnd(\"observe\")` even when the resulting outcome is `observed` (no reply), and the BlueBubbles adapter previously treated every tool start as reply commitment — so groups would briefly show typing or mark-read before the silent path completed. Both callbacks now short-circuit for `observe`: no startTypingNow, no toolCallbacks dispatch, just an observability event. Real reply-commit semantics (typing, mark-read, status messages on real tools) are preserved. Regression test reproduces the real callback sequence from the engine and asserts the lane stays quiet."

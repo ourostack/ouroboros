@@ -98,6 +98,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
   // observability via senses.mail_search_cache_upserted and friends.
   "mailroom/search-relevance",
+  // Trip ledger crypto helpers: pure RSA/AES envelope construction + slug
+  // hashing. The caller (trips/store.ts) owns observability via
+  // trips.ledger_created and trips.evidence_attached.
+  "trips/core",
   // Outlook HTTP helper modules: route/static/transport/hook seams are
   // dispatched by outlook-http.ts, whose server lifecycle owns observability.
   "heart/outlook/outlook-http-transport",

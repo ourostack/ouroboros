@@ -189,7 +189,15 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Exact count: 67 tools total including Mailroom status, outbound mail, attachment, and image recovery tools
-    expect(names).toHaveLength(67);
+    // Added in trip ledger Step 4: 6 trip tools
+    expect(names).toContain("trip_ensure_ledger");
+    expect(names).toContain("trip_status");
+    expect(names).toContain("trip_get");
+    expect(names).toContain("trip_upsert");
+    expect(names).toContain("trip_attach_evidence");
+    expect(names).toContain("trip_new_id");
+
+    // Exact count: 73 tools total including Mailroom status, outbound mail, attachment, image recovery, and trip ledger tools
+    expect(names).toHaveLength(73);
   });
 });
