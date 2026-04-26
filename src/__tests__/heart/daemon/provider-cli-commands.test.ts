@@ -7174,6 +7174,7 @@ describe("provider CLI command execution", () => {
       "18888",
       "/bb-webhook",
       "12000",
+      "+1 415 555 0000, slugger@ouro.bot",
     ]
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
@@ -7205,6 +7206,7 @@ describe("provider CLI command execution", () => {
       bluebubbles: {
         serverUrl: "http://127.0.0.1:1234",
         password: "bb-password",
+        ownHandles: ["+1 415 555 0000", "slugger@ouro.bot"],
       },
       bluebubblesChannel: {
         port: 18888,

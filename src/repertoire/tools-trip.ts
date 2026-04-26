@@ -233,6 +233,71 @@ export const tripToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "trip_update_leg",
+        description: "Update specific fields of an existing leg in a trip. Pass tripId, legId, and a JSON object of field updates (e.g. {status:\"cancelled\", confirmationCode:\"PNR123\"}). Existing evidence is preserved unless explicitly overwritten. Use this instead of trip_upsert when you only need to change one leg without re-emitting the whole record. The leg's `kind` cannot be changed (changing kind means a new leg).",
+        parameters: {
+          type: "object",
+          properties: {
+            tripId: { type: "string", description: "Canonical trip id." },
+            legId: { type: "string", description: "Leg id within the trip." },
+            updates: { type: "string", description: "JSON object of leg fields to update. Cannot include `legId` or `kind`. Common fields: status, confirmationCode, vendor, amount, checkInDate, checkOutDate, departureTime, arrivalTime, etc." },
+            updatedAt: { type: "string", description: "ISO timestamp for the update. Used both for the leg's updatedAt and the trip's updatedAt." },
+          },
+          required: ["tripId", "legId", "updates", "updatedAt"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      const tripId = args.tripId
+      const legId = args.legId
+      const updatedAt = args.updatedAt
+      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
+      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
+      try {
+        const updates = parseJsonArg(args.updates, "updates")
+        if (!isRecord(updates)) return "updates must be a JSON object."
+        // Reject identity-changing fields — those would silently break referential integrity.
+        if ("legId" in updates) return "updates cannot change legId; create a new leg instead."
+        if ("kind" in updates) return "updates cannot change kind; create a new leg instead."
+        if (Object.keys(updates).length === 0) return "updates cannot be empty — pass at least one field."
+        const trip = readTripRecord(getAgentName(), tripId)
+        const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
+        if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
+        const leg = trip.legs[legIndex]!
+        const updatedLeg = {
+          ...leg,
+          ...updates,
+          legId: leg.legId,
+          kind: leg.kind,
+          updatedAt,
+        } as TripLeg
+        const updated: TripRecord = {
+          ...trip,
+          legs: [...trip.legs.slice(0, legIndex), updatedLeg, ...trip.legs.slice(legIndex + 1)],
+          updatedAt,
+        }
+        upsertTripRecord(getAgentName(), updated)
+        emitNervesEvent({
+          component: "trips",
+          event: "trips.leg_updated",
+          message: "trip leg fields updated",
+          meta: { agentId: getAgentName(), tripId, legId, fields: Object.keys(updates) },
+        })
+        const fieldList = Object.keys(updates).join(", ")
+        return `leg ${legId} updated in ${tripId}: ${fieldList}.`
+      } catch (error) {
+        if (error instanceof TripNotFoundError) return error.message
+        return `update failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`
+      }
+    },
+    summaryKeys: ["tripId", "legId"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "trip_new_id",
         description: "Compute a deterministic trip id from agentId + name + createdAt. Useful before constructing a new TripRecord so the id is stable and reproducible.",
         parameters: {

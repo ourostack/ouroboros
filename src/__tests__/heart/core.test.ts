@@ -831,7 +831,10 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry
+    // — we're verifying think-tag stream routing here, not the retry path
+    // (which has dedicated tests in core-rest.test.ts).
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("only thinking")
     expect(textChunks).toEqual([])
   })
@@ -977,7 +980,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     expect(reasoningChunks.join("")).toBe("unterminated reasoning")
     expect(textChunks).toEqual([])
   })
@@ -1027,7 +1031,8 @@ describe("runAgent", () => {
       onError: () => {},
     }
 
-    await runAgent([{ role: "system", content: "test" }], callbacks)
+    // toolChoiceRequired:false isolates this test from the no-tool-call retry.
+    await runAgent([{ role: "system", content: "test" }], callbacks, undefined, undefined, { toolChoiceRequired: false })
     // "reasoning" is emitted during chunked processing, "</" is flushed at end as reasoning
     expect(reasoningChunks.join("")).toBe("reasoning</")
     expect(textChunks).toEqual([])

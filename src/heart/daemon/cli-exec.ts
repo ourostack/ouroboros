@@ -3543,6 +3543,14 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   const port = parseOptionalPort(await promptInput("Local webhook port [18790]: "), 18790, "BlueBubbles webhook port")
   const webhookPath = normalizeWebhookPath(await promptInput("Local webhook path [/bluebubbles-webhook]: "), "/bluebubbles-webhook")
   const requestTimeoutMs = parseOptionalPositiveInteger(await promptInput("Request timeout ms [30000]: "), 30000, "BlueBubbles request timeout")
+  // Capture the operator's known iMessage handles so the BB ingest path can
+  // filter group-chat echoes whose `isFromMe` flag was lost or never set.
+  // Without this, the agent would ingest its own outbound message as inbound
+  // and reply to itself ("Slugger talking to himself" in groups).
+  const ownHandlesRaw = (await promptInput("Your iMessage handle(s) — phone(s) and/or email(s) BlueBubbles attributes to your sent messages (comma-separated; needed for the group self-talk filter; blank to skip): ")).trim()
+  const ownHandles = ownHandlesRaw
+    ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
+    : []
   const machineId = currentMachineId(deps)
 
   const progress = createHumanCommandProgress(deps, "connect bluebubbles")
@@ -3562,6 +3570,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
         serverUrl,
         password,
         accountId: "default",
+        ownHandles,
       },
       bluebubblesChannel: {
         port,
@@ -3594,6 +3603,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
       `Stored: ${stored.itemPath}`,
       "agent.json: senses.bluebubbles.enabled = true",
       `Runtime: ${daemonApply}`,
+      `ownHandles: ${ownHandles.length > 0 ? ownHandles.join(", ") : "(none — group self-talk filter inactive)"}`,
       "secret was not printed",
       ...(syncSummary ? [syncSummary] : []),
     ],

@@ -312,6 +312,29 @@ export interface RunAgentOptions {
   journalFiles?: import("../mind/prompt").JournalFileEntry[];
 }
 
+/**
+ * Strip <think>...</think> blocks for the violation-detection check at the
+ * end of a streaming turn. Used to tell legitimate text-only responses
+ * apart from the MiniMax-M2.7 "only thinking, no tool call" violation
+ * shape. Mirrors the more thorough stripThinkBlocks helper in
+ * senses/shared-turn.ts (which is for operator-facing output) — kept
+ * inline here to avoid pulling senses/ into the core module's import graph.
+ */
+function stripThinkBlocksForViolationCheck(input: string): string {
+  let out = input
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
 function hasFreshPendingWork(options?: RunAgentOptions): boolean {
   const pendingMessages = options?.pendingMessages
   if (!Array.isArray(pendingMessages)) return false
@@ -749,6 +772,21 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
+  // that called rest, was told "fresh work arrived", processed the items,
+  // and called rest again would get the same message forever — the gate
+  // condition is read from the turn-start snapshot of pendingMessages,
+  // which doesn't update mid-turn. The agent only needs to be told once;
+  // after that, repeated rest attempts mean they've acknowledged.
+  let freshWorkGateFired = false;
+  // Counter for "no tool call returned despite tool_choice=required" violations.
+  // MiniMax reasoning models occasionally emit only a <think>...</think>
+  // block and stop, without any tool call — even when tool_choice is set to
+  // "required". This is a provider-level violation; the harness retries with
+  // a corrective nudge up to a small cap rather than silently accepting an
+  // empty turn.
+  let noToolCallRetries = 0;
+  const NO_TOOL_CALL_MAX_RETRIES = 2;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -971,13 +1009,53 @@ export async function runAgent(
         (msg as AssistantMessageWithReasoning).phase = isSoleSettle ? "settle" : "commentary";
       }
 
+      // Detect the MiniMax "only-thinking, no tool call" violation: no tool
+      // calls returned, and the content is empty after stripping
+      // <think>...</think> blocks. This is a narrow check — legitimate
+      // content-only responses (text without think tags, or text outside
+      // think tags) still flow through the original "no tool calls →
+      // accept as-is" path so existing channels and tests are unaffected.
+      const onlyThinkContent = !result.toolCalls.length
+        && typeof result.content === "string"
+        && stripThinkBlocksForViolationCheck(result.content).length === 0
+        && result.content.length > 0;
+
       if (!result.toolCalls.length) {
-        // No tool calls — accept response as-is.
-        // (Kick detection disabled; tool_choice: required + settle
-        // is the primary loop control. See src/heart/kicks.ts to re-enable.)
+        if (onlyThinkContent && toolChoiceRequired && noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
+          // Provider-level violation: tool_choice was required, model emitted
+          // only a <think>...</think> block (or empty content) with no tool
+          // call. Retry with a corrective nudge up to NO_TOOL_CALL_MAX_RETRIES
+          // times. After cap, accept as-is (the readback path strips think
+          // tags and surfaces a clear diagnostic).
+          noToolCallRetries++;
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.no_tool_call_retry",
+            message: "model returned only <think> content with no tool call despite tool_choice=required; retrying with corrective nudge",
+            meta: {
+              attempt: noToolCallRetries,
+              cap: NO_TOOL_CALL_MAX_RETRIES,
+              provider: providerRuntime.id,
+              model: providerRuntime.model,
+              contentLength: result.content!.length,
+            },
+          });
+          messages.push(msg);
+          messages.push({
+            role: "user",
+            content: isInnerDialog
+              ? "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
+              : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
+          });
+          continue;
+        }
+        // Legitimate text-only response, or cap reached — accept as-is.
         messages.push(msg);
         done = true;
       } else {
+        // Reset the retry counter on any successful tool call.
+        noToolCallRetries = 0;
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
@@ -1115,12 +1193,20 @@ export async function runAgent(
             continue;
           }
 
-          if (hasFreshPendingWork(options)) {
+          if (hasFreshPendingWork(options) && !freshWorkGateFired) {
+            freshWorkGateFired = true;
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
             messages.push(msg);
             const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            emitNervesEvent({
+              level: "info",
+              component: "engine",
+              event: "engine.fresh_work_gate_fired",
+              message: "rest deferred once because pending work arrived this turn; agent has been notified",
+              meta: { pendingCount: options!.pendingMessages!.length },
+            });
             continue;
           }
 
