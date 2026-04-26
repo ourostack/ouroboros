@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.490",
+      "changes": [
+        "BlueBubbles group echo self-talk fix. The BB ingest path previously relied solely on the payload's `isFromMe` flag to detect the agent's own outbound messages — but in groups, BlueBubbles sometimes broadcasts the echo back through the webhook with that flag missing or false. Without a fallback, the agent would ingest its own message and reply to it (the user reported this in a group with their friend Rach: 'Slugger talking to himself'). New `bluebubbles.ownHandles` config field accepts the agent's known iMessage handles (phone numbers in any formatting, or email addresses); a fallback guard at the head of `handleBlueBubblesNormalizedEvent` filters any event whose `sender.externalId` matches a configured handle (case-insensitive, with phone-number normalization across +/space/paren/dash differences) and emits a `senses.bluebubbles_self_handle_filtered` warn-level nerve event so the case is observable. Direct chats are unaffected (their echoes already carry `isFromMe: true` reliably). Also folds in three trivial cleanups surfaced by the full-system audit: removed a stray `# Production SPA serving` heading from the README, removed a vestigial `// getPhrases removed` comment in bluebubbles/index.ts, and removed two unreachable `throw new Error('unreachable')` statements after `process.exit(1)` in heart/core.ts (process.exit returns `never` so TS already knows control doesn't continue)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.489",
       "changes": [
         "Trip ledger Step 4 — harness-side trip tools land. Six new tools (`trip_ensure_ledger`, `trip_status`, `trip_get`, `trip_upsert`, `trip_attach_evidence`, `trip_new_id`) give the agent a private, encrypted, per-agent travel ledger backed by an RSA-OAEP-SHA256 + AES-256-GCM envelope. Ledger keypair lives at `state/trips/ledger.json`; encrypted records persist under `state/trips/records/<tripId>.json`. Tools are gated behind the same trust check as other private surfaces (only available to trusted callers) and validate `TripRecord` / `TripEvidence` shape before persisting. Vendor-copies the substrate trip-control types so the harness has no runtime dependency on a hosted ledger service yet, while keeping the on-disk format compatible for future migration."

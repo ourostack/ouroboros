@@ -55,7 +55,7 @@ Useful scopes in the current codebase include:
 - `heart` — core engine, providers, identity, config
 - `mind` — prompt, sessions, diary, journal, phrases, friends
 - `repertoire` — tools, coding, tasks, skills, integration clients
-- `senses` — CLI, Teams, BlueBubbles, MCP, inner dialog
+- `senses` — CLI, Teams, BlueBubbles, Mail, inner dialog (MCP is a bridge, not a sense — `src/heart/mcp/`)
 - `nerves` — events, logging, audit coverage
 - `docs` — documentation
 

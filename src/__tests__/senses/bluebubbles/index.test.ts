@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     serverUrl: "http://bluebubbles.local",
     password: "secret-token",
     accountId: "default",
+    ownHandles: [],
   }),
   getBlueBubblesChannelConfig: vi.fn().mockReturnValue({
     port: 18790,
@@ -559,6 +560,7 @@ function resetMocks(): void {
     serverUrl: "http://bluebubbles.local",
     password: "secret-token",
     accountId: "default",
+    ownHandles: [],
   })
   mocks.getBlueBubblesChannelConfig.mockReset().mockReturnValue({
     port: 18790,
@@ -1878,6 +1880,52 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.markChatRead).not.toHaveBeenCalled()
+  })
+
+  it("filters group echoes whose sender matches an agent-owned handle (isFromMe missing/false)", async () => {
+    // Reproduces "Slugger talking to himself" — BlueBubbles re-broadcasts the
+    // agent's own group-chat outbound message back through the webhook with
+    // isFromMe:false, and without a fallback identity check the agent ingests
+    // it as inbound and replies to itself.
+    mocks.getBlueBubblesConfig.mockReturnValueOnce({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["+14155550000"],
+    })
+
+    const groupEchoPayload = {
+      ...dmThreadPayload,
+      data: {
+        ...dmThreadPayload.data,
+        guid: "ECHO-GROUP-AAAA-BBBB-CCCC",
+        isFromMe: false, // <-- the bug: BB lost the flag on echo
+        handle: { address: "+1 (415) 555-0000" }, // sender is the agent itself, just normalized differently
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(groupEchoPayload)
+
+    expect(result).toEqual(
+      expect.objectContaining({ handled: true, notifiedAgent: false, reason: "from_me" }),
+    )
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("does NOT filter when the sender is a real friend whose handle is unrelated to the agent's own handles", async () => {
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["+14155550000"],
+    })
+
+    // dmThreadPayload's sender is ari@mendelow.me — should still flow through
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    expect(result.reason).not.toBe("from_me")
   })
 
   it("stops typing even when the agent turn throws before a final answer is sent", async () => {
@@ -7130,5 +7178,47 @@ describe("BlueBubbles adapter - reaction enrichment", () => {
     const bb = await import("../../../senses/bluebubbles")
     const result = bb.enrichReactionText("reacted with love", "", 80)
     expect(result).toBe("reacted with love")
+  })
+})
+
+describe("isAgentSelfHandle", () => {
+  it("matches a phone number across +/space/paren formatting differences", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    expect(bb.isAgentSelfHandle("+1 (415) 555-0000", ["+14155550000"])).toBe(true)
+    expect(bb.isAgentSelfHandle("4155550000", ["+14155550000"])).toBe(false) // missing country code = different number
+    expect(bb.isAgentSelfHandle("+1-415-555-0000", ["14155550000"])).toBe(true)
+  })
+
+  it("matches an email handle case-insensitively", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    expect(bb.isAgentSelfHandle("Slugger@Ouro.Bot", ["slugger@ouro.bot"])).toBe(true)
+    expect(bb.isAgentSelfHandle("notmine@ouro.bot", ["slugger@ouro.bot"])).toBe(false)
+  })
+
+  it("returns false for empty/missing inputs", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    expect(bb.isAgentSelfHandle("", ["+14155550000"])).toBe(false)
+    expect(bb.isAgentSelfHandle("   ", ["+14155550000"])).toBe(false)
+    expect(bb.isAgentSelfHandle(undefined, ["+14155550000"])).toBe(false)
+    expect(bb.isAgentSelfHandle("+14155550000", [])).toBe(false)
+  })
+
+  it("returns false when the digit-extracted form of one side is empty/short and the raw forms differ", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    // Mismatched short numeric forms shouldn't match.
+    expect(bb.isAgentSelfHandle("+1", ["+2"])).toBe(false)
+  })
+
+  it("treats whitespace-only entries in ownHandles as no-ops (defensive)", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    // getBlueBubblesConfig normally filters these out, but the helper itself
+    // is robust to them.
+    expect(bb.isAgentSelfHandle("slugger@ouro.bot", ["   ", "slugger@ouro.bot"])).toBe(true)
+    expect(bb.isAgentSelfHandle("slugger@ouro.bot", ["   "])).toBe(false)
+  })
+
+  it("falls through to substring/case match for non-phone non-email handles", async () => {
+    const bb = await import("../../../senses/bluebubbles")
+    expect(bb.isAgentSelfHandle("UID-ABC123", ["uid-abc123"])).toBe(true)
   })
 })

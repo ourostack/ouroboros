@@ -1755,6 +1755,36 @@ describe("appendSyntheticAssistantMessage", () => {
     })
     expect(appendSyntheticAssistantMessage("/mock/write-fails.json", "test")).toBe(false)
   })
+
+  it("assigns a sequence beyond the max existing sequence (not events.length+1) so pruned envelopes don't collide", async () => {
+    // Regression for the off-by-one in appendSyntheticAssistantEvent. Build a
+    // canonical session envelope where events have non-contiguous sequences
+    // (simulating prior pruning), then call appendSyntheticAssistantMessage
+    // and verify the new event's sequence is max+1, not events.length+1.
+    vi.mocked(fs.readFileSync).mockReset()
+    vi.mocked(fs.writeFileSync).mockReset()
+    const { appendSyntheticAssistantMessage } = await import("../../mind/context")
+    const envelope = {
+      version: 2 as const,
+      events: [
+        { id: "evt-000001", sequence: 1, role: "user", content: "hello", time: { recordedAt: "2026-04-26T00:00:00Z", observedAt: "2026-04-26T00:00:00Z" }, captureKind: "live" as const, encoding: { format: "v1" as const, role: "user" }, projectionVersion: 1 },
+        { id: "evt-000050", sequence: 50, role: "assistant", content: "ok", time: { recordedAt: "2026-04-26T00:00:01Z", observedAt: "2026-04-26T00:00:01Z" }, captureKind: "live" as const, encoding: { format: "v1" as const, role: "assistant" }, projectionVersion: 1 },
+      ],
+      projection: { eventIds: ["evt-000001", "evt-000050"], projectedAt: "2026-04-26T00:00:01Z", trimmed: false },
+    }
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(envelope))
+
+    const result = appendSyntheticAssistantMessage("/mock/pruned-session.json", "my reflection")
+    expect(result).toBe(true)
+    const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+    const newEvent = written.events[written.events.length - 1]
+    // Pre-fix: events.length+1 = 3 → would collide with no existing event but
+    // breaks the invariant that sequence is monotonic across appends. The
+    // correct value is max(existing) + 1 = 51.
+    expect(newEvent.sequence).toBe(51)
+    expect(newEvent.id).toBe("evt-000051")
+  })
 })
 
 describe("migrateToolNames", () => {

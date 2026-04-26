@@ -16,7 +16,6 @@ import { getChannelCapabilities } from "../../mind/friends/channel"
 import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pending"
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
-// getPhrases removed — no longer needed after debug-activity cleanup
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
@@ -149,6 +148,7 @@ interface RuntimeDeps {
   createFriendStore: () => FileFriendStore
   createFriendResolver: (store: FileFriendStore, params: FriendResolverParams) => FriendResolver
   createServer: typeof http.createServer
+  getOwnHandles: () => readonly string[]
 }
 
 interface BlueBubblesReplyTargetController {
@@ -188,6 +188,7 @@ const defaultDeps: RuntimeDeps = {
   createFriendStore: () => new FileFriendStore(path.join(getAgentRoot(), "friends")),
   createFriendResolver: (store, params) => new FriendResolver(store, params),
   createServer: http.createServer,
+  getOwnHandles: () => getBlueBubblesConfig().ownHandles,
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
@@ -701,6 +702,29 @@ function isWebhookPasswordValid(url: URL, expectedPassword: string): boolean {
   return !provided || provided === expectedPassword
 }
 
+function normalizeHandleForSelfMatch(handle: string): string {
+  const trimmed = handle.trim().toLowerCase()
+  if (!trimmed) return ""
+  // Phone-shaped: strip everything but digits so +1 (415) 555-... matches 14155550000.
+  if (/[+\d]/.test(trimmed) && !trimmed.includes("@")) {
+    const digits = trimmed.replace(/\D/g, "")
+    if (digits.length >= 7) return digits
+  }
+  return trimmed
+}
+
+export function isAgentSelfHandle(senderExternalId: string | undefined, ownHandles: readonly string[]): boolean {
+  if (!senderExternalId || !senderExternalId.trim()) return false
+  const target = normalizeHandleForSelfMatch(senderExternalId)
+  /* v8 ignore start -- target is non-empty by construction since senderExternalId was just verified non-whitespace */
+  if (!target) return false
+  /* v8 ignore stop */
+  for (const own of ownHandles) {
+    if (normalizeHandleForSelfMatch(own) === target) return true
+  }
+  return false
+}
+
 async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
@@ -716,6 +740,25 @@ async function handleBlueBubblesNormalizedEvent(
       meta: {
         messageGuid: event.messageGuid,
         kind: event.kind,
+      },
+    })
+    return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
+  }
+  // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat
+  // outbound message back through the webhook with `isFromMe` missing/false.
+  // Without this guard the agent ingests its own message and replies to it
+  // ("Slugger talking to himself"). Compare the sender's externalId against
+  // the agent's known iMessage handles.
+  if (isAgentSelfHandle(event.sender.externalId, resolvedDeps.getOwnHandles())) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_self_handle_filtered",
+      message: "filtered bluebubbles event whose sender matched an agent-owned handle (isFromMe was missing/false)",
+      meta: {
+        messageGuid: event.messageGuid,
+        kind: event.kind,
+        senderExternalId: event.sender.externalId,
       },
     })
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }

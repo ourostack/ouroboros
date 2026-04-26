@@ -107,27 +107,30 @@ Human-facing CLI commands share one terminal surface family instead of each comm
 
 ## Senses
 
-Current senses:
+Current senses (`SenseName` in `src/heart/identity.ts`):
 
 - `cli`
 - `teams`
 - `bluebubbles`
-- `mcp`
+- `mail`
 
 Sense status model:
 
 - `interactive`
 - `disabled`
 - `needs_config`
+- `not_attached`
 - `ready`
 - `running`
 - `error`
 
-The daemon manages daemon-hosted senses and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted.
+The daemon manages daemon-hosted senses (teams, bluebubbles, mail) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted.
 
-### MCP Sense
+MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex). It's described below for completeness but lives at `src/heart/mcp/`, not under `src/senses/`. Tool calls coming through MCP route into the same agent runtime as senses do, but MCP is a transport, not a managed input channel.
 
-The MCP sense is how agents talk to developer tools like Claude Code and Codex. It works like this:
+### MCP Bridge
+
+The MCP bridge is how agents talk to developer tools like Claude Code and Codex. It works like this:
 
 - `ouro mcp-serve --agent <name>` starts a JSON-RPC 2.0 server on stdin/stdout. The dev tool launches this as a subprocess.
 - The MCP server exposes tools (e.g., `send_message`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.

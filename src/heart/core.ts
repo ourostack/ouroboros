@@ -190,7 +190,6 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
     // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
     console.error(`\n[fatal] ${msg}\n`);
     process.exit(1);
-    throw new Error("unreachable");
   }
 
   if (!_providerRuntimes[facing]) {
@@ -202,7 +201,6 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
       meta: {},
     });
     process.exit(1);
-    throw new Error("unreachable");
   }
   return _providerRuntimes[facing]!.runtime;
 }

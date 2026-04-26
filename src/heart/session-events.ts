@@ -1159,7 +1159,10 @@ export function appendSyntheticAssistantEvent(
   content: string,
   recordedAt: string,
 ): SessionEnvelope {
-  const sequence = envelope.events.length + 1
+  // Use nextEventSequence(events) instead of `events.length + 1` so any gap
+  // (from pruning, archive replay, or self-heal dedup) cannot collide with
+  // an existing event id. Same fix pattern as line 1046.
+  const sequence = nextEventSequence(envelope.events)
   const event = buildEventFromMessage(
     { role: "assistant", content },
     sequence,

@@ -22,7 +22,9 @@ Current first-class senses:
 - `cli`
 - `teams`
 - `bluebubbles`
-- `mcp`
+- `mail`
+
+(MCP is a bridge for developer tools — a separate channel, not a sense. See `src/heart/mcp/` for the implementation.)
 
 Current provider ids:
 
@@ -45,7 +47,7 @@ The shared harness lives in `src/`:
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP, activity transport, inner-dialog orchestration, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -267,4 +269,3 @@ See `skills/configure-dev-tools.md` for the full tool inventory and troubleshoot
 ## A Note To Future Maintainers
 
 If you discover a doc that lies, fix it or remove it. Accuracy is a kindness. A future agent should not have to untangle a fossil record just to understand where their hands are.
-# Production SPA serving
