@@ -291,6 +291,8 @@ export interface EncryptedPayload {
 
 export interface PrivateMailEnvelope {
   messageId?: string
+  inReplyTo?: string
+  references?: string[]
   from: string[]
   to: string[]
   cc: string[]
@@ -749,8 +751,22 @@ export async function buildStoredMailMessage(input: {
   const parsed = await simpleParser(input.rawMime)
   const id = messageStorageId(input.envelope, input.rawMime)
   const text = parsed.text ?? ""
+  const inReplyTo = typeof parsed.inReplyTo === "string" && parsed.inReplyTo.trim().length > 0
+    ? parsed.inReplyTo.trim()
+    : undefined
+  const referencesRaw = parsed.references
+  /* v8 ignore start -- string-fallback branch: mailparser typically returns string[]; single-ref string fallback is defensive @preserve */
+  const referencesAsString = typeof referencesRaw === "string" && referencesRaw.trim().length > 0
+    ? referencesRaw.trim().split(/\s+/)
+    : undefined
+  /* v8 ignore stop */
+  const references = Array.isArray(referencesRaw)
+    ? referencesRaw.filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim())
+    : referencesAsString
   const privateEnvelope: PrivateMailEnvelope = {
     messageId: parsed.messageId ?? undefined,
+    ...(inReplyTo ? { inReplyTo } : {}),
+    ...(references && references.length > 0 ? { references } : {}),
     from: parsedAddressList(parsed.from),
     to: parsedAddressList(parsed.to),
     cc: parsedAddressList(parsed.cc),

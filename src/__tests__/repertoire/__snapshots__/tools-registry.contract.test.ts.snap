@@ -33,6 +33,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "list_skills",
   "load_skill",
   "mail_access_log",
+  "mail_body",
   "mail_compose",
   "mail_decide",
   "mail_recent",

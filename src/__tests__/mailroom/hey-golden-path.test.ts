@@ -174,7 +174,7 @@ describe("HEY MBOX golden path", () => {
     const messageId = /mail_[a-f0-9]+/.exec(String(search))?.[0]
     expect(messageId).toBeTruthy()
 
-    const body = await tool("mail_thread").handler({
+    const body = await tool("mail_body").handler({
       message_id: messageId!,
       reason: "extract travel confirmation for upcoming plan update",
       max_chars: "1200",
@@ -203,7 +203,7 @@ describe("HEY MBOX golden path", () => {
       expect.objectContaining({ tool: "mail_search", reason: "update Ari travel plan" }),
       expect.objectContaining({ tool: "mail_search", reason: "recover travel search with OR terms" }),
       expect.objectContaining({ tool: "mail_search", reason: "recover travel search with anchor list" }),
-      expect.objectContaining({ tool: "mail_thread", reason: "extract travel confirmation for upcoming plan update" }),
+      expect.objectContaining({ tool: "mail_body", reason: "extract travel confirmation for upcoming plan update" }),
     ]))
   })
 })

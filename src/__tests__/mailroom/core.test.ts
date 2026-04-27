@@ -169,7 +169,7 @@ describe("mailroom core", () => {
     await store.recordAccess({
       agentId: "slugger",
       messageId: result.accepted[0].id,
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "test read",
     })
     expect(await store.listAccessLog("slugger")).toHaveLength(1)
@@ -389,6 +389,51 @@ describe("mailroom core", () => {
     }))
 
     expect(() => decryptStoredMailMessage(message, {})).toThrow("Missing private mail key")
+  })
+
+  it("captures In-Reply-To and References headers on ingest", async () => {
+    const { registry, keys } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const native = resolveMailAddress(registry, "slugger@ouro.bot")
+    if (!native) throw new Error("expected native mailbox")
+
+    const replyMime = Buffer.from([
+      "From: Friend <friend@example.com>",
+      "To: slugger@ouro.bot",
+      "Subject: Re: Trip plans",
+      "Message-ID: <reply-1@example.com>",
+      "In-Reply-To: <root-1@example.com>",
+      "References: <root-1@example.com> <reply-0@example.com>",
+      "",
+      "yes please",
+    ].join("\r\n"))
+    const reply = await buildStoredMailMessage({
+      resolved: native,
+      envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: replyMime,
+    })
+    const replyPrivate = decryptStoredMailMessage(reply.message, keys).private
+    expect(replyPrivate.inReplyTo).toBe("<root-1@example.com>")
+    expect(replyPrivate.references).toEqual(["<root-1@example.com>", "<reply-0@example.com>"])
+
+    const noHeadersMime = Buffer.from([
+      "From: Friend <friend@example.com>",
+      "To: slugger@ouro.bot",
+      "Subject: Standalone",
+      "",
+      "single message",
+    ].join("\r\n"))
+    const standalone = await buildStoredMailMessage({
+      resolved: native,
+      envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: noHeadersMime,
+    })
+    const standalonePrivate = decryptStoredMailMessage(standalone.message, keys).private
+    expect(standalonePrivate.inReplyTo).toBeUndefined()
+    expect(standalonePrivate.references).toBeUndefined()
   })
 
   it("preserves sender policies during ensure and fails fast when stored keys are missing", () => {

@@ -98,6 +98,9 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
   // observability via senses.mail_search_cache_upserted and friends.
   "mailroom/search-relevance",
+  // Mail thread reconstruction: pure graph-walk over decrypted message
+  // metadata. Consumers (tools-mail.ts mail_thread handler) own observability.
+  "mailroom/thread",
   // Trip ledger crypto helpers: pure RSA/AES envelope construction + slug
   // hashing. The caller (trips/store.ts) owns observability via
   // trips.ledger_created and trips.evidence_attached.

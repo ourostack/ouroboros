@@ -274,7 +274,7 @@ describe("AzureBlobMailroomStore", () => {
     await store.recordAccess({
       agentId: "slugger",
       messageId: created.message.id,
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "blob store proof",
     })
     await store.recordAccess({
@@ -283,7 +283,7 @@ describe("AzureBlobMailroomStore", () => {
       reason: "blob mailbox overview",
     })
     expect(await store.listAccessLog("slugger")).toEqual([
-      expect.objectContaining({ tool: "mail_thread", reason: "blob store proof" }),
+      expect.objectContaining({ tool: "mail_body", reason: "blob store proof" }),
       expect.objectContaining({ tool: "mail_recent", reason: "blob mailbox overview" }),
     ])
 

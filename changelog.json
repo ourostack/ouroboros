@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.497",
+      "changes": [
+        "Mail thread reconstruction + tool rename. The previous `mail_thread` tool was misleadingly named — it returned ONE message body, not a thread. Renamed to `mail_body`. The new actual conversation walker now owns the canonical name `mail_thread`. Existing tests, audit-log strings, and CLI guidance updated to match.",
+        "Header capture: `PrivateMailEnvelope` carries optional `inReplyTo` and `references` fields, populated at `buildStoredMailMessage` time from RFC822 headers. Existing messages without these headers are unaffected. `mail_thread` walks the thread from any seed message (storage id or RFC822 `<message-id@host>`): ancestors via `In-Reply-To`/`References`, descendants by reverse-edges across the recent message pool (default 200, configurable 20-500, scoped native/delegated/all), assigns true reply-chain depth via topological longest-path, and renders chronologically with depth-indented summaries. Bodies not included — `mail_body` opens one message.",
+        "Pure thread-walker (`src/mailroom/thread.ts`) is testable without the filesystem: 7 unit tests cover mid-thread seed (walks both directions), seed by RFC822 message-id when storage id doesn't match, References-only (no In-Reply-To, common in list mailers), unrelated-message exclusion, empty/whitespace defensiveness. Plus 3 new tool-level tests for `mail_thread` (multi-message reconstruction, untrusted refusal, delegated-trust block). Tool registry stays at 75 (rename, not addition). All 194 mailroom tests pass."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.496",
       "changes": [
         "New `Lifecycle` category in `ouro doctor` (`src/heart/daemon/doctor.ts:checkLifecycle`). Reads daemon.ndjson from the first available agent bundle and surfaces operator-relevant signal: last activity timestamp + age (warns if older than 5 minutes — daemon may be silent or stopped), daemon restart count in the last hour (warns if >3 — high churn), recent version-install events with installed versions, and any agent_process_error events with reason. Designed to answer the operator's question after the daemon goes silent: 'did it crash? when did it last do anything? did it just upgrade?' This session's daemon went silent at 04:30 UTC with no easy way to diagnose; the new check would have surfaced 'last event 18m ago — daemon may be silent or stopped' immediately. Tail-reads only the last 5000 log lines so doctor stays snappy on chatty daemons. 13 new tests covering recent activity, restart counts, install events, agent_process_error, age formatting, log truncation, and edge cases (malformed JSON, missing meta fields, missing log file, read failure)."

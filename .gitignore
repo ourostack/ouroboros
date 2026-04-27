@@ -10,3 +10,4 @@ ouro.bot-cli-*.tgz
 packages/outlook-ui/node_modules/
 packages/outlook-ui/dist/
 .playwright-mcp/
+.audit/

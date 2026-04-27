@@ -324,7 +324,7 @@ describe("Agent Mail local proof", () => {
     expect(search).toContain("Flight to London confirmed")
     const messageId = /mail_[a-f0-9]+/.exec(String(search))?.[0]
     expect(messageId).toBeTruthy()
-    const thread = await tool("mail_thread").handler({
+    const thread = await tool("mail_body").handler({
       message_id: messageId!,
       reason: "extract itinerary details",
       max_chars: "1000",

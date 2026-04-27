@@ -125,6 +125,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("describe_image");
     expect(names).toContain("mail_recent");
     expect(names).toContain("mail_search");
+    expect(names).toContain("mail_body");
     expect(names).toContain("mail_thread");
     expect(names).toContain("mail_screener");
     expect(names).toContain("mail_decide");
@@ -198,7 +199,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("trip_update_leg");
     expect(names).toContain("trip_new_id");
 
-    // Exact count: 74 tools total including Mailroom status, outbound mail, attachment, image recovery, and trip ledger tools
-    expect(names).toHaveLength(74);
+    // Exact count: 75 tools total including Mailroom status, outbound mail (mail_compose/send), mail_body+mail_thread, attachment, image recovery, and trip ledger tools
+    expect(names).toHaveLength(75);
   });
 });

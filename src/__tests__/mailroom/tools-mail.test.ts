@@ -308,7 +308,7 @@ describe("mail tools", () => {
     expect(result).toContain("AUTH_REQUIRED:mailroom")
     await expect(tool("mail_search").handler({ query: "pancakes" }, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
-    await expect(tool("mail_thread").handler({ message_id: "mail_missing", reason: "test" }, trustedContext()))
+    await expect(tool("mail_body").handler({ message_id: "mail_missing", reason: "test" }, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
     await expect(tool("mail_access_log").handler({}, trustedContext()))
       .resolves.toContain("AUTH_REQUIRED:mailroom")
@@ -336,7 +336,7 @@ describe("mail tools", () => {
     ctx.context!.friend.trustLevel = "stranger"
     await expect(tool("mail_recent").handler({}, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_search").handler({ query: "pancakes" }, ctx)).resolves.toContain("mail is private")
-    await expect(tool("mail_thread").handler({ message_id: "mail_1", reason: "test" }, ctx)).resolves.toContain("mail is private")
+    await expect(tool("mail_body").handler({ message_id: "mail_1", reason: "test" }, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_access_log").handler({}, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_compose").handler({ to: "ari@example.com" }, ctx)).resolves.toContain("mail is private")
     await expect(tool("mail_send").handler({ draft_id: "draft_1", confirmation: "CONFIRM_SEND" }, ctx)).resolves.toContain("mail is private")
@@ -573,14 +573,14 @@ describe("mail tools", () => {
     const search = await tool("mail_search").handler({ query: "pancakes", reason: "find breakfast" }, trustedContext())
     expect(search).toContain(messageId!)
 
-    const thread = await tool("mail_thread").handler({ message_id: messageId!, reason: "answer Ari", max_chars: "80" }, trustedContext())
+    const thread = await tool("mail_body").handler({ message_id: messageId!, reason: "answer Ari", max_chars: "80" }, trustedContext())
     expect(thread).toContain("body (untrusted external content)")
     expect(thread).toContain("pancakes")
 
     const accessLog = await tool("mail_access_log").handler({}, trustedContext())
     expect(accessLog).toContain("mail_recent")
     expect(accessLog).toContain("mail_search")
-    expect(accessLog).toContain("mail_thread")
+    expect(accessLog).toContain("mail_body")
     expect(accessLog).toContain("delegated human mailbox: ari@mendelow.me / hey")
 
     const rawAccessLog = await seeded.store.listAccessLog("slugger")
@@ -597,7 +597,7 @@ describe("mail tools", () => {
     await seeded.store.recordAccess({
       agentId: "slugger",
       messageId,
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "legacy delegated audit",
       mailboxRole: "delegated-human-mailbox",
       compartmentKind: "delegated",
@@ -620,7 +620,7 @@ describe("mail tools", () => {
     expect(familySearch).toContain("Breakfast logistics")
     const messageId = /mail_[a-f0-9]+/.exec(String(familySearch))?.[0]
     expect(messageId).toBeTruthy()
-    await expect(tool("mail_thread").handler({ message_id: messageId!, reason: "friend curiosity" }, friendContext()))
+    await expect(tool("mail_body").handler({ message_id: messageId!, reason: "friend curiosity" }, friendContext()))
       .resolves.toContain("delegated human mail requires family trust")
   })
 
@@ -1447,22 +1447,22 @@ describe("mail tools", () => {
     const friendNativeSearch = await tool("mail_search").handler({ query: "long body" }, friendContext())
     expect(friendNativeSearch).toContain(seeded.longId)
 
-    await expect(tool("mail_thread").handler({ message_id: "", reason: "test" }, trustedContext()))
+    await expect(tool("mail_body").handler({ message_id: "", reason: "test" }, trustedContext()))
       .resolves.toBe("message_id is required.")
-    await expect(tool("mail_thread").handler({ reason: "test" }, trustedContext()))
+    await expect(tool("mail_body").handler({ reason: "test" }, trustedContext()))
       .resolves.toBe("message_id is required.")
-    await expect(tool("mail_thread").handler({ message_id: "mail_missing", reason: "test" }, trustedContext()))
+    await expect(tool("mail_body").handler({ message_id: "mail_missing", reason: "test" }, trustedContext()))
       .resolves.toContain("No visible mail message found")
-    const longThread = await tool("mail_thread").handler({ message_id: seeded.longId, reason: "clip", max_chars: "200" }, trustedContext())
+    const longThread = await tool("mail_body").handler({ message_id: seeded.longId, reason: "clip", max_chars: "200" }, trustedContext())
     expect(longThread).toContain("body (untrusted external content):")
     expect(String(longThread).endsWith("...")).toBe(true)
-    const emptyThread = await tool("mail_thread").handler({ message_id: seeded.emptyId, reason: "inspect empty" }, trustedContext())
+    const emptyThread = await tool("mail_body").handler({ message_id: seeded.emptyId, reason: "inspect empty" }, trustedContext())
     expect(emptyThread).toContain("(no text body)")
 
     await seeded.store.recordAccess({
       agentId: "slugger",
       threadId: "thread-1",
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "thread-shaped audit target",
     })
     const accessLog = await tool("mail_access_log").handler({}, trustedContext())
@@ -1479,7 +1479,7 @@ describe("mail tools", () => {
     await seeded.store.recordAccess({
       agentId: "slugger",
       messageId: seeded.longId,
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "baseline audit",
     })
     fs.appendFileSync(path.join(storePath, "access-log", "slugger.jsonl"), "{\"id\":\"broken\"", "utf-8")
@@ -1497,7 +1497,7 @@ describe("mail tools", () => {
     await seeded.store.recordAccess({
       agentId: "slugger",
       messageId: seeded.longId,
-      tool: "mail_thread",
+      tool: "mail_body",
       reason: "baseline audit",
     })
     const accessLogPath = path.join(storePath, "access-log", "slugger.jsonl")
@@ -1527,7 +1527,7 @@ describe("mail tools", () => {
     expect(missingOnlySearch).toContain("No matching mail.")
     expect(missingOnlySearch).toContain("1 mail message could not be decrypted")
 
-    const lostThread = await tool("mail_thread").handler({ message_id: recovered.lostId, reason: "lost-key open" }, trustedContext())
+    const lostThread = await tool("mail_body").handler({ message_id: recovered.lostId, reason: "lost-key open" }, trustedContext())
     expect(lostThread).toContain("could not be decrypted")
     expect(lostThread).toContain(recovered.lostKeyId)
     expect(lostThread).toContain("rotation cannot recover mail already encrypted to a lost private key")
@@ -1564,7 +1564,7 @@ describe("mail tools", () => {
 
     await expect(tool("mail_recent").handler({ scope: "native", reason: "native smoke" }, trustedContext()))
       .rejects.toThrow()
-    await expect(tool("mail_thread").handler({ message_id: recovered.messageId, reason: "open corrupt key" }, trustedContext()))
+    await expect(tool("mail_body").handler({ message_id: recovered.messageId, reason: "open corrupt key" }, trustedContext()))
       .rejects.toThrow()
   })
 
@@ -1639,5 +1639,109 @@ describe("mail tools", () => {
     )
     const missingSource = await tool("mail_recent").handler({ scope: "delegated" }, trustedContext())
     expect(missingSource).toContain("delegated:ari@mendelow.me:source")
+  })
+
+  it("mail_thread reconstructs a multi-message conversation, mail_body opens one message, both audit-logged", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    const native = registry.mailboxes.find((mb) => mb.canonicalAddress === "slugger@ouro.bot")!
+
+    const ingest = async (mime: Buffer, receivedAt: string) => {
+      const result = await ingestRawMailToStore({
+        registry,
+        store,
+        envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
+        rawMime: mime,
+        receivedAt: new Date(receivedAt),
+      })
+      return result.accepted[0]!.id
+    }
+
+    const rootMime = Buffer.from([
+      "From: Friend <friend@example.com>",
+      "To: slugger@ouro.bot",
+      "Subject: Trip plans",
+      "Message-ID: <root@example.com>",
+      "",
+      "want to go to Basel",
+    ].join("\r\n"))
+    const replyMime = Buffer.from([
+      "From: Friend <friend@example.com>",
+      "To: slugger@ouro.bot",
+      "Subject: Re: Trip plans",
+      "Message-ID: <reply@example.com>",
+      "In-Reply-To: <root@example.com>",
+      "References: <root@example.com>",
+      "",
+      "yes, August?",
+    ].join("\r\n"))
+    void native // keep for future binding shape
+    const rootId = await ingest(rootMime, "2026-04-25T10:00:00.000Z")
+    const replyId = await ingest(replyMime, "2026-04-25T11:00:00.000Z")
+
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: { mailboxAddress: "slugger@ouro.bot", storePath, privateKeys: keys },
+    })
+
+    const thread = await tool("mail_thread").handler({ message_id: replyId, reason: "review trip thread" }, trustedContext()) as string
+    expect(thread).toContain("Conversation thread (2 messages")
+    expect(thread).toContain(rootId)
+    expect(thread).toContain(replyId)
+    expect(thread).toContain("Trip plans")
+
+    const aloneThread = await tool("mail_thread").handler({ message_id: rootId, reason: "from root", pool_size: "20" }, trustedContext()) as string
+    expect(aloneThread).toContain("Conversation thread (2 messages")
+
+    const standaloneMime = Buffer.from([
+      "From: Other <other@example.com>",
+      "To: slugger@ouro.bot",
+      "Subject: Standalone",
+      "Message-ID: <standalone@example.com>",
+      "",
+      "no thread here",
+    ].join("\r\n"))
+    const standaloneId = await ingest(standaloneMime, "2026-04-25T12:00:00.000Z")
+    const standaloneThread = await tool("mail_thread").handler({ message_id: standaloneId, reason: "lone seed" }, trustedContext()) as string
+    expect(standaloneThread).toContain("Conversation thread (1 message")
+    expect(standaloneThread).toContain("(no related messages found in pool")
+
+    const missingSeed = await tool("mail_thread").handler({ message_id: "mail_nope", reason: "absent" }, trustedContext()) as string
+    expect(missingSeed).toContain("not in the scanned pool")
+
+    const emptyArg = await tool("mail_thread").handler({ message_id: "", reason: "x" }, trustedContext()) as string
+    expect(emptyArg).toBe("message_id is required.")
+
+    const body = await tool("mail_body").handler({ message_id: replyId, reason: "open reply" }, trustedContext()) as string
+    expect(body).toContain("body (untrusted external content)")
+
+    const accessLog = await tool("mail_access_log").handler({}, trustedContext()) as string
+    expect(accessLog).toContain("mail_thread")
+    expect(accessLog).toContain("mail_body")
+  })
+
+  it("mail_thread blocks delegated scope for non-family ctx", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger", ownerEmail: "ari@mendelow.me", source: "hey" })
+    const store = new FileMailroomStore({ rootDir: storePath })
+    void store
+    void registry
+    cacheRuntimeCredentialConfig("slugger", {
+      mailroom: { mailboxAddress: "slugger@ouro.bot", storePath, privateKeys: keys },
+    })
+    const blocked = await tool("mail_thread").handler({ message_id: "x", reason: "y", scope: "delegated" }, friendContext()) as string
+    expect(blocked).toContain("delegated human mail requires family trust")
+  })
+
+  it("mail_thread refuses untrusted callers", async () => {
+    setAgentName("slugger")
+    const ctx = {
+      signin: async () => undefined,
+      context: { friend: { id: "x", name: "X", trustLevel: "stranger", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "0", updatedAt: "0", schemaVersion: 1 }, channel: { channel: "cli", senseType: "local", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+    } as unknown as ToolContext
+    const result = await tool("mail_thread").handler({ message_id: "x", reason: "snoop" }, ctx) as string
+    expect(result).toContain("mail is private")
   })
 })

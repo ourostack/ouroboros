@@ -9,7 +9,7 @@ describe("mail tool registration and trust boundaries", () => {
       "mail_status",
       "mail_recent",
       "mail_search",
-      "mail_thread",
+      "mail_body",
       "mail_access_log",
       "mail_screener",
       "mail_decide",
