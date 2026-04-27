@@ -415,7 +415,7 @@ describe("AzureBlobMailroomStore", () => {
     const duplicateState = serviceClient.container.blobs.get(`messages/${created.message.id}.json`)
     if (!duplicateState) throw new Error("expected duplicate blob state")
     duplicateState.downloadFailuresRemaining = 4
-    duplicateState.downloadFailureMessage = "download messages/existing.json timed out after 20000ms"
+    duplicateState.downloadFailureMessage = "download messages/existing.json timed out after 60000ms"
 
     const duplicate = await store.putRawMessage({
       resolved,

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.494",
+      "changes": [
+        "Bump default Azure Blob operation timeout from 20s to 60s. Slugger's HEY-corpus validation against the booking-aware ranking from #608 surfaced a real issue: ranking and metadata are clean, but body fetches for targeted retrieval (`mail_thread`-style 'open this specific message') were timing out on real-world mail bodies. HEY mail with HTML-heavy booking confirmations regularly exceed the 20s ceiling on cold reads from Azure Blob. 60s with 2 attempts gives 120s max wait, which matches Azure's actual cold-read SLA for few-MB blobs while still bounding total wait. Index reads still fit comfortably in this budget. Existing test fixture for the timeout error message updated."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.493",
       "changes": [
         "Position-aware orphan-tool-result detection in `repairToolCallSequences`. Slugger's session was STILL hitting MiniMax error 2013 even after the alpha.492 inline-reasoning strip landed because the orphan check was global (a tool result was kept if its tool_call_id appeared in ANY assistant message in the conversation, regardless of order). After session pruning, a synthetic tool-result for a long-pruned tool_call ended up at sequence 86 referencing `call_function_utqogadgqp5h_1` while the assistant message that defined that id lived at sequence 88 — AFTER the tool result. MiniMax requires tool results to follow their matching assistant. The fix walks the conversation in order, tracking tool_call_ids only as they're encountered in assistant messages; tool results referencing ids that haven't been defined yet are removed. Regression test reproduces the exact misordered shape and asserts the misplaced tool result is dropped while the correctly-ordered one survives. This is the third and final layer of the empty-reply chain (#611 stripped the operator surface, #612 stripped the persisted content + load-time repair, #493 fixes orphan-detection ordering)."

@@ -21,7 +21,13 @@ const MESSAGE_INDEX_PREFIX = "message-index"
 const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
 const MESSAGE_INDEX_SORT_WIDTH = 13
 const MESSAGE_INDEX_NO_SOURCE = "~"
-const DEFAULT_BLOB_OPERATION_TIMEOUT_MS = 20_000
+// Bumped from 20s after Slugger's HEY-corpus validation revealed that
+// real-world mail bodies (HTML-heavy booking confirmations, MBOX-imported
+// large messages) regularly exceed the original 20s ceiling. 60s with 2
+// attempts = 120s max wait, which is closer to what Azure Blob actually
+// needs for cold reads of a few-MB message body. Index reads still fit
+// comfortably in this budget.
+const DEFAULT_BLOB_OPERATION_TIMEOUT_MS = 60_000
 const DEFAULT_BLOB_DOWNLOAD_ATTEMPTS = 2
 const DEFAULT_MESSAGE_FETCH_CONCURRENCY = 20
 const DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY = 8
