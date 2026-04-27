@@ -45,12 +45,75 @@ interface QueueEntry {
  */
 export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
 
+/**
+ * Habit recursion detector thresholds. The instinct cap above protects
+ * against pending-dir self-loops; this protects against the *external*
+ * IPC self-loop where heartbeat-shaped messages get re-issued faster
+ * than their cadence — e.g. a hook misconfigured to repost on every
+ * heartbeat, a daemon retry storm, or a stuck timer firing back-to-back.
+ *
+ * MIN_INTERVAL_MS — two of the same habit within this window is suspect
+ * regardless of cadence (no realistic habit fires every few seconds).
+ * BURST_THRESHOLD over BURST_WINDOW_MS catches slower runaways that stay
+ * just under MIN_INTERVAL_MS.
+ *
+ * Detection is observation-only: it emits warn-level nerves events, it
+ * does not drop the message. An operator (or follow-up auto-recovery)
+ * decides what to do with the signal.
+ */
+export const HABIT_RECURSION_MIN_INTERVAL_MS = 5_000
+export const HABIT_RECURSION_BURST_WINDOW_MS = 60_000
+export const HABIT_RECURSION_BURST_THRESHOLD = 5
+
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
   hasPendingWork: () => boolean = () => hasPendingMessages(getInnerDialogPendingDir(getAgentName())),
+  nowSource: () => number = () => Date.now(),
 ): InnerDialogWorkerController {
   let running = false
   const queue: QueueEntry[] = []
+  const lastFireByHabit = new Map<string, number>()
+  const recentHabitFires: number[] = []
+
+  function recordHabitFireForRecursion(habitName: string): void {
+    const now = nowSource()
+    const previous = lastFireByHabit.get(habitName)
+    if (previous !== undefined) {
+      const intervalMs = now - previous
+      if (intervalMs < HABIT_RECURSION_MIN_INTERVAL_MS) {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.habit_recursion_suspected",
+          message: "habit fired suspiciously fast after the previous fire — possible self-recursion or duplicate dispatch",
+          meta: {
+            habitName,
+            intervalMs,
+            thresholdMs: HABIT_RECURSION_MIN_INTERVAL_MS,
+          },
+        })
+      }
+    }
+    lastFireByHabit.set(habitName, now)
+    recentHabitFires.push(now)
+    while (recentHabitFires.length > 0 && now - recentHabitFires[0]! > HABIT_RECURSION_BURST_WINDOW_MS) {
+      recentHabitFires.shift()
+    }
+    if (recentHabitFires.length >= HABIT_RECURSION_BURST_THRESHOLD) {
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.habit_recursion_burst",
+        message: "habit messages arriving in a burst — possible runaway loop",
+        meta: {
+          count: recentHabitFires.length,
+          windowMs: HABIT_RECURSION_BURST_WINDOW_MS,
+          thresholdCount: HABIT_RECURSION_BURST_THRESHOLD,
+          lastHabitName: habitName,
+        },
+      })
+    }
+  }
 
   async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void> {
     if (running) {
@@ -141,11 +204,15 @@ export function createInnerDialogWorker(
     if (!message || typeof message !== "object") return
     const maybeMessage = message as Partial<InnerDialogWorkerMessage>
     if (maybeMessage.type === "habit") {
+      /* v8 ignore next -- defensive fallback: live habit dispatch always sets habitName @preserve */
+      const habitName = maybeMessage.habitName ?? "(unnamed)"
+      recordHabitFireForRecursion(habitName)
       await run("habit", undefined, maybeMessage.habitName)
       return
     }
     if (maybeMessage.type === "heartbeat") {
       // Backward compatibility: heartbeat -> habit/heartbeat
+      recordHabitFireForRecursion("heartbeat")
       await run("habit", undefined, "heartbeat")
       return
     }

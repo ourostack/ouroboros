@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.498",
+      "changes": [
+        "Heartbeat / habit recursion detection in the inner-dialog worker. The existing instinct cap (`MAX_CONSECUTIVE_INSTINCT_TURNS=3`) protects against the *internal* pending-dir self-loop (a turn writes back to its own pending dir, drains it, repeats). It does not protect against the *external* IPC self-loop where heartbeat-shaped messages get re-issued faster than their cadence — e.g. a hook misconfigured to repost on every heartbeat, a daemon retry storm, or two timers drifting into the same window.",
+        "Two new warn-level nerve events: `senses.habit_recursion_suspected` fires when two of the same habit (e.g. `heartbeat`) arrive within `HABIT_RECURSION_MIN_INTERVAL_MS` (5s) — no realistic cadence runs that fast. `senses.habit_recursion_burst` fires when `HABIT_RECURSION_BURST_THRESHOLD` (5) or more habit messages of any kind land within `HABIT_RECURSION_BURST_WINDOW_MS` (60s) — catches slower runaways that stay just under the min-interval threshold.",
+        "Detection is observation-only by design: it emits the warn signal so an operator (or a follow-up auto-recovery layer) can act on it. The message is not dropped — the signal is the value. Per-habit-name tracking, so two distinct habits firing close together don't trip the min-interval warning. `nowSource` is injectable via the `createInnerDialogWorker` factory for deterministic tests. 5 new tests cover both detectors plus the trim-window and per-habit isolation cases."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.497",
       "changes": [
         "Mail thread reconstruction + tool rename. The previous `mail_thread` tool was misleadingly named — it returned ONE message body, not a thread. Renamed to `mail_body`. The new actual conversation walker now owns the canonical name `mail_thread`. Existing tests, audit-log strings, and CLI guidance updated to match.",

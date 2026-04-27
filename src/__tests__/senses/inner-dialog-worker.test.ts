@@ -472,4 +472,93 @@ describe("inner-dialog-worker", () => {
       expect(capEvents).toHaveLength(0)
     })
   })
+
+  describe("habit recursion detection", () => {
+    it("emits a warn event when two heartbeats arrive within the min-interval window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 1_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 1_500
+      await worker.handleMessage({ type: "heartbeat" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(1)
+      expect(recursionEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({ habitName: "heartbeat", intervalMs: 1_500 }),
+      }))
+    })
+
+    it("does not emit when heartbeats are spaced beyond the min-interval window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 2_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 30_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(0)
+    })
+
+    it("emits a burst event when the configured threshold of habits arrive within the burst window", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 3_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      for (let i = 0; i < 5; i++) {
+        await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+        now += 6_000
+      }
+
+      const burstEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_burst")
+      expect(burstEvents.length).toBeGreaterThanOrEqual(1)
+      expect(burstEvents[0]?.[0]).toEqual(expect.objectContaining({
+        level: "warn",
+        meta: expect.objectContaining({ count: 5, lastHabitName: "heartbeat" }),
+      }))
+    })
+
+    it("trims old fires outside the burst window and does not falsely escalate", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 4_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      for (let i = 0; i < 4; i++) {
+        await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+        now += 6_000
+      }
+      now += 90_000
+      await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+
+      const burstEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_burst")
+      expect(burstEvents).toHaveLength(0)
+    })
+
+    it("tracks per-habit-name independently — two distinct habits firing close together do not trip the min-interval warning", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 5_000_000
+      const nowSource = () => now
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, nowSource)
+
+      await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+      now += 1_000
+      await worker.handleMessage({ type: "habit", habitName: "morning-review" })
+
+      const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
+      expect(recursionEvents).toHaveLength(0)
+    })
+  })
 })
