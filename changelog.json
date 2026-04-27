@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.495",
+      "changes": [
+        "New regression bundle at `src/__tests__/heart/provider-replay-regressions.test.ts` that captures provider replay-rejection bug shapes in one place — documentation-as-test. Each entry cites the PR that fixed the shape and the runbook entry; future debuggers seeing a 4xx from a provider on what looks like a valid turn can grep this file first to see if the shape was already encountered. Currently bundles the MiniMax-M2.7 inline-`<think>`-plus-tool_calls case (#612), the reused-tool_call_id-misordered-after-pruning case (#613), and a cross-reference stub for the event-id collision class (covered separately in session-events.test.ts). Also documents the contribution pattern: capture the failing shape, write the test BEFORE the fix, land the fix, verify the test passes, cite the PR. Linked from `docs/known-issues-and-recovery.md` so operators triaging a similar bug land on the test bundle by default."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.494",
       "changes": [
         "Bump default Azure Blob operation timeout from 20s to 60s. Slugger's HEY-corpus validation against the booking-aware ranking from #608 surfaced a real issue: ranking and metadata are clean, but body fetches for targeted retrieval (`mail_thread`-style 'open this specific message') were timing out on real-world mail bodies. HEY mail with HTML-heavy booking confirmations regularly exceed the 20s ceiling on cold reads from Azure Blob. 60s with 2 attempts gives 120s max wait, which matches Azure's actual cold-read SLA for few-MB blobs while still bounding total wait. Index reads still fit comfortably in this budget. Existing test fixture for the timeout error message updated."

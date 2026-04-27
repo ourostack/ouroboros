@@ -123,3 +123,16 @@ canonical place to surface "what just happened" to the agent —
 write it like a post-incident note: cause, mitigation, suggested
 next action. See `buildSyntheticToolResultMessage` in
 `src/heart/session-events.ts` for the pattern.
+
+## Regression test bundle
+
+Provider replay-rejection bugs have a dedicated regression bundle
+at `src/__tests__/heart/provider-replay-regressions.test.ts`. The
+file exists as a documentation index — when a provider rejects on
+what looks like a valid turn, grep that file first; the shape may
+already be captured.
+
+When you encounter a NEW replay rejection: capture the shape from
+the daemon log, write the test BEFORE the fix (it should fail),
+land the fix, verify the test passes. Each entry there cites the
+PR + the runbook entry above.
