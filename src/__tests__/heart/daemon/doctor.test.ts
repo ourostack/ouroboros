@@ -31,6 +31,7 @@ import {
   checkHabits,
   checkSecurity,
   checkDisk,
+  checkLifecycle,
 } from "../../../heart/daemon/doctor"
 
 function createMockDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
@@ -1221,6 +1222,311 @@ describe("checkSecurity", () => {
 })
 
 // ── Disk checks ──
+
+describe("checkLifecycle", () => {
+  function ndjsonLine(ts: string, event: string, meta: Record<string, unknown> = {}): string {
+    return JSON.stringify({ ts, level: "info", event, component: "daemon", message: "evt", meta }) + "\n"
+  }
+
+  it("warns when no daemon log is found", () => {
+    const deps = createMockDeps({ existsSync: existsFor([]) })
+    const cat = checkLifecycle(deps)
+    expect(cat.name).toBe("Lifecycle")
+    expect(cat.checks).toHaveLength(1)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no daemon.ndjson")
+  })
+
+  it("warns when an agent bundle exists but its daemon.ndjson does not", () => {
+    // discoverAgents returns ['slugger.ouro'] (bundlesRoot exists), but the
+    // log file inside it doesn't — the candidate-existsSync check fails.
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]), // bundlesRoot exists, log path doesn't
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+    })
+    const cat = checkLifecycle(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no daemon.ndjson")
+  })
+
+  it("passes when last activity is recent", () => {
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const log = ndjsonLine(recentTs, "daemon.command_received")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("warns when last activity is older than 5 minutes", () => {
+    const staleTs = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const log = ndjsonLine(staleTs, "senses.shared_turn_end")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("warn")
+    expect(activity?.detail).toContain("silent or stopped")
+  })
+
+  it("counts daemon restarts in the last hour", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 30 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 20 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 60 * 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.status).toBe("pass")
+    expect(restarts?.detail).toContain("2 restarts")
+  })
+
+  it("warns when restart count is high (churn)", () => {
+    const now = Date.now()
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) {
+      lines.push(ndjsonLine(new Date(now - (5 - i) * 60 * 1000).toISOString(), "daemon.daemon_started"))
+    }
+    lines.push(ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"))
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.status).toBe("warn")
+    expect(restarts?.detail).toContain("high churn")
+  })
+
+  it("reports cli_version_install_end events with versions", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 10 * 60 * 1000).toISOString(), "daemon.cli_version_install_end", { version: "0.1.0-alpha.493" }),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const installs = cat.checks.find((c) => c.label === "version installs (last hour)")
+    expect(installs?.status).toBe("pass")
+    expect(installs?.detail).toContain("alpha.493")
+  })
+
+  it("warns on agent_process_error events with the reason", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 5 * 60 * 1000).toISOString(), "daemon.agent_process_error", { agent: "slugger", reason: "ENOENT" }),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.status).toBe("warn")
+    expect(errors?.detail).toContain("slugger: ENOENT")
+  })
+
+  it("ignores events older than one hour", () => {
+    const oldTs = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+    const recentTs = new Date(Date.now() - 30_000).toISOString()
+    const log = [
+      ndjsonLine(oldTs, "daemon.daemon_started"),
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    // Old daemon_started is outside the hour cutoff and not counted.
+    expect(restarts).toBeUndefined()
+  })
+
+  it("handles malformed ndjson lines gracefully", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      "not valid json\n",
+      JSON.stringify({ ts: "not a date", event: "wat" }) + "\n",
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("fails if the log read throws", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: () => { throw new Error("EACCES") },
+    })
+    const cat = checkLifecycle(deps)
+    const readable = cat.checks.find((c) => c.label === "daemon log readable")
+    expect(readable?.status).toBe("fail")
+    expect(readable?.detail).toContain("EACCES")
+  })
+
+  it("falls back to 'unknown' when agent_process_error meta lacks reason/agent fields", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      ndjsonLine(recentTs, "daemon.agent_process_error", {}), // missing reason and agent
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.detail).toContain("unknown: unknown")
+  })
+
+  it("uses singular 'restart' when count is 1", () => {
+    const now = Date.now()
+    const log = [
+      ndjsonLine(new Date(now - 30 * 60 * 1000).toISOString(), "daemon.daemon_started"),
+      ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const restarts = cat.checks.find((c) => c.label === "daemon restarts (last hour)")
+    expect(restarts?.detail).toContain("1 restart")
+    expect(restarts?.detail).not.toContain("1 restarts")
+  })
+
+  it("truncates the agent_process_error detail when more than 3 errors", () => {
+    const now = Date.now()
+    const lines: string[] = []
+    for (let i = 0; i < 5; i++) {
+      lines.push(ndjsonLine(new Date(now - (5 - i) * 60 * 1000).toISOString(), "daemon.agent_process_error", { agent: `a${i}`, reason: `r${i}` }))
+    }
+    lines.push(ndjsonLine(new Date(now - 1000).toISOString(), "daemon.command_received"))
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const errors = cat.checks.find((c) => c.label === "agent process errors (last hour)")
+    expect(errors?.detail).toContain("5 errors")
+    expect(errors?.detail).toContain("...")
+  })
+
+  it("formats activity age in seconds when under one minute", () => {
+    const log = ndjsonLine(new Date(Date.now() - 5_000).toISOString(), "daemon.command_received")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.detail).toMatch(/\d+s ago/)
+  })
+
+  it("trims to last 5000 lines when log is huge", () => {
+    const lines: string[] = []
+    // 10000 lines, the first 5000 should be ignored
+    for (let i = 0; i < 5000; i++) {
+      lines.push(ndjsonLine(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(), "daemon.update_check"))
+    }
+    // Recent activity in last 5000 lines
+    for (let i = 0; i < 5000; i++) {
+      lines.push(ndjsonLine(new Date(Date.now() - 1000 - i).toISOString(), "daemon.command_received"))
+    }
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": lines.join("") }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+  })
+
+  it("skips entries missing ts or event fields", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      JSON.stringify({ event: "daemon.daemon_started" }) + "\n", // no ts
+      JSON.stringify({ ts: recentTs, message: "no event field" }) + "\n",
+      JSON.stringify({ ts: "garbage-not-iso-date", event: "x" }) + "\n", // bad ts
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("pass")
+    expect(activity?.detail).toContain("daemon.command_received")
+  })
+
+  it("handles cli_version_install_end with no version meta", () => {
+    const recentTs = new Date(Date.now() - 1000).toISOString()
+    const log = [
+      ndjsonLine(recentTs, "daemon.cli_version_install_end", {}), // no version key
+      ndjsonLine(recentTs, "daemon.command_received"),
+    ].join("")
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": log }),
+    })
+    const cat = checkLifecycle(deps)
+    const installs = cat.checks.find((c) => c.label === "version installs (last hour)")
+    // installCount > 0 but no versions → detail says installed: (empty)
+    expect(installs?.status).toBe("pass")
+    expect(installs?.detail).toBe("installed: ")
+  })
+
+  it("warns when file exists but contains no parseable entries", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["slugger.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/slugger.ouro/state/daemon/logs/daemon.ndjson": "garbage\nnot json\n" }),
+    })
+    const cat = checkLifecycle(deps)
+    const activity = cat.checks.find((c) => c.label === "recent daemon activity")
+    expect(activity?.status).toBe("warn")
+    expect(activity?.detail).toContain("no parseable events")
+  })
+})
 
 describe("checkDisk", () => {
   it("passes when logs dir exists with reasonable size", () => {
