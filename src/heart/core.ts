@@ -592,10 +592,13 @@ export function repairOrphanedToolCalls(
 
     const missing = asst.tool_calls.filter((tc) => !resultIds.has(tc.id));
     if (missing.length > 0) {
+      // AX rule: the agent must see what happened. Don't say "interrupted"
+      // — that's vague. Tell them the result was lost, possible causes,
+      // and what to do next.
       const syntheticResults: OpenAI.ChatCompletionToolMessageParam[] = missing.map((tc) => ({
         role: "tool" as const,
         tool_call_id: tc.id,
-        content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+        content: "error: this tool call's result was lost — the previous turn ended before the tool finished (provider rejection, daemon interrupt, or the tool itself errored). if the work needs to be done, retry the tool call now.",
       }));
       let insertAt = i + 1;
       while (insertAt < messages.length && messages[insertAt].role === "tool") insertAt++;
@@ -982,7 +985,35 @@ export async function runAgent(
       const msg: OpenAI.ChatCompletionAssistantMessageParam = {
         role: "assistant",
       };
-      if (result.content) msg.content = result.content;
+      // Persist assistant content WITHOUT inline <think>...</think> blocks.
+      // Reasoning content already routed through onReasoningChunk for live
+      // surfacing and persisted separately as `_reasoning_items` for
+      // providers that support a reasoning channel; saving it inline AND
+      // alongside tool_calls causes MiniMax to reject the replayed turn
+      // with "tool result's tool id not found" (error code 2013) because
+      // it can't reconcile reasoning-with-tools in the same assistant
+      // message. Strip aggressively at persist so the next replay is
+      // clean; preserve the original reasoning trace on the message via
+      // `_inline_reasoning` so debug/audit paths can still see it.
+      if (result.content) {
+        const stripped = stripThinkBlocksForViolationCheck(result.content);
+        if (stripped.length > 0) msg.content = stripped;
+        if (stripped.length !== result.content.length) {
+          (msg as unknown as Record<string, unknown>)._inline_reasoning = result.content;
+          emitNervesEvent({
+            level: "info",
+            component: "engine",
+            event: "engine.inline_reasoning_stripped",
+            message: "stripped inline <think> blocks from persisted assistant message; preserved on _inline_reasoning",
+            meta: {
+              provider: providerRuntime.id,
+              model: providerRuntime.model,
+              originalLength: result.content.length,
+              strippedLength: stripped.length,
+            },
+          });
+        }
+      }
       if (result.toolCalls.length)
         msg.tool_calls = result.toolCalls.map((tc) => ({
           id: tc.id,

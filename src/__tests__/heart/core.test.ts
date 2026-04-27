@@ -1267,6 +1267,55 @@ describe("runAgent", () => {
     expect(toolResultMsg.content).toBe("contents")
   })
 
+  it("strips inline <think> blocks from persisted assistant content (MiniMax replay-rejection fix)", async () => {
+    // Regression for the actual bug Slugger surfaced: MiniMax-M2.7 emits
+    // assistant messages with BOTH <think>...</think> content AND a settle
+    // tool_call. When that message is replayed in the next turn, MiniMax
+    // rejects with error 2013 \"tool result's tool id not found\" because
+    // it can't reconcile reasoning content with tool_calls in the same
+    // assistant message. Stripping <think> at persist time keeps replays
+    // valid while preserving the reasoning trace via _inline_reasoning.
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          // Mimic MiniMax: think content streams as d.content with inline <think> tags
+          makeChunk("<think>reasoning that should not persist</think>"),
+          makeChunk(undefined, [
+            { index: 0, id: "call_settle_1", function: { name: "settle", arguments: JSON.stringify({ answer: "the actual answer", intent: "complete" }) } },
+          ]),
+        ])
+      }
+      return makeStream([makeChunk("done")])
+    })
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => {},
+    }
+
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, callbacks, "mcp")
+
+    const assistantMsg = messages.find((m: any) => m.role === "assistant" && m.tool_calls)
+    expect(assistantMsg).toBeDefined()
+    // The persisted content must NOT contain <think> blocks.
+    expect(assistantMsg.content ?? "").not.toContain("<think>")
+    expect(assistantMsg.content ?? "").not.toContain("</think>")
+    // The original reasoning trace is preserved on _inline_reasoning for audit.
+    expect((assistantMsg as any)._inline_reasoning).toContain("<think>")
+    expect((assistantMsg as any)._inline_reasoning).toContain("reasoning that should not persist")
+    // The tool_call survives.
+    expect(assistantMsg.tool_calls[0].function.name).toBe("settle")
+  })
+
   it("does NOT push user message (adapter responsibility)", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("response")]))
 
@@ -8443,7 +8492,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(4)
     expect(messages[2].role).toBe("tool")
     expect(messages[2].tool_call_id).toBe("tc-1")
-    expect(messages[2].content).toContain("interrupted")
+    expect(messages[2].content).toContain("result was lost")
   })
 
   it("removes orphaned tool results that have no matching tool_calls", async () => {
@@ -8517,7 +8566,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages.length).toBe(5)
     expect(messages[4].role).toBe("tool")
     expect(messages[4].tool_call_id).toBe("tc-2")
-    expect(messages[4].content).toContain("interrupted")
+    expect(messages[4].content).toContain("result was lost")
   })
 
   it("skips system messages between tool calls when scanning for results", async () => {
@@ -8586,7 +8635,7 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[2].tool_call_id).toBe("tc-a")
     expect(messages[2].content).toBe("ok")
     expect(messages[3].tool_call_id).toBe("tc-b")
-    expect(messages[3].content).toContain("interrupted")
+    expect(messages[3].content).toContain("result was lost")
   })
 })
 

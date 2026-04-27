@@ -447,7 +447,10 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   return result.map(toProviderMessage)
 }
 
-function repairToolCallSequences(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
+function repairToolCallSequences(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  inlineReasoningStrippedCallIds: Set<string> = new Set(),
+): OpenAI.ChatCompletionMessageParam[] {
   const normalized = messages.map(normalizeMessage)
   const validCallIds = new Set<string>()
   for (const msg of normalized) {
@@ -493,7 +496,7 @@ function repairToolCallSequences(messages: OpenAI.ChatCompletionMessageParam[]):
 
     const syntheticResults: NormalizedProviderMessage[] = missing.map((toolCall) => ({
       role: "tool",
-      content: "error: tool call was interrupted (previous turn timed out or was aborted)",
+      content: buildSyntheticToolResultMessage(toolCall.id, inlineReasoningStrippedCallIds),
       name: null,
       toolCallId: toolCall.id,
       toolCalls: [],
@@ -584,6 +587,108 @@ export function migrateToolNames(messages: OpenAI.ChatCompletionMessageParam[]):
   return safeMessages.map(normalizeMessage).map(toProviderMessage)
 }
 
+/**
+ * Strip inline `<think>...</think>` blocks from a string. Mirrors the
+ * helper at senses/shared-turn.ts (operator-facing) and core.ts
+ * (live-turn) — kept inline here because session-events.ts is the load-
+ * time repair path and needs its own copy to avoid sense/heart import
+ * cycles. If the close tag is missing, drops everything from the open
+ * tag onward.
+ */
+function stripInlineThinkBlocks(input: string): string {
+  let out = input
+  for (;;) {
+    const open = out.indexOf("<think>")
+    if (open === -1) break
+    const close = out.indexOf("</think>", open + "<think>".length)
+    if (close === -1) {
+      out = out.slice(0, open)
+      break
+    }
+    out = out.slice(0, open) + out.slice(close + "</think>".length)
+  }
+  return out.trim()
+}
+
+/**
+ * Strip inline `<think>` content from any assistant message that ALSO has
+ * tool_calls. MiniMax-style models persist think-content + tool_calls on
+ * the same assistant turn; replaying that combination triggers MiniMax
+ * error 2013 ("tool result's tool id not found") and stalls the session.
+ *
+ * AX requirement: the agent MUST see that this happened. We don't silently
+ * paper over their previous turn — we strip for replay correctness AND
+ * collect the affected tool_call_ids in `inlineReasoningStrippedCallIds`
+ * so the downstream synthetic-tool-result repair can produce an
+ * explanatory message addressed to those specific calls. The agent sees:
+ * "your previous tool call's result was lost because the assistant message
+ * had inline reasoning blocks the provider couldn't replay — here's what
+ * happened, retry if needed." Full awareness, no silent corrections.
+ *
+ * This load-time repair self-heals existing sessions that were saved
+ * before the persist-time strip in core.ts landed.
+ */
+function repairInlineReasoningOnReplay(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  inlineReasoningStrippedCallIds: Set<string>,
+): OpenAI.ChatCompletionMessageParam[] {
+  let repaired = 0
+  const result = messages.map((msg) => {
+    if (msg.role !== "assistant") return msg
+    const a = msg as OpenAI.ChatCompletionAssistantMessageParam
+    if (!a.tool_calls || a.tool_calls.length === 0) return msg
+    if (typeof a.content !== "string") return msg
+    if (!a.content.includes("<think>")) return msg
+    const stripped = stripInlineThinkBlocks(a.content)
+    repaired++
+    for (const tc of a.tool_calls) inlineReasoningStrippedCallIds.add(tc.id)
+    return { ...a, content: stripped.length > 0 ? stripped : null } as OpenAI.ChatCompletionAssistantMessageParam
+  })
+  if (repaired > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_inline_reasoning_repair",
+      component: "mind",
+      message: "stripped inline <think> blocks from assistant messages with tool_calls so replay is valid; agent will see explanatory tool-result messages",
+      meta: { repaired, affectedCallIds: inlineReasoningStrippedCallIds.size },
+    })
+  }
+  return result
+}
+
+/**
+ * Compose the synthetic tool-result message the agent sees when their
+ * previous turn's tool call has no matching tool result. The default
+ * message tells the agent what happened (turn ended early, result lost)
+ * and what to do (retry if the work isn't done). When the parent
+ * assistant message had inline `<think>` reasoning that the provider
+ * rejected, the message is more specific so the agent can adjust.
+ *
+ * AX rule: every repair must produce a message the agent can read and
+ * act on. Silent strips are never OK.
+ */
+function buildSyntheticToolResultMessage(
+  toolCallId: string,
+  inlineReasoningStrippedCallIds: Set<string>,
+): string {
+  if (inlineReasoningStrippedCallIds.has(toolCallId)) {
+    return [
+      "error: this tool call's result was lost.",
+      "your previous assistant turn included inline `<think>...</think>` reasoning alongside tool_calls,",
+      "and the provider (likely MiniMax) rejects that combination on replay (error 2013).",
+      "the harness has stripped the inline reasoning from the persisted content so the next replay is valid;",
+      "your reasoning trace itself is preserved out-of-band and not lost.",
+      "if the underlying work still needs to be done, retry the tool call now —",
+      "the call may not have run, or it ran but the result didn't reach you.",
+    ].join(" ")
+  }
+  return [
+    "error: this tool call's result was lost — the previous turn ended before the tool finished",
+    "(provider rejection, daemon interrupt, or the tool itself errored).",
+    "if the work needs to be done, retry the tool call now.",
+  ].join(" ")
+}
+
 export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
   const safeMessages = messages.filter((message): message is OpenAI.ChatCompletionMessageParam => Boolean(message) && typeof message === "object")
   const normalized = safeMessages.map(normalizeMessage)
@@ -597,8 +702,21 @@ export function sanitizeProviderMessages(messages: OpenAI.ChatCompletionMessageP
       meta: { violations },
     })
   }
+  // Track which tool_call_ids belonged to assistant messages whose inline
+  // reasoning we just stripped. The synthetic-tool-result repair downstream
+  // uses this set to produce an explanatory message for those calls so the
+  // agent has full awareness of what happened.
+  const inlineReasoningStrippedCallIds = new Set<string>()
   return canonicalizeSystemMessageSequence(
-    migrateToolNames(repairToolCallSequences(repairSessionMessages(normalized.map(toProviderMessage)))),
+    migrateToolNames(
+      repairToolCallSequences(
+        repairInlineReasoningOnReplay(
+          repairSessionMessages(normalized.map(toProviderMessage)),
+          inlineReasoningStrippedCallIds,
+        ),
+        inlineReasoningStrippedCallIds,
+      ),
+    ),
   )
 }
 
