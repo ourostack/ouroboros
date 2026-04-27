@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.499",
+      "changes": [
+        "New `ouro session-playback <session.json>` CLI for dry-running the sanitize pipeline against a saved session. When an agent is stuck in a replay loop, an operator can now run the same `sanitizeProviderMessages` chain that the harness fires before every replay, see what would be dropped/modified/synthesized, and decide whether to clear or hand-repair the session — *without* writing anything to disk.",
+        "The report distinguishes three repair classes: dropped (orphan tool results whose preceding assistant has no matching tool_call), modified-content (assistant messages whose inline `<think>...</think>` blocks would be stripped before replay), and synthetic-added (synthetic tool-results inserted to satisfy the provider's tool_call/tool_result pairing — these include the explanatory message added in #612 so the agent can read what happened). Each change carries a role, index, optional tool_call_id, reason, and a 120-char preview of the affected content.",
+        "Two output modes: human-readable text (default) and `--json` for piping into jq/diagnostics. Underlying `runSessionPlayback` is a pure function — takes either a session path or a raw object — so it's testable in isolation and the same code path can be embedded in future doctor checks. Wired as `npm run session:playback -- <path>` and as the `dist/heart/session-playback-cli-main.js` entry. 7 tests cover the four envelope shapes (clean legacy, with stripped think, with orphan tool result, unrecognized) plus the two CLI flag paths."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.498",
       "changes": [
         "Heartbeat / habit recursion detection in the inner-dialog worker. The existing instinct cap (`MAX_CONSECUTIVE_INSTINCT_TURNS=3`) protects against the *internal* pending-dir self-loop (a turn writes back to its own pending dir, drains it, repeats). It does not protect against the *external* IPC self-loop where heartbeat-shaped messages get re-issued faster than their cadence — e.g. a hook misconfigured to repost on every heartbeat, a daemon retry storm, or two timers drifting into the same window.",

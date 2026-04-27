@@ -112,6 +112,11 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/outlook/outlook-http-hooks",
   "heart/outlook/outlook-http-routes",
   "heart/outlook/outlook-http-response",
+  // Session playback: read-only debugging CLI for sanitize-pipeline replay.
+  // No side effects on the runtime; output is human-readable diagnostics only.
+  "heart/session-playback-cli-main",
+  "heart/session-playback-cli",
+  "heart/session-playback",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
