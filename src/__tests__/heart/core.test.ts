@@ -8637,6 +8637,38 @@ describe("repairOrphanedToolCalls", () => {
     expect(messages[3].tool_call_id).toBe("tc-b")
     expect(messages[3].content).toContain("result was lost")
   })
+
+  it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware)", async () => {
+    // Same-shape regression as the fix in session-events.ts. MiniMax-M2.7
+    // reuses canonical tool_call_ids across turns; after pruning, a stale
+    // synthetic tool result can end up referencing an id that's redefined
+    // by a later assistant message. The previous global-Set check kept
+    // the misordered tool result; the position-aware walk drops it.
+    vi.resetModules()
+    const { repairOrphanedToolCalls } = await import("../../heart/core")
+    const messages: any[] = [
+      { role: "user", content: "early" },
+      // Misplaced tool result: appears before any assistant defines the id
+      { role: "tool", tool_call_id: "call_xyz_1", content: "stale or misplaced result" },
+      { role: "user", content: "middle" },
+      // Assistant defines call_xyz_1 here — AFTER the tool result above
+      { role: "assistant", content: null, tool_calls: [{ id: "call_xyz_1", type: "function", function: { name: "settle", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_xyz_1", content: "(delivered)" },
+    ]
+
+    repairOrphanedToolCalls(messages)
+
+    // The misplaced one is removed
+    const stale = messages.find((m: any) => m.content === "stale or misplaced result")
+    expect(stale).toBeUndefined()
+    // The correctly-ordered one survives
+    const valid = messages.find((m: any) => m.content === "(delivered)")
+    expect(valid).toBeDefined()
+    // Order invariant holds: assistant before its tool result
+    const assistantIdx = messages.findIndex((m: any) => m.role === "assistant" && m.tool_calls)
+    const toolIdx = messages.findIndex((m: any) => m.role === "tool" && m.content === "(delivered)")
+    expect(assistantIdx).toBeLessThan(toolIdx)
+  })
 })
 
 describe("getSettleRetryError delegation adherence (removed)", () => {

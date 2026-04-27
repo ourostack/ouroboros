@@ -2400,6 +2400,44 @@ describe("session events", () => {
       expect(content).not.toContain("<think>")
     })
 
+    it("removes a tool result that appears BEFORE its matching assistant tool_call (position-aware orphan check)", async () => {
+      // Real bug observed in slugger.ouro/state/sessions/.../mcp/c11a7ba8-...:
+      // After session pruning, a synthetic tool result lived at seq 86
+      // referencing call_function_utqogadgqp5h_1, but the assistant message
+      // that defines that tool_call_id was at seq 88 — AFTER the tool result.
+      // The previous orphan check used a global Set so this looked valid,
+      // but MiniMax rejected with error 2013 because tool results must
+      // follow their matching assistant.
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const sanitized = sanitizeProviderMessages([
+        { role: "user", content: "early" },
+        // Tool result referencing a tool_call_id that doesn't exist YET
+        // in the conversation
+        { role: "tool", content: "stale or misplaced result", tool_call_id: "call_xyz_1" } as any,
+        { role: "user", content: "middle" },
+        // The assistant that defines call_xyz_1 — appears AFTER the tool result above
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_xyz_1", type: "function" as const, function: { name: "settle", arguments: "{\"answer\":\"ok\",\"intent\":\"complete\"}" } }],
+        },
+        // Valid following tool result for the assistant
+        { role: "tool", content: "(delivered)", tool_call_id: "call_xyz_1" } as any,
+      ])
+
+      // The misplaced tool result before the assistant is removed
+      const toolMsgs = sanitized.filter((m) => m.role === "tool") as any[]
+      expect(toolMsgs.find((m) => m.content === "stale or misplaced result")).toBeUndefined()
+
+      // The valid one (after the assistant) survives
+      expect(toolMsgs.find((m) => m.content === "(delivered)")).toBeDefined()
+
+      // The order is sane: assistant comes before its tool result
+      const assistantIdx = sanitized.findIndex((m) => m.role === "assistant" && (m as any).tool_calls)
+      const validToolIdx = sanitized.findIndex((m) => m.role === "tool" && (m as any).content === "(delivered)")
+      expect(assistantIdx).toBeLessThan(validToolIdx)
+    })
+
     it("end-to-end: a Slugger-shaped poisoned session produces a valid replay shape after sanitize", async () => {
       // Reproduces the exact pattern observed in
       // ~/AgentBundles/slugger.ouro/state/sessions/.../mcp/c11a7ba8-...json:

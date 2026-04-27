@@ -548,28 +548,39 @@ const TOOL_SCAN_BOUNDARY_ROLES: ReadonlySet<string> = new Set(["assistant", "use
 // 1. If an assistant message has tool_calls but missing tool results, inject synthetic error results.
 // 2. If a tool result's tool_call_id doesn't match any tool_calls in a preceding assistant message, remove it.
 // This prevents 400 errors from the API after an aborted turn.
+//
+// Position-aware: a tool result is orphaned when its tool_call_id hasn't been
+// defined by an assistant message AT THIS POSITION yet. MiniMax-M2.7 reuses
+// canonical tool_call_ids across turns, so the global-set check that this
+// function used previously kept misordered tool results that MiniMax then
+// rejected with error 2013 ("tool result's tool id not found"). Walking
+// in order matches what MiniMax actually enforces.
 export function repairOrphanedToolCalls(
   messages: OpenAI.ChatCompletionMessageParam[],
 ): void {
-  // Pass 1: collect all valid tool_call IDs from assistant messages
-  const validCallIds = new Set<string>();
-  for (const msg of messages) {
+  // Pass 1: walk in order, accumulate seen tool_call_ids per-position, and
+  // mark tool results for removal if their id hasn't been defined yet.
+  const seenCallIds = new Set<string>();
+  const removeIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     if (msg.role === "assistant") {
       const asst = msg as OpenAI.ChatCompletionAssistantMessageParam;
       if (asst.tool_calls) {
-        for (const tc of asst.tool_calls) validCallIds.add(tc.id);
+        for (const tc of asst.tool_calls) seenCallIds.add(tc.id);
+      }
+      continue;
+    }
+    if (msg.role === "tool") {
+      const toolMsg = msg as OpenAI.ChatCompletionToolMessageParam;
+      if (!seenCallIds.has(toolMsg.tool_call_id)) {
+        removeIndices.push(i);
       }
     }
   }
-
-  // Pass 2: remove orphaned tool results (tool_call_id not in any assistant's tool_calls)
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "tool") {
-      const toolMsg = messages[i] as OpenAI.ChatCompletionToolMessageParam;
-      if (!validCallIds.has(toolMsg.tool_call_id)) {
-        messages.splice(i, 1);
-      }
-    }
+  // Splice from the end so earlier indices stay valid.
+  for (let i = removeIndices.length - 1; i >= 0; i--) {
+    messages.splice(removeIndices[i]!, 1);
   }
 
   // Pass 3: inject synthetic results for tool_calls missing their tool results

@@ -452,16 +452,21 @@ function repairToolCallSequences(
   inlineReasoningStrippedCallIds: Set<string> = new Set(),
 ): OpenAI.ChatCompletionMessageParam[] {
   const normalized = messages.map(normalizeMessage)
-  const validCallIds = new Set<string>()
-  for (const msg of normalized) {
-    if (msg.role !== "assistant") continue
-    for (const toolCall of msg.toolCalls) validCallIds.add(toolCall.id)
-  }
 
+  // Position-aware orphan detection. A tool result is orphaned if there is
+  // no preceding assistant message in the array whose tool_calls contain the
+  // matching id. (The previous logic checked all assistant messages
+  // globally, which kept tool results that appeared BEFORE their matching
+  // assistant — invalid order — and triggered MiniMax error 2013 on replay.)
   let removed = 0
+  const seenCallIds = new Set<string>()
   const repaired = normalized.filter((msg) => {
+    if (msg.role === "assistant") {
+      for (const tc of msg.toolCalls) seenCallIds.add(tc.id)
+      return true
+    }
     if (msg.role !== "tool") return true
-    const keep = msg.toolCallId !== null && validCallIds.has(msg.toolCallId)
+    const keep = msg.toolCallId !== null && seenCallIds.has(msg.toolCallId)
     if (!keep) removed++
     return keep
   })
