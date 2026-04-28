@@ -238,7 +238,6 @@ const ACTIVE_SURFACE_ENTRIES = [
   "AGENTS.md",
   "README.md",
   "docs",
-  "lobster-research.md",
   "packages",
   "src",
 ]

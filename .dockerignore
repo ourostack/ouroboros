@@ -1,8 +1,0 @@
-.git
-node_modules
-dist
-coverage
-.tasks
-packages/outlook-ui/node_modules
-packages/outlook-ui/dist
-*.log
