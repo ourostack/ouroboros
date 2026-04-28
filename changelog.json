@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.504",
+      "changes": [
+        "New `mail_outbox` tool — the agent can now introspect its own outbound mail (drafts, queued sends, delivered, bounced, etc.). The mail repertoire had `mail_compose`, `mail_send`, and `mail_recent` for inbound — but no symmetric way to ask 'what did I send / queue?' Operators were having to ssh in and `ls state/.../outbound`. Real-world need: when planning a trip with the operator, the agent often wants to verify it sent a confirmation request before re-asking.",
+        "Lists records newest-first (by `updatedAt`), bounded to `limit` (1-50, default 20), with optional `status` filter across the full MailOutboundStatus union (draft / sent / submitted / accepted / delivered / bounced / suppressed / quarantined / spam-filtered / failed). Each record renders id + status + recipients + truncated subject (80 chars) + last-touched timestamp + provider message id and error message when present. No body text dumped — agent uses message id with another tool if it needs the content.",
+        "Family-trust gated like the rest of mail (read gate, no special block since outbound metadata isn't body content). Records `mail_outbox` access in the access log alongside the other mail tools. Tool registry now at 75 tools (snapshot updated). Two tests cover the empty / sorted / limit / status-filter / audit-log paths, plus the trust block."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.503",
       "changes": [
         "In-process LRU cache for decrypted mail bodies. The cold path for `mail_thread` is read-encrypted-blob-from-Azure (1-3s p50, up to tens of seconds for HEY-sized bodies — #614 raised the timeout to 60s for this very reason) plus an RSA-OAEP+A256GCM decrypt. Repeated reads of the same message are common: re-checking a booking confirmation while seeding a trip leg, following up on a thread, looping back to verify a fact. Each repeat hit was paying the full cold cost.",
