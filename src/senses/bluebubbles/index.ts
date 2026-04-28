@@ -188,7 +188,7 @@ const defaultDeps: RuntimeDeps = {
   createFriendStore: () => new FileFriendStore(path.join(getAgentRoot(), "friends")),
   createFriendResolver: (store, params) => new FriendResolver(store, params),
   createServer: http.createServer,
-  getOwnHandles: () => getBlueBubblesConfig().ownHandles,
+  getOwnHandles: () => [...getBlueBubblesConfig().ownHandles, ...discoveredOwnHandles],
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
@@ -725,6 +725,49 @@ export function isAgentSelfHandle(senderExternalId: string | undefined, ownHandl
   return false
 }
 
+/**
+ * In-memory store of agent iMessage handles auto-discovered from
+ * `event.fromMe === true` events. Bluebubbles attributes the agent's
+ * canonical handle as `event.sender.externalId` on outbound messages —
+ * capturing it here makes the next `isFromMe`-missing group echo
+ * (the bug that motivated `bluebubbles.ownHandles` originally) recoverable
+ * even before the operator has populated the config.
+ *
+ * Per-process. A daemon restart re-learns from the next outbound. The
+ * accompanying nerves event (`senses.bluebubbles_own_handle_discovered`)
+ * tells the operator what to add to `bluebubbles.ownHandles` for cross-
+ * restart durability.
+ */
+const discoveredOwnHandles = new Set<string>()
+
+export function getDiscoveredOwnHandles(): readonly string[] {
+  return [...discoveredOwnHandles]
+}
+
+export function clearDiscoveredOwnHandles(): void {
+  discoveredOwnHandles.clear()
+}
+
+export function recordDiscoveredOwnHandle(senderExternalId: string | undefined): boolean {
+  if (!senderExternalId || !senderExternalId.trim()) return false
+  const trimmed = senderExternalId.trim()
+  const normalized = normalizeHandleForSelfMatch(trimmed)
+  /* v8 ignore next -- defensive: normalizeHandleForSelfMatch only returns falsy for empty input, already guarded above @preserve */
+  if (!normalized) return false
+  for (const existing of discoveredOwnHandles) {
+    if (normalizeHandleForSelfMatch(existing) === normalized) return false
+  }
+  discoveredOwnHandles.add(trimmed)
+  emitNervesEvent({
+    level: "info",
+    component: "senses",
+    event: "senses.bluebubbles_own_handle_discovered",
+    message: "captured a new agent-owned bluebubbles handle from an isFromMe outbound — add to bluebubbles.ownHandles for cross-restart durability",
+    meta: { handle: trimmed, totalDiscovered: discoveredOwnHandles.size },
+  })
+  return true
+}
+
 async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
@@ -742,6 +785,7 @@ async function handleBlueBubblesNormalizedEvent(
         kind: event.kind,
       },
     })
+    recordDiscoveredOwnHandle(event.sender.externalId)
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
   }
   // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat

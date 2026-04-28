@@ -7217,6 +7217,35 @@ describe("isAgentSelfHandle", () => {
     expect(bb.isAgentSelfHandle("slugger@ouro.bot", ["   "])).toBe(false)
   })
 
+  describe("recordDiscoveredOwnHandle", () => {
+    it("captures a new handle and reports newly-added; second call with same normalized form is a no-op", async () => {
+      const bb = await import("../../../senses/bluebubbles")
+      bb.clearDiscoveredOwnHandles()
+      expect(bb.recordDiscoveredOwnHandle("+1 (415) 555-0000")).toBe(true)
+      expect(bb.getDiscoveredOwnHandles()).toEqual(["+1 (415) 555-0000"])
+      expect(bb.recordDiscoveredOwnHandle("+14155550000")).toBe(false)
+      expect(bb.recordDiscoveredOwnHandle("Slugger@Ouro.Bot")).toBe(true)
+      expect(bb.getDiscoveredOwnHandles()).toEqual(["+1 (415) 555-0000", "Slugger@Ouro.Bot"])
+    })
+
+    it("rejects empty/whitespace inputs", async () => {
+      const bb = await import("../../../senses/bluebubbles")
+      bb.clearDiscoveredOwnHandles()
+      expect(bb.recordDiscoveredOwnHandle("")).toBe(false)
+      expect(bb.recordDiscoveredOwnHandle("   ")).toBe(false)
+      expect(bb.recordDiscoveredOwnHandle(undefined)).toBe(false)
+      expect(bb.getDiscoveredOwnHandles()).toEqual([])
+    })
+
+    it("isAgentSelfHandle uses discovered handles after recording — proves the auto-detection unblocks subsequent group echoes", async () => {
+      const bb = await import("../../../senses/bluebubbles")
+      bb.clearDiscoveredOwnHandles()
+      bb.recordDiscoveredOwnHandle("+1 (415) 555-1111")
+      const discovered = bb.getDiscoveredOwnHandles()
+      expect(bb.isAgentSelfHandle("+14155551111", discovered)).toBe(true)
+    })
+  })
+
   it("falls through to substring/case match for non-phone non-email handles", async () => {
     const bb = await import("../../../senses/bluebubbles")
     expect(bb.isAgentSelfHandle("UID-ABC123", ["uid-abc123"])).toBe(true)

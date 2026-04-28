@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.499",
+  "version": "0.1.0-alpha.500",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -37,8 +37,7 @@
     "lint": "eslint src/",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:smoke": "node scripts/release-smoke.cjs",
-    "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js",
-    "session:playback": "npm run build && node dist/heart/session-playback-cli-main.js"
+    "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.500",
+      "changes": [
+        "Auto-discover BlueBubbles agent handles on isFromMe outbound. The `bluebubbles.ownHandles` config field added in #610 closes the group-echo self-talk loop, but only after an operator manually populates it with the right handle format. Until then, the very bug the field is supposed to fix can fire — the agent ingests its own group echo and replies to itself.",
+        "When a normalized BlueBubbles event arrives with `event.fromMe === true`, BlueBubbles is telling us the canonical handle BB attributes to the agent's outbound. We capture `event.sender.externalId` into an in-process `discoveredOwnHandles` set and emit an info-level `senses.bluebubbles_own_handle_discovered` nerve event with the captured handle, so an operator can promote it to durable config (cross-restart). The default `getOwnHandles` now returns the union of configured + discovered; `isAgentSelfHandle` therefore filters subsequent isFromMe-missing group echoes even before the operator updates the vault config.",
+        "Per-process state by design — a daemon restart re-learns from the next outbound. Three new tests cover: capture-and-dedupe (raw/normalized form match collapses to one entry), defensive empty/whitespace input handling, and the end-to-end proof that `isAgentSelfHandle` honors discovered handles after `recordDiscoveredOwnHandle` fires."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.499",
       "changes": [
         "New `ouro session-playback <session.json>` CLI for dry-running the sanitize pipeline against a saved session. When an agent is stuck in a replay loop, an operator can now run the same `sanitizeProviderMessages` chain that the harness fires before every replay, see what would be dropped/modified/synthesized, and decide whether to clear or hand-repair the session — *without* writing anything to disk.",
