@@ -117,6 +117,11 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/session-playback-cli-main",
   "heart/session-playback-cli",
   "heart/session-playback",
+  // Nerves review: read-only NDJSON tail/filter CLI for debugging.
+  // Diagnostics-only utility; the running daemon owns observability.
+  "nerves/review/cli-main",
+  "nerves/review/cli",
+  "nerves/review/core",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

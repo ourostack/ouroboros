@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.501",
+      "changes": [
+        "New `ouro nerves-review` CLI for tailing the agent's nerves ndjson with structured filters. Read-only. Operators previously had to grep raw ndjson by hand to track down something like 'how many heartbeat-recursion-suspected events fired today' or 'show me the last hour of senses warnings'.",
+        "Filters: `--component <substr>`, `--event <substr>`, `--level <level>`, `--since <duration>` (e.g. 5m, 2h, 1d), `--limit <N>`, `--process <name>` (default: daemon), `--agent <name>` (default: current). Output modes: human-readable text (`<time> [<level>] <component>/<event> — <message>`) and `--json` (one parsed object per line for piping to jq).",
+        "Pure `reviewNerveEvents(filePath, filter)` core in `src/nerves/review/core.ts` reads the tail of the ndjson (8 MB cap, walks last 200+ lines) and applies in-memory filters; testable without filesystem mocks beyond a temp file. 12 tests cover all six filter dimensions plus duration parsing edge cases (ms/s/m/h/d, malformed inputs), missing-file handling, and the two CLI flag paths (--help, invalid --since). Wired as `npm run nerves:review -- <flags>` and `dist/nerves/review/cli-main.js`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.500",
       "changes": [
         "Auto-discover BlueBubbles agent handles on isFromMe outbound. The `bluebubbles.ownHandles` config field added in #610 closes the group-echo self-talk loop, but only after an operator manually populates it with the right handle format. Until then, the very bug the field is supposed to fix can fire — the agent ingests its own group echo and replies to itself.",
