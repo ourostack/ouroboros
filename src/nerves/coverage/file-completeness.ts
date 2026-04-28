@@ -84,6 +84,12 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // HTTP health probe: pure HTTP utility factory. The HealthMonitor caller
   // owns observability via daemon.health_result events.
   "daemon/http-health-probe",
+  // Rollup decision function: pure decision tree mapping per-agent
+  // snapshots + bootstrap-degraded entries + safe-mode flag to a
+  // RollupStatus. No side effects. The caller (daemon-entry.ts
+  // buildDaemonHealthState → DaemonHealthWriter) owns observability via
+  // daemon.health_written when the rolled-up state is persisted.
+  "daemon/daemon-rollup",
   // Attachment helper modules: generic file-path/extension utilities and the
   // source registry are pure support seams. The orchestrator/adapters that
   // call them own the observability.

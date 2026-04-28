@@ -2,6 +2,7 @@ import type { CodingSession, CodingSessionOrigin } from "../../nerves/observatio
 import type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../../nerves/observation"
 import type { TaskStatus, RuntimeMetadata } from "../../nerves/observation"
 import type { UsageData } from "../../nerves/observation"
+import type { DaemonStatus } from "../../nerves/observation"
 import type { InnerJobStatus } from "../daemon/thoughts"
 import type { AgentProviderVisibility } from "../provider-visibility"
 import type { SessionEvent } from "../session-events"
@@ -680,7 +681,15 @@ export type OutlookHabitHealthEntry = HabitHealth
 export type OutlookLogEntry = LogEvent
 
 export interface OutlookDaemonHealthDeep {
-  status: string
+  /**
+   * Daemon-wide rollup status. After Layer 1 this is one of the five
+   * `DaemonStatus` literals (`healthy`/`partial`/`degraded`/`safe-mode`/
+   * `down`) when the cached health file uses the post-Layer-1 vocabulary,
+   * or `"unknown"` when the file is absent, malformed, or contains a
+   * legacy/unrecognized status string. Outlook consumers MUST handle
+   * `"unknown"` defensively.
+   */
+  status: DaemonStatus | "unknown"
   mode: string
   pid: number
   startedAt: string

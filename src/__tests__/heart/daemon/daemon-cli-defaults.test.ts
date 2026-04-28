@@ -1576,7 +1576,7 @@ describe("daemon CLI default dependency branches", () => {
     vi.resetModules()
 
     const readHealth = vi.fn(() => ({
-      status: "ok",
+      status: "healthy",
       mode: "normal",
       pid: 123,
       startedAt: "2026-04-10T05:02:36.000Z",
@@ -1628,7 +1628,7 @@ describe("daemon CLI default dependency branches", () => {
     expect(deps.healthFilePath).toBe("/tmp/daemon-health.json")
     expect(deps.readHealthState?.("/tmp/daemon-health.json")).toEqual(expect.objectContaining({
       pid: 123,
-      status: "ok",
+      status: "healthy",
     }))
     expect(deps.readHealthUpdatedAt?.("/tmp/daemon-health.json")).toBe(4242)
     expect(deps.readRecentDaemonLogLines?.(5)).toEqual([

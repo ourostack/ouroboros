@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.516",
+      "changes": [
+        "Layer 1 of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Replaces the daemon-wide rollup at `daemon-entry.ts` (the binary `degraded.length > 0 ? \"degraded\" : \"ok\"` literal) with a five-state vocabulary: `healthy / partial / degraded / safe-mode / down`. A single sick agent no longer tips the whole daemon to `degraded`.",
+        "Type structure: `RollupStatus` (4-state, returned by the new pure `computeDaemonRollup` decision function in `daemon-rollup.ts`) and `DaemonStatus = RollupStatus | \"down\"` (full daemon-status; `down` is caller-owned because it represents pre-inventory failure, before the rollup is reachable). Both unions project from a single source-of-truth literal tuple so future widening touches one site.",
+        "`renderRollupStatusLine` in `cli-render.ts` uses a compiler-forced `never`-typed exhaustive switch — adding a future state compile-errors at every consumer using the pattern. The `degraded` literal carries three copy variants picked by inspecting cached agent statuses: empty map (fresh install, prompts `ouro hatch`), non-empty + any running agent (legacy stale cache from pre-Layer-1 daemons, prompts `ouro up` refresh), non-empty + zero running (all-failed live-check, prompts `ouro doctor`).",
+        "`runtime-readers.ts:readDaemonHealthDeep` parse tightened to use `isDaemonStatus`. `OutlookDaemonHealthDeep.status` widened to `DaemonStatus | \"unknown\"` so legacy serialized strings (`\"running\"`, `\"ok\"`) coerce defensively rather than failing the parse during rollout.",
+        "9759 tests pass (508 test files); coverage gate clean. The per-agent live-check loop in `cli-exec.ts` is intentionally untouched — it was already try/catch-isolated; the bug was in how its output rolled up. Subsequent PRs (layers 4, 2, 3) build on this PR's vocabulary."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.515",
       "changes": [
         "New `speak` tool — agent can deliver words to the current friend mid-turn without ending the turn. Pairs with `settle` (ends turn) and `ponder` (private inner thought). For acknowledgment of heavy work, phase-boundary updates, or progress narration on chat-style channels (cli, teams, bluebubbles).",

@@ -3945,7 +3945,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date(Date.now() - 3600000).toISOString(),
@@ -3973,7 +3973,9 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          // partial: bootstrap-degraded component, but agent surface is healthy
+          // (no agents in this fixture).
+          status: "partial",
           mode: "prod",
           pid: 1234,
           startedAt: new Date(Date.now() - 3600000).toISOString(),
@@ -4015,7 +4017,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date().toISOString(),
@@ -4041,7 +4043,7 @@ describe("rhythmStatusSection", () => {
       const p = String(filePath)
       if (p.endsWith("daemon-health.json")) {
         return JSON.stringify({
-          status: "running",
+          status: "healthy",
           mode: "prod",
           pid: 1234,
           startedAt: new Date().toISOString(),

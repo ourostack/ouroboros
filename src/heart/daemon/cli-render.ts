@@ -11,7 +11,7 @@ import { getRuntimeMetadata } from "./runtime-metadata"
 import { detectRuntimeMode } from "./runtime-mode"
 import { getRepoRoot } from "../identity"
 import { readDaemonTombstone } from "./daemon-tombstone"
-import { readHealth, getDefaultHealthPath } from "./daemon-health"
+import { readHealth, getDefaultHealthPath, type DaemonHealthState, type DaemonStatus } from "./daemon-health"
 import { listAllBundleAgents, listBundleSyncRows } from "./agent-discovery"
 import type { McpListCliCommand, McpCallCliCommand } from "./cli-types"
 
@@ -519,6 +519,70 @@ export function buildStoppedStatusPayload(
   }
 }
 
+/**
+ * Render the cached daemon-rollup status as a one-line string for the
+ * "daemon not running" view. Each `DaemonStatus` literal maps to a
+ * label + a brief explanatory copy fragment. The default branch is
+ * `never`-typed so future widening of `DaemonStatus` compile-errors
+ * here — Layer 1's compiler-forced exhaustiveness contract.
+ *
+ * The `degraded` literal splits into two copy variants based on the
+ * cached health file's `agents` map:
+ * - empty map → "no agents configured" (fresh-install copy).
+ * - non-empty map → "none ready" (all-agents-failed-live-check copy).
+ *
+ * The split lives at the render layer (not in the rollup status itself)
+ * so the same status can carry distinct UX copy without inflating the
+ * type union.
+ */
+export function renderRollupStatusLine(health: DaemonHealthState): string {
+  const status: DaemonStatus = health.status
+  const tail = `(pid ${health.pid}, uptime ${health.uptimeSeconds}s)`
+  /* v8 ignore next -- v8 instruments the switch statement itself as a branch; the never-typed default below is unreachable by construction so v8 cannot observe its branch firing @preserve */
+  switch (status) {
+    case "healthy":
+      return `Last known status: healthy ${tail}`
+    case "partial":
+      return `Last known status: partial — some agents unhealthy ${tail}`
+    case "degraded": {
+      // Three-way copy split based on the cached agents map:
+      // - empty map → fresh install / no agents configured.
+      // - non-empty + any agent reports "running" → legacy stale cache:
+      //   pre-Layer-1, status="degraded" meant "any sick component," so a
+      //   running agent could coexist with a degraded daemon. Post-Layer-1,
+      //   degraded means "zero serving" — mutually exclusive with a running
+      //   agent. A live disagreement therefore implies the cache pre-dates
+      //   the rollup-semantics fix; prompt for `ouro up` to refresh rather
+      //   than falsely claim "none ready."
+      // - non-empty + zero agents reporting "running" → all-failed copy.
+      const agentEntries = Object.values(health.agents)
+      if (agentEntries.length === 0) {
+        return `Last known status: degraded — no agents configured (run \`ouro hatch\` to add one) ${tail}`
+      }
+      const anyRunning = agentEntries.some((agent) => agent.status === "running")
+      if (anyRunning) {
+        return `Last known status: degraded — stale cache, run \`ouro up\` to refresh ${tail}`
+      }
+      return `Last known status: degraded — agents configured but none ready (run \`ouro doctor\`) ${tail}`
+    }
+    case "safe-mode":
+      return `Last known status: safe-mode — crash loop tripped ${tail}`
+    case "down":
+      return `Last known status: down ${tail}`
+    /* v8 ignore start -- compiler-forced exhaustiveness: the never-typed default branch is unreachable by construction; if DaemonStatus widens, tsc errors at the assignment before the throw can run @preserve */
+    default: {
+      // Compiler-forced exhaustiveness. If DaemonStatus grows a new
+      // literal, this `never` cast errors at tsc, forcing every
+      // consumer to handle it explicitly. NEVER replace this with a
+      // permissive `default:` returning a fallback string — that's
+      // exactly how the old "ok | degraded" semantics leaked through.
+      const _exhaustive: never = status
+      throw new Error(`unhandled daemon status: ${_exhaustive as string}`)
+    }
+    /* v8 ignore stop */
+  }
+}
+
 export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath?: string): string {
   // Read per-agent sync config and bundle list from disk so the user still
   // sees them when the daemon is down. Best-effort: any fs error returns []
@@ -563,7 +627,7 @@ export function daemonUnavailableStatusOutput(socketPath: string, healthFilePath
   const resolvedHealthPath = healthFilePath ?? getDefaultHealthPath()
   const health = readHealth(resolvedHealthPath)
   if (health) {
-    lines.push(`Last known status: ${health.status} (pid ${health.pid}, uptime ${health.uptimeSeconds}s)`)
+    lines.push(renderRollupStatusLine(health))
 
     if (health.safeMode?.active) {
       lines.push(`SAFE MODE: ${health.safeMode.reason}`)

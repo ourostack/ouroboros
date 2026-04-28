@@ -4,6 +4,7 @@ import { emitNervesEvent } from "../../../nerves/runtime"
 import { parseHabitFile } from "../../habits/habit-parser"
 import { applyHabitRuntimeState } from "../../habits/habit-runtime-state"
 import { getAgentBundlesRoot } from "../../identity"
+import { isDaemonStatus } from "../../daemon/daemon-health"
 import {
   type OutlookAttentionQueueItem,
   type OutlookAttentionView,
@@ -278,7 +279,12 @@ export function readDaemonHealthDeep(healthPath?: string): OutlookDaemonHealthDe
     const health = JSON.parse(raw) as Record<string, unknown>
 
     return {
-      status: typeof health.status === "string" ? health.status : "unknown",
+      // Layer 1: tighten the parse so only post-Layer-1 vocabulary
+      // carries through. Stale cached files that still hold legacy
+      // string values like "ok" or "running" — written by an older
+      // daemon binary — fall back to "unknown" so downstream Outlook
+      // consumers can detect the unparseable case explicitly.
+      status: isDaemonStatus(health.status) ? health.status : "unknown",
       mode: typeof health.mode === "string" ? health.mode : "unknown",
       pid: typeof health.pid === "number" ? health.pid : 0,
       startedAt: typeof health.startedAt === "string" ? health.startedAt : "",

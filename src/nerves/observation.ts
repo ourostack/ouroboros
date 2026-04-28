@@ -12,7 +12,7 @@
 export type { UsageData, SessionContinuityState } from "../mind/context"
 export type { CodingSession, CodingSessionStatus, CodingRunner, CodingSessionOrigin, CodingFailureDiagnostics } from "../repertoire/coding/types"
 export type { BridgeRecord, BridgeSessionRef, BridgeTaskLink } from "../heart/bridges/store"
-export type { DaemonHealthState, DegradedComponent, AgentHealth, HabitHealth, SafeModeState } from "../heart/daemon/daemon-health"
+export type { DaemonHealthState, DegradedComponent, AgentHealth, HabitHealth, SafeModeState, DaemonStatus, RollupStatus } from "../heart/daemon/daemon-health"
 export type { LogEvent, LogLevel } from "./index"
 export type { HabitFile, HabitStatus } from "../heart/habits/habit-parser"
 export type { AttentionItem } from "../arc/attention-types"

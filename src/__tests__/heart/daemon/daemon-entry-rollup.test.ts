@@ -1,3 +1,16 @@
+/**
+ * Unit 3a: integration-shaped tests that boot the daemon (test-level —
+ * no subprocess) with seeded agent snapshots + bootstrap-degraded
+ * entries and assert that `buildDaemonHealthState` rolls up to the new
+ * vocabulary via `computeDaemonRollup`.
+ *
+ * Structural precedent: daemon-entry-health-state.test.ts. We reuse its
+ * vi.mock setup pattern — process-manager / sense-manager / etc. all
+ * stubbed; we drive listAgentSnapshots via the seeded `snapshots`
+ * argument; we drive bootstrap-degraded by making
+ * migrateHabitsFromTaskSystem throw.
+ */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
@@ -120,13 +133,13 @@ vi.mock("../../../heart/daemon/daemon-health", async () => {
   }
 })
 
-describe("daemon entry health state wiring", () => {
+describe("daemon-entry rollup vocabulary", () => {
   let testHomeRoot: string
   let originalHome: string | undefined
 
   beforeEach(() => {
     originalHome = process.env.HOME
-    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-health-home-"))
+    testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-rollup-home-"))
     process.env.HOME = testHomeRoot
   })
 
@@ -209,15 +222,12 @@ describe("daemon entry health state wiring", () => {
     return { emitNervesEvent }
   }
 
-  it("captures a healthy snapshot when an enabled agent is running and no components are degraded", async () => {
+  it("returns 'healthy' when two enabled agents are running and there are no bootstrap-degraded entries", async () => {
     vi.resetModules()
-    // Layer 1 rollup change: "no degraded entries" no longer means
-    // "healthy" — empty inventory is now classified as degraded
-    // (zero enabled agents serving). Seed a running agent so the
-    // rollup correctly reports healthy.
-    listEnabledBundleAgentsMock.mockReturnValue(["solo"])
-    const { emitNervesEvent } = setupDaemonMocks([
-      { name: "solo", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
+    setupDaemonMocks([
+      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "beta",  channel: "inner-dialog", status: "running", pid: 101, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
@@ -225,125 +235,18 @@ describe("daemon entry health state wiring", () => {
     await Promise.resolve()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    expect(registerGlobalLogSinkMock).toHaveBeenCalledTimes(1)
     registeredHealthSinks[0]!({ event: "daemon.agent_started" })
-
     expect(capturedHealthStates).toHaveLength(1)
-    expect(capturedHealthStates[0]).toMatchObject({
-      status: "healthy",
-      pid: process.pid,
-      safeMode: null,
-      degraded: [],
-    })
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "daemon.entry_start",
-    }))
+    expect(capturedHealthStates[0]?.status).toBe("healthy")
   })
 
-  it("deduplicates repeated degraded components and keeps the latest reason", async () => {
+  it("returns 'partial' when one enabled agent is running and one is crashed", async () => {
     vi.resetModules()
-    listEnabledBundleAgentsMock.mockReturnValue(["slugger", "slugger"])
-    migrateHabitsFromTaskSystemMock
-      .mockImplementationOnce(() => {
-        throw new Error("first failure")
-      })
-      .mockImplementationOnce(() => {
-        throw new Error("second failure")
-      })
-
-    setupDaemonMocks()
-    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
-
-    await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    registeredHealthSinks[0]!({ event: "daemon.bootstrap_degraded" })
-
-    expect(capturedHealthStates).toHaveLength(1)
-    expect(capturedHealthStates[0]?.status).toBe("degraded")
-    expect(capturedHealthStates[0]?.degraded).toEqual([
-      expect.objectContaining({
-        component: "habits:slugger",
-        reason: expect.stringContaining("second failure"),
-      }),
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
+    setupDaemonMocks([
+      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+      { name: "beta",  channel: "inner-dialog", status: "crashed", pid: null, restartCount: 3, lastCrashAt: "2026-04-28T19:30:00.000Z", errorReason: "live-check failed", fixHint: "ouro doctor" },
     ])
-  })
-
-  it("stringifies non-Error scheduler.start failures in degraded bootstrap events", async () => {
-    vi.resetModules()
-    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
-    habitSchedulerStartMock.mockImplementationOnce(() => {
-      throw "raw start failure" // eslint-disable-line no-throw-literal
-    })
-
-    const { emitNervesEvent } = setupDaemonMocks()
-    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
-
-    await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      level: "warn",
-      event: "daemon.bootstrap_degraded",
-      meta: expect.objectContaining({
-        error: "raw start failure",
-      }),
-    }))
-  })
-
-  it("captures degraded agent snapshots with fix guidance in daemon health state", async () => {
-    vi.resetModules()
-    setupDaemonMocks([{
-      name: "ouroboros",
-      channel: "inner-dialog",
-      status: "crashed",
-      pid: null,
-      restartCount: 0,
-      lastCrashAt: null,
-      errorReason: "secrets.json for 'ouroboros' is missing providers.github-copilot section",
-      fixHint: "Run 'ouro auth ouroboros' to configure github-copilot credentials.",
-    }])
-    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
-
-    await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    registeredHealthSinks[0]!({ event: "daemon.agent_config_invalid" })
-
-    expect(capturedHealthStates).toHaveLength(1)
-    expect(capturedHealthStates[0]).toMatchObject({
-      status: "degraded",
-      agents: {
-        ouroboros: {
-          status: "crashed",
-          pid: null,
-          crashes: 0,
-        },
-      },
-    })
-    expect(capturedHealthStates[0]?.degraded).toEqual([
-      expect.objectContaining({
-        component: "agent:ouroboros",
-        reason: "secrets.json for 'ouroboros' is missing providers.github-copilot section Fix: Run 'ouro auth ouroboros' to configure github-copilot credentials.",
-      }),
-    ])
-  })
-
-  it("falls back to worker status when degraded agent snapshots have no fix guidance", async () => {
-    vi.resetModules()
-    setupDaemonMocks([{
-      name: "helper",
-      channel: "inner-dialog",
-      status: "stopped",
-      pid: null,
-      restartCount: 0,
-      lastCrashAt: null,
-      errorReason: null,
-      fixHint: null,
-    }])
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
@@ -351,12 +254,70 @@ describe("daemon entry health state wiring", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     registeredHealthSinks[0]!({ event: "daemon.agent_exit" })
+    expect(capturedHealthStates).toHaveLength(1)
+    expect(capturedHealthStates[0]?.status).toBe("partial")
+  })
 
-    expect(capturedHealthStates[0]?.degraded).toEqual([
-      expect.objectContaining({
-        component: "agent:helper",
-        reason: "inner-dialog is stopped",
-      }),
+  it("returns 'degraded' when every enabled agent's live-check fails (zero serving)", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha", "beta"])
+    setupDaemonMocks([
+      { name: "alpha", channel: "inner-dialog", status: "crashed", pid: null, restartCount: 3, lastCrashAt: null, errorReason: "boom", fixHint: null },
+      { name: "beta",  channel: "inner-dialog", status: "stopped", pid: null, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
     ])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    registeredHealthSinks[0]!({ event: "daemon.agent_exit" })
+    expect(capturedHealthStates).toHaveLength(1)
+    expect(capturedHealthStates[0]?.status).toBe("degraded")
+  })
+
+  it("returns 'degraded' when no enabled agents are configured (fresh install — empty inventory)", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue([])
+    setupDaemonMocks([])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    registeredHealthSinks[0]!({ event: "daemon.agent_started" })
+    expect(capturedHealthStates).toHaveLength(1)
+    expect(capturedHealthStates[0]?.status).toBe("degraded")
+  })
+
+  it("returns 'partial' when agents are healthy but a bootstrap-degraded component was recorded (downgrade rule)", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    // Force recordRecoverableBootstrapFailure to be called by making
+    // migrateHabitsFromTaskSystem throw — same trick as the existing
+    // daemon-entry-health-state.test.ts uses to populate
+    // degradedComponents[].
+    migrateHabitsFromTaskSystemMock.mockImplementationOnce(() => {
+      throw new Error("habit migration failed")
+    })
+    setupDaemonMocks([
+      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
+    ])
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // bootstrap_degraded fires after recordRecoverableBootstrapFailure populates
+    // degradedComponents[]. The captured state should reflect the partial
+    // downgrade (alpha is running, but cron/habits bootstrap failed).
+    registeredHealthSinks[0]!({ event: "daemon.bootstrap_degraded" })
+    expect(capturedHealthStates).toHaveLength(1)
+    expect(capturedHealthStates[0]?.status).toBe("partial")
+    // Sanity: the bootstrap-degraded entry made it into the degraded[] array
+    // unchanged — preserving backwards-compatible inspection per the doing doc.
+    expect(capturedHealthStates[0]?.degraded.some((d) => d.component === "habits:alpha")).toBe(true)
   })
 })
