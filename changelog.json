@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.505",
+      "changes": [
+        "New `ouro session-stats <session.json>` CLI for at-a-glance metrics on a saved session: total events, breakdown by role (system/user/assistant/tool), tool-call totals + top 5 by frequency, attachment count, time range with duration, projection breakdown (in/out, input tokens, max tokens, trimmed), and last usage. Read-only.",
+        "Pure `computeSessionStats(envelope, path)` core in `src/heart/session-stats.ts` — testable with synthesized envelopes, embeddable in future doctor checks. `runSessionStats(path)` adds the file-load layer; `formatStatsReport(report)` renders human-readable text; `--json` mode for jq piping. Composes with #619 (session-playback) and #622 (nerves-review): three pure-analyzer-plus-thin-CLI tools that together make a stuck session immediately diagnosable end-to-end.",
+        "8 tests cover role counts, tool-call name aggregation with frequency-sorted top-5, time range with and without authoredAt timestamps, attachment counting, projection-omission detection, the unrecognized-envelope stub, CLI no-args help, and CLI --json output. Wired as `npm run session:stats -- <path>` and `dist/heart/session-stats-cli-main.js`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.504",
       "changes": [
         "New `mail_outbox` tool — the agent can now introspect its own outbound mail (drafts, queued sends, delivered, bounced, etc.). The mail repertoire had `mail_compose`, `mail_send`, and `mail_recent` for inbound — but no symmetric way to ask 'what did I send / queue?' Operators were having to ssh in and `ls state/.../outbound`. Real-world need: when planning a trip with the operator, the agent often wants to verify it sent a confirmation request before re-asking.",

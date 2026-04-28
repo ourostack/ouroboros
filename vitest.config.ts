@@ -45,6 +45,8 @@ export default defineConfig({
         "src/nerves/review/cli-main.ts",
         "src/nerves/review/cli.ts",
         "src/nerves/review/core.ts",
+        "src/heart/session-stats-cli-main.ts",
+        "src/heart/session-stats.ts",
         "src/heart/providers/anthropic-token.ts",
         "src/nerves/observation.ts",
         "src/heart/outlook/outlook-render.ts",

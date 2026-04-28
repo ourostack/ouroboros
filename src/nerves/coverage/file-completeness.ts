@@ -126,6 +126,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // lives at the caller (tools-mail.ts mail_body handler) which fires
   // repertoire.mail_body_cache_hit on cache reuse.
   "mailroom/body-cache",
+  // Session stats: read-only session.json analyzer CLI for debugging.
+  // Diagnostics-only utility; output is human-readable summary.
+  "heart/session-stats-cli-main",
+  "heart/session-stats",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
