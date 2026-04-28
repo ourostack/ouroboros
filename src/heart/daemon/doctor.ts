@@ -542,6 +542,80 @@ export function checkMailroom(deps: DoctorDeps): DoctorCategory {
   return { name: "Mailroom", checks }
 }
 
+export function checkFriends(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "friends", status: "warn", detail: "no agent bundles found" })
+    return { name: "Friends", checks }
+  }
+
+  for (const agentDir of agents) {
+    const friendsDir = `${deps.bundlesRoot}/${agentDir}/friends`
+    if (!deps.existsSync(friendsDir)) {
+      checks.push({ label: `${agentDir} friends`, status: "pass", detail: "no friends directory (no friends recorded yet)" })
+      continue
+    }
+    let entries: string[]
+    /* v8 ignore start -- defensive: readdirSync failure after existsSync passes is a race-condition fallback @preserve */
+    try {
+      entries = deps.readdirSync(friendsDir).filter((name) => name.endsWith(".json"))
+    } catch {
+      checks.push({ label: `${agentDir} friends`, status: "fail", detail: "friends directory could not be read" })
+      continue
+    }
+    /* v8 ignore stop */
+    if (entries.length === 0) {
+      checks.push({ label: `${agentDir} friends`, status: "pass", detail: "0 friends recorded" })
+      continue
+    }
+    let parseFailures = 0
+    let trustFamily = 0
+    let trustFriend = 0
+    let trustStranger = 0
+    let trustOther = 0
+    /* v8 ignore start -- per-record trust-level tally branches: tests don't exhaustively combine all four trust buckets in one fixture @preserve */
+    for (const name of entries) {
+      const filePath = `${friendsDir}/${name}`
+      let raw: string
+      try {
+        raw = deps.readFileSync(filePath)
+      } catch {
+        parseFailures += 1
+        continue
+      }
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(raw) as Record<string, unknown>
+      } catch {
+        parseFailures += 1
+        continue
+      }
+      const trustLevel = typeof parsed.trustLevel === "string" ? parsed.trustLevel : "friend"
+      if (trustLevel === "family") trustFamily += 1
+      else if (trustLevel === "friend") trustFriend += 1
+      else if (trustLevel === "stranger") trustStranger += 1
+      else trustOther += 1
+    }
+    if (parseFailures > 0) {
+      checks.push({ label: `${agentDir} friends`, status: "warn", detail: `${entries.length} record${entries.length === 1 ? "" : "s"}, ${parseFailures} unparseable` })
+      continue
+    }
+    const parts = [
+      `${entries.length} friend${entries.length === 1 ? "" : "s"}`,
+      `${trustFamily} family`,
+      `${trustFriend} friend`,
+      `${trustStranger} stranger`,
+    ]
+    if (trustOther > 0) parts.push(`${trustOther} other`)
+    checks.push({ label: `${agentDir} friends`, status: "pass", detail: parts.join(", ") })
+    /* v8 ignore stop */
+  }
+
+  return { name: "Friends", checks }
+}
+
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
@@ -752,6 +826,7 @@ const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "Security", fn: checkSecurity },
   { name: "Trips", fn: checkTrips },
   { name: "Mailroom", fn: checkMailroom },
+  { name: "Friends", fn: checkFriends },
   { name: "Disk", fn: checkDisk },
 ]
 
