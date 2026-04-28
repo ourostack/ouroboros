@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.502",
+      "changes": [
+        "Enrich `engine.error` nerve event with HTTP status, redacted body excerpt, and a one-line summary string. Provider errors previously surfaced only as a free-form `error.message`, which forced operators to spelunk the SDK's wrapped object to find the actual status code or quota explanation.",
+        "Two new helpers in `src/heart/providers/error-classification.ts`: `extractProviderErrorDetails(error)` pulls `status` (when present) and a body excerpt (capped at 240 chars, with redaction of any 32+ char token-shaped substring so leaked auth keys don't get persisted into nerves), falling through `error.error → error.response → error.body → error.message` until something usable shows up. Survives circular structures defensively. `summarizeProviderError(error, classification, providerId, model)` produces the canonical operator-readable line: `provider <id>/<model>: <classification>[ HTTP <status>][ — <bodyExcerpt>]`.",
+        "Wired into `finishTerminalProviderError` in `src/heart/core.ts` so every terminal provider error now lands in nerves with `httpStatus` + `bodyExcerpt` + `summary` meta — making `ouro nerves-review --component engine --event engine.error` (alpha.501) immediately useful for diagnosing provider blowups. 11 new tests cover status capture, missing-status defaults, token redaction, 240-char truncation, fallback through alternate body fields, circular-structure safety, and summary formatting in two shapes."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.501",
       "changes": [
         "New `ouro nerves-review` CLI for tailing the agent's nerves ndjson with structured filters. Read-only. Operators previously had to grep raw ndjson by hand to track down something like 'how many heartbeat-recursion-suspected events fired today' or 'show me the last hour of senses warnings'.",

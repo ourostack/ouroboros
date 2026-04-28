@@ -17,6 +17,7 @@ import type { SystemPrompt } from "../mind/prompt";
 import type { McpManager } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { createKeptNotesJudge, injectKeptNotes } from "./kept-notes";
+import { extractProviderErrorDetails, summarizeProviderError } from "./providers/error-classification";
 import { createAnthropicProviderRuntime } from "./providers/anthropic";
 import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
@@ -822,6 +823,7 @@ export async function runAgent(
     }
     /* v8 ignore stop */
 
+    const errorDetails = extractProviderErrorDetails(terminalError);
     emitNervesEvent({
       level: "error",
       event: "engine.error",
@@ -832,6 +834,14 @@ export async function runAgent(
         provider: providerRuntime.id,
         model: providerRuntime.model,
         errorClassification: terminalErrorClassification,
+        ...(errorDetails.status !== undefined ? { httpStatus: errorDetails.status } : {}),
+        ...(errorDetails.bodyExcerpt ? { bodyExcerpt: errorDetails.bodyExcerpt } : {}),
+        summary: summarizeProviderError(
+          terminalError,
+          terminalErrorClassification,
+          providerRuntime.id,
+          providerRuntime.model,
+        ),
       },
     });
     stripLastToolCalls(messages);

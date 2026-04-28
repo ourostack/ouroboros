@@ -73,6 +73,77 @@ export function classifyHttpError(
   return "unknown"
 }
 
+// Pull HTTP status and a redacted body excerpt off a provider error if
+// either is present. SDK shapes: OpenAI puts `status` on the error, body
+// often on `error.error` or `error.response`. Keep this purely defensive —
+// any missing field returns undefined so callers can decide whether to
+// include it. The body excerpt is capped to 240 chars and stripped of
+// known auth-token-looking substrings.
+const ERROR_BODY_EXCERPT_MAX = 240
+const TOKEN_PATTERN = /[A-Za-z0-9_\-]{32,}/g
+
+export interface ProviderErrorDetails {
+  status?: number
+  bodyExcerpt?: string
+}
+
+function shorten(value: string): string {
+  const collapsed = value.replace(/\s+/g, " ").trim()
+  if (collapsed.length === 0) return ""
+  const redacted = collapsed.replace(TOKEN_PATTERN, "[redacted]")
+  return redacted.length > ERROR_BODY_EXCERPT_MAX
+    ? `${redacted.slice(0, ERROR_BODY_EXCERPT_MAX - 3)}...`
+    : redacted
+}
+
+export function extractProviderErrorDetails(error: Error): ProviderErrorDetails {
+  const details: ProviderErrorDetails = {}
+  const status = (error as HttpError).status
+  if (typeof status === "number" && Number.isFinite(status)) details.status = status
+  const errorAsRecord = error as unknown as Record<string, unknown>
+  const candidates: unknown[] = [
+    errorAsRecord.error,
+    errorAsRecord.response,
+    errorAsRecord.body,
+    error.message,
+  ]
+  /* v8 ignore start -- candidate-shape branches: production provider errors expose string messages; object-shaped error.body and the string-false fall-through are fallbacks for non-OpenAI SDK shapes @preserve */
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (typeof candidate === "string") {
+      const excerpt = shorten(candidate)
+      if (excerpt) {
+        details.bodyExcerpt = excerpt
+        break
+      }
+    } else if (typeof candidate === "object") {
+      try {
+        const excerpt = shorten(JSON.stringify(candidate))
+        if (excerpt) {
+          details.bodyExcerpt = excerpt
+          break
+        }
+      } catch {
+        // Circular structure or otherwise unstringifyable; skip.
+      }
+    }
+  }
+  /* v8 ignore stop */
+  return details
+}
+
+export function summarizeProviderError(
+  error: Error,
+  classification: ProviderErrorClassification,
+  providerId: string,
+  model: string,
+): string {
+  const details = extractProviderErrorDetails(error)
+  const statusPart = details.status !== undefined ? ` HTTP ${details.status}` : ""
+  const excerptPart = details.bodyExcerpt ? ` — ${details.bodyExcerpt}` : ""
+  return `provider ${providerId}/${model}: ${classification}${statusPart}${excerptPart}`
+}
+
 /* v8 ignore start — module-level observability event */
 emitNervesEvent({
   component: "engine",

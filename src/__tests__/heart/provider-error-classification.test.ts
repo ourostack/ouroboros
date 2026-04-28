@@ -342,3 +342,66 @@ describe("isNetworkError (shared)", () => {
     expect(isNetworkError(err)).toBe(false)
   })
 })
+
+describe("extractProviderErrorDetails", () => {
+  it("captures HTTP status when present", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    const err = makeHttpError("rate limited", 429)
+    expect(extractProviderErrorDetails(err)).toEqual({ status: 429, bodyExcerpt: "rate limited" })
+  })
+
+  it("returns no status when not on the error", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    expect(extractProviderErrorDetails(new Error("oops")).status).toBeUndefined()
+  })
+
+  it("redacts long token-like substrings from the body excerpt", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    const err = new Error("auth failed sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa visible-tail")
+    const details = extractProviderErrorDetails(err)
+    expect(details.bodyExcerpt).toContain("[redacted]")
+    expect(details.bodyExcerpt).not.toContain("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    expect(details.bodyExcerpt).toContain("visible-tail")
+  })
+
+  it("truncates body excerpts at 240 chars with ellipsis", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    // Repeat short word + space so we don't trigger the 32-char token redaction.
+    const err = new Error("foo ".repeat(200))
+    const excerpt = extractProviderErrorDetails(err).bodyExcerpt!
+    expect(excerpt).toHaveLength(240)
+    expect(excerpt.endsWith("...")).toBe(true)
+  })
+
+  it("falls back to the response/error/body fields when message is empty", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    const err = new Error("") as Error & { error?: unknown }
+    err.error = { code: "billing_hard_limit", message: "billing cap reached" }
+    expect(extractProviderErrorDetails(err).bodyExcerpt).toContain("billing_hard_limit")
+  })
+
+  it("survives circular structures in body without throwing", async () => {
+    const { extractProviderErrorDetails } = await import("../../heart/providers/error-classification")
+    const err = new Error("") as Error & { error?: unknown }
+    const circular: Record<string, unknown> = { kind: "weird" }
+    circular.self = circular
+    err.error = circular
+    expect(() => extractProviderErrorDetails(err)).not.toThrow()
+  })
+})
+
+describe("summarizeProviderError", () => {
+  it("renders provider/model + classification + status + body excerpt in one line", async () => {
+    const { summarizeProviderError } = await import("../../heart/providers/error-classification")
+    const err = makeHttpError("billing cap reached", 429)
+    const summary = summarizeProviderError(err, "usage-limit", "openai-codex", "gpt-5")
+    expect(summary).toBe("provider openai-codex/gpt-5: usage-limit HTTP 429 — billing cap reached")
+  })
+
+  it("omits HTTP status when not present", async () => {
+    const { summarizeProviderError } = await import("../../heart/providers/error-classification")
+    const err = new Error("ECONNRESET")
+    const summary = summarizeProviderError(err, "network-error", "minimax", "minimax-m2.7")
+    expect(summary).toBe("provider minimax/minimax-m2.7: network-error — ECONNRESET")
+  })
+})
