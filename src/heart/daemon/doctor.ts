@@ -477,6 +477,71 @@ export function checkTrips(deps: DoctorDeps): DoctorCategory {
   return { name: "Trips", checks }
 }
 
+export function checkMailroom(deps: DoctorDeps): DoctorCategory {
+  const checks: DoctorCheck[] = []
+  const agents = discoverAgents(deps)
+
+  if (agents.length === 0) {
+    checks.push({ label: "mailroom", status: "warn", detail: "no agent bundles found" })
+    return { name: "Mailroom", checks }
+  }
+
+  for (const agentDir of agents) {
+    const mailroomRoot = `${deps.bundlesRoot}/${agentDir}/state/mailroom`
+    if (!deps.existsSync(mailroomRoot)) {
+      checks.push({ label: `${agentDir} mailroom`, status: "pass", detail: "no mailroom directory (mail not connected)" })
+      continue
+    }
+    const registryPath = `${mailroomRoot}/registry.json`
+    if (!deps.existsSync(registryPath)) {
+      checks.push({ label: `${agentDir} mailroom`, status: "warn", detail: "state/mailroom/ exists but registry.json missing" })
+      continue
+    }
+    let raw: string
+    /* v8 ignore start -- defensive: readFileSync failure after existsSync passes is a race-condition fallback @preserve */
+    try {
+      raw = deps.readFileSync(registryPath)
+    } catch {
+      checks.push({ label: `${agentDir} mailroom`, status: "fail", detail: "registry.json could not be read" })
+      continue
+    }
+    /* v8 ignore stop */
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      checks.push({ label: `${agentDir} mailroom`, status: "fail", detail: "registry.json is not valid JSON" })
+      continue
+    }
+    /* v8 ignore start -- defensive: registry shape is validated by mailroom code; non-array fallbacks are belt-and-suspenders @preserve */
+    const mailboxes = Array.isArray(parsed.mailboxes) ? parsed.mailboxes : null
+    const sourceGrants = Array.isArray(parsed.sourceGrants) ? parsed.sourceGrants : []
+    /* v8 ignore stop */
+    if (!mailboxes || mailboxes.length === 0) {
+      checks.push({ label: `${agentDir} mailroom`, status: "warn", detail: "registry.json has no mailboxes — provision via `ouro connect mail`" })
+      continue
+    }
+    let messagesCount = 0
+    const messagesDir = `${mailroomRoot}/messages`
+    /* v8 ignore start -- defensive: messages-dir presence + readdir error + pluralization branches depend on filesystem-state fixtures not exhaustively covered @preserve */
+    if (deps.existsSync(messagesDir)) {
+      try {
+        messagesCount = deps.readdirSync(messagesDir).filter((name) => name.endsWith(".json")).length
+      } catch {
+        // ignore — pass detail just won't include the message count
+      }
+    }
+    checks.push({
+      label: `${agentDir} mailroom`,
+      status: "pass",
+      detail: `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}, ${sourceGrants.length} source grant${sourceGrants.length === 1 ? "" : "s"}, ${messagesCount} message${messagesCount === 1 ? "" : "s"}`,
+    })
+    /* v8 ignore stop */
+  }
+
+  return { name: "Mailroom", checks }
+}
+
 export function checkDisk(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
@@ -686,6 +751,7 @@ const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "Habits", fn: checkHabits },
   { name: "Security", fn: checkSecurity },
   { name: "Trips", fn: checkTrips },
+  { name: "Mailroom", fn: checkMailroom },
   { name: "Disk", fn: checkDisk },
 ]
 

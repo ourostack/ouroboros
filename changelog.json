@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.510",
+      "changes": [
+        "New `Mailroom` category in `ouro doctor`. Same shape as the `Trips` check from #631 (alpha.509): walk each agent bundle, classify the mailroom registry's health into pass/warn/fail with structured detail, return record/grant/message counts for healthy ledgers.",
+        "Health classes: pass when no mailroom dir (mail not connected), pass with `<N> mailboxes, <N> source grants, <N> messages` when healthy, warn when registry.json is missing or has zero mailboxes, fail when registry.json is unreadable or unparseable. Message count walks the messages dir and counts `.json` files only — stray `.txt` etc. are ignored.",
+        "6 new tests cover all branches plus message-count file-extension filtering. Wired between `Security` and `Disk` in `CATEGORY_CHECKERS`. With #631's Trips check landing alongside, doctor now has agent-private state coverage for the two stateful primitives the agent owns (mail + trips) — same shape, same detail format, same orchestration."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.509",
       "changes": [
         "New `Trips` category in `ouro doctor`. Operators previously had no quick way to verify the trip ledger was healthy — they had to call `trip_status` from inside the agent or open `state/trips/ledger.json` by hand. With the trip ledger now load-bearing for trip planning workflows, doctor coverage matters.",

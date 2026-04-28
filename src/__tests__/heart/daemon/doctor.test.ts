@@ -31,6 +31,7 @@ import {
   checkHabits,
   checkSecurity,
   checkTrips,
+  checkMailroom,
   checkDisk,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
@@ -1325,6 +1326,106 @@ describe("checkTrips", () => {
     expect(cat.checks[0].status).toBe("pass")
     expect(cat.checks[0].detail).toContain("ledger_slugger_xyz")
     expect(cat.checks[0].detail).toContain("2 records")
+  })
+})
+
+// ── Mailroom checks ──
+
+describe("checkMailroom", () => {
+  const registryJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    schemaVersion: 1,
+    domain: "ouro.bot",
+    mailboxes: [{ agentId: "test", mailboxId: "mb_x", canonicalAddress: "test@ouro.bot", keyId: "k", publicKeyPem: "pem", defaultPlacement: "imbox" }],
+    sourceGrants: [],
+    ...overrides,
+  })
+
+  it("warns when no agents found", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": [] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.name).toBe("Mailroom")
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
+  })
+
+  it("passes when no mailroom dir (mail not connected)", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("not connected")
+  })
+
+  it("warns when state/mailroom dir exists but no registry.json", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/mailroom"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("registry.json missing")
+  })
+
+  it("fails when registry.json is unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": "{not json" }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("not valid JSON")
+  })
+
+  it("warns when registry has zero mailboxes", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/mailroom/registry.json": registryJson({ mailboxes: [] }) }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no mailboxes")
+  })
+
+  it("passes with mailbox / grant / message counts when healthy", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/mailroom",
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json",
+        "/tmp/bundles/test.ouro/state/mailroom/messages",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/mailroom/messages": ["mail_a.json", "mail_b.json", "mail_c.json", "skip.txt"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/state/mailroom/registry.json": registryJson({
+          sourceGrants: [
+            { grantId: "g1", agentId: "test", ownerEmail: "x@y.com", source: "hey", aliasAddress: "x.test@ouro.bot", keyId: "k", publicKeyPem: "pem", defaultPlacement: "imbox", enabled: true },
+          ],
+        }),
+      }),
+    })
+    const cat = checkMailroom(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("1 mailbox")
+    expect(cat.checks[0].detail).toContain("1 source grant")
+    expect(cat.checks[0].detail).toContain("3 messages")
   })
 })
 
