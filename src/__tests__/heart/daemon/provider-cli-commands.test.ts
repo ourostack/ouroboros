@@ -1102,12 +1102,12 @@ describe("provider CLI command parsing", () => {
     emitTestEvent("provider cli parse dns workflow")
     const bindingPath = "infra/dns/ouro.bot.binding.json"
 
-    expect(parseOuroCommand(["dns", "backup", "--agent", "Slugger", "--binding", bindingPath, "--output", "slugger/tasks/dns-backup.json"])).toEqual({
+    expect(parseOuroCommand(["dns", "backup", "--agent", "Slugger", "--binding", bindingPath, "--output", "/tmp/dns-backup.json"])).toEqual({
       kind: "dns.workflow",
       action: "backup",
       agent: "Slugger",
       bindingPath,
-      outputPath: "slugger/tasks/dns-backup.json",
+      outputPath: "/tmp/dns-backup.json",
     })
     expect(parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath])).toEqual({
       kind: "dns.workflow",
@@ -1127,18 +1127,18 @@ describe("provider CLI command parsing", () => {
       action: "verify",
       bindingPath,
     })
-    expect(parseOuroCommand(["dns", "certificate", "--agent", "Slugger", "--binding", bindingPath, "--output", "slugger/tasks/dns-cert.json"])).toEqual({
+    expect(parseOuroCommand(["dns", "certificate", "--agent", "Slugger", "--binding", bindingPath, "--output", "/tmp/dns-cert.json"])).toEqual({
       kind: "dns.workflow",
       action: "certificate",
       agent: "Slugger",
       bindingPath,
-      outputPath: "slugger/tasks/dns-cert.json",
+      outputPath: "/tmp/dns-cert.json",
     })
-    expect(parseOuroCommand(["dns", "rollback", "--binding", bindingPath, "--backup", "slugger/tasks/dns-backup.json", "--yes"])).toEqual({
+    expect(parseOuroCommand(["dns", "rollback", "--binding", bindingPath, "--backup", "/tmp/dns-backup.json", "--yes"])).toEqual({
       kind: "dns.workflow",
       action: "rollback",
       bindingPath,
-      backupPath: "slugger/tasks/dns-backup.json",
+      backupPath: "/tmp/dns-backup.json",
       yes: true,
     })
 
@@ -1154,7 +1154,7 @@ describe("provider CLI command parsing", () => {
       .toThrow("dns --binding must be a non-empty path without control characters")
     expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath]))
       .toThrow("dns rollback requires --backup <path>")
-    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath, "--backup", "slugger/tasks/dns-backup.json"]))
+    expect(() => parseOuroCommand(["dns", "rollback", "--agent", "Slugger", "--binding", bindingPath, "--backup", "/tmp/dns-backup.json"]))
       .toThrow("dns rollback requires --yes after choosing a backup")
     expect(() => parseOuroCommand(["dns", "plan", "--agent", "Slugger", "--binding", bindingPath, "--bad"]))
       .toThrow("Usage: ouro dns plan [--agent <name>] --binding <path>")
