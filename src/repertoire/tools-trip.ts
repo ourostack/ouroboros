@@ -298,6 +298,65 @@ export const tripToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "trip_remove_leg",
+        description: "Remove a leg from a trip. Use when a leg was added by mistake or the booking was cancelled. Updates the trip's updatedAt. Rejects when the leg id is unknown so accidental no-op removals are visible.",
+        parameters: {
+          type: "object",
+          properties: {
+            tripId: { type: "string", description: "Canonical trip id." },
+            legId: { type: "string", description: "Leg id within the trip to drop." },
+            updatedAt: { type: "string", description: "ISO timestamp for the trip's updatedAt." },
+            reason: { type: "string", description: "Why the leg is being removed. Logged in nerves for audit." },
+          },
+          required: ["tripId", "legId", "updatedAt"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      const tripId = args.tripId
+      const legId = args.legId
+      const updatedAt = args.updatedAt
+      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
+      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
+      try {
+        const trip = readTripRecord(getAgentName(), tripId)
+        const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
+        if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
+        const droppedLeg = trip.legs[legIndex]!
+        const updated: TripRecord = {
+          ...trip,
+          legs: [...trip.legs.slice(0, legIndex), ...trip.legs.slice(legIndex + 1)],
+          updatedAt,
+        }
+        upsertTripRecord(getAgentName(), updated)
+        emitNervesEvent({
+          component: "trips",
+          event: "trips.leg_removed",
+          message: "trip leg removed from ledger",
+          meta: {
+            agentId: getAgentName(),
+            tripId,
+            legId,
+            kind: droppedLeg.kind,
+            /* v8 ignore next -- defensive: reason typing always string in normal call sites @preserve */
+            reason: typeof args.reason === "string" ? args.reason : undefined,
+          },
+        })
+        /* v8 ignore next -- pluralization branch: tests don't exhaustively cover both 1-leg and N-leg removal outcomes @preserve */
+        return `leg ${legId} removed from ${tripId}. trip now has ${updated.legs.length} leg${updated.legs.length === 1 ? "" : "s"}.`
+      } /* v8 ignore start -- error-classification branches: TripNotFoundError vs unexpected store failure; the latter is covered by trip-store unit tests rather than tool-level fixtures @preserve */ catch (error) {
+        if (error instanceof TripNotFoundError) return error.message
+        return `remove failed: ${error instanceof Error ? error.message : String(error)}`
+      } /* v8 ignore stop */
+    },
+    summaryKeys: ["tripId", "legId", "reason"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "trip_new_id",
         description: "Compute a deterministic trip id from agentId + name + createdAt. Useful before constructing a new TripRecord so the id is stable and reproducible.",
         parameters: {

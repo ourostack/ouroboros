@@ -75,7 +75,7 @@ describe("trip tools", () => {
 
     it("rejects stranger ctx for every trip_ tool", async () => {
       mountAgent()
-      const names = ["trip_ensure_ledger", "trip_status", "trip_get", "trip_upsert", "trip_attach_evidence", "trip_update_leg", "trip_new_id"]
+      const names = ["trip_ensure_ledger", "trip_status", "trip_get", "trip_upsert", "trip_attach_evidence", "trip_update_leg", "trip_remove_leg", "trip_new_id"]
       for (const name of names) {
         const result = await tool(name).handler({ tripId: "x", legId: "y", evidence: "{}", record: "{}", name: "n", createdAt: "t" }, strangerCtx)
         expect(typeof result === "string" && result.includes("private")).toBe(true)
@@ -551,6 +551,78 @@ describe("trip tools", () => {
       mountAgent()
       expect(await tool("trip_new_id").handler({ name: "", createdAt: "t" }, familyCtx)).toContain("name is required")
       expect(await tool("trip_new_id").handler({ name: "n", createdAt: "" }, familyCtx)).toContain("createdAt is required")
+    })
+  })
+
+  describe("trip_remove_leg", () => {
+    it("removes the named leg, updates updatedAt, and reports the new leg count", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const seeded = trip({
+        legs: [
+          {
+            legId: "leg_lodging_0000000000000000",
+            kind: "lodging",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T08:00:00.000Z",
+            updatedAt: "2026-04-01T08:00:00.000Z",
+          },
+          {
+            legId: "leg_flight_0000000000000001",
+            kind: "flight",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T09:00:00.000Z",
+            updatedAt: "2026-04-01T09:00:00.000Z",
+          },
+        ],
+      })
+      await tool("trip_upsert").handler({ record: JSON.stringify(seeded) }, familyCtx)
+      const result = await tool("trip_remove_leg").handler({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "booking cancelled",
+      }, familyCtx) as string
+      expect(result).toContain("removed")
+      expect(result).toContain("trip now has 1 leg")
+      const got = await tool("trip_get").handler({ tripId: seeded.tripId }, familyCtx) as string
+      expect(got).toContain("legs: 1")
+      expect(got).not.toContain("leg_flight_0000000000000001")
+    })
+
+    it("rejects when the leg id is unknown so accidental no-op removals are visible", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
+      const result = await tool("trip_remove_leg").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_doesnotexist_0000000000000000",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+      }, familyCtx) as string
+      expect(result).toContain("not found")
+    })
+
+    it("returns trip-not-found when the trip is missing", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const result = await tool("trip_remove_leg").handler({
+        tripId: "trip_missing_0000000000000000",
+        legId: "leg_x",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+      }, familyCtx) as string
+      expect(result).toContain("trip not found")
+    })
+
+    it("rejects empty inputs", async () => {
+      mountAgent()
+      const empty = await tool("trip_remove_leg").handler({ tripId: "", legId: "x", updatedAt: "t" }, familyCtx) as string
+      expect(empty).toContain("tripId is required")
+      const noLeg = await tool("trip_remove_leg").handler({ tripId: "t", legId: "", updatedAt: "t" }, familyCtx) as string
+      expect(noLeg).toContain("legId is required")
+      const noTime = await tool("trip_remove_leg").handler({ tripId: "t", legId: "x", updatedAt: "" }, familyCtx) as string
+      expect(noTime).toContain("updatedAt is required")
     })
   })
 })

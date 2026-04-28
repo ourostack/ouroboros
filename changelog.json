@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.508",
+      "changes": [
+        "New `trip_remove_leg` tool. The trip ledger had `trip_upsert`, `trip_attach_evidence`, and `trip_update_leg`, but no first-class way to drop a leg — the agent had to re-emit the entire trip record minus that leg (fragile, easy to lose evidence). Real workflow that needed it: the user cancelled a hotel booking; #620's e2e test exercised the add path but there was no way to model the cancel.",
+        "`trip_remove_leg(tripId, legId, updatedAt, reason?)` finds the leg, drops it from `legs[]`, bumps the trip's `updatedAt`, and emits `trips.leg_removed` (info) carrying tripId/legId/kind/reason. Rejects when the leg id is unknown (so accidental no-ops are visible) and when the trip is missing (returns the same `trip not found` shape as the other tools). Tool registry up to 75 (now 8 trip tools — snapshot updated, H10 contract list includes the new name).",
+        "5 tests cover happy-path removal with leg-count assertion via `trip_get`, unknown-leg rejection, missing-trip propagation, the three required-field validation paths, plus the existing stranger-ctx trust block now extended to include `trip_remove_leg`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.507",
       "changes": [
         "Drop the second of two consecutive assistant messages with byte-identical content in `repairSessionMessages`. The existing back-to-back-assistant repair concatenated content with `\\n\\n`, which produced visible duplicate text on the surface when the second message was a retry/double-persist artifact (a common shape when a turn is interrupted mid-save and re-emitted).",

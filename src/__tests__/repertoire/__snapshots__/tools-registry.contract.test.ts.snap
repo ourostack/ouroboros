@@ -67,6 +67,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "trip_ensure_ledger",
   "trip_get",
   "trip_new_id",
+  "trip_remove_leg",
   "trip_status",
   "trip_update_leg",
   "trip_upsert",
