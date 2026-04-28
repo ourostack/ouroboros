@@ -206,4 +206,76 @@ describe("notes/friend tools", () => {
     })
     expect(result).toBe("friend not found: missing-friend")
   })
+
+  it("friend_list lists all friends sorted by name with default limit", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friends: FriendRecord[] = [
+      makeFriend({ id: "f-a", name: "Bea", trustLevel: "family" }),
+      makeFriend({ id: "f-b", name: "Aria", trustLevel: "friend" }),
+      makeFriend({ id: "f-c", name: "Cleo", trustLevel: "stranger" }),
+    ]
+    const result = await execTool("friend_list", {}, {
+      signin: async () => undefined,
+      friendStore: {
+        get: vi.fn(),
+        put: vi.fn(),
+        delete: vi.fn(),
+        findByExternalId: vi.fn(),
+        listAll: vi.fn(async () => friends),
+      } as any,
+    })
+    expect(result).toContain("3 friends")
+    expect(result.indexOf("Aria")).toBeLessThan(result.indexOf("Bea"))
+    expect(result.indexOf("Bea")).toBeLessThan(result.indexOf("Cleo"))
+  })
+
+  it("friend_list filters by trust level", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friends: FriendRecord[] = [
+      makeFriend({ id: "f-a", name: "FamilyMember", trustLevel: "family" }),
+      makeFriend({ id: "f-b", name: "AcquaintanceX", trustLevel: "stranger" }),
+    ]
+    const result = await execTool("friend_list", { trust: "family" }, {
+      signin: async () => undefined,
+      friendStore: {
+        get: vi.fn(),
+        put: vi.fn(),
+        delete: vi.fn(),
+        findByExternalId: vi.fn(),
+        listAll: vi.fn(async () => friends),
+      } as any,
+    })
+    expect(result).toContain("trust=family")
+    expect(result).toContain("FamilyMember")
+    expect(result).not.toContain("AcquaintanceX")
+  })
+
+  it("friend_list reports 'not available' when friendStore lacks listAll", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool("friend_list", {}, {
+      signin: async () => undefined,
+      friendStore: {
+        get: vi.fn(),
+        put: vi.fn(),
+        delete: vi.fn(),
+        findByExternalId: vi.fn(),
+      },
+    })
+    expect(result).toContain("does not support listing")
+  })
+
+  it("friend_list reports empty state with trust filter", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const result = await execTool("friend_list", { trust: "family" }, {
+      signin: async () => undefined,
+      friendStore: {
+        get: vi.fn(),
+        put: vi.fn(),
+        delete: vi.fn(),
+        findByExternalId: vi.fn(),
+        listAll: vi.fn(async () => []),
+      } as any,
+    })
+    expect(result).toContain("no friends with trust level 'family'")
+  })
 })

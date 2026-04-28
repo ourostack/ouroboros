@@ -23,6 +23,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "flight_cancel",
   "flight_hold",
   "flight_search",
+  "friend_list",
   "geocode_search",
   "get_friend_note",
   "glob",

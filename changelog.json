@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.512",
+      "changes": [
+        "New `friend_list` tool — the agent can list its known friends with id, name, and trust level. The notes/friend repertoire had `get_friend_note` and `save_friend_note` for individual lookups but no surface to enumerate the friend graph. Real workflows that needed it: cross-chat outreach decisions, screener triage, orienting on relationships at session start.",
+        "Optional `trust` filter (`family`/`friend`/`stranger`) and `limit` (1-200, default 50). Renders one entry per friend with id, trust label, name, and external-id channel:identifier pairs when present. Sorted alphabetically by display name. Empty-state messages are filter-aware so the agent can tell the difference between 'no friends at all' and 'no matches for the filter'.",
+        "Defensively handles a friend store that lacks `listAll` (the interface marks it optional) — returns 'the configured friend store does not support listing' rather than throwing. Tool registry up to 75 (snapshot regenerated, H10 contract list extended). 4 new tests cover sorted listing, trust filtering, store-without-listAll defensive path, and filter-empty state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.511",
       "changes": [
         "Add `--json` flag to `ouro doctor`. Default human-readable output is unchanged; `--json` emits the full DoctorResult (categories + checks + summary) as pretty-printed JSON for piping into jq, dashboards, scheduled health monitors, or CI pipelines that want to alert on a doctor failure.",

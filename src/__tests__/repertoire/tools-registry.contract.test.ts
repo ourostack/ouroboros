@@ -118,6 +118,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("search_notes");
     expect(names).toContain("save_friend_note");
     expect(names).toContain("get_friend_note");
+    expect(names).toContain("friend_list");
     expect(names).toContain("list_skills");
     expect(names).toContain("load_skill");
     expect(names).toContain("list_recent_attachments");
@@ -202,7 +203,8 @@ describe("tool registry contract", () => {
     expect(names).toContain("trip_new_id");
 
     expect(names).toContain("mail_outbox");
-    // Exact count: 77 tools total — trip ledger at 8 with trip_remove_leg, plus mail_outbox addition
-    expect(names).toHaveLength(77);
+    expect(names).toContain("friend_list");
+    // Exact count: 78 tools (77 prior + friend_list)
+    expect(names).toHaveLength(78);
   });
 });
