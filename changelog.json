@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.503",
+      "changes": [
+        "In-process LRU cache for decrypted mail bodies. The cold path for `mail_thread` is read-encrypted-blob-from-Azure (1-3s p50, up to tens of seconds for HEY-sized bodies — #614 raised the timeout to 60s for this very reason) plus an RSA-OAEP+A256GCM decrypt. Repeated reads of the same message are common: re-checking a booking confirmation while seeding a trip leg, following up on a thread, looping back to verify a fact. Each repeat hit was paying the full cold cost.",
+        "New `src/mailroom/body-cache.ts` keeps a 50-entry LRU keyed by `StoredMailMessage.id` (a deterministic content hash — rotating keys produces a new id, so stale ciphertext can never be served against a fresh keyset). Insertion-order eviction; reads refresh LRU position. Per-process by design — daemon restart clears it (matches the established pattern with #618 heartbeat-recursion state and #621 BB own-handle discovery).",
+        "Wired into both `mail_thread` (cache-first read; on miss, do the disk fetch + decrypt and cache for next time) and `mail_recent`/`mail_search` (which already decrypt batches; now they also seed the body cache so the next `mail_thread` on any of those is free). New `repertoire.mail_body_cache_hit` info-level event makes hit rate observable via `ouro nerves-review --event mail_body_cache_hit` (alpha.501). 7 new tests cover hit/miss, LRU refresh-on-read, eviction at capacity, defensive empty-id handling, and clear."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.502",
       "changes": [
         "Enrich `engine.error` nerve event with HTTP status, redacted body excerpt, and a one-line summary string. Provider errors previously surfaced only as a free-form `error.message`, which forced operators to spelunk the SDK's wrapped object to find the actual status code or quota explanation.",

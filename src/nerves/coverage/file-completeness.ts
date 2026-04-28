@@ -122,6 +122,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "nerves/review/cli-main",
   "nerves/review/cli",
   "nerves/review/core",
+  // Mail body cache: in-process LRU helper. Cache hit/miss observability
+  // lives at the caller (tools-mail.ts mail_body handler) which fires
+  // repertoire.mail_body_cache_hit on cache reuse.
+  "mailroom/body-cache",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
