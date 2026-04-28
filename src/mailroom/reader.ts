@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { BlobServiceClient } from "@azure/storage-blob"
 import { DefaultAzureCredential } from "@azure/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentName, getAgentRoot } from "../heart/identity"
+import { getAgentMailroomRoot, getAgentName } from "../heart/identity"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { AzureBlobMailroomStore } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
@@ -131,7 +131,7 @@ function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): 
     }
   }
 
-  const storePath = config.storePath ?? path.join(getAgentRoot(agentName), "state", "mailroom")
+  const storePath = config.storePath ?? getAgentMailroomRoot(agentName)
   return {
     store: new FileMailroomStore({ rootDir: storePath }),
     storeKind: "file",

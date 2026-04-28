@@ -333,6 +333,10 @@ export function getAgentMessagesRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "messages")
 }
 
+export function getAgentMailroomRoot(agentName?: string): string {
+  return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "mailroom")
+}
+
 export function getAgentToolsRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "tools")
 }
