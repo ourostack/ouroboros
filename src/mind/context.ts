@@ -16,7 +16,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { estimateTokensForMessages } from "./token-estimate"
 
-export { migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
+export { detectDuplicateToolCallIds, migrateToolNames, repairSessionMessages, validateSessionMessages } from "../heart/session-events"
 
 export interface UsageData {
   input_tokens: number

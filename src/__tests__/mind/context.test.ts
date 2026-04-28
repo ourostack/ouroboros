@@ -1653,6 +1653,55 @@ describe("validateSessionMessages", () => {
     ]
     expect(validateSessionMessages(messages)).toEqual([])
   })
+
+  it("flags duplicate tool_call_id reused across assistant messages (MiniMax canonical id collision)", async () => {
+    const { validateSessionMessages, detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "first" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_function_aaaaaa_1", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "result1", tool_call_id: "call_function_aaaaaa_1" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "second" },
+      { role: "assistant", content: null, tool_calls: [{ id: "call_function_aaaaaa_1", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "result2", tool_call_id: "call_function_aaaaaa_1" },
+      { role: "assistant", content: "done" },
+    ]
+    const violations = validateSessionMessages(messages)
+    expect(violations.some((violation) => violation.includes("duplicate tool_call_id"))).toBe(true)
+    const collisions = detectDuplicateToolCallIds(messages)
+    expect(collisions).toHaveLength(1)
+    expect(collisions[0]?.id).toBe("call_function_aaaaaa_1")
+    expect(collisions[0]?.indices).toEqual([2, 6])
+  })
+
+  it("does not flag the same tool_call_id appearing twice in one assistant message (parallel call shape)", async () => {
+    const { detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "x" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "dup", type: "function", function: { name: "foo", arguments: "{}" } },
+          { id: "dup", type: "function", function: { name: "foo", arguments: "{}" } },
+        ],
+      },
+    ]
+    expect(detectDuplicateToolCallIds(messages)).toEqual([])
+  })
+
+  it("does not flag distinct ids across messages", async () => {
+    const { detectDuplicateToolCallIds } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "x" },
+      { role: "assistant", content: null, tool_calls: [{ id: "a", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "r1", tool_call_id: "a" },
+      { role: "assistant", content: null, tool_calls: [{ id: "b", type: "function", function: { name: "foo", arguments: "{}" } }] },
+      { role: "tool", content: "r2", tool_call_id: "b" },
+    ]
+    expect(detectDuplicateToolCallIds(messages)).toEqual([])
+  })
 })
 
 describe("repairSessionMessages", () => {

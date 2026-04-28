@@ -414,7 +414,56 @@ export function validateSessionMessages(messages: OpenAI.ChatCompletionMessagePa
     prevNonToolRole = msg.role
   }
 
+  for (const collision of detectDuplicateToolCallIds(messages)) {
+    violations.push(
+      `duplicate tool_call_id '${collision.id}' across assistant messages at indices ${collision.indices.join(", ")} — provider may reject (MiniMax canonicalizes call_function_<hash>_<n> across turns)`,
+    )
+  }
+
   return violations
+}
+
+export interface ToolCallIdCollision {
+  id: string
+  indices: number[]
+}
+
+/**
+ * Detect tool_call_ids that appear in more than one assistant message
+ * within the conversation. MiniMax-M2.7 in particular emits canonical
+ * ids of the form `call_function_<hash>_<n>` and reuses the same id
+ * across turns when the same function is called — which causes provider
+ * rejections on replay because tool_call_id is supposed to be unique
+ * per request. We don't (yet) rewrite these here; this function exists
+ * so the sanitize pipeline can surface the collision through nerves
+ * (`mind.session_invariant_violation`) and operators can decide.
+ *
+ * Same-message duplicates (one assistant calling the same id twice)
+ * are not collisions — they're a legitimate parallel call shape and
+ * would be handled by the assistant's own emit logic. We only flag
+ * cross-message reuse.
+ */
+export function detectDuplicateToolCallIds(
+  messages: OpenAI.ChatCompletionMessageParam[],
+): ToolCallIdCollision[] {
+  const idsByFirstIndex = new Map<string, number[]>()
+  for (let i = 0; i < messages.length; i++) {
+    const msg = normalizeMessage(messages[i]!)
+    if (msg.role !== "assistant") continue
+    const seenInThisMessage = new Set<string>()
+    for (const call of msg.toolCalls) {
+      if (!call.id || seenInThisMessage.has(call.id)) continue
+      seenInThisMessage.add(call.id)
+      const indices = idsByFirstIndex.get(call.id) ?? []
+      indices.push(i)
+      idsByFirstIndex.set(call.id, indices)
+    }
+  }
+  const collisions: ToolCallIdCollision[] = []
+  for (const [id, indices] of idsByFirstIndex) {
+    if (indices.length > 1) collisions.push({ id, indices })
+  }
+  return collisions
 }
 
 export function repairSessionMessages(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.ChatCompletionMessageParam[] {
