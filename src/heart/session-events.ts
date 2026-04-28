@@ -472,17 +472,36 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
   if (violations.length === 0) return normalized.map(toProviderMessage)
 
   const result: NormalizedProviderMessage[] = []
+  let duplicateAssistantsDropped = 0
   for (const msg of normalized) {
     if (msg.role === "assistant" && result.length > 0) {
       const prev = result[result.length - 1]
       if (prev.role === "assistant" && prev.toolCalls.length === 0) {
         const prevContent = contentText(prev.content)
         const curContent = contentText(msg.content)
+        // Drop the second of two consecutive assistants when the content is
+        // byte-identical (after trim) — that's a retry/double-persist artifact,
+        // not legitimate continuation. Concatenating them produced visible
+        // duplicate text in surfaces. Empty strings still concatenate (could
+        // be "" + real content).
+        if (prevContent.trim().length > 0 && prevContent.trim() === curContent.trim() && msg.toolCalls.length === 0) {
+          duplicateAssistantsDropped += 1
+          continue
+        }
         prev.content = `${prevContent}\n\n${curContent}`
         continue
       }
     }
     result.push(msg)
+  }
+  if (duplicateAssistantsDropped > 0) {
+    emitNervesEvent({
+      level: "info",
+      event: "mind.session_duplicate_assistant_dropped",
+      component: "mind",
+      message: "dropped consecutive assistant messages with identical content (retry/double-persist artifact)",
+      meta: { count: duplicateAssistantsDropped },
+    })
   }
 
   emitNervesEvent({

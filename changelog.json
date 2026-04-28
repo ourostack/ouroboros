@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.507",
+      "changes": [
+        "Drop the second of two consecutive assistant messages with byte-identical content in `repairSessionMessages`. The existing back-to-back-assistant repair concatenated content with `\\n\\n`, which produced visible duplicate text on the surface when the second message was a retry/double-persist artifact (a common shape when a turn is interrupted mid-save and re-emitted).",
+        "Behavior change is narrow: trim-equality only, both sides must have non-empty content, and the second assistant must not have its own tool_calls. Different content still concatenates (legitimate continuation). Empty-content assistants still concatenate (the existing test case for null+undefined is preserved). Emits `mind.session_duplicate_assistant_dropped` (info) with the count so #622 (nerves-review) can show how often it fires in real traffic. 2 new tests cover the dedup path and the no-false-positive case (different content concatenates as before)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.506",
       "changes": [
         "Detect duplicate tool_call_id across assistant messages in `validateSessionMessages`. MiniMax-M2.7 emits canonical tool_call ids of the form `call_function_<hash>_<n>` and reuses the same id across turns when the same function gets called — which causes provider rejections on replay because tool_call_id is supposed to be unique per request. The session sanitize pass already had position-aware orphan detection (#613) and inline-reasoning strip (#612); this adds the third member of the family — collision detection.",

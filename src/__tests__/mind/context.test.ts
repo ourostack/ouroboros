@@ -1746,6 +1746,32 @@ describe("repairSessionMessages", () => {
     // Both non-string contents should fall back to ""
     expect((repaired[2] as any).content).toBe("\n\n")
   })
+
+  it("drops the second of two consecutive assistants with byte-identical content (retry/double-persist artifact)", async () => {
+    const { repairSessionMessages } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "I'll help with that." },
+      { role: "assistant", content: "I'll help with that." },
+    ]
+    const repaired = repairSessionMessages(messages)
+    expect(repaired).toHaveLength(3)
+    expect((repaired[2] as { content: string }).content).toBe("I'll help with that.")
+  })
+
+  it("trim-equality only — different content still concatenates (legitimate back-to-back)", async () => {
+    const { repairSessionMessages } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "First part." },
+      { role: "assistant", content: "Second, different part." },
+    ]
+    const repaired = repairSessionMessages(messages)
+    expect(repaired).toHaveLength(3)
+    expect((repaired[2] as { content: string }).content).toBe("First part.\n\nSecond, different part.")
+  })
 })
 
 describe("appendSyntheticAssistantMessage", () => {
