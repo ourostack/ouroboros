@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.511",
+      "changes": [
+        "Add `--json` flag to `ouro doctor`. Default human-readable output is unchanged; `--json` emits the full DoctorResult (categories + checks + summary) as pretty-printed JSON for piping into jq, dashboards, scheduled health monitors, or CI pipelines that want to alert on a doctor failure.",
+        "Same shape as the `--json` flag on the diagnostic family that's been growing alongside (session-playback / nerves-review / session-stats in their respective open PRs). Doctor was the asymmetric case — text-only output. With agent-private state coverage now landing in the doctor (Trips in #631, Mailroom in #632), structured output makes the doctor genuinely consumable by external tooling.",
+        "1 new test on the parse path (`doctor --json` → `{ kind: \"doctor\", json: true }`); the existing parse test is updated to match the new shape (`{ kind: \"doctor\", json: false }`). The exec-side change is a one-line ternary that picks `JSON.stringify(result, null, 2) + \"\\n\"` over `formatDoctorOutput(result)` when the flag is set. 83/83 doctor + parse tests pass."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.510",
       "changes": [
         "New `Mailroom` category in `ouro doctor`. Same shape as the `Trips` check from #631 (alpha.509): walk each agent bundle, classify the mailroom registry's health into pass/warn/fail with structured detail, return record/grant/message counts for healthy ledgers.",

@@ -7,8 +7,12 @@ vi.mock("../../../nerves/runtime", () => ({
 import { parseOuroCommand, usage } from "../../../heart/daemon/cli-parse"
 
 describe("ouro doctor CLI parsing", () => {
-  it("parses 'doctor' as { kind: 'doctor' }", () => {
-    expect(parseOuroCommand(["doctor"])).toEqual({ kind: "doctor" })
+  it("parses 'doctor' as { kind: 'doctor', json: false }", () => {
+    expect(parseOuroCommand(["doctor"])).toEqual({ kind: "doctor", json: false })
+  })
+
+  it("parses 'doctor --json' with json: true", () => {
+    expect(parseOuroCommand(["doctor", "--json"])).toEqual({ kind: "doctor", json: true })
   })
 
   it("usage() output includes 'doctor'", () => {

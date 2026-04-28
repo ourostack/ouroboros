@@ -1515,7 +1515,11 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
   if (head === "clone") return parseCloneCommand(args.slice(1))
-  if (head === "doctor") return { kind: "doctor" }
+  if (head === "doctor") {
+    const tail = args.slice(1)
+    const json = tail.includes("--json")
+    return { kind: "doctor", json }
+  }
   if (head === "bluebubbles") return parseBlueBubblesCommand(args.slice(1))
 
   const suggestion = suggestCommand(head)

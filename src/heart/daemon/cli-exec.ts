@@ -8100,7 +8100,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       envPath: process.env.PATH ?? "",
     }
     const doctorResult = await runDoctorChecks(doctorDeps)
-    const output = formatDoctorOutput(doctorResult)
+    const output = command.json
+      ? `${JSON.stringify(doctorResult, null, 2)}\n`
+      : formatDoctorOutput(doctorResult)
     deps.writeStdout(output)
     emitNervesEvent({
       component: "daemon",
