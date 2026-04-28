@@ -8099,7 +8099,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       homedir: os.homedir(),
       envPath: process.env.PATH ?? "",
     }
-    const doctorResult = await runDoctorChecks(doctorDeps)
+    const doctorResult = command.category
+      ? await runDoctorChecks(doctorDeps, { category: command.category })
+      : await runDoctorChecks(doctorDeps)
+    if (command.category && doctorResult.categories.length === 0) {
+      const message = `unknown doctor category '${command.category}'. known categories: CLI, Daemon, Agents, Senses, Habits, Security, Trips, Mailroom, Friends, Disk.\n`
+      deps.writeStdout(message)
+      return message
+    }
     const output = command.json
       ? `${JSON.stringify(doctorResult, null, 2)}\n`
       : formatDoctorOutput(doctorResult)
@@ -8108,8 +8115,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       component: "daemon",
       event: "daemon.doctor_run",
       message: "ouro doctor completed",
-      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed },
+      meta: { passed: doctorResult.summary.passed, warnings: doctorResult.summary.warnings, failed: doctorResult.summary.failed, strict: command.strict ?? false },
     })
+    if (command.strict && (doctorResult.summary.warnings > 0 || doctorResult.summary.failed > 0)) {
+      throw new Error(`doctor --strict: ${doctorResult.summary.warnings} warning${doctorResult.summary.warnings === 1 ? "" : "s"} and ${doctorResult.summary.failed} failure${doctorResult.summary.failed === 1 ? "" : "s"}`)
+    }
     return output
   }
 

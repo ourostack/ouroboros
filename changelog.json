@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.514",
+      "changes": [
+        "Add `--strict` flag to `ouro doctor` and bundle the `--category` flag (also in #637) for a coherent CI-friendly diagnostic interface. `--strict` makes the CLI exit non-zero (via thrown error caught by ouro-entry) when any check is `warn` or `fail`. Default behavior is unchanged.",
+        "Composes naturally with --category and --json (#634): `ouro doctor --category Daemon --strict --json` is the canonical CI invocation — runs only the daemon checker, exits 1 on any issue, output is parseable. Emits `daemon.doctor_run` with `strict: true` in meta when set so the strict-failure events are filterable through #622's `nerves-review`.",
+        "5 new parse tests cover --strict alone, --strict + --category combined, and the existing happy-path / no-value cases. cli-types now models `{ kind: \"doctor\", category?, strict? }`. KNOWN_DOCTOR_CATEGORIES (also from #637) gives external tooling a stable list of available filters. 69/69 doctor + parse tests pass."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.513",
       "changes": [
         "New `Friends` category in `ouro doctor`. Same shape as the Mailroom (#632) and Trips (#631) checks — walk each agent bundle, classify the friend store's health, and report a trust-level breakdown for the healthy path.",

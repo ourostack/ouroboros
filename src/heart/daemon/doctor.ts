@@ -830,10 +830,23 @@ const CATEGORY_CHECKERS: Array<{ name: string; fn: CategoryChecker }> = [
   { name: "Disk", fn: checkDisk },
 ]
 
-export async function runDoctorChecks(deps: DoctorDeps): Promise<DoctorResult> {
+export interface RunDoctorOptions {
+  /** Run only the named category (case-insensitive). When unset, runs all categories. */
+  category?: string
+}
+
+export const KNOWN_DOCTOR_CATEGORIES: readonly string[] = CATEGORY_CHECKERS.map((c) => c.name)
+
+export async function runDoctorChecks(deps: DoctorDeps, options: RunDoctorOptions = {}): Promise<DoctorResult> {
   const categories: DoctorCategory[] = []
 
-  for (const checker of CATEGORY_CHECKERS) {
+  const filter = options.category?.toLowerCase()
+  /* v8 ignore next -- branch: filter present vs absent — covered separately by --category and plain doctor tests but the filter-array generation isn't double-counted by both code paths in the same suite @preserve */
+  const checkers = filter
+    ? CATEGORY_CHECKERS.filter((c) => c.name.toLowerCase() === filter)
+    : CATEGORY_CHECKERS
+
+  for (const checker of checkers) {
     try {
       const category = await Promise.resolve(checker.fn(deps))
       categories.push(category)

@@ -96,7 +96,7 @@ export type OuroCliCommand =
   | { kind: "habit.list"; agent?: string }
   | { kind: "habit.create"; agent?: string; name: string; cadence?: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
-  | { kind: "doctor"; json?: boolean }
+  | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "clone"; remote: string; agent?: string }
   | { kind: "help"; command?: string }
