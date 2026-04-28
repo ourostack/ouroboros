@@ -124,6 +124,7 @@ write it like a post-incident note: cause, mitigation, suggested
 next action. See `buildSyntheticToolResultMessage` in
 `src/heart/session-events.ts` for the pattern.
 
+<<<<<<< HEAD
 ## Regression test bundle
 
 Provider replay-rejection bugs have a dedicated regression bundle
@@ -136,3 +137,26 @@ When you encounter a NEW replay rejection: capture the shape from
 the daemon log, write the test BEFORE the fix (it should fail),
 land the fix, verify the test passes. Each entry there cites the
 PR + the runbook entry above.
+=======
+## Sanitize-pass repair quick reference
+
+`sanitizeProviderMessages` runs before every replay and applies a
+fixed pipeline of repairs. Each repair emits a structured nerves
+event so an operator can grep and quantify how often a given shape
+occurs in real traffic. The four classes shipped so far:
+
+| repair | nerves event | trigger | recovery shape |
+| --- | --- | --- | --- |
+| inline `<think>` + tool_calls | `engine.inline_reasoning_stripped` (info) | persist time | strip the `<think>` block from `content`, preserve original on `_inline_reasoning` |
+| inline `<think>` on load (legacy) | `mind.session_invariant_repair` (info) | session load | same strip, plus an explanatory synthetic tool result for affected `tool_call_id`s |
+| orphan tool result | `mind.session_orphan_tool_result_repair` (info) | sanitize | drop tool messages whose preceding assistant has no matching `tool_call_id` |
+| invariant violation | `mind.session_invariant_violation` (info) | validate | reported but not repaired — operator action only |
+
+When a session looks stuck, search the daemon log for these event
+names — the meta tells you what was repaired, how many times, and
+which call ids were affected. For deeper inspection of which
+specific repairs *would* run on a saved session without committing,
+the sanitize pipeline is testable as a pure function (see
+`src/__tests__/heart/provider-replay-regressions.test.ts` for the
+shape of an isolated repro).
+>>>>>>> d741b661 (docs(known-issues): sanitize-pass repair quick reference table)
