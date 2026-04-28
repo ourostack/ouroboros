@@ -151,7 +151,7 @@ interface RuntimeDeps {
   getOwnHandles: () => readonly string[]
 }
 
-interface BlueBubblesReplyTargetController {
+export interface BlueBubblesReplyTargetController {
   getReplyToMessageGuid(): string | undefined
   setSelection(selection: BlueBubblesReplyTargetSelection): string
 }
@@ -505,7 +505,7 @@ function emitBlueBubblesMarkReadWarning(chat: BlueBubblesChatRef, error: unknown
   })
 }
 
-function createBlueBubblesCallbacks(
+export function createBlueBubblesCallbacks(
   client: BlueBubblesClient,
   chat: BlueBubblesChatRef,
   replyTarget: BlueBubblesReplyTargetController,
@@ -596,7 +596,12 @@ function createBlueBubblesCallbacks(
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
-      if (name === "observe") {
+      // observe + speak are flow-control: their visible output (or lack of it) is
+      // handled outside the tool-activity callbacks. speak in particular delivers
+      // its message via onTextChunk/flushNow — we MUST NOT enqueue a "speaking..."
+      // status sendText here, which would arrive as a separate iMessage right
+      // before the actual speak content.
+      if (name === "observe" || name === "speak") {
         emitNervesEvent({
           component: "senses",
           event: "senses.bluebubbles_tool_start",
@@ -618,7 +623,8 @@ function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      if (name !== "observe") {
+      // observe + speak skip the tool-activity end callback (no ✓/✗ status sent).
+      if (name !== "observe" && name !== "speak") {
         toolCallbacks.onToolEnd(name, summary, success)
       }
       emitNervesEvent({
@@ -642,6 +648,29 @@ function createBlueBubblesCallbacks(
 
     onClearText(): void {
       textBuffer = ""
+    },
+
+    async flushNow(): Promise<void> {
+      // Contract: throws if delivery fails. We deliberately let `client.sendText`
+      // rejections propagate so the engine's speak interception can mark the
+      // tool call as failed and tell the agent the message did not reach the
+      // friend (rather than silently logging and pretending success).
+      const trimmed = textBuffer.trim()
+      if (!trimmed) return
+      textBuffer = ""
+      await client.sendText({
+        chat,
+        text: trimmed,
+        replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
+      })
+      // Note: do NOT call client.setTyping(chat, false) here — the agent is
+      // still mid-turn, so the typing indicator stays ACTIVE.
+      emitNervesEvent({
+        component: "senses",
+        event: "bluebubbles.speak_flush",
+        message: "bluebubbles flushed mid-turn speak",
+        meta: { messageLength: trimmed.length },
+      })
     },
 
     async flush(): Promise<void> {

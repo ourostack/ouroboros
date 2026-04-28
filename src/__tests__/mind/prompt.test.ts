@@ -5008,4 +5008,64 @@ describe("pre-implementation scrutiny", () => {
     expect(scrutinyIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
   })
+
+  // ── Unit 9a: speak system prompt nudge ─────────────────────────────────────
+  describe("speak system prompt nudge", () => {
+    async function renderFor(channel: string): Promise<string> {
+      setupReadFileSync()
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+      return flattenSystemPrompt(await buildSystem(channel as any))
+    }
+
+    it("includes 'speaking mid-turn' for channel='cli'", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='teams'", async () => {
+      const result = await renderFor("teams")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("includes 'speaking mid-turn' for channel='bluebubbles'", async () => {
+      const result = await renderFor("bluebubbles")
+      expect(result).toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='inner'", async () => {
+      const result = await renderFor("inner")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mcp'", async () => {
+      const result = await renderFor("mcp")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("does NOT include 'speaking mid-turn' for channel='mail'", async () => {
+      const result = await renderFor("mail")
+      expect(result).not.toContain("speaking mid-turn")
+    })
+
+    it("contains the three rule-line markers verbatim", async () => {
+      const result = await renderFor("cli")
+      expect(result).toContain("if my next step depends on a reply, i settle")
+      expect(result).toContain("phase boundaries during heavy work")
+      expect(result).toContain("speak is progress, not invitation")
+    })
+
+    it("anti-hedging: section between 'speaking mid-turn' heading and next '##' has no may/should/prefer/if-relevant", async () => {
+      const result = await renderFor("cli")
+      const headingIdx = result.indexOf("## speaking mid-turn")
+      expect(headingIdx).toBeGreaterThan(-1)
+      const after = result.slice(headingIdx + "## speaking mid-turn".length)
+      const nextHeadingIdx = after.indexOf("\n## ")
+      const section = nextHeadingIdx === -1 ? after : after.slice(0, nextHeadingIdx)
+      expect(/(\b(may|should|prefer)\b|if relevant)/i.test(section)).toBe(false)
+    })
+  })
 })

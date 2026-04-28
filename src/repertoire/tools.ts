@@ -24,7 +24,7 @@ function safeGetAgentRoot(): string | undefined {
 }
 
 // Re-export types and constants used by the rest of the codebase
-export { tools, settleTool, observeTool, ponderTool, restTool } from "./tools-base";
+export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 
 // Re-export surface tool schema for consumers (e.g. heart/core.ts)

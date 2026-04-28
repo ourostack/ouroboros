@@ -280,6 +280,13 @@ describe("humanReadableToolDescription", () => {
     })
   })
 
+  describe("speak", () => {
+    it("returns null (hidden — visible output is the message itself via onTextChunk/flushNow)", () => {
+      expect(humanReadableToolDescription("speak", { message: "hi friend" }))
+        .toBeNull()
+    })
+  })
+
   describe("query_session modes", () => {
     it("returns search text when mode is search", () => {
       expect(humanReadableToolDescription("query_session", { mode: "search", query: "MCP" }))

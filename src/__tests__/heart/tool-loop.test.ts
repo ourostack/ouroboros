@@ -195,6 +195,25 @@ describe("tool loop guard", () => {
     expect(result).toMatchObject({ stuck: true, detector: "global_circuit_breaker" })
   })
 
+  it("global circuit breaker DOES trip on speak (Unit 8: speak is intentionally NOT exempt)", async () => {
+    // Rationale: speak silence IS the fallback — agent can still work and settle
+    // without speaking. Exempting speak would risk infinite narration. The 24-call
+    // breaker provides healthy backpressure against narration-spam misuse.
+    const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < GLOBAL_CIRCUIT_BREAKER_LIMIT; count++) {
+      recordToolOutcome(state, `tool_${count}`, { step: String(count) }, `result ${count}`, true)
+    }
+
+    const result = detectToolLoop(state, "speak", { message: "still working..." })
+    expect(result).toMatchObject({
+      stuck: true,
+      detector: "global_circuit_breaker",
+      count: GLOBAL_CIRCUIT_BREAKER_LIMIT,
+    })
+  })
+
   it("does not flag known polls when the observed result changes", async () => {
     const { createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
 

@@ -22,7 +22,7 @@ import { attachmentToolDefinitions } from "./tools-attachments";
 import { mailToolDefinitions } from "./tools-mail"
 import { tripToolDefinitions } from "./tools-trip"
 // Re-export flow tools for consumers that import them from tools-base
-export { ponderTool, observeTool, settleTool, restTool } from "./tools-flow";
+export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
 
 // Re-export renderInnerProgressStatus for consumers
 export { renderInnerProgressStatus } from "./tools-session";

@@ -1092,6 +1092,20 @@ export function ponderPacketSopsSection(): string {
 - reflection: ordinary private thinking with no engineering workflow implied.`
 }
 
+export function speakSopsSection(channel: string): string {
+  const isChatStyle = channel === "cli" || channel === "teams" || channel === "bluebubbles"
+  if (!isChatStyle) return ""
+  return [
+    "## speaking mid-turn",
+    "",
+    "i have a `speak` tool that sends words to my friend without ending my turn. i use it to keep my friend in the loop while i'm doing real work.",
+    "",
+    "- if my next step depends on a reply, i settle. otherwise, i speak.",
+    "- i speak at phase boundaries during heavy work — after acking a heavy ask, after hitting a major constraint, before switching strategy, before a long externally-visible step. i don't narrate individual tool calls.",
+    "- speak is progress, not invitation. my friend won't steer me mid-turn after i speak — if i need steering, i settle.",
+  ].join("\n")
+}
+
 export function contextSection(context?: ResolvedContext, options?: BuildSystemOptions): string {
   if (!context) return ""
 
@@ -1431,6 +1445,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     "# how i work",
     workspaceDisciplineSection(),
     ponderPacketSopsSection(),
+    speakSopsSection(channel),
     preImplementationScrutinySection(channelHasCodingTools(channel, options?.providerCapabilities)),
     toolRestrictionSection(context),
     loopOrientationSection(channel),

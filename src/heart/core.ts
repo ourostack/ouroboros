@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, getToolsForChannel } from "../repertoire/tools";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel } from "../repertoire/tools";
 import type { ToolContext } from "../repertoire/tools";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
@@ -272,6 +272,17 @@ export interface ChannelCallbacks {
   // Clear any buffered text accumulated during streaming. Called before emitting
   // the settle answer so streamed noise (e.g. refusal text) is discarded.
   onClearText?(): void;
+  /** Deliver any buffered output to the friend now. Called by the `speak` tool
+   *  to push mid-turn messages immediately rather than waiting for the natural
+   *  end-of-turn flush. Senses with no buffering (e.g. CLI) implement as noop.
+   *
+   *  Contract: best-effort delivery. THROWS if the message could not be delivered
+   *  through any available path (e.g. Teams when both stream emit AND sendMessage
+   *  fallback fail; BlueBubbles when client.sendText rejects). The engine catches
+   *  these throws to mark the speak tool call as failed and tell the agent the
+   *  message did NOT reach the friend — preventing the agent from assuming
+   *  silent success when delivery actually failed. */
+  flushNow?(): void | Promise<void>;
 }
 
 export interface RunAgentOptions {
@@ -353,6 +364,13 @@ export type RunAgentOutcome =
   | "errored"
   | "observed"
   | "rested";
+
+/** Chat-style channels expose the `speak` tool — outer human-conversation channels
+ *  where mid-turn delivery is meaningful. Inner dialog has `ponder`. MCP returns
+ *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
+export function isChatStyleChannel(channel: string): boolean {
+  return channel === "cli" || channel === "teams" || channel === "bluebubbles";
+}
 
 // Sole-call tools must be the only tool call in a turn. When they appear
 // alongside other tools, the sole-call tool is rejected with this message.
@@ -894,6 +912,7 @@ export async function runAgent(
       ...(isInnerDialog ? [surfaceToolDef, restTool] : []),
       ...(!isInnerDialog ? [observeTool] : []),
       ...(!isInnerDialog ? [settleTool] : []),
+      ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
     ];
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -1299,6 +1318,59 @@ export async function runAgent(
           }
           if (tc.name === "send_message" && args.friendId === "self") {
             sawSendMessageSelf = true;
+          }
+          if (tc.name === "speak") {
+            let speakArgs: { message?: unknown } = {};
+            try { speakArgs = JSON.parse(tc.arguments) as { message?: unknown }; } catch { /* malformed */ }
+            const speakMessage = typeof speakArgs.message === "string" ? speakArgs.message : "";
+            const argSummary = summarizeArgs("speak", { message: speakMessage });
+            callbacks.onToolStart("speak", { message: speakMessage });
+            if (speakMessage.trim().length === 0) {
+              const err = "speak requires a non-empty `message` string.";
+              callbacks.onToolEnd("speak", argSummary, false);
+              messages.push({ role: "tool", tool_call_id: tc.id, content: err });
+              providerRuntime.appendToolOutput(tc.id, err);
+              emitNervesEvent({
+                level: "warn",
+                component: "engine",
+                event: "engine.speak_invalid",
+                message: "speak rejected: missing or empty message",
+                meta: {},
+              });
+              continue;
+            }
+            callbacks.onTextChunk(speakMessage);
+            let speakDeliveryError: Error | null = null;
+            try {
+              await callbacks.flushNow?.();
+            } catch (err) {
+              speakDeliveryError = err instanceof Error ? err : new Error(String(err));
+            }
+            if (speakDeliveryError) {
+              callbacks.onToolEnd("speak", argSummary, false);
+              const failMsg = `speak delivery failed: ${speakDeliveryError.message}. the message did not reach your friend; do not assume they saw it.`;
+              messages.push({ role: "tool", tool_call_id: tc.id, content: failMsg });
+              providerRuntime.appendToolOutput(tc.id, failMsg);
+              emitNervesEvent({
+                level: "error",
+                component: "engine",
+                event: "engine.speak_delivery_failed",
+                message: "speak delivery failed",
+                meta: { error: speakDeliveryError.message, messageLength: speakMessage.length },
+              });
+              continue;
+            }
+            callbacks.onToolEnd("speak", argSummary, true);
+            const ack = "(spoken)";
+            messages.push({ role: "tool", tool_call_id: tc.id, content: ack });
+            providerRuntime.appendToolOutput(tc.id, ack);
+            emitNervesEvent({
+              component: "engine",
+              event: "engine.speak",
+              message: "agent spoke mid-turn",
+              meta: { messageLength: speakMessage.length },
+            });
+            continue;
           }
           if (tc.name === "ponder") {
             const parsedArgs = normalizeLegacyPonderArgs(parsePonderPayload(tc.arguments));

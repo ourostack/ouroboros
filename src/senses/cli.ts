@@ -332,11 +332,19 @@ export function createCliCallbacks(): ChannelCallbacks & { flushMarkdown(): void
       /* v8 ignore stop */
       textDirty = text.length > 0 && !text.endsWith("\n")
     },
+    flushNow: () => {
+      // CLI flushes immediately on each onTextChunk; nothing buffered to push.
+    },
     onReasoningChunk: (_text: string) => {
       // Keep reasoning private in the CLI surface. The spinner continues to
       // represent active thinking until actual tool or answer output arrives.
     },
     onToolStart: (_name: string, _args: Record<string, string>) => {
+      // speak is flow-control: its visible output is the message itself (delivered
+      // via onTextChunk/flushNow). Do NOT start a tool spinner — that would write
+      // a "running speak..." phrase to stderr right before the actual message
+      // arrives, which is the visual churn the user explicitly does not want.
+      if (_name === "speak") return
       // Stop the model-start spinner: when the model returns only tool calls
       // (no content/reasoning), onModelStreamStart never fires, so the old
       // spinner's intervals would leak.

@@ -115,6 +115,10 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   settle: () => null,
   rest: () => null,
   descend: () => null,
+  // speak's visible output is the message itself, delivered via onTextChunk +
+  // flushNow. The shared tool-activity callbacks must skip it so no per-sense
+  // tool-status text precedes the actual message.
+  speak: () => null,
 }
 
 export function humanReadableToolDescription(

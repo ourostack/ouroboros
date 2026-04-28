@@ -86,6 +86,21 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   },
 };
 
+export const speakTool: OpenAI.ChatCompletionFunctionTool = {
+  type: "function",
+  function: {
+    name: "speak",
+    description: "i speak to send words to my friend mid-turn without ending it. for progress, acknowledgment, or phase-boundary updates during heavy work. i settle when my work is done or i need a reply. speak is one-way: my friend cannot steer me mid-turn after i speak.",
+    parameters: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "the words i'm sending to my friend right now" },
+      },
+      required: ["message"],
+    },
+  },
+};
+
 export const restTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
