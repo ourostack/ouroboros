@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.509",
+      "changes": [
+        "New `Trips` category in `ouro doctor`. Operators previously had no quick way to verify the trip ledger was healthy — they had to call `trip_status` from inside the agent or open `state/trips/ledger.json` by hand. With the trip ledger now load-bearing for trip planning workflows, doctor coverage matters.",
+        "The check walks each agent bundle and reports per-agent trip health: pass when the ledger is absent (optional feature, not yet ensured), warn when `state/trips/` exists but `ledger.json` is missing or lacks the `ledgerId` field, fail when `ledger.json` is unreadable, unparseable, or missing the `privateKeyPem` (encrypted records would be unreadable). Healthy ledgers report `<ledgerId> (<N> records)` so the operator sees record count without opening anything.",
+        "7 new tests cover: no-agents (warn), no-ledger-dir (pass — optional), missing ledger.json (warn), unparseable JSON (fail), missing ledgerId (warn), missing privateKeyPem (fail), and the healthy passing path with record-counting that ignores non-`.json` files in the records dir. Wired between `Security` and `Disk` in the `CATEGORY_CHECKERS` array — same orchestration shape as the existing categories."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.508",
       "changes": [
         "New `trip_remove_leg` tool. The trip ledger had `trip_upsert`, `trip_attach_evidence`, and `trip_update_leg`, but no first-class way to drop a leg — the agent had to re-emit the entire trip record minus that leg (fragile, easy to lose evidence). Real workflow that needed it: the user cancelled a hotel booking; #620's e2e test exercised the add path but there was no way to model the cancel.",

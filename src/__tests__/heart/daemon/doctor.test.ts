@@ -30,6 +30,7 @@ import {
   checkSenses,
   checkHabits,
   checkSecurity,
+  checkTrips,
   checkDisk,
   checkLifecycle,
 } from "../../../heart/daemon/doctor"
@@ -1218,6 +1219,112 @@ describe("checkSecurity", () => {
     const cat = checkSecurity(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("no agents")
+  })
+})
+
+// ── Trip ledger checks ──
+
+describe("checkTrips", () => {
+  const ledgerJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    ledgerId: "ledger_slugger_xyz",
+    privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----",
+    ...overrides,
+  })
+
+  it("warns when no agents are found", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": [] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.name).toBe("Trips")
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("no agent bundles")
+  })
+
+  it("passes when an agent has no trip ledger directory yet (optional feature)", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("no ledger directory")
+  })
+
+  it("warns when trips dir exists but ledger.json is missing", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/trips"]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("ledger.json missing")
+  })
+
+  it("fails when ledger.json is unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": "{not json" }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("not valid JSON")
+  })
+
+  it("warns when ledger.json is missing the ledgerId field", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----" }) }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("ledgerId")
+  })
+
+  it("fails when privateKeyPem is missing — encrypted records cannot be read", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ ledgerId: "lg" }) }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("fail")
+    expect(cat.checks[0].detail).toContain("privateKeyPem missing")
+  })
+
+  it("passes with record count when ledger is healthy", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips/records",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_a.json", "trip_b.json", "ignore.txt"],
+      }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": ledgerJson() }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("ledger_slugger_xyz")
+    expect(cat.checks[0].detail).toContain("2 records")
   })
 })
 
