@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.523",
+  "version": "0.1.0-alpha.524",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -30,11 +30,11 @@
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",
     "test:e2e:real-smoke": "npm run build && node scripts/nightly-real-smoke.cjs",
-    "typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json",
-    "test:outlook-ui": "npm test --prefix packages/outlook-ui",
+    "typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json",
+    "test:mailbox-ui": "npm test --prefix packages/mailbox-ui",
     "test:coverage:vitest": "vitest run --coverage",
     "test:coverage": "node scripts/run-coverage-gate.cjs",
-    "build": "tsc && (cd packages/outlook-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cd ../.. && node scripts/copy-outlook-ui.cjs) || echo 'outlook-ui build skipped'",
+    "build": "tsc && (cd packages/mailbox-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cd ../.. && node scripts/copy-mailbox-ui.cjs) || echo 'mailbox-ui build skipped'",
     "lint": "eslint src/",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:smoke": "node scripts/release-smoke.cjs",

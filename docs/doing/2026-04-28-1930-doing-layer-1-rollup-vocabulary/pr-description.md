@@ -53,7 +53,7 @@ Suggested order:
 2. **`src/heart/daemon/daemon-rollup.ts`** — pure decision function with the four-state truth table. Read alongside `src/__tests__/heart/daemon/daemon-rollup.test.ts`, which encodes each row + the input-contract / determinism / non-mutation / never-returns-down invariants.
 3. **`src/heart/daemon/daemon-entry.ts`** — the call site replaces the old binary literal with `computeDaemonRollup`. The integration tests in `daemon-entry-rollup.test.ts` cover the full state table at the daemon-entry layer (booted in-process, no subprocess).
 4. **`src/heart/daemon/cli-render.ts:renderRollupStatusLine`** — the never-typed-default render switch and the `degraded` two-copy split. Tests in `cli-render-rollup-vocabulary.test.ts`.
-5. **`src/heart/outlook/readers/runtime-readers.ts`** — the parse-side tightening. Stale legacy status strings (`"running"`, `"ok"`) defensively fall back to `"unknown"` so the Outlook surface gets a typed `DaemonStatus | "unknown"` view.
+5. **`src/heart/mailbox/readers/runtime-readers.ts`** — the parse-side tightening. Stale legacy status strings (`"running"`, `"ok"`) defensively fall back to `"unknown"` so the Mailbox surface gets a typed `DaemonStatus | "unknown"` view.
 6. **`docs/doing/2026-04-28-1930-doing-layer-1-rollup-vocabulary/status-callsites.md`** — the Unit 0 survey + Unit 5 experiment record. Useful for understanding why the planning-doc-named consumers were retargeted.
 
 The doing doc itself (`docs/doing/2026-04-28-1930-doing-layer-1-rollup-vocabulary.md`) is the authoritative TDD trace if you want to see which tests were written before which implementation.

@@ -31,7 +31,7 @@ Map of every read/write of `DaemonHealthState.status` and the bootstrap-degraded
 | File:line | What it does | Render outcome |
 | --- | --- | --- |
 | `src/heart/daemon/cli-render.ts:566` | `daemonUnavailableStatusOutput`: `lines.push(\`Last known status: ${health.status} ...\`)` — fallback display when the daemon is down. **Real human-facing consumer of the rollup string.** | Switch on `DaemonStatus` to map each rollup state to a label + colored dot. `degraded` gets the two-sub-case copy split per the doing doc (zero-enabled vs all-unhealthy). Default case `never`-typed. |
-| `src/heart/outlook/readers/runtime-readers.ts:281` | `readDaemonHealthDeep`: defensive read of `health.status` from the JSON file, falls through to `"unknown"` on parse failure. **Outlook surface consumer.** | Tighten parse: use `isDaemonStatus` to validate. The `"unknown"` fallback stays for genuinely unparseable files; the type for the DTO field becomes `DaemonStatus | "unknown"` so the outlook side carries the new vocabulary forward. |
+| `src/heart/mailbox/readers/runtime-readers.ts:281` | `readDaemonHealthDeep`: defensive read of `health.status` from the JSON file, falls through to `"unknown"` on parse failure. **Mailbox surface consumer.** | Tighten parse: use `isDaemonStatus` to validate. The `"unknown"` fallback stays for genuinely unparseable files; the type for the DTO field becomes `DaemonStatus | "unknown"` so the mailbox side carries the new vocabulary forward. |
 | `src/heart/daemon/daemon-health.ts:63` | `DaemonHealthWriter.writeHealth` emits `meta: { ..., status: state.status }` to the nerves event log. | No render branch — passes the typed `DaemonStatus` straight through. No code change needed beyond the type tightening at line 32. |
 
 ### Type-only forwarders (no branch on status)
@@ -43,7 +43,7 @@ Map of every read/write of `DaemonHealthState.status` and the bootstrap-degraded
 | `src/heart/daemon/cli-types.ts:166` | `readHealthState?: (healthPath: string) => DaemonHealthState \| null` — DI seam. | None. |
 | `src/mind/prompt.ts:1349` | `rhythmStatusSection(preReadHealth?: ... DaemonHealthState ...)`. Reads `health.degraded` and `health.habits`, **NOT `health.status`**. | None — does not branch on status. Out of scope. |
 | `src/mind/prompt.ts:755` | `daemonHealth?: ... DaemonHealthState` field on `BuildSystemOptions`. Forwarded to `rhythmStatusSection`. | None. |
-| `src/nerves/observation.ts:15` | Re-exports `DaemonHealthState`, `DegradedComponent`, etc. for outlook readers. | None. |
+| `src/nerves/observation.ts:15` | Re-exports `DaemonHealthState`, `DegradedComponent`, etc. for mailbox readers. | None. |
 | `src/senses/pipeline.ts:688` | Forwards `daemonHealth: ctx.daemonHealth` into a sense pipeline frame. | None. |
 
 ## Bootstrap-degraded inputs (not the same as rollup status)
@@ -110,4 +110,4 @@ Performed during Unit 5 (2026-04-28 15:25 PT). Steps:
 
 5. Reverted the experimental literal. Final state: `ROLLUP_STATUS_LITERALS = ["healthy", "partial", "degraded", "safe-mode"] as const`. tsc clean; type-guard tests green.
 
-**Conclusion**: Layer 1's compiler-forced exhaustiveness contract holds. A future PR adding a new rollup state to the literal tuple WILL compile-error at every render-side `switch (status)` consumer that uses a `never`-typed default — there's currently exactly one such consumer (`renderRollupStatusLine`). Future PRs adding more consumers (e.g. inner-status / startup-tui / outlook UI) MUST follow the same `never`-default pattern; this is now the documented Layer 1 invariant.
+**Conclusion**: Layer 1's compiler-forced exhaustiveness contract holds. A future PR adding a new rollup state to the literal tuple WILL compile-error at every render-side `switch (status)` consumer that uses a `never`-typed default — there's currently exactly one such consumer (`renderRollupStatusLine`). Future PRs adding more consumers (e.g. inner-status / startup-tui / mailbox UI) MUST follow the same `never`-default pattern; this is now the documented Layer 1 invariant.

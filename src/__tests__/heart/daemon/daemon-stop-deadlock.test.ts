@@ -38,7 +38,7 @@ function tmpSocketPath(name: string): string {
 function makeDaemon(
   socketPath: string,
   options?: {
-    outlookServerFactory?: () => Promise<{ stop: () => Promise<void> }>
+    mailboxServerFactory?: () => Promise<{ stop: () => Promise<void> }>
   },
 ) {
   const processManager = {
@@ -65,7 +65,7 @@ function makeDaemon(
     listSenseRows: vi.fn(() => []),
     listManagedPids: vi.fn(() => []),
   }
-  const outlookServerFactory = vi.fn(async () => ({
+  const mailboxServerFactory = vi.fn(async () => ({
     origin: "http://127.0.0.1:0",
     stop: vi.fn(async () => undefined),
   }))
@@ -76,7 +76,7 @@ function makeDaemon(
     healthMonitor,
     router,
     senseManager,
-    outlookServerFactory: options?.outlookServerFactory,
+    mailboxServerFactory: options?.mailboxServerFactory,
     mode: "dev",
   } as any)
 }
@@ -128,11 +128,11 @@ async function sendDaemonStopOverRealSocket(socketPath: string, timeoutMs: numbe
 describe("daemon.stop deadlock regression", () => {
   let daemons: OuroDaemon[] = []
   let socketPath: string
-  let releaseBlockedOutlookStop: (() => void) | null = null
+  let releaseBlockedMailboxStop: (() => void) | null = null
 
   afterEach(async () => {
-    releaseBlockedOutlookStop?.()
-    releaseBlockedOutlookStop = null
+    releaseBlockedMailboxStop?.()
+    releaseBlockedMailboxStop = null
     setRuntimeLogger(null)
     vi.restoreAllMocks()
     for (const daemon of daemons.reverse()) {
@@ -202,16 +202,16 @@ describe("daemon.stop deadlock regression", () => {
   it("an older daemon stop path does not unlink a replacement path entry after releasing the original socket", async () => {
     socketPath = tmpSocketPath("daemon-stop-socket-race")
 
-    let markOutlookStopBlocked: (() => void) | null = null
-    const outlookStopBlocked = new Promise<void>((resolve) => {
-      markOutlookStopBlocked = resolve
+    let markMailboxStopBlocked: (() => void) | null = null
+    const mailboxStopBlocked = new Promise<void>((resolve) => {
+      markMailboxStopBlocked = resolve
     })
     const daemonA = makeDaemon(socketPath, {
-      outlookServerFactory: async () => ({
+      mailboxServerFactory: async () => ({
         stop: async () => {
           await new Promise<void>((resolve) => {
-            releaseBlockedOutlookStop = resolve
-            markOutlookStopBlocked?.()
+            releaseBlockedMailboxStop = resolve
+            markMailboxStopBlocked?.()
           })
         },
       }),
@@ -220,7 +220,7 @@ describe("daemon.stop deadlock regression", () => {
     await daemonA.start()
 
     const daemonAStop = daemonA.stop()
-    await outlookStopBlocked
+    await mailboxStopBlocked
     await waitForSocketPathState(socketPath, false, 2_000)
 
     // The bug is pathname ownership, not socket protocol. Once daemon A has
@@ -239,8 +239,8 @@ describe("daemon.stop deadlock regression", () => {
       error: vi.fn(),
     })
 
-    releaseBlockedOutlookStop?.()
-    releaseBlockedOutlookStop = null
+    releaseBlockedMailboxStop?.()
+    releaseBlockedMailboxStop = null
     await daemonAStop
 
     expect(fs.existsSync(socketPath)).toBe(true)

@@ -1561,7 +1561,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "outlook" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
   return command
 }
 
@@ -7216,7 +7216,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  if (command.kind === "outlook") {
+  if (command.kind === "mailbox") {
     let status: DaemonResponse
     try {
       status = await deps.sendCommand(deps.socketPath, { kind: "daemon.status" })
@@ -7229,25 +7229,25 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     /* v8 ignore stop */
 
     const payload = parseStatusPayload(status.data)
-    /* v8 ignore start -- ?? branch: outlookUrl always present in test fixtures */
-    const outlookUrl = payload?.overview.outlookUrl ?? "unavailable"
+    /* v8 ignore start -- ?? branch: mailboxUrl always present in test fixtures */
+    const mailboxUrl = payload?.overview.mailboxUrl ?? payload?.overview.outlookUrl ?? "unavailable"
     /* v8 ignore stop */
     if (!command.json) {
-      deps.writeStdout(outlookUrl)
-      return outlookUrl
+      deps.writeStdout(mailboxUrl)
+      return mailboxUrl
     }
 
-    /* v8 ignore start — error path: outlook URL not available */
-    if (outlookUrl === "unavailable") {
-      deps.writeStdout(outlookUrl)
-      return outlookUrl
+    /* v8 ignore start — error path: mailbox URL not available */
+    if (mailboxUrl === "unavailable") {
+      deps.writeStdout(mailboxUrl)
+      return mailboxUrl
     }
     /* v8 ignore stop */
 
     /* v8 ignore start -- ?? branch: tests always inject fetchImpl */
     const fetchImpl = deps.fetchImpl ?? fetch
     /* v8 ignore stop */
-    const response = await fetchImpl(`${outlookUrl}/api/machine`)
+    const response = await fetchImpl(`${mailboxUrl}/api/machine`)
     const data = await response.json() as unknown
     const text = JSON.stringify(data, null, 2)
     deps.writeStdout(text)

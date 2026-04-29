@@ -11,6 +11,7 @@ export interface CommandHelp {
   usage: string
   example?: string
   subcommands?: string[]
+  hidden?: boolean
 }
 
 export type CommandCategory =
@@ -105,6 +106,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Deprecated alias for `ouro mailbox`",
     usage: "ouro outlook [--json]",
     example: "ouro outlook --json",
+    hidden: true,
   },
   whoami: {
     category: "Agents",
@@ -458,6 +460,7 @@ export function suggestCommand(input: string): string | null {
   let bestDistance = Infinity
 
   for (const name of Object.keys(COMMAND_REGISTRY)) {
+    if (COMMAND_REGISTRY[name].hidden) continue
     const distance = levenshteinDistance(input, name)
     if (distance < bestDistance) {
       bestDistance = distance
@@ -490,6 +493,7 @@ export function getGroupedHelp(): string {
   for (const category of CATEGORY_ORDER) {
     lines.push(`  ${category}:`)
     for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
+      if (entry.hidden) continue
       if (entry.category === category) {
         lines.push(`    ${name.padEnd(16)} ${entry.description}`)
       }

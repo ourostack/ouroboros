@@ -18,7 +18,7 @@ import { handleKillToEnd, handleKillToStart, handleKillWordBack, handleYank, han
 import { imageRefEndingAt, imageRefStartingAt, deleteTokenBefore } from "./image-ref-navigation"
 
 // ─── Ouroboros Brand Palette (ANSI RGB) ─────────────────────────────
-// From packages/outlook-ui/src/style.css and ouroboros.bot
+// From packages/mailbox-ui/src/style.css and ouroboros.bot
 const OURO = {
   scale: "#2f8f4e",    // primary green
   teal: "#4ec9b0",     // tool/accent teal

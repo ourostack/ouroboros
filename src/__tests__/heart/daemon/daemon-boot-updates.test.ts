@@ -86,7 +86,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -99,7 +99,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       router,
       bundlesRoot,
       senseManager,
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
     return { daemon, processManager }
   }
@@ -215,7 +215,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -229,7 +229,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "dev",
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
 
     await daemon.start()
@@ -267,7 +267,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -281,7 +281,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
       bundlesRoot,
       senseManager,
       mode: "production",
-      outlookServerFactory,
+      mailboxServerFactory,
     } as any)
 
     await daemon.start()

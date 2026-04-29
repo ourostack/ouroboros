@@ -32,7 +32,7 @@ export type OuroCliCommand =
   | { kind: "daemon.status" }
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune" }
-  | { kind: "outlook"; json?: boolean }
+  | { kind: "mailbox"; json?: boolean }
   | { kind: "provider.use"; agent?: string; lane: ProviderLane; provider: AgentProvider; model: string; force?: boolean; legacyFacing?: Facing }
   | { kind: "provider.check"; agent?: string; lane: ProviderLane; legacyFacing?: Facing }
   | { kind: "provider.status"; agent?: string }

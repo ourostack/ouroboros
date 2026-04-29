@@ -46,15 +46,16 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/skills/diagnose-vault-expired.md")
   })
 
-  it("declares stale nested Outlook UI dist as disallowed", () => {
-    expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/outlook-ui/dist/")
+  it("declares stale nested Mailbox UI dist as disallowed", () => {
+    expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/mailbox-ui/dist/")
+    expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/outlook-ui/")
   })
 
   it("passes when required assets are present and no stale paths exist", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
-    writeFile(root, "dist/outlook-ui/index.html")
-    writeFile(root, "dist/outlook-ui/assets/index.js")
+    writeFile(root, "dist/mailbox-ui/index.html")
+    writeFile(root, "dist/mailbox-ui/assets/index.js")
 
     const result = validatePackageAssets(root)
 
@@ -101,21 +102,33 @@ describe("package asset validation", () => {
     expect(result.message).toContain("RepairGuide.ouro/psyche/IDENTITY.md")
   })
 
-  it("fails with clear disallowed-path messages when stale Outlook UI output is present", () => {
+  it("fails with clear disallowed-path messages when stale Mailbox UI output is present", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
-    writeFile(root, "dist/outlook-ui/dist/index.html")
-    writeFile(root, "dist/outlook-ui/dist/assets/old.js")
+    writeFile(root, "dist/mailbox-ui/dist/index.html")
+    writeFile(root, "dist/mailbox-ui/dist/assets/old.js")
 
     const result = validatePackageAssets(root)
 
     expect(result.ok).toBe(false)
     expect(result.disallowed).toEqual([
-      "dist/outlook-ui/dist/assets/old.js",
-      "dist/outlook-ui/dist/index.html",
+      "dist/mailbox-ui/dist/assets/old.js",
+      "dist/mailbox-ui/dist/index.html",
     ])
     expect(result.message).toContain("disallowed package assets")
-    expect(result.message).toContain("dist/outlook-ui/dist/index.html")
+    expect(result.message).toContain("dist/mailbox-ui/dist/index.html")
+  })
+
+  it("fails when legacy Outlook UI output remains in the package", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    writeFile(root, "dist/outlook-ui/index.html")
+
+    const result = validatePackageAssets(root)
+
+    expect(result.ok).toBe(false)
+    expect(result.disallowed).toEqual(["dist/outlook-ui/index.html"])
+    expect(result.message).toContain("dist/outlook-ui/index.html")
   })
 
   it("derives the package root from a symlinked npm .bin path", () => {

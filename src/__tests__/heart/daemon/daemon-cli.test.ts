@@ -217,10 +217,10 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
-    expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "outlook" })
-    expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "outlook", json: true })
-    expect(parseOuroCommand(["outlook"])).toEqual({ kind: "outlook" })
-    expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "outlook", json: true })
+    expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "mailbox" })
+    expect(parseOuroCommand(["mailbox", "--json"])).toEqual({ kind: "mailbox", json: true })
+    expect(parseOuroCommand(["outlook"])).toEqual({ kind: "mailbox" })
+    expect(parseOuroCommand(["outlook", "--json"])).toEqual({ kind: "mailbox", json: true })
     expect(parseOuroCommand(["hatch"])).toEqual({ kind: "hatch.start" })
     expect(
       parseOuroCommand([
@@ -1928,7 +1928,7 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 0,
             health: "ok",
-            outlookUrl: "http://127.0.0.1:4310/outlook",
+            mailboxUrl: "http://127.0.0.1:4310/mailbox",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
           },
@@ -1986,7 +1986,7 @@ describe("ouro CLI execution", () => {
             health: "ok",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
-            outlookUrl: "http://127.0.0.1:4310/outlook",
+            mailboxUrl: "http://127.0.0.1:4310/mailbox",
           },
           senses: [],
           workers: [],
@@ -2001,10 +2001,10 @@ describe("ouro CLI execution", () => {
     }
 
     const urlResult = await runOuroCli(["mailbox"], deps)
-    expect(urlResult).toContain("http://127.0.0.1:4310/outlook")
+    expect(urlResult).toContain("http://127.0.0.1:4310/mailbox")
 
     const jsonResult = await runOuroCli(["mailbox", "--json"], deps)
-    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4310/outlook/api/machine")
+    expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4310/mailbox/api/machine")
     expect(jsonResult).toContain("\"productName\": \"Ouro Mailbox\"")
   })
 
@@ -2216,7 +2216,7 @@ describe("ouro CLI execution", () => {
             workerCount: 1,
             senseCount: 3,
             health: "ok",
-            outlookUrl: "http://127.0.0.1:4310/outlook",
+            mailboxUrl: "http://127.0.0.1:4310/mailbox",
             entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
             mode: "production",
           },
@@ -2276,7 +2276,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("inner-dialog")
     expect(result).toContain("restarts: 0")
     expect(result).toContain("Mailbox")
-    expect(result).toContain("http://127.0.0.1:4310/outlook")
+    expect(result).toContain("http://127.0.0.1:4310/mailbox")
   })
 
   it("falls back to the raw sense name when daemon status includes an unknown sense label", async () => {

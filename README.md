@@ -41,7 +41,7 @@ The shared harness lives in `src/`:
 - `src/arc/`
   Durable continuity state — obligations, cares, episodes, intentions, presence, and attention types. The agent's sense of ongoing story.
 - `src/heart/`
-  Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), outlook/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
+  Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), mailbox/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
 - `src/mind/`
   Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary, note search, embedding providers, journal, obligation steering, and friend resolution.
 - `src/repertoire/`

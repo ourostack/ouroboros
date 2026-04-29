@@ -8,7 +8,7 @@ describe("package metadata", () => {
     expect(packageJson.files).toContain("RepairGuide.ouro/")
   })
 
-  it("uses the deterministic Outlook UI copy helper during build", () => {
-    expect(packageJson.scripts.build).toContain("node scripts/copy-outlook-ui.cjs")
+  it("uses the deterministic Mailbox UI copy helper during build", () => {
+    expect(packageJson.scripts.build).toContain("node scripts/copy-mailbox-ui.cjs")
   })
 })

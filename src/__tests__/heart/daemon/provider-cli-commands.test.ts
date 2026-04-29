@@ -539,7 +539,7 @@ function daemonStatusData(
       daemon: "running",
       health: status === "running" ? "ok" : "warn",
       socketPath: "/tmp/test-socket",
-      outlookUrl: "http://127.0.0.1:6876",
+      mailboxUrl: "http://127.0.0.1:6876",
       version: "0.1.0-alpha.test",
       lastUpdated: NOW,
       repoRoot: "/tmp/test-repo",

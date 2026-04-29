@@ -13,7 +13,8 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
 ]
 
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
-  "dist/outlook-ui/dist/",
+  "dist/mailbox-ui/dist/",
+  "dist/outlook-ui/",
 ]
 
 function toPackagePath(filePath) {

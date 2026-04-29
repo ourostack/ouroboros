@@ -3,7 +3,7 @@ import * as net from "node:net"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { readMailView } from "../../heart/outlook/readers/mail"
+import { readMailView } from "../../heart/mailbox/readers/mail"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { cacheRuntimeCredentialConfig, resetRuntimeCredentialConfigCache } from "../../heart/runtime-credentials"
 import { provisionMailboxRegistry, type MailroomRegistry } from "../../mailroom/core"
@@ -129,7 +129,7 @@ afterEach(() => {
 })
 
 describe("Agent Mail local proof", () => {
-  it("proves import, SMTP ingress, Screener, tools, confirmed send, sense attention, and Outlook in one isolated Slugger mailbox", async () => {
+  it("proves import, SMTP ingress, Screener, tools, confirmed send, sense attention, and Mailbox in one isolated Slugger mailbox", async () => {
     setAgentName("slugger")
     const root = tempDir()
     const storePath = path.join(root, "mailroom")

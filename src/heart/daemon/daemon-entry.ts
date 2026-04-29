@@ -179,7 +179,7 @@ function buildDaemonHealthState(): DaemonHealthState {
       }
     })
   // Preserved for backwards-compatible inspection: callers (status
-  // command, outlook surface, etc.) may still read this combined list
+  // command, mailbox surface, etc.) may still read this combined list
   // for per-component reasons. The rollup status field above is what
   // changed meaning — the array is still the union of bootstrap +
   // agent-derived degradation entries.

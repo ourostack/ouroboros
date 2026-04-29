@@ -106,10 +106,10 @@ const DISPATCH_EXEMPT_PATTERNS = [
   "heart/attachments/originals",
   "heart/attachments/sources/index",
   "heart/attachments/sources/cli-local-file",
-  // Browser-safe Outlook contract helpers: shared types/formatting helpers
-  // consumed by server readers and the UI. Outlook read/render modules own
+  // Browser-safe Mailbox contract helpers: shared types/formatting helpers
+  // consumed by server readers and the UI. Mailbox read/render modules own
   // the observability for these projections.
-  "heart/outlook/outlook-types",
+  "heart/mailbox/mailbox-types",
   // Mail search relevance scorer: pure heuristic function (regex + counter
   // arithmetic). The caller (search-cache.ts searchMailSearchCache) owns
   // observability via senses.mail_search_cache_upserted and friends.
@@ -121,13 +121,13 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // hashing. The caller (trips/store.ts) owns observability via
   // trips.ledger_created and trips.evidence_attached.
   "trips/core",
-  // Outlook HTTP helper modules: route/static/transport/hook seams are
-  // dispatched by outlook-http.ts, whose server lifecycle owns observability.
-  "heart/outlook/outlook-http-transport",
-  "heart/outlook/outlook-http-static",
-  "heart/outlook/outlook-http-hooks",
-  "heart/outlook/outlook-http-routes",
-  "heart/outlook/outlook-http-response",
+  // Mailbox HTTP helper modules: route/static/transport/hook seams are
+  // dispatched by mailbox-http.ts, whose server lifecycle owns observability.
+  "heart/mailbox/mailbox-http-transport",
+  "heart/mailbox/mailbox-http-static",
+  "heart/mailbox/mailbox-http-hooks",
+  "heart/mailbox/mailbox-http-routes",
+  "heart/mailbox/mailbox-http-response",
   // Session playback: read-only debugging CLI for sanitize-pipeline replay.
   // No side effects on the runtime; output is human-readable diagnostics only.
   "heart/session-playback-cli-main",

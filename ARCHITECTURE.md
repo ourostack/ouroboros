@@ -158,7 +158,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
 - `src/heart/`
   Core engine, provider runtimes, identity/config loading, daemon, bootstrap, and entrypoints. Organized into topic subdirectories:
   - `heart/daemon/` — daemon lifecycle, CLI routing, process management, health, sockets (~37 files)
-  - `heart/outlook/` — Outlook/calendar integration (HTTP, read, render, types, view)
+  - `heart/mailbox/` — Ouro Mailbox integration (HTTP, read, types, view)
   - `heart/habits/` — habit parsing, scheduling, and migration
   - `heart/hatch/` — agent creation flow, specialist orchestration, animation
   - `heart/versioning/` — version management, update checking, staged restart, wrapper publishing

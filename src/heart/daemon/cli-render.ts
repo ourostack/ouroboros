@@ -21,7 +21,8 @@ interface StatusOverviewRow {
   daemon: string
   health: string
   socketPath: string
-  outlookUrl: string
+  mailboxUrl: string
+  outlookUrl?: string
   version: string
   lastUpdated: string
   repoRoot: string
@@ -123,7 +124,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
     health: stringField((overview as Record<string, unknown>).health) ?? "unknown",
     socketPath: stringField((overview as Record<string, unknown>).socketPath) ?? "unknown",
-    outlookUrl: stringField((overview as Record<string, unknown>).outlookUrl) ?? "unavailable",
+    mailboxUrl: stringField((overview as Record<string, unknown>).mailboxUrl)
+      ?? stringField((overview as Record<string, unknown>).outlookUrl)
+      ?? "unavailable",
+    outlookUrl: stringField((overview as Record<string, unknown>).outlookUrl) ?? undefined,
     version: stringField((overview as Record<string, unknown>).version) ?? "unknown",
     lastUpdated: stringField((overview as Record<string, unknown>).lastUpdated) ?? "unknown",
     repoRoot: stringField((overview as Record<string, unknown>).repoRoot) ?? "unknown",
@@ -345,7 +349,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
   // ── Key-value overview ──
   const kvLine = (label: string, value: string) => `  ${teal(label.padEnd(11))} ${value}`
   lines.push(kvLine("Socket", ov.socketPath))
-  lines.push(kvLine("Mailbox", ov.outlookUrl))
+  lines.push(kvLine("Mailbox", ov.mailboxUrl))
   lines.push(kvLine("Health", `${statusDot(ov.health)} ${ov.health}`))
   lines.push(kvLine("Updated", ov.lastUpdated))
   lines.push("")
@@ -501,6 +505,7 @@ export function buildStoppedStatusPayload(
       daemon: "stopped",
       health: "warn",
       socketPath,
+      mailboxUrl: "unavailable",
       outlookUrl: "unavailable",
       version: metadata.version,
       lastUpdated: metadata.lastUpdated,

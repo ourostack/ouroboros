@@ -80,23 +80,23 @@ describe("coverage workflow contract", () => {
     expect(workflow).not.toContain("@alpha")
   })
 
-  it("runs the outlook-ui package typecheck and test suite before the root coverage gate continues", () => {
+  it("runs the mailbox-ui package typecheck and test suite before the root coverage gate continues", () => {
     const gate = readFileSync(
       join(process.cwd(), "scripts", "run-coverage-gate.cjs"),
       "utf8",
     )
 
-    expect(gate).toContain('runNpm(["run", "typecheck:outlook-ui"])')
-    expect(gate).toContain("outlook_ui_typecheck")
-    expect(gate).toContain('runNpm(["run", "test:outlook-ui"])')
-    expect(gate).toContain("outlook_ui_tests")
+    expect(gate).toContain('runNpm(["run", "typecheck:mailbox-ui"])')
+    expect(gate).toContain("mailbox_ui_typecheck")
+    expect(gate).toContain('runNpm(["run", "test:mailbox-ui"])')
+    expect(gate).toContain("mailbox_ui_tests")
 
     const packageJson = readFileSync(
       join(process.cwd(), "package.json"),
       "utf8",
     )
 
-    expect(packageJson).toContain('"typecheck:outlook-ui": "tsc --noEmit -p packages/outlook-ui/tsconfig.json"')
-    expect(packageJson).toContain('"test:outlook-ui": "npm test --prefix packages/outlook-ui"')
+    expect(packageJson).toContain('"typecheck:mailbox-ui": "tsc --noEmit -p packages/mailbox-ui/tsconfig.json"')
+    expect(packageJson).toContain('"test:mailbox-ui": "npm test --prefix packages/mailbox-ui"')
   })
 })

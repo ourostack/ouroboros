@@ -71,7 +71,7 @@ describe("daemon command plane branches", () => {
       router,
       bundlesRoot,
       senseManager,
-      outlookServerFactory: vi.fn(async () => ({
+      mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
       })),
@@ -255,7 +255,7 @@ describe("daemon command plane branches", () => {
         send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
         pollInbox: vi.fn(() => []),
       },
-      outlookServerFactory: vi.fn(async () => ({
+      mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
       })),
@@ -282,7 +282,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 0,
         senseCount: 0,
-        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
         entryPath: expect.any(String),
         mode: expect.stringMatching(/^(dev|production)$/),
       }),
@@ -353,7 +353,7 @@ describe("daemon command plane branches", () => {
         daemon: "running",
         workerCount: 1,
         senseCount: 3,
-        outlookUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+        mailboxUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       }),
       workers: [
         expect.objectContaining({

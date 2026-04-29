@@ -8,7 +8,7 @@ function makeOverview(overrides: Record<string, unknown> = {}): Record<string, u
     daemon: "running",
     health: "ok",
     socketPath: "/tmp/test.sock",
-    outlookUrl: "http://localhost:6876",
+    mailboxUrl: "http://localhost:6876",
     version: "0.1.0-alpha.1",
     lastUpdated: "2026-04-09T12:00:00Z",
     repoRoot: "/repo",

@@ -7,7 +7,7 @@ manifest.*.zip
 ouro.bot-cli-*.tgz
 .azure/
 .claude/
-packages/outlook-ui/node_modules/
-packages/outlook-ui/dist/
+packages/mailbox-ui/node_modules/
+packages/mailbox-ui/dist/
 .playwright-mcp/
 .audit/

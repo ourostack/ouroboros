@@ -1472,7 +1472,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
     if (second === "prune") return { kind: "daemon.logs.prune" }
     return { kind: "daemon.logs" }
   }
-  if (head === "mailbox" || head === "outlook") return { kind: "outlook", ...(args.includes("--json") ? { json: true } : {}) }
+  if (head === "mailbox" || head === "outlook") return { kind: "mailbox", ...(args.includes("--json") ? { json: true } : {}) }
   if (head === "hatch") return parseHatchCommand(args.slice(1))
   if (head === "auth") return parseAuthCommand(args.slice(1))
   if (head === "account") return parseAccountCommand(args.slice(1))

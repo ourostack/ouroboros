@@ -57,7 +57,7 @@ describe("daemon agent service command routing", () => {
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
     }
-    const outlookServerFactory = vi.fn(async () => ({
+    const mailboxServerFactory = vi.fn(async () => ({
       origin: "http://127.0.0.1:0",
       stop: vi.fn(async () => undefined),
     }))
@@ -69,7 +69,7 @@ describe("daemon agent service command routing", () => {
       healthMonitor,
       router,
       senseManager,
-      outlookServerFactory,
+      mailboxServerFactory,
       mode: "dev",
     } as any)
     return { daemon }

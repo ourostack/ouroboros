@@ -104,6 +104,14 @@ describe("getGroupedHelp()", () => {
     // connect should appear in the Auth section
     expect(result).toContain("connect")
     expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
+    expect(result).toContain("mailbox")
+    expect(result).not.toContain("outlook")
+  })
+
+  it("keeps deprecated aliases out of grouped help", () => {
+    const result = getGroupedHelp()
+    expect(COMMAND_REGISTRY["outlook"].hidden).toBe(true)
+    expect(result).not.toContain("outlook")
   })
 
   it("includes a Usage header line", () => {
@@ -139,6 +147,12 @@ describe("getCommandHelp()", () => {
   it("includes description for known command", () => {
     const result = getCommandHelp("up")!
     expect(result).toContain(COMMAND_REGISTRY["up"].description)
+  })
+
+  it("returns help for the deprecated outlook alias when asked directly", () => {
+    const result = getCommandHelp("outlook")
+    expect(result).toContain("Deprecated alias")
+    expect(result).toContain("ouro outlook [--json]")
   })
 
   it("describes `up` in plain language instead of leaning on house metaphor", () => {
