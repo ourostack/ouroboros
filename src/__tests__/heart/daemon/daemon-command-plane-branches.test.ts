@@ -27,7 +27,11 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon command plane branches", () => {
-  const make = (socketPath: string, bundlesRoot?: string) => {
+  const make = (
+    socketPath: string,
+    bundlesRoot?: string,
+    options?: { onStopCommandComplete?: () => void },
+  ) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -45,6 +49,7 @@ describe("daemon command plane branches", () => {
 
     const healthMonitor = {
       runChecks: vi.fn(async () => [{ name: "agent-processes", status: "ok" as const, message: "good" }]),
+      stopPeriodicChecks: vi.fn(),
     }
 
     const router = {
@@ -70,6 +75,7 @@ describe("daemon command plane branches", () => {
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
       })),
+      onStopCommandComplete: options?.onStopCommandComplete,
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
@@ -82,7 +88,8 @@ describe("daemon command plane branches", () => {
     const socketPath = tmpSocketPath("daemon-start-stop")
     fs.writeFileSync(socketPath, "stale", "utf-8")
 
-    const { daemon, processManager, senseManager } = make(socketPath)
+    const onStopCommandComplete = vi.fn()
+    const { daemon, processManager, senseManager, healthMonitor } = make(socketPath, undefined, { onStopCommandComplete })
 
     const started = await daemon.handleCommand({ kind: "daemon.start" })
     expect(started).toEqual({ ok: true, message: "daemon started" })
@@ -94,6 +101,8 @@ describe("daemon command plane branches", () => {
     expect(stopped).toEqual({ ok: true, message: "daemon stopped" })
     expect(processManager.stopAll).toHaveBeenCalled()
     expect(senseManager.stopAll).toHaveBeenCalled()
+    expect(healthMonitor.stopPeriodicChecks).toHaveBeenCalledTimes(1)
+    expect(onStopCommandComplete).toHaveBeenCalledTimes(1)
     expect(fs.existsSync(socketPath)).toBe(false)
   })
 

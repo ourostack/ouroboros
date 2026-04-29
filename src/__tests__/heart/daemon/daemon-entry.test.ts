@@ -255,6 +255,88 @@ describe("daemon entrypoint", () => {
     argvSpy.mockRestore()
   })
 
+  it("wires daemon.stop command cleanup to stop entrypoint timers before exiting", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const daemonCtor = vi.fn()
+    const healthMonitorStopPeriodicChecks = vi.fn()
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      constructor(_opts: unknown) {
+        daemonCtor(_opts)
+      }
+      start = start
+      stop = stop
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+        sendToAgent = vi.fn()
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/health-monitor", () => ({
+      HealthMonitor: class MockHealthMonitor {
+        runChecks = vi.fn(async () => [])
+        startPeriodicChecks = vi.fn()
+        stopPeriodicChecks = healthMonitorStopPeriodicChecks
+      },
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    try {
+      await import("../../../heart/daemon/daemon-entry")
+      await Promise.resolve()
+      await Promise.resolve()
+
+      const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
+        onStopCommandComplete: () => void
+      }
+      expect(typeof daemonOptions.onStopCommandComplete).toBe("function")
+
+      daemonOptions.onStopCommandComplete()
+      daemonOptions.onStopCommandComplete()
+
+      expect(habitSchedulerStopWatchMock).toHaveBeenCalledTimes(1)
+      expect(habitSchedulerStopMock).toHaveBeenCalledTimes(1)
+      expect(healthMonitorStopPeriodicChecks).toHaveBeenCalledTimes(1)
+      expect(exitSpy).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(100)
+
+      expect(exitSpy).toHaveBeenCalledTimes(1)
+      expect(exitSpy).toHaveBeenCalledWith(0)
+    } finally {
+      argvSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it("discovers managed agents from ~/AgentBundles instead of hardcoding them", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["Juno", "Northstar", "slugger"])

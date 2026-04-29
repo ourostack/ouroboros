@@ -129,6 +129,23 @@ const healthMonitor = new HealthMonitor({
   },
 })
 
+const habitSchedulers: HabitScheduler[] = []
+let entryRuntimeStopping = false
+let stopCommandExitScheduled = false
+
+function stopEntryRuntime(): void {
+  if (entryRuntimeStopping) return
+  entryRuntimeStopping = true
+  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+  healthMonitor.stopPeriodicChecks()
+}
+
+function scheduleCleanProcessExitAfterStopCommand(): void {
+  if (stopCommandExitScheduled) return
+  stopCommandExitScheduled = true
+  setTimeout(() => process.exit(0), 100)
+}
+
 const daemon = new OuroDaemon({
   socketPath,
   processManager,
@@ -137,6 +154,10 @@ const daemon = new OuroDaemon({
   healthMonitor,
   router,
   mode,
+  onStopCommandComplete: () => {
+    stopEntryRuntime()
+    scheduleCleanProcessExitAfterStopCommand()
+  },
 })
 
 const daemonStartedAt = new Date().toISOString()
@@ -293,8 +314,6 @@ const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
 /* v8 ignore stop */
 
-const habitSchedulers: HabitScheduler[] = []
-
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void daemon.start().then(() => {
   const bundlesRoot = getAgentBundlesRoot()
@@ -391,8 +410,7 @@ process.on("SIGINT", () => {
   // tombstone is strictly better than silence.
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  healthMonitor.stopPeriodicChecks()
+  stopEntryRuntime()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })
@@ -400,8 +418,7 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  healthMonitor.stopPeriodicChecks()
+  stopEntryRuntime()
   setTimeout(() => process.exit(1), 5_000).unref()
   void daemon.stop().then(() => process.exit(0))
 })

@@ -1355,21 +1355,29 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
     await client.checkHealth()
     const capturedPending = countPendingCapturedInboundMessages(agentName)
     const recoveryPending = countPendingRecoveryCandidates(agentName)
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "ok",
+      detail: "upstream reachable; recovery pass running",
+      lastCheckedAt: checkedAt,
+      pendingRecoveryCount: capturedPending + recoveryPending,
+      lastRecoveredAt: previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
     const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState, {
       processTurns: false,
     })
     const failed = catchUp.failed
     const queued = capturedPending + recoveryPending + (catchUp.queued ?? 0)
-    // upstreamStatus reflects whether BlueBubbles itself is healthy and we
-    // have unprocessed work (pendingRecoveryCount). Per-cycle recovery
-    // failures are noted in `detail` for transparency but do NOT flip the
-    // status to error: a single permanently-unrecoverable message would
-    // otherwise stick the sense in "error" forever, contradicting `ouro
+    // upstreamStatus reflects whether BlueBubbles itself is healthy and
+    // whether the local bridge can answer webhook traffic. Queued recovery work
+    // and per-cycle failures are noted in `detail` for transparency but do NOT
+    // flip the status to error: a single permanently-unrecoverable message
+    // would otherwise stick the sense in "error" forever, contradicting `ouro
     // doctor` which only checks upstream reachability.
     writeBlueBubblesRuntimeState(agentName, {
-      upstreamStatus: queued > 0 ? "error" : "ok",
+      upstreamStatus: "ok",
       detail: queued > 0
-        ? `pending recovery: ${queued}`
+        ? `upstream reachable; ${queued} recovery item(s) queued`
         : failed > 0
           ? `${failed} message(s) unrecoverable this cycle; upstream ok`
           : "upstream reachable",

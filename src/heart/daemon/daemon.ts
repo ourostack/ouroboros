@@ -330,6 +330,7 @@ export interface DaemonSchedulerLike {
 
 export interface DaemonHealthMonitorLike {
   runChecks(): Promise<DaemonHealthResult[]>
+  stopPeriodicChecks?(): void
 }
 
 export interface DaemonRouterLike {
@@ -404,6 +405,13 @@ export interface OuroDaemonOptions {
    * wired with the daemon's bundlesRoot and view builders.
    */
   outlookServerFactory?: () => Promise<OutlookHttpServerHandle>
+  /**
+   * Runs after a daemon.stop command has completed daemon-owned cleanup but
+   * before the JSON response is returned to the command socket. Entrypoints
+   * use this to schedule process-level shutdown without putting process.exit()
+   * in the daemon core.
+   */
+  onStopCommandComplete?: () => void
 }
 
 interface DaemonWorkerRow {
@@ -568,6 +576,7 @@ export class OuroDaemon {
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly outlookServerFactory: () => Promise<OutlookHttpServerHandle>
+  private readonly onStopCommandComplete: (() => void) | null
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -579,6 +588,7 @@ export class OuroDaemon {
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
     this.outlookServerFactory = options.outlookServerFactory ?? this.createDefaultOutlookServer.bind(this)
+    this.onStopCommandComplete = options.onStopCommandComplete ?? null
   }
 
   /* v8 ignore start -- default outlook server wiring: production-only path, tests inject outlookServerFactory stub instead. startOutlookHttpServer itself has full coverage in outlook-http.test.ts @preserve */
@@ -1085,6 +1095,7 @@ export class OuroDaemon {
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()
+    this.healthMonitor.stopPeriodicChecks?.()
     if (this.senseAutostartTimer) {
       clearTimeout(this.senseAutostartTimer)
       this.senseAutostartTimer = null
@@ -1204,6 +1215,7 @@ export class OuroDaemon {
         return { ok: true, message: "daemon started" }
       case "daemon.stop":
         await this.stop()
+        this.onStopCommandComplete?.()
         return { ok: true, message: "daemon stopped" }
       case "daemon.status": {
         const data = this.buildStatusPayload()

@@ -3587,11 +3587,12 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath))
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
-        upstreamStatus: "error",
-        detail: "pending recovery: 1",
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 recovery item(s) queued",
         pendingRecoveryCount: 1,
       }),
     )
@@ -4729,7 +4730,7 @@ describe("BlueBubbles sense runtime", () => {
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "session-already-has-message")).toBe(true)
   })
 
-  it("marks runtime state as error when recovery still has pending backlog after a healthy probe", async () => {
+  it("keeps runtime state healthy when reachable BlueBubbles still has pending recovery backlog", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -4760,11 +4761,39 @@ describe("BlueBubbles sense runtime", () => {
       textForAgent: "message marked as delivered",
       requiresRepair: false,
     })
-    mocks.repairEvent.mockResolvedValueOnce({
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 recovery item(s) queued",
+        pendingRecoveryCount: 1,
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("marks runtime healthy immediately while startup recovery is still running", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
+    recordBlueBubblesMutation("testagent", {
       kind: "mutation",
       eventType: "updated-message",
       mutationType: "delivery",
-      messageGuid: "pending-runtime-sync",
+      messageGuid: "slow-recovery-runtime-sync",
       timestamp: Date.parse("2026-03-11T18:21:00.000Z"),
       fromMe: false,
       sender: {
@@ -4785,6 +4814,8 @@ describe("BlueBubbles sense runtime", () => {
       textForAgent: "message marked as delivered",
       requiresRepair: false,
     })
+    const listRecentMessages = createDeferred<any[]>()
+    mocks.listRecentMessages.mockReturnValueOnce(listRecentMessages.promise)
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -4798,11 +4829,14 @@ describe("BlueBubbles sense runtime", () => {
     await waitFor(() => fs.existsSync(runtimePath))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
-        upstreamStatus: "error",
-        detail: "pending recovery: 1",
+        upstreamStatus: "ok",
+        detail: "upstream reachable; recovery pass running",
         pendingRecoveryCount: 1,
       }),
     )
+    listRecentMessages.resolve([])
+    await flushAsyncWork()
+    closableServer.close()
   })
 
   it("keeps runtime sync from hydrating backlog messages in the live HTTP worker", async () => {
@@ -4845,11 +4879,12 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath))
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
-        upstreamStatus: "error",
-        detail: "pending recovery: 1",
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 recovery item(s) queued",
         pendingRecoveryCount: 1,
       }),
     )
@@ -4897,11 +4932,12 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath))
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
-        upstreamStatus: "error",
-        detail: "pending recovery: 1",
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 recovery item(s) queued",
         pendingRecoveryCount: 1,
       }),
     )
@@ -4930,11 +4966,12 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
 
     const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
-    await waitFor(() => fs.existsSync(runtimePath))
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
     expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
       expect.objectContaining({
-        upstreamStatus: "error",
-        detail: "pending recovery: 1",
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 recovery item(s) queued",
         pendingRecoveryCount: 1,
       }),
     )
