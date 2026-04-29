@@ -1233,6 +1233,12 @@ describe("checkTrips", () => {
     ...overrides,
   })
 
+  const nestedLedgerJson = (overrides: Record<string, unknown> = {}): string => JSON.stringify({
+    ledger: { ledgerId: "ledger_slugger_nested" },
+    privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----",
+    ...overrides,
+  })
+
   it("warns when no agents are found", () => {
     const deps = createMockDeps({
       existsSync: existsFor(["/tmp/bundles"]),
@@ -1327,6 +1333,21 @@ describe("checkTrips", () => {
     expect(cat.checks[0].status).toBe("pass")
     expect(cat.checks[0].detail).toContain("ledger_slugger_xyz")
     expect(cat.checks[0].detail).toContain("2 records")
+  })
+
+  it("accepts the current nested trip ledger schema", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson() }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("ledger_slugger_nested")
   })
 })
 

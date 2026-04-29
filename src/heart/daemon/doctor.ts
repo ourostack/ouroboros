@@ -446,7 +446,14 @@ export function checkTrips(deps: DoctorDeps): DoctorCategory {
       checks.push({ label: `${agentDir} trip ledger`, status: "fail", detail: "ledger.json is not valid JSON" })
       continue
     }
-    const ledgerId = typeof parsed.ledgerId === "string" ? parsed.ledgerId : null
+    const nestedLedger = parsed.ledger && typeof parsed.ledger === "object"
+      ? parsed.ledger as Record<string, unknown>
+      : null
+    const ledgerId = typeof parsed.ledgerId === "string"
+      ? parsed.ledgerId
+      : typeof nestedLedger?.ledgerId === "string"
+        ? nestedLedger.ledgerId
+        : null
     const hasPrivateKey = typeof parsed.privateKeyPem === "string" && parsed.privateKeyPem.includes("BEGIN")
     if (!ledgerId) {
       checks.push({ label: `${agentDir} trip ledger`, status: "warn", detail: "ledger.json missing ledgerId field" })

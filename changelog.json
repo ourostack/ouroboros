@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.531",
+      "changes": [
+        "`ouro doctor` now recognizes the current nested trip ledger schema (`ledger.ledgerId`) as healthy while keeping backward compatibility with older top-level `ledgerId` ledgers.",
+        "Adds regression coverage so valid trip ledgers no longer surface as doctor warnings during runtime reliability checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.530",
       "changes": [
         "`ouro up` now gives freshly restarted daemons a bounded final health-settling window before failing, so managed senses such as BlueBubbles and mail can finish proving healthy after asynchronous recovery without producing a false failed handoff.",
