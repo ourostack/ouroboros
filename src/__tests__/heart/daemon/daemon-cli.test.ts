@@ -215,6 +215,7 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["stop"])).toEqual({ kind: "daemon.stop" })
     expect(parseOuroCommand(["down"])).toEqual({ kind: "daemon.stop" })
     expect(parseOuroCommand(["status"])).toEqual({ kind: "daemon.status" })
+    expect(parseOuroCommand(["status", "--json"])).toEqual({ kind: "daemon.status", json: true })
     expect(parseOuroCommand(["logs"])).toEqual({ kind: "daemon.logs" })
     expect(parseOuroCommand(["logs", "prune"])).toEqual({ kind: "daemon.logs.prune" })
     expect(parseOuroCommand(["mailbox"])).toEqual({ kind: "mailbox" })
@@ -280,6 +281,13 @@ describe("ouro CLI parsing", () => {
     expect(parseOuroCommand(["hatch", "--unknown-flag", "noop"])).toEqual({
       kind: "hatch.start",
     })
+  })
+
+  it("rejects unsupported status flag combinations", () => {
+    expect(() => parseOuroCommand(["status", "--bogus"])).toThrow("Usage: ouro status [--json] OR ouro status --agent <name>")
+    expect(() => parseOuroCommand(["status", "--agent", "slugger", "--json"])).toThrow(
+      "Usage: ouro status [--json] OR ouro status --agent <name>",
+    )
   })
 
   it("parses hook command with event name and agent", () => {
@@ -2038,6 +2046,105 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("Mailbox")
     // With no sync rows, the Git Sync section is omitted entirely (matches Senses/Workers)
     expect(result).not.toContain("Git Sync")
+  })
+
+  it("renders daemon status as JSON when requested", async () => {
+    const payload = {
+      overview: {
+        daemon: "running",
+        socketPath: "/tmp/ouro-test.sock",
+        version: PACKAGE_VERSION.version,
+        lastUpdated: "2026-03-08T23:50:00.000Z",
+        workerCount: 1,
+        senseCount: 1,
+        health: "ok",
+        mailboxUrl: "http://127.0.0.1:4310/mailbox",
+        entryPath: "/usr/local/lib/node_modules/@ouro.bot/cli/dist/heart/daemon/daemon-entry.js",
+        mode: "production",
+      },
+      senses: [
+        {
+          agent: "slugger",
+          sense: "cli",
+          label: "CLI",
+          enabled: true,
+          status: "interactive",
+          detail: "local interactive terminal",
+        },
+      ],
+      workers: [
+        {
+          agent: "slugger",
+          worker: "inner-dialog",
+          status: "running",
+          pid: 1234,
+          restarts: 0,
+        },
+      ],
+      sync: [],
+      agents: [{ name: "slugger", enabled: true }],
+    }
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=1\tsenses=1\thealth=ok",
+        data: payload,
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual(payload)
+    expect(result).not.toContain("ouroboros daemon")
+    expect(deps.writeStdout).toHaveBeenCalledWith(JSON.stringify(payload, null, 2))
+  })
+
+  it("renders daemon status metadata as JSON when the daemon omits status data", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: false,
+        summary: "daemon=degraded",
+        message: "provider lane degraded",
+        error: "provider check failed",
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      summary: "daemon=degraded",
+      message: "provider lane degraded",
+      error: "provider check failed",
+    })
+  })
+
+  it("renders minimal daemon status JSON when the daemon omits optional metadata", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({ ok: true })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    }
+
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({ ok: true })
   })
 
   it("renders Git Sync as a per-agent section with remote URL, local-only, not-a-repo, and disabled states", async () => {

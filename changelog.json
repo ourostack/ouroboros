@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.525",
+      "changes": [
+        "`ouro status --json` now returns parseable daemon status JSON instead of the human ANSI status board, giving automation and review gates a truthful machine-readable status surface.",
+        "Unavailable-daemon status checks with `--json` now still return structured JSON with socket and health-file context instead of falling back to human prose.",
+        "Adds CLI parse and execution coverage for the status JSON flag so future status rendering changes cannot silently break the automation contract again."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.524",
       "changes": [
         "Completes the human-facing Ouro Mailbox rename by moving the former Outlook source, tests, UI package, build scripts, and package asset checks onto mailbox naming.",

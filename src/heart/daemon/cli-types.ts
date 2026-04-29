@@ -29,7 +29,7 @@ export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollba
 export type OuroCliCommand =
   | { kind: "daemon.up"; noRepair?: boolean }
   | { kind: "daemon.stop" }
-  | { kind: "daemon.status" }
+  | { kind: "daemon.status"; json?: boolean }
   | { kind: "daemon.logs" }
   | { kind: "daemon.logs.prune" }
   | { kind: "mailbox"; json?: boolean }

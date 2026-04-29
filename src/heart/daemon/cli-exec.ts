@@ -652,6 +652,24 @@ function writeProviderRepairSummary(
   deps.writeStdout([title, ...blocks].join("\n\n"))
 }
 
+function formatDaemonStatusJsonOutput(response: DaemonResponse): string {
+  return JSON.stringify(response.data ?? {
+    ok: response.ok,
+    ...(response.summary ? { summary: response.summary } : {}),
+    ...(response.message ? { message: response.message } : {}),
+    ...(response.error ? { error: response.error } : {}),
+  }, null, 2)
+}
+
+function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: string): string {
+  return JSON.stringify({
+    ok: false,
+    error: "daemon unavailable",
+    socketPath,
+    ...(healthFilePath ? { healthFilePath } : {}),
+  }, null, 2)
+}
+
 /**
  * Layer 4: render a per-agent drift advisory block to stdout. Called from
  * the `--no-repair` summary path when one or more enabled agents have a
@@ -8492,7 +8510,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     if (command.kind === "daemon.status" && isDaemonUnavailableError(error)) {
-      const message = daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
+      const message = command.json
+        ? daemonUnavailableStatusJsonOutput(deps.socketPath, deps.healthFilePath)
+        : daemonUnavailableStatusOutput(deps.socketPath, deps.healthFilePath)
       deps.writeStdout(message)
       return message
     }
@@ -8505,7 +8525,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   }
   const fallbackMessage = response.summary ?? response.message ?? (response.ok ? "ok" : `error: ${response.error ?? "unknown error"}`)
   const message = command.kind === "daemon.status"
-    ? formatDaemonStatusOutput(response, fallbackMessage)
+    ? command.json
+      ? formatDaemonStatusJsonOutput(response)
+      : formatDaemonStatusOutput(response, fallbackMessage)
     : fallbackMessage
   deps.writeStdout(message)
   return message

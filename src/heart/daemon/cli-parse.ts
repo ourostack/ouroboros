@@ -1452,11 +1452,14 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "stop" || head === "down") return { kind: "daemon.stop" }
   if (head === "status") {
     const { agent, rest } = extractAgentFlag(args.slice(1))
+    const json = rest.includes("--json")
+    const unknown = rest.filter((token) => token !== "--json")
     if (agent) {
-      if (rest.length > 0) throw new Error("Usage: ouro status --agent <name>")
+      if (unknown.length > 0 || json) throw new Error("Usage: ouro status [--json] OR ouro status --agent <name>")
       return { kind: "provider.status", agent }
     }
-    return { kind: "daemon.status" }
+    if (unknown.length > 0) throw new Error("Usage: ouro status [--json] OR ouro status --agent <name>")
+    return { kind: "daemon.status", ...(json ? { json: true } : {}) }
   }
   if (head === "use") return parseProviderUseCommand(args.slice(1))
   if (head === "check") return parseProviderCheckCommand(args.slice(1))

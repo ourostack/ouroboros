@@ -132,6 +132,30 @@ describe("ouro status with health file fallback", () => {
     expect(result).toContain("daemon not running")
   })
 
+  it("ouro status --json stays parseable when the daemon is unavailable", async () => {
+    const deps = makeUnavailableDeps({ healthFilePath: "/tmp/nonexistent/daemon-health.json" } as any)
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon unavailable",
+      socketPath: "/tmp/ouro-test.sock",
+      healthFilePath: "/tmp/nonexistent/daemon-health.json",
+    })
+    expect(result).not.toContain("daemon not running")
+  })
+
+  it("ouro status --json omits health file context when no health path is configured", async () => {
+    const deps = makeUnavailableDeps()
+    const result = await runOuroCli(["status", "--json"], deps)
+
+    expect(JSON.parse(result)).toEqual({
+      ok: false,
+      error: "daemon unavailable",
+      socketPath: "/tmp/ouro-test.sock",
+    })
+  })
+
   it("ouro status falls back to the default health path when no explicit path is provided", async () => {
     const dir = makeTmpDir()
     const originalHome = process.env.HOME
