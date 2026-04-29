@@ -826,7 +826,10 @@ function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
   return lines.join("\n")
 }
 
-async function verifyDaemonReadyForHandoff(deps: OuroCliDeps): Promise<FinalDaemonCheckResult> {
+async function verifyDaemonReadyForHandoff(
+  deps: OuroCliDeps,
+  options: { allowDegradedHealth?: boolean } = {},
+): Promise<FinalDaemonCheckResult> {
   const socketAlive = await deps.checkSocketAlive(deps.socketPath)
   if (!socketAlive) {
     return {
@@ -869,6 +872,12 @@ async function verifyDaemonReadyForHandoff(deps: OuroCliDeps): Promise<FinalDaem
         .filter((sense) => sense.enabled && !["running", "interactive", "disabled", "not_attached"].includes(sense.status))
         .map((sense) => `${sense.agent}/${sense.sense}: ${sense.status} - ${sense.detail}`)
       const detail = degradedSenses.length > 0 ? `; ${degradedSenses.join("; ")}` : ""
+      if (options.allowDegradedHealth) {
+        return {
+          ok: true,
+          summary: `runtime health ${payload.overview.health}`,
+        }
+      }
       return {
         ok: false,
         summary: `daemon health ${payload.overview.health}`,
@@ -6841,7 +6850,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
     progress.completePhase("provider checks", providerRepairCountSummary(providerDegraded.length))
     progress.startPhase("final daemon check")
-    const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps)
+    const finalDaemonCheck = await verifyDaemonReadyForHandoff(deps, {
+      allowDegradedHealth: Boolean(
+        command.noRepair
+        && ((daemonResult.stability?.degraded.length ?? 0) > 0 || providerDegraded.length > 0),
+      ),
+    })
     if (!finalDaemonCheck.ok) {
       ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(
         "final daemon check",

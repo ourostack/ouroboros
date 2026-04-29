@@ -525,6 +525,16 @@ function formatStatusSummary(payload: DaemonStatusPayload): string {
       .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),
   ]
   const detail = degraded.length > 0 ? `\tdegraded=${degraded.join(",")}` : ""
+  if (!detail) {
+    const rows = [
+      ...payload.workers.map((row) => `${row.agent}/${row.worker}:${row.status}`),
+      ...payload.senses
+        .filter((row) => row.enabled)
+        .map((row) => `${row.agent}/${row.sense}:${row.status}`),
+    ]
+    const items = rows.length > 0 ? `\titems=${rows.join(",")}` : ""
+    return `daemon=${payload.overview.daemon}\tworkers=${payload.overview.workerCount}\tsenses=${payload.overview.senseCount}\thealth=${payload.overview.health}${items}`
+  }
   return `daemon=${payload.overview.daemon}\tworkers=${payload.overview.workerCount}\tsenses=${payload.overview.senseCount}\thealth=${payload.overview.health}${detail}`
 }
 
