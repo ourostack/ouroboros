@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.528",
+      "changes": [
+        "Daemon overview health now degrades whenever an enabled sense is configured but not externally proven healthy, and `ouro up` refuses a healthy handoff when runtime senses are degraded instead of treating unreachable iMessage as green.",
+        "Managed sense health probes now carry restart ownership, so failed BlueBubbles/iMessage probes trigger daemon-managed recovery while preserving proof method, proof age, failure layer, recovery action, and pending recovery age in status surfaces.",
+        "BlueBubbles webhooks now durably capture inbound and mutation sidecars before acknowledging the HTTP request, then process the slower agent turn asynchronously so live iMessage delivery is not blocked by model/runtime latency.",
+        "MCP agent status now returns concrete runtime facts instead of terse placeholder text, giving external tools a proof-bearing status surface for Slugger and other agents."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.527",
       "changes": [
         "Suppresses `onResult`/`onFailure` in the shared tool-activity callbacks factory for any tool that started hidden, so a hidden tool's END never re-emits its raw args into chat surfaces — fixing rejected `settle` calls leaking `answer=`/`intent=` into BlueBubbles and Teams threads.",
