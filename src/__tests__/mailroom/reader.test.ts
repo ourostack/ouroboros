@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 afterEach(() => {
   vi.doUnmock("@azure/identity")
   vi.doUnmock("@azure/storage-blob")
+  vi.doUnmock("../../heart/runtime-credentials")
   vi.resetModules()
 })
 
@@ -106,6 +107,154 @@ describe("mailroom reader", () => {
     }))
     expect(credentialOptions).toEqual([{ managedIdentityClientId: "client-id" }])
     expect(serviceUrls).toEqual(["https://mail.blob.core.windows.net"])
+  })
+
+  it("refreshes runtime credentials once when the cached mail reader config is unavailable", async () => {
+    let refreshed = false
+    const refreshRuntimeCredentialConfig = vi.fn(async (agentName: string) => {
+      refreshed = true
+      return {
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: {
+          mailroom: {
+            mailboxAddress: "slugger@ouro.bot",
+            storePath: "/tmp/mailroom",
+            privateKeys: { mail_slugger_primary: "secret" },
+          },
+        },
+        revision: "runtime_refreshed",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      }
+    })
+
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => refreshed
+        ? {
+            ok: true,
+            itemPath: `vault:${agentName}:runtime/config`,
+            config: {
+              mailroom: {
+                mailboxAddress: "slugger@ouro.bot",
+                storePath: "/tmp/mailroom",
+                privateKeys: { mail_slugger_primary: "secret" },
+              },
+            },
+            revision: "runtime_refreshed",
+            updatedAt: "2026-04-28T00:00:00.000Z",
+          }
+        : {
+            ok: false,
+            reason: "unavailable",
+            itemPath: `vault:${agentName}:runtime/config`,
+            error: "runtime config is unavailable",
+          },
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
+
+    const resolved = await resolveMailroomReaderWithRefresh("slugger")
+    expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
+    expect(resolved).toEqual(expect.objectContaining({
+      ok: true,
+      storeKind: "file",
+      storeLabel: "/tmp/mailroom",
+    }))
+  })
+
+  it("returns an already-resolved mail reader without refreshing", async () => {
+    const refreshRuntimeCredentialConfig = vi.fn()
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: {
+          mailroom: {
+            mailboxAddress: "slugger@ouro.bot",
+            storePath: "/tmp/mailroom",
+            privateKeys: { mail_slugger_primary: "secret" },
+          },
+        },
+        revision: "runtime_cached",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      }),
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
+
+    await expect(resolveMailroomReaderWithRefresh("slugger")).resolves.toEqual(expect.objectContaining({
+      ok: true,
+      storeKind: "file",
+    }))
+    expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+  })
+
+  it("does not refresh malformed cached mail reader config", async () => {
+    const refreshRuntimeCredentialConfig = vi.fn()
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: { mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: null } },
+        revision: "runtime_bad",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      }),
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
+
+    await expect(resolveMailroomReaderWithRefresh("slugger")).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      reason: "misconfigured",
+    }))
+    expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+  })
+
+  it("does not refresh a missing runtime credential item", async () => {
+    const refreshRuntimeCredentialConfig = vi.fn()
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: false,
+        reason: "missing",
+        itemPath: `vault:${agentName}:runtime/config`,
+        error: "missing runtime config",
+      }),
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
+
+    await expect(resolveMailroomReaderWithRefresh("slugger")).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      reason: "auth-required",
+    }))
+    expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+  })
+
+  it("keeps the original auth-required reader error when refresh fails", async () => {
+    const refreshRuntimeCredentialConfig = vi.fn(async () => {
+      throw new Error("vault unavailable")
+    })
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: `vault:${agentName}:runtime/config`,
+        error: "vault unavailable",
+      }),
+      refreshRuntimeCredentialConfig,
+    }))
+
+    const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
+
+    await expect(resolveMailroomReaderWithRefresh("slugger")).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      reason: "auth-required",
+    }))
+    expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
   })
 
   it("resolves Azure Blob mailroom stores with default credentials and explicit container", async () => {

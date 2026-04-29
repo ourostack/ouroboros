@@ -169,6 +169,14 @@ function requireSession() {
     process.exit(1)
   }
 }
+function readPassword(positionalIndex) {
+  const passwordEnvIndex = args.indexOf("--passwordenv")
+  if (passwordEnvIndex >= 0) {
+    const envName = args[passwordEnvIndex + 1]
+    return envName ? process.env[envName] : undefined
+  }
+  return args[positionalIndex]
+}
 function itemMatches(item, search) {
   if (item.name === search) return true
   return Array.isArray(item.login?.uris) && item.login.uris.some((entry) => entry && entry.uri && String(entry.uri).includes(search))
@@ -191,7 +199,7 @@ if (args[0] === "config" && args[1] === "server") {
 if (args[0] === "login") {
   const state = readState()
   const email = args[1]
-  const password = args[2]
+  const password = readPassword(2)
   if (email !== state.email || password !== state.masterPassword) {
     process.stderr.write("invalid master password\\n")
     process.exit(1)
@@ -203,7 +211,7 @@ if (args[0] === "login") {
 }
 if (args[0] === "unlock") {
   const state = readState()
-  const password = args[1]
+  const password = readPassword(1)
   if (password !== state.masterPassword) {
     process.stderr.write("invalid master password\\n")
     process.exit(1)

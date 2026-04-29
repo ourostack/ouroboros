@@ -16,6 +16,7 @@ import { ensureBwCli } from "./bw-installer"
 
 const MAX_ERROR_DETAIL_LENGTH = 500
 const LONG_ENCODED_TOKEN_PATTERN = /[A-Za-z0-9+/=]{32,}/g
+const BW_PASSWORD_ENV = "OURO_BW_MASTER_PASSWORD"
 
 function uniqueSecrets(secrets: Array<string | undefined>): string[] {
   return [...new Set(
@@ -118,8 +119,21 @@ function isBwConfigLogoutRequired(err: Error): boolean {
   return message.includes("logout") && message.includes("required")
 }
 
-function shouldPreferExactItemLookup(domain: string): boolean {
+function isBwAlreadyLoggedInError(err: Error): boolean {
+  return err.message.toLowerCase().includes("already logged in")
+}
+
+function shouldUseStructuredItemLookup(domain: string): boolean {
   return domain.includes("/")
+}
+
+function shouldUseFullListForStructuredLookup(domain: string, appDataDir?: string): boolean {
+  return domain.includes("/") && !appDataDir
+}
+
+function isBwItemNotFoundError(error: Error): boolean {
+  const message = error.message.toLowerCase()
+  return message.includes("not found") || message.includes("no item")
 }
 
 // ---------------------------------------------------------------------------
@@ -236,11 +250,19 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
   }
 }
 
-function execBw(args: string[], sessionToken?: string, appDataDir?: string, stdin?: string, bwBinaryPath = "bw"): Promise<string> {
+function execBw(
+  args: string[],
+  sessionToken?: string,
+  appDataDir?: string,
+  stdin?: string,
+  bwBinaryPath = "bw",
+  extraEnv: Record<string, string> = {},
+): Promise<string> {
   const env = {
     ...process.env,
     ...(sessionToken ? { BW_SESSION: sessionToken } : {}),
     ...(appDataDir ? { BITWARDENCLI_APPDATA_DIR: appDataDir } : {}),
+    ...extraEnv,
   }
 
   const runCommand = (): Promise<string> =>
@@ -417,6 +439,17 @@ export class BitwardenCredentialStore implements CredentialStore {
     return execBw(args, sessionToken, this.appDataDir, stdin, this.bwBinaryPath)
   }
 
+  private execBwWithPasswordEnv(args: string[]): Promise<string> {
+    return execBw(
+      [...args, "--passwordenv", BW_PASSWORD_ENV],
+      undefined,
+      this.appDataDir,
+      undefined,
+      this.bwBinaryPath,
+      { [BW_PASSWORD_ENV]: this.masterPassword },
+    )
+  }
+
   /**
    * Ensure the bw CLI is authenticated and unlocked.
    * Handles three states: logged out → login, locked → unlock, already unlocked → no-op.
@@ -492,11 +525,20 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     if (status.status === "locked") {
       // Already logged in, just needs unlock
-      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
+      const unlockOutput = await this.execBwWithPasswordEnv(["unlock", "--raw"])
       this.sessionToken = unlockOutput.trim()
     } else if (status.status === "unauthenticated" || !status.status) {
       // Not logged in — full login
-      const loginOutput = await this.execBw(["login", this.email, this.masterPassword, "--raw"])
+      let loginOutput: string
+      try {
+        loginOutput = await this.execBwWithPasswordEnv(["login", this.email, "--raw"])
+      } catch (error) {
+        const err = error as Error
+        if (!isBwAlreadyLoggedInError(err)) {
+          throw err
+        }
+        loginOutput = await this.execBwWithPasswordEnv(["unlock", "--raw"])
+      }
       try {
         const parsed = JSON.parse(loginOutput)
         this.sessionToken = parsed.access_token ?? loginOutput.trim()
@@ -505,7 +547,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     } else {
       // Status is "unlocked" — already good, just need the session token
-      const unlockOutput = await this.execBw(["unlock", this.masterPassword, "--raw"])
+      const unlockOutput = await this.execBwWithPasswordEnv(["unlock", "--raw"])
       this.sessionToken = unlockOutput.trim()
     }
 
@@ -589,7 +631,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     })
 
     const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session, { preferExactStructured: true })),
     )
 
     if (!item) {
@@ -619,7 +661,7 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   async getRawSecret(domain: string, field: string): Promise<string> {
     const item = await this.withTransientRetry(() =>
-      this.withSessionRetry((session) => this.findItemByDomain(domain, session)),
+      this.withSessionRetry((session) => this.findItemByDomain(domain, session, { preferExactStructured: true })),
     )
 
     if (!item) {
@@ -759,8 +801,15 @@ export class BitwardenCredentialStore implements CredentialStore {
 
   // --- Private ---
 
-  private async findItemByDomain(domain: string, session?: string): Promise<BwLoginItem | null> {
-    if (shouldPreferExactItemLookup(domain)) {
+  private async findItemByDomain(
+    domain: string,
+    session?: string,
+    options: { preferExactStructured?: boolean } = {},
+  ): Promise<BwLoginItem | null> {
+    if (options.preferExactStructured && shouldUseStructuredItemLookup(domain)) {
+      return this.findStructuredItemByName(domain, session)
+    }
+    if (shouldUseFullListForStructuredLookup(domain, this.appDataDir)) {
       const items = await this.readStructuredItemCache(session)
       return items.get(domain) ?? null
     }
@@ -770,6 +819,19 @@ export class BitwardenCredentialStore implements CredentialStore {
 
     // Find exact match by name
     return items.find((item) => item.name === domain) ?? null
+  }
+
+  private async findStructuredItemByName(domain: string, session?: string): Promise<BwLoginItem | null> {
+    try {
+      const stdout = await this.execBw(["get", "item", domain], session)
+      const item = parseBwItem(stdout, "bw get item")
+      return item.name === domain ? item : null
+    } catch (error) {
+      /* v8 ignore next -- defensive: execBw rejects with Error instances @preserve */
+      const err = error instanceof Error ? error : new Error(String(error))
+      if (isBwItemNotFoundError(err)) return null
+      throw err
+    }
   }
 
   private shouldSyncVaultAfterSession(status: { status?: string; serverUrl?: string; userEmail?: string }): boolean {
@@ -805,17 +867,17 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
   }
 
+  private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
+    const stdout = await this.execBw(["get", "item", id], session)
+    return parseBwItem(stdout, "bw get item")
+  }
+
   private async readStructuredItemCache(session?: string): Promise<Map<string, BwLoginItem>> {
     if (this.structuredItemCache) return this.structuredItemCache
     const stdout = await this.execBw(["list", "items"], session)
     const items = parseBwItems(stdout, "bw list items")
     this.structuredItemCache = new Map(items.map((item) => [item.name, item]))
     return this.structuredItemCache
-  }
-
-  private async findItemById(id: string, session?: string): Promise<BwLoginItem> {
-    const stdout = await this.execBw(["get", "item", id], session)
-    return parseBwItem(stdout, "bw get item")
   }
 
   private assertStoredCredentialMatches(

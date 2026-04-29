@@ -36,6 +36,7 @@ import { listTargetSessionCandidates } from "./target-resolution"
 import { readRecentEpisodes, type EpisodeRecord } from "../arc/episodes"
 import { readActiveCares, type CareRecord } from "../arc/cares"
 import { getSyncConfig, loadConfig } from "./config"
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "./runtime-credentials"
 import { readHealth, getDefaultHealthPath } from "./daemon/daemon-health"
 import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
@@ -197,6 +198,10 @@ function hasTextField(record: Record<string, unknown> | undefined, key: string):
   return typeof record?.[key] === "string" && (record[key] as string).trim().length > 0
 }
 
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
 function readSenseStatusLines(): string[] {
   const config = loadAgentConfig()
   const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
@@ -208,10 +213,14 @@ function readSenseStatusLines(): string[] {
     mail: configuredSenses.mail ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
-
-  const teams = payload.teams as Record<string, unknown> | undefined
-  const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
-  const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const agentName = getAgentName()
+  const runtimeConfig = readRuntimeCredentialConfig(agentName)
+  const machineRuntimeConfig = readMachineRuntimeCredentialConfig(agentName)
+  const runtimePayload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
+  const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
+  const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
+  const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
   const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,

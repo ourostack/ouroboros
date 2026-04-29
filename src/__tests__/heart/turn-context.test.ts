@@ -115,6 +115,23 @@ vi.mock("../../heart/config", () => ({
   loadConfig: () => mockLoadConfig(),
 }))
 
+const mockReadRuntimeCredentialConfig = vi.fn().mockReturnValue({
+  ok: false,
+  reason: "missing",
+  itemPath: "vault:test-agent:runtime/config",
+  error: "missing runtime config",
+})
+const mockReadMachineRuntimeCredentialConfig = vi.fn().mockReturnValue({
+  ok: false,
+  reason: "missing",
+  itemPath: "vault:test-agent:runtime/machines/<this-machine>/config",
+  error: "missing machine runtime config",
+})
+vi.mock("../../heart/runtime-credentials", () => ({
+  readRuntimeCredentialConfig: (...args: any[]) => mockReadRuntimeCredentialConfig(...args),
+  readMachineRuntimeCredentialConfig: (...args: any[]) => mockReadMachineRuntimeCredentialConfig(...args),
+}))
+
 const mockReadHealth = vi.fn().mockReturnValue(null)
 const mockGetDefaultHealthPath = vi.fn().mockReturnValue("/mock/health.json")
 vi.mock("../../heart/daemon/daemon-health", () => ({
@@ -194,6 +211,18 @@ describe("buildTurnContext", () => {
     mockReadActiveCares.mockReturnValue([])
     mockGetSyncConfig.mockReturnValue({ enabled: false, remote: "origin" })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:test-agent:runtime/config",
+      error: "missing runtime config",
+    })
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: false,
+      reason: "missing",
+      itemPath: "vault:test-agent:runtime/machines/<this-machine>/config",
+      error: "missing machine runtime config",
+    })
     mockReadHealth.mockReturnValue(null)
     mockReadJournalFiles.mockReturnValue([])
     mockListVisibleBackgroundOperations.mockReturnValue([])
@@ -472,6 +501,60 @@ describe("buildTurnContext", () => {
       "- Teams: ready",
       "- BlueBubbles: ready",
       "- Mail: ready",
+    ])
+  })
+
+  it("detects mail from cached vault runtime credentials when local config is stale", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_mail",
+      updatedAt: "2026-04-28T00:00:00.000Z",
+      config: {
+        mailroom: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: { mail_slugger_primary: "secret" },
+        },
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: ready",
+    ])
+  })
+
+  it("detects BlueBubbles from cached machine runtime credentials when local config is stale", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: true }, mail: { enabled: false } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/machines/test-machine/config",
+      revision: "runtime_bluebubbles",
+      updatedAt: "2026-04-28T00:00:00.000Z",
+      config: {
+        bluebubbles: {
+          serverUrl: "http://127.0.0.1:18789",
+          password: "secret",
+        },
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: ready",
+      "- Mail: disabled",
     ])
   })
 

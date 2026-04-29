@@ -1,6 +1,6 @@
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { decryptMessages, type MailAccessLogEntry } from "../../../mailroom/file-store"
-import { resolveMailroomReader } from "../../../mailroom/reader"
+import { resolveMailroomReaderWithRefresh } from "../../../mailroom/reader"
 import { describeMailProvenance, type DecryptedMailMessage, type StoredMailMessage } from "../../../mailroom/core"
 import type { MailOutboundRecord, MailScreenerCandidate } from "../../../mailroom/core"
 import type {
@@ -289,7 +289,7 @@ function statusFromReaderFailure(reason: "auth-required" | "misconfigured"): "au
 }
 
 export async function readMailView(agentName: string): Promise<OutlookMailView> {
-  const resolved = resolveMailroomReader(agentName)
+  const resolved = await resolveMailroomReaderWithRefresh(agentName)
   if (!resolved.ok) {
     const status = statusFromReaderFailure(resolved.reason)
     emitMailRead(agentName, "list", status)
@@ -335,7 +335,7 @@ export async function readMailView(agentName: string): Promise<OutlookMailView> 
 }
 
 export async function readMailMessageView(agentName: string, messageId: string): Promise<OutlookMailMessageView> {
-  const resolved = resolveMailroomReader(agentName)
+  const resolved = await resolveMailroomReaderWithRefresh(agentName)
   if (!resolved.ok) {
     const status = statusFromReaderFailure(resolved.reason)
     emitMailRead(agentName, "message", status)

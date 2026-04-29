@@ -7,6 +7,7 @@ import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surf
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "../heart/identity";
 import { loadConfig } from "../heart/config";
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../heart/runtime-credentials";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, type Channel, type ChannelCapabilities, type ResolvedContext } from "./friends/types";
 import { describeTrustContext } from "./friends/trust-explanation";
@@ -44,7 +45,6 @@ let _psycheCache: {
   tacitKnowledge: string;
   aspirations: string;
 } | null = null;
-let _senseStatusLinesCache: string[] | null = null;
 
 function loadPsycheFile(name: string): string {
   try {
@@ -75,7 +75,6 @@ function loadPsyche(): {
 
 export function resetPsycheCache(): void {
   _psycheCache = null;
-  _senseStatusLinesCache = null;
 }
 
 export type { Channel }
@@ -418,10 +417,11 @@ function hasTextField(record: Record<string, unknown> | undefined, key: string):
   return typeof record?.[key] === "string" && record[key].trim().length > 0
 }
 
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return !!value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
 function localSenseStatusLines(): string[] {
-  if (_senseStatusLinesCache) {
-    return [..._senseStatusLinesCache]
-  }
   const config = loadAgentConfig()
   const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
   const senses: AgentSensesConfig = {
@@ -432,9 +432,13 @@ function localSenseStatusLines(): string[] {
     mail: configuredSenses.mail ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
-  const teams = payload.teams as Record<string, unknown> | undefined
-  const bluebubbles = payload.bluebubbles as Record<string, unknown> | undefined
-  const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
+  const machineRuntimeConfig = readMachineRuntimeCredentialConfig(getAgentName())
+  const runtimePayload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const machinePayload = machineRuntimeConfig.ok ? machineRuntimeConfig.config : {}
+  const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
+  const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
+  const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
   const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
@@ -459,8 +463,7 @@ function localSenseStatusLines(): string[] {
     },
   ]
 
-  _senseStatusLinesCache = rows.map((row) => `- ${row.label}: ${row.status}`)
-  return [..._senseStatusLinesCache]
+  return rows.map((row) => `- ${row.label}: ${row.status}`)
 }
 
 function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): string[] {

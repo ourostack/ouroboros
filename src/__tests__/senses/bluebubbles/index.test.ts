@@ -1880,6 +1880,30 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.markChatRead).not.toHaveBeenCalled()
+    expect(bluebubbles.getDiscoveredOwnHandles()).toEqual([])
+  })
+
+  it("discovers own handles from group-chat from-me echoes only", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent({
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-FROM-ME-DISCOVERY",
+        isFromMe: true,
+        handle: { address: "+1 (415) 555-0000" },
+      },
+    })
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        handled: true,
+        notifiedAgent: false,
+        reason: "from_me",
+      }),
+    )
+    expect(bluebubbles.getDiscoveredOwnHandles()).toEqual(["+14155550000"])
+    expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
   it("filters group echoes whose sender matches an agent-owned handle (isFromMe missing/false)", async () => {
@@ -1895,9 +1919,9 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const groupEchoPayload = {
-      ...dmThreadPayload,
+      ...groupThreadPayload,
       data: {
-        ...dmThreadPayload.data,
+        ...groupThreadPayload.data,
         guid: "ECHO-GROUP-AAAA-BBBB-CCCC",
         isFromMe: false, // <-- the bug: BB lost the flag on echo
         handle: { address: "+1 (415) 555-0000" }, // sender is the agent itself, just normalized differently
@@ -1912,6 +1936,159 @@ describe("BlueBubbles sense runtime", () => {
     )
     expect(mocks.runAgent).not.toHaveBeenCalled()
     expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("does not filter a real DM when stale ownHandles contains the friend's handle", async () => {
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["ari@mendelow.me"],
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(result.reason).not.toBe("from_me")
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent).toHaveBeenCalled()
+  })
+
+  it("does not filter a group message when stale ownHandles contains a known non-self friend", async () => {
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["ari@mendelow.me"],
+    })
+    mocks.findByExternalId.mockResolvedValueOnce({
+      ...defaultFriendContext.friend,
+      id: "ari-friend-id",
+      name: "Ari",
+      kind: "human",
+      externalIds: [{ provider: "imessage-handle", externalId: "ari@mendelow.me", linkedAt: "2026-04-28T19:51:15.766Z" }],
+    })
+
+    const payload = {
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-KNOWN-FRIEND-NOT-SELF",
+        isFromMe: false,
+        handle: { address: "ari@mendelow.me" },
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(result.reason).not.toBe("from_me")
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_self_handle_bypassed_known_friend",
+      meta: expect.objectContaining({ senderExternalId: "ari@mendelow.me", friendId: "ari-friend-id" }),
+    }))
+  })
+
+  it("does not filter a group message when stale ownHandles contains a known non-self agent", async () => {
+    mocks.getAgentName.mockReturnValue("slugger")
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["other-agent@ouro.bot"],
+    })
+    mocks.findByExternalId.mockResolvedValueOnce({
+      ...defaultFriendContext.friend,
+      id: "other-agent-id",
+      name: "Other Agent",
+      kind: "agent",
+      agentMeta: { bundleName: "other-agent", familiarity: 1, sharedMissions: [], outcomes: [] },
+      externalIds: [{ provider: "imessage-handle", externalId: "other-agent@ouro.bot", linkedAt: "2026-04-28T19:51:15.766Z" }],
+    })
+
+    const payload = {
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-KNOWN-AGENT-NOT-SELF",
+        isFromMe: false,
+        handle: { address: "other-agent@ouro.bot" },
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: true }))
+    expect(result.reason).not.toBe("from_me")
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_self_handle_bypassed_known_friend",
+      meta: expect.objectContaining({ senderExternalId: "other-agent@ouro.bot", friendId: "other-agent-id" }),
+    }))
+  })
+
+  it("still filters a group echo when the matching friend record is the agent itself", async () => {
+    mocks.getAgentName.mockReturnValue("slugger")
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["slugger@ouro.bot"],
+    })
+    mocks.findByExternalId.mockResolvedValueOnce({
+      ...defaultFriendContext.friend,
+      id: "slugger-self-id",
+      name: "Runtime Self",
+      kind: "agent",
+      agentMeta: { bundleName: "slugger", familiarity: 1, sharedMissions: [], outcomes: [] },
+      externalIds: [{ provider: "imessage-handle", externalId: "slugger@ouro.bot", linkedAt: "2026-04-28T19:51:15.766Z" }],
+    })
+
+    const payload = {
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-SELF-FRIEND-STILL-FILTERED",
+        isFromMe: false,
+        handle: { address: "slugger@ouro.bot" },
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: false, reason: "from_me" }))
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
+  })
+
+  it("keeps filtering likely group self-echoes when known-friend lookup throws", async () => {
+    mocks.getBlueBubblesConfig.mockReturnValue({
+      serverUrl: "http://bluebubbles.local",
+      password: "secret-token",
+      accountId: "default",
+      ownHandles: ["slugger@ouro.bot"],
+    })
+    mocks.findByExternalId.mockRejectedValueOnce(new Error("friend store unavailable"))
+
+    const payload = {
+      ...groupThreadPayload,
+      data: {
+        ...groupThreadPayload.data,
+        guid: "GROUP-FRIEND-LOOKUP-FAILED-FILTER",
+        isFromMe: false,
+        handle: { address: "slugger@ouro.bot" },
+      },
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.handleBlueBubblesEvent(payload)
+
+    expect(result).toEqual(expect.objectContaining({ handled: true, notifiedAgent: false, reason: "from_me" }))
+    expect(mocks.handleInboundTurn).not.toHaveBeenCalled()
   })
 
   it("does NOT filter when the sender is a real friend whose handle is unrelated to the agent's own handles", async () => {

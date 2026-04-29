@@ -2088,6 +2088,37 @@ describe("session events", () => {
       fs.rmdirSync(tmpDir)
     })
 
+    it("keeps the live envelope event when an archived event id collides", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { loadFullEventHistory, extractEventText } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+
+      const envelopeEvent = mkEvent("evt-000001", 1, "user", "current envelope copy")
+      const archivedEvent = mkEvent("evt-000001", 1, "user", "stale archived copy")
+      const envelope = {
+        version: 2 as const,
+        events: [envelopeEvent],
+        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }
+      fs.writeFileSync(sessPath, JSON.stringify(envelope))
+      fs.writeFileSync(archivePath, JSON.stringify(archivedEvent) + "\n")
+
+      const events = loadFullEventHistory(sessPath)
+      expect(events).toHaveLength(1)
+      expect(extractEventText(events[0]!)).toBe("current envelope copy")
+
+      fs.unlinkSync(sessPath)
+      fs.unlinkSync(archivePath)
+      fs.rmdirSync(tmpDir)
+    })
+
     it("skips corrupted NDJSON lines gracefully", async () => {
       const fs = await import("fs")
       const os = await import("os")

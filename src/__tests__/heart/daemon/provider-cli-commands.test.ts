@@ -10053,8 +10053,11 @@ describe("provider CLI command execution", () => {
     const output = (deps as OuroCliDeps & { _output: string[] })._output.join("")
 
     expect(result).toContain("provider status: Slugger")
-    expect(output).toContain("... reading provider credentials")
-    expect(output).toContain("✓ reading provider credentials")
+    expect(output).toContain("... reading selected provider credentials")
+    expect(output).toContain("✓ reading selected provider credentials")
+    expect(mockProviderCredentials.refreshProviderCredentialPool).toHaveBeenCalledWith("Slugger", expect.objectContaining({
+      providers: ["anthropic", "minimax"],
+    }))
     expect(result).toContain("inner")
     expect(result).toContain("minimax")
     expect(result).toContain("MiniMax-M2.5")
@@ -10077,6 +10080,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("outward: unavailable")
     expect(result).toContain("provider-state-missing")
     expect(result).toContain("ouro use --agent Slugger --lane outward")
+    expect(mockProviderCredentials.refreshProviderCredentialPool).not.toHaveBeenCalled()
   })
 
   it("config models and config model show progress while reading GitHub Copilot credentials and checking models", async () => {

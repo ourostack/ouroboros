@@ -2,6 +2,7 @@ import * as crypto from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "../repertoire/credential-access"
 import { getAgentName } from "./identity"
+import { cacheProviderCredentialRecords, type ProviderCredentialRecord } from "./provider-credentials"
 
 export type RuntimeCredentialConfig = Record<string, unknown>
 
@@ -13,6 +14,15 @@ type RuntimeCredentialConfigReadSuccess = Extract<RuntimeCredentialConfigReadRes
 
 export interface RefreshRuntimeCredentialConfigOptions {
   preserveCachedOnFailure?: boolean
+}
+
+export interface RuntimeCredentialBootstrapMessage {
+  type: "ouro.runtimeCredentialBootstrap"
+  agentName: string
+  runtimeConfig?: RuntimeCredentialConfig
+  machineRuntimeConfig?: RuntimeCredentialConfig
+  machineId?: string
+  providerCredentialRecords?: ProviderCredentialRecord[]
 }
 
 interface RuntimeCredentialVaultPayload {
@@ -30,6 +40,29 @@ let cachedMachineRuntimeConfigs = new Map<string, RuntimeCredentialConfigReadRes
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function isCredentialValue(value: unknown): value is string | number {
+  return typeof value === "string" || typeof value === "number"
+}
+
+function isCredentialRecord(value: unknown): value is Record<string, string | number> {
+  if (!isRecord(value)) return false
+  return Object.values(value).every(isCredentialValue)
+}
+
+function isProviderCredentialRecord(value: unknown): value is ProviderCredentialRecord {
+  if (!isRecord(value)) return false
+  if (typeof value.provider !== "string") return false
+  if (typeof value.revision !== "string" || value.revision.trim().length === 0) return false
+  if (typeof value.updatedAt !== "string" || value.updatedAt.trim().length === 0) return false
+  if (!isCredentialRecord(value.credentials)) return false
+  if (!isCredentialRecord(value.config)) return false
+  const provenance = value.provenance
+  if (!isRecord(provenance)) return false
+  if (provenance.source !== "auth-flow" && provenance.source !== "manual") return false
+  if (typeof provenance.updatedAt !== "string" || provenance.updatedAt.trim().length === 0) return false
+  return true
 }
 
 function stableJson(value: unknown): string {
@@ -156,6 +189,81 @@ export function cacheMachineRuntimeCredentialConfig(
     config: { ...config },
   }
   return cacheMachineResult(agentName, resultFromPayloadForItem(agentName, machineRuntimeConfigItemName(machineId), payload))
+}
+
+function isRuntimeCredentialBootstrapMessage(value: unknown): value is RuntimeCredentialBootstrapMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (record.type !== "ouro.runtimeCredentialBootstrap") return false
+  if (typeof record.agentName !== "string" || record.agentName.trim().length === 0) return false
+  if (record.runtimeConfig !== undefined && !isRecord(record.runtimeConfig)) return false
+  if (record.machineRuntimeConfig !== undefined && !isRecord(record.machineRuntimeConfig)) return false
+  if (record.machineId !== undefined && (typeof record.machineId !== "string" || record.machineId.trim().length === 0)) return false
+  if (
+    record.providerCredentialRecords !== undefined
+    && (
+      !Array.isArray(record.providerCredentialRecords)
+      || !record.providerCredentialRecords.every(isProviderCredentialRecord)
+    )
+  ) return false
+  return true
+}
+
+export function applyRuntimeCredentialBootstrapMessage(message: unknown): boolean {
+  if (!isRuntimeCredentialBootstrapMessage(message)) return false
+  const agentName = message.agentName.trim()
+  const now = new Date()
+  if (message.runtimeConfig) {
+    cacheRuntimeCredentialConfig(agentName, message.runtimeConfig, now)
+  }
+  if (message.machineRuntimeConfig) {
+    cacheMachineRuntimeCredentialConfig(agentName, message.machineRuntimeConfig, now, message.machineId ?? "<this-machine>")
+  }
+  if (message.providerCredentialRecords && message.providerCredentialRecords.length > 0) {
+    cacheProviderCredentialRecords(agentName, message.providerCredentialRecords, now)
+  }
+  emitNervesEvent({
+    component: "config/identity",
+    event: "config.runtime_credentials_bootstrapped",
+    message: "loaded runtime credentials from daemon bootstrap",
+    meta: {
+      agentName,
+      runtimeConfig: !!message.runtimeConfig,
+      machineRuntimeConfig: !!message.machineRuntimeConfig,
+      providerCredentialRecords: message.providerCredentialRecords?.length ?? 0,
+    },
+  })
+  return true
+}
+
+export function waitForRuntimeCredentialBootstrap(
+  agentName: string,
+  options: { timeoutMs?: number } = {},
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 1_500
+  return new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const finish = (value: boolean): void => {
+      /* v8 ignore next -- defensive: listener cleanup and timer cleanup prevent double settlement @preserve */
+      if (settled) return
+      settled = true
+      /* v8 ignore next -- defensive: timer is assigned immediately after listener registration @preserve */
+      if (timer) clearTimeout(timer)
+      process.off?.("message", onMessage)
+      resolve(value)
+    }
+
+    const onMessage = (message: unknown): void => {
+      if (!isRuntimeCredentialBootstrapMessage(message)) return
+      if (message.agentName.trim() !== agentName.trim()) return
+      finish(applyRuntimeCredentialBootstrapMessage(message))
+    }
+
+    process.on?.("message", onMessage)
+    timer = setTimeout(() => finish(false), timeoutMs)
+  })
 }
 
 async function refreshRuntimeCredentialConfigItem(

@@ -671,6 +671,82 @@ describe("buildSystem", () => {
     expect(result).toContain("Mail: ready")
   })
 
+  it("uses cached vault runtime credentials for Mail sense status when local config is stale", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    cacheRuntimeCredentialConfig("testagent", {
+      mailroom: {
+        mailboxAddress: "slugger@ouro.bot",
+        privateKeys: { mail_slugger_primary: "secret" },
+      },
+    })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Mail: ready")
+  })
+
+  it("uses cached machine runtime credentials for BlueBubbles sense status when local config is stale", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+        mail: { enabled: false },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheMachineRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    cacheMachineRuntimeCredentialConfig("testagent", {
+      bluebubbles: {
+        serverUrl: "http://127.0.0.1:18789",
+        password: "secret",
+      },
+    }, new Date("2026-04-28T00:00:00.000Z"), "test-machine")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("BlueBubbles: ready")
+  })
+
   it("includes sense-state meanings and truthful setup guidance", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

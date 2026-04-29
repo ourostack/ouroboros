@@ -24,7 +24,7 @@ emitNervesEvent({
 // Using dynamic import avoids a static heart/ -> senses/ dependency.
 import("./runtime-credentials")
   .then(async ({ refreshRuntimeCredentialConfig }) => {
-    await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     const { startInnerDialogWorker } = await import("../senses/inner-dialog-worker")
     await startInnerDialogWorker()
   })

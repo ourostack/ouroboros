@@ -119,7 +119,7 @@ describe("Outlook mail reader", () => {
 
   it("caps hosted Outlook summary reads to the visible mailbox slice", async () => {
     const listMessages = vi.fn(async () => [])
-    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReader").mockReturnValue({
+    const readerSpy = vi.spyOn(mailroomReader, "resolveMailroomReaderWithRefresh").mockResolvedValue({
       ok: true,
       agentName: "slugger",
       config: {

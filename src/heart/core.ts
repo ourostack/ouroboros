@@ -186,22 +186,25 @@ async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRun
       event: "engine.provider_init_error",
       component: "engine",
       message: msg,
-      meta: {},
+      meta: { facing },
     });
     // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
     console.error(`\n[fatal] ${msg}\n`);
-    process.exit(1);
+    throw error instanceof Error ? error : new Error(msg);
   }
 
   if (!_providerRuntimes[facing]) {
+    const msg = "provider runtime could not be initialized.";
     emitNervesEvent({
       level: "error",
       event: "engine.provider_init_error",
       component: "engine",
-      message: "provider runtime could not be initialized.",
-      meta: {},
+      message: msg,
+      meta: { facing },
     });
-    process.exit(1);
+    // eslint-disable-next-line no-console -- pre-boot guard: provider init failure
+    console.error(`\n[fatal] ${msg}\n`);
+    throw new Error(msg);
   }
   return _providerRuntimes[facing]!.runtime;
 }
@@ -990,7 +993,10 @@ export async function runAgent(
           const seconds = delayMs / 1000
           const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
           try {
-            await refreshProviderCredentialPool(getAgentName(), { preserveCachedOnFailure: true })
+            await refreshProviderCredentialPool(getAgentName(), {
+              preserveCachedOnFailure: true,
+              providers: [record.provider],
+            })
             _providerRuntimes[facing] = null
             providerRuntime = await getProviderRuntime(facing)
             providerRuntime.resetTurnState(messages)

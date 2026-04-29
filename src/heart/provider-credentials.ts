@@ -411,7 +411,7 @@ export async function readProviderCredentialRecord(
 ): Promise<ProviderCredentialRecordReadResult> {
   const cached = readCachedProviderCredentialRecord(agentName, provider)
   if (cached.ok || options.refreshIfMissing === false) return cached
-  return resultForProvider(await refreshProviderCredentialPool(agentName), provider)
+  return resultForProvider(await refreshProviderCredentialPool(agentName, { providers: [provider] }), provider)
 }
 
 export async function upsertProviderCredential(input: ProviderCredentialUpsertInput): Promise<ProviderCredentialRecord> {
@@ -439,6 +439,7 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
   })
   input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
   const refreshResult = await refreshProviderCredentialPool(input.agentName, {
+    providers: [input.provider],
     onProgress: input.onProgress,
   })
   if (!refreshResult.ok) {

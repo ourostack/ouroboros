@@ -317,6 +317,122 @@ describe("startup-tui", () => {
       }])
     })
 
+    it("times out unresolved workers as degraded instead of polling forever", async () => {
+      const baseTime = new Date("2026-04-09T12:00:00.000Z").getTime()
+      let calls = 0
+      const payload = makePayload([
+        { agent: "alpha", status: "running", startedAt: "2026-04-09T11:59:50.000Z" },
+        { agent: "beta", status: "starting", startedAt: null },
+      ])
+
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? baseTime : baseTime + 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        maxWaitMs: 1_000,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.stable).toEqual(["alpha"])
+      expect(result.degraded).toEqual([{
+        agent: "beta",
+        errorReason: "startup timed out after 1s while worker was starting",
+        fixHint: "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+      }])
+    })
+
+    it("times out unresolved workers without rendering when render is disabled", async () => {
+      const baseTime = new Date("2026-04-09T12:00:00.000Z").getTime()
+      let calls = 0
+      const payload = makePayload([
+        { agent: "beta", status: "starting", startedAt: null },
+      ])
+
+      const deps = {
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? baseTime : baseTime + 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        maxWaitMs: 1_000,
+        render: false,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.degraded[0]?.agent).toBe("beta")
+      expect(deps.writeRaw).not.toHaveBeenCalled()
+    })
+
+    it("uses a generic log-check fix when a timed-out unresolved worker already has an error reason but no fix", async () => {
+      const baseTime = new Date("2026-04-09T12:00:00.000Z").getTime()
+      let calls = 0
+      const payload = makePayload([
+        { agent: "beta", status: "starting", startedAt: null, errorReason: "vault lock still held", fixHint: null },
+      ])
+
+      const result = await pollDaemonStartup({
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? baseTime : baseTime + 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        maxWaitMs: 1_000,
+      })
+
+      expect(result.degraded).toEqual([{
+        agent: "beta",
+        errorReason: "startup timed out after 1s while worker was starting",
+        fixHint: "check daemon logs",
+      }])
+    })
+
+    it("keeps already degraded workers while timing out unresolved workers", async () => {
+      const baseTime = new Date("2026-04-09T12:00:00.000Z").getTime()
+      let calls = 0
+      const payload = makePayload([
+        { agent: "alpha", status: "crashed", startedAt: null, errorReason: "bad config", fixHint: "repair config" },
+        { agent: "beta", status: "starting", startedAt: null },
+      ])
+
+      const result = await pollDaemonStartup({
+        sendCommand: vi.fn(async () => makeDaemonResponse(payload)),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 12345,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? baseTime : baseTime + 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        maxWaitMs: 1_000,
+      })
+
+      expect(result.degraded).toEqual([
+        { agent: "alpha", errorReason: "bad config", fixHint: "repair config" },
+        {
+          agent: "beta",
+          errorReason: "startup timed out after 1s while worker was starting",
+          fixHint: "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+        },
+      ])
+    })
+
     it("retries when daemon socket not responding initially", async () => {
       let callCount = 0
       const now = new Date("2026-04-09T12:00:10.000Z").getTime()
@@ -736,6 +852,62 @@ describe("startup-tui", () => {
 
       const result = await pollDaemonStartup(deps)
       expect(result.degraded[0]!.errorReason).toBe("daemon process died during startup")
+    })
+
+    it("times out before the daemon socket answers", async () => {
+      let calls = 0
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? 0 : 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
+        readLatestDaemonEvent: vi.fn(() => "loading config"),
+        maxWaitMs: 1_000,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([{
+        agent: "daemon",
+        errorReason: "daemon did not answer within 1s; latest event: loading config",
+        fixHint: "check daemon logs or run `ouro doctor`",
+      }])
+    })
+
+    it("times out before the daemon socket answers without rendering when no daemon event is available", async () => {
+      let calls = 0
+      const deps = {
+        sendCommand: vi.fn(async () => { throw new Error("ECONNREFUSED") }),
+        socketPath: "/tmp/test.sock",
+        daemonPid: 99999,
+        writeRaw: vi.fn(),
+        now: vi.fn(() => {
+          calls += 1
+          return calls === 1 ? 0 : 2_000
+        }),
+        sleep: vi.fn(async () => {}),
+        isProcessAlive: vi.fn(() => true),
+        readLatestDaemonEvent: vi.fn(() => null),
+        maxWaitMs: 1_000,
+        render: false,
+      }
+
+      const result = await pollDaemonStartup(deps)
+
+      expect(result.stable).toEqual([])
+      expect(result.degraded).toEqual([{
+        agent: "daemon",
+        errorReason: "daemon did not answer within 1s",
+        fixHint: "check daemon logs or run `ouro doctor`",
+      }])
+      expect(deps.writeRaw).not.toHaveBeenCalled()
     })
 
     it("continues polling when daemon pid is null (unknown)", async () => {

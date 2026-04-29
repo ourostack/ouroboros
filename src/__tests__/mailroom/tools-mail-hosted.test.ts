@@ -54,6 +54,15 @@ function friendContext(): ToolContext {
   return ctx
 }
 
+function refreshableReaderMock<T extends { resolveMailroomReader: () => unknown }>(
+  mock: T,
+): T & { resolveMailroomReaderWithRefresh: () => Promise<unknown> } {
+  return {
+    ...mock,
+    resolveMailroomReaderWithRefresh: async () => mock.resolveMailroomReader(),
+  }
+}
+
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME
   else process.env.HOME = originalHome
@@ -217,7 +226,7 @@ describe("hosted mail tools", () => {
       accessedAt: "2026-04-24T18:10:00.000Z",
     }))
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -306,7 +315,7 @@ describe("hosted mail tools", () => {
       accessedAt: "2026-04-24T18:10:00.000Z",
     }))
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -437,7 +446,7 @@ describe("hosted mail tools", () => {
       accessedAt: "2026-04-24T18:10:00.000Z",
     }))
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -575,7 +584,7 @@ describe("hosted mail tools", () => {
       accessedAt: "2026-04-24T18:45:00.000Z",
     }))
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -624,7 +633,7 @@ describe("hosted mail tools", () => {
       accessedAt: "2026-04-24T18:11:00.000Z",
     }))
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -713,7 +722,7 @@ describe("hosted mail tools", () => {
 
   it("returns reader resolution errors for mail_status when Mailroom is not configured", async () => {
     setAgentName("slugger")
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: false,
         error: "AUTH_REQUIRED:mailroom: Run `ouro connect mail --agent slugger`.",
@@ -780,7 +789,7 @@ describe("hosted mail tools", () => {
     const readMailroomRegistry = vi.fn(async () => registry)
     const writeMailroomRegistry = vi.fn(async () => undefined)
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -897,7 +906,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -986,7 +995,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1032,7 +1041,7 @@ describe("hosted mail tools", () => {
         getRepoRoot: () => repoRoot,
       }
     })
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1111,7 +1120,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1189,7 +1198,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1264,7 +1273,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1339,7 +1348,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1414,7 +1423,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1489,7 +1498,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1553,7 +1562,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1616,7 +1625,7 @@ describe("hosted mail tools", () => {
       ].join("\r\n")),
     })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1693,7 +1702,7 @@ describe("hosted mail tools", () => {
     const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1789,7 +1798,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1866,7 +1875,7 @@ describe("hosted mail tools", () => {
     })
     const store = new FileMailroomStore({ rootDir: tempDir() })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1924,7 +1933,7 @@ describe("hosted mail tools", () => {
     })
     const writtenRegistries: unknown[] = []
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -1994,7 +2003,7 @@ describe("hosted mail tools", () => {
     })
     const writtenRegistries: unknown[] = []
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -2064,7 +2073,7 @@ describe("hosted mail tools", () => {
       ].join("\r\n")),
     })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",
@@ -2131,7 +2140,7 @@ describe("hosted mail tools", () => {
       ].join("\r\n")),
     })
 
-    vi.doMock("../../mailroom/reader", () => ({
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
       resolveMailroomReader: () => ({
         ok: true,
         agentName: "slugger",

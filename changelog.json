@@ -2,6 +2,33 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.520",
+      "changes": [
+        "`ouro up` now prints the current runtime version in the update-check phase before asking npm for newer bits, so a stalled registry or update path no longer hides what is actually running.",
+        "Production `ouro up` starts or refreshes the daemon before provider health checks and repair prompts. Broken credentials for one agent are reported as degraded provider state after the daemon is answering instead of preventing every agent from coming online.",
+        "Daemon startup now opens the command socket before autostarting provider-dependent workers and kicks agent/sense autostart concurrently. A thrown or stalled config check is contained to that agent's crashed snapshot, leaving the daemon and sibling agents reachable.",
+        "BlueBubbles no longer auto-learns a one-to-one chat partner as the agent's own iMessage handle after an outbound reply, so the next inbound text from that person is not filtered as self-talk.",
+        "Mail tools and the Ouro Mailbox now retry runtime/config resolution when a sense process cached a transient vault-unavailable state, and prompt sense-status rendering reads the same cached vault runtime truth instead of stale local config.",
+        "`ouro up` now times out unresolved daemon startup polling instead of spinning forever, and daemon worker startup ignores duplicate start attempts while a provider/config check is already in flight. Stopping during a pending config check no longer lets that worker spawn afterward.",
+        "BlueBubbles self-handle filtering is now group-echo scoped and bypasses known non-self friends, so a stale `ownHandles` entry cannot make real Ari messages disappear from Slugger's iMessage turn loop.",
+        "`ouro up` now trusts daemon-published provider readiness after startup instead of doing a second foreground vault read, so a slow Bitwarden provider check cannot freeze the command or report a false auth prompt after the daemon is already healthy.",
+        "Bitwarden vault login/unlock now passes the saved vault unlock secret through `bw --passwordenv` instead of process arguments, so the secret does not appear in `ps` output while `ouro up` or a sense startup is unlocking the agent vault.",
+        "Production Bitwarden reads for structured runtime/provider item names now use bounded exact search with isolated app data instead of a full-vault listing, reducing the startup window where `ouro up` appears quiet while the vault CLI is busy.",
+        "Daemon startup provider health checks now cache the selected provider credentials they just verified, so the first MCP or iMessage turn does not re-open Bitwarden before using the already-checked `openai-codex` key.",
+        "Managed sense workers now receive the daemon's already-verified provider credential snapshot over IPC at startup, so BlueBubbles and other child processes do not reopen Bitwarden mid-message after `ouro up` has already proved the selected provider is ready.",
+        "Daemon health recovery no longer cancels an agent whose config check is still in flight, so a slow provider/vault check cannot leave the inner-dialog worker stopped after `ouro up`.",
+        "`ouro up` no longer waits on optional sense runtime/config vault refreshes. Sense workers use cached config for the boot decision, refresh their runtime config in the background, and retry once fresh config arrives, while entrypoints start their worker before best-effort runtime refresh completes.",
+        "Daemon health recovery now invalidates stale no-process startup attempts before retrying, so an old hung provider check cannot keep an agent stuck in `starting` forever or spawn a stale worker after recovery; stale recovery defaults to 45s so the next health pass can clear it.",
+        "Provider initialization failures during daemon-handled sense turns now throw back to the command boundary instead of calling `process.exit(1)`, so a bad provider/vault read can fail one MCP or iMessage turn without killing the `ouro up` supervisor.",
+        "Provider retry and single-provider read paths now refresh only the selected provider's vault item, so a slow or broken credential for another provider cannot stall a healthy `openai-codex` turn.",
+        "`ouro status --agent <name>` now refreshes only the providers selected by that agent's outward/inner lanes, and skips vault reads entirely when local provider state is missing, so an unused broken provider cannot freeze status.",
+        "`ouro up` now keeps its startup poll finite while allowing enough time for bounded Bitwarden retry paths before labeling an otherwise-progressing worker as timed out.",
+        "User-facing session transcript summaries and searches now hide tool-result chatter for outward sessions while keeping full tool traces available in `self/inner`, so iMessage history reads as the human conversation instead of shell logs.",
+        "Small transcript-tail reads now always keep the latest visible user and assistant turns even after tool-heavy BlueBubbles activity, so Slugger does not mistake a live iMessage session for stale history.",
+        "Custom-socket daemon runs, including hermetic integration sandboxes, no longer touch the production daemon pidfile or orphan-cleanup sweep, so tests and dev harnesses cannot SIGTERM the real `ouro up` daemon while validating startup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.519",
       "changes": [
         "Layer 3 (final) of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Ships the `RepairGuide.ouro/` library bundle alongside `SerpentGuide.ouro/` containing five diagnostic skills (`diagnose-bootstrap-drift`, `diagnose-broken-remote`, `diagnose-sync-blocked`, `diagnose-vault-expired`, `diagnose-stacked-typed-issues`) plus `psyche/SOUL.md` + `psyche/IDENTITY.md`. Loaded by the existing `agentic-repair.ts` pipeline as a content source — not a runtime agent (no senses, no vault, no `ouro status` presence).",

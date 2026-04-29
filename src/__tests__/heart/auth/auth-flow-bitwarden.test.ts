@@ -228,12 +228,8 @@ function installBwExecHarness(): void {
 describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
   const originalHome = process.env.HOME
   const tempHomes: string[] = []
-  const providerReadProgress = [
-    "reading azure credentials...",
+  const minimaxReadProgress = [
     "reading minimax credentials...",
-    "reading anthropic credentials...",
-    "reading openai-codex credentials...",
-    "reading github-copilot credentials...",
   ]
 
   afterEach(() => {
@@ -267,13 +263,13 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultSaveBot's vault access...",
       "reading vault items for VaultSaveBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultSaveBot's vault session...",
       "storing minimax credentials in VaultSaveBot's vault...",
       "refreshing local provider snapshot from VaultSaveBot's vault...",
       "reading vault items for VaultSaveBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "credentials stored at providers/minimax; local provider snapshot refreshed.",
     ])
@@ -297,8 +293,8 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
 
   it("surfaces a clear post-save refresh failure when the vault write succeeded but the snapshot reload did not", async () => {
     installBwExecHarness()
-    bwHarness.failNextListAllWith = "access denied by vault policy"
-    bwHarness.failListAllAtCall = 2
+    bwHarness.failNextGetWith = "access denied by vault policy"
+    bwHarness.failGetAtCall = 3
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "auth-flow-bw-home-"))
     tempHomes.push(tempHome)
     process.env.HOME = tempHome
@@ -318,13 +314,13 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultRefreshBot's vault access...",
       "reading vault items for VaultRefreshBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultRefreshBot's vault session...",
       "storing minimax credentials in VaultRefreshBot's vault...",
       "refreshing local provider snapshot from VaultRefreshBot's vault...",
       "reading vault items for VaultRefreshBot...",
-      "reading azure credentials...",
+      "reading minimax credentials...",
     ])
     expect(bwHarness.items.has("providers/minimax")).toBe(true)
   })
@@ -353,7 +349,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultLockedBot's vault access...",
       "reading vault items for VaultLockedBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultLockedBot's vault session...",
       "storing minimax credentials in VaultLockedBot's vault...",
@@ -383,7 +379,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultServerBot's vault access...",
       "reading vault items for VaultServerBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultServerBot's vault session...",
       "storing minimax credentials in VaultServerBot's vault...",
@@ -422,7 +418,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
     expect(progress).toEqual([
       "checking VaultPromptBot's vault access...",
       "reading vault items for VaultPromptBot...",
-      ...providerReadProgress,
+      ...minimaxReadProgress,
       "parsing provider credentials...",
       "opening VaultPromptBot's vault session...",
       "storing minimax credentials in VaultPromptBot's vault...",

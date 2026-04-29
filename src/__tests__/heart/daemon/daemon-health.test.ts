@@ -448,6 +448,7 @@ describe("daemon-health", () => {
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_config_failure")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_entry_missing")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_spawn_failed")
+      expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_startup_stale_recovered")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_restart_exhausted")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_permanent_failure")
       expect(HEALTH_TRACKED_EVENTS).toContain("daemon.agent_cooldown_recovery")

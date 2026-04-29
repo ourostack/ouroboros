@@ -4,7 +4,7 @@ import { BlobServiceClient } from "@azure/storage-blob"
 import { DefaultAzureCredential } from "@azure/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentMailroomRoot, getAgentName } from "../heart/identity"
-import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { AzureBlobMailroomStore } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
 import type { MailroomRegistry } from "./core"
@@ -234,4 +234,14 @@ export function resolveMailroomReader(agentName: string = getAgentName()): Mailr
     meta: { agentName, status: "ready", mailboxAddress: config.mailboxAddress, storeKind: store.storeKind },
   })
   return result
+}
+
+export async function resolveMailroomReaderWithRefresh(agentName: string = getAgentName()): Promise<MailroomReaderResolution> {
+  const resolved = resolveMailroomReader(agentName)
+  if (resolved.ok || resolved.reason !== "auth-required" || !resolved.error.includes(" is unavailable")) {
+    return resolved
+  }
+
+  await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+  return resolveMailroomReader(agentName)
 }

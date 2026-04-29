@@ -114,26 +114,24 @@ describe("nerves start_end_pairing — startUpdateChecker/stopUpdateChecker", ()
 describe("nerves start_end_pairing — daemon.start() error path", () => {
   // Use the OuroDaemon construction pattern from daemon-boot-updates.test.ts
   // which is already on the test-isolation allowlist.
-  it("emits daemon.server_error when startInner throws, pairing server_start", async () => {
+  it("emits daemon.server_error when command socket startup throws, pairing server_start", async () => {
     const cap = captureEvents()
     try {
       // Import dynamically so we can re-mock per test
       vi.resetModules()
       const { OuroDaemon } = await import("../../heart/daemon/daemon")
 
-      // Make applyPendingUpdates throw mid-startup to trigger the error path
-      const { applyPendingUpdates: realApply } = await import("../../heart/versioning/update-hooks")
-      void realApply // silence unused — we're patching the method directly below
-
-      // Build a daemon with minimal deps and inject a processManager that throws
-      const socketPath = path.join(os.tmpdir(), `pairing-throw-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
+      // Use a socket path under a missing directory so openCommandSocket throws.
+      const socketPath = path.join(
+        os.tmpdir(),
+        `pairing-missing-socket-dir-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        "daemon.sock",
+      )
       const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pairing-throw-bundles-"))
 
       const processManager = {
         listAgentSnapshots: vi.fn(() => []),
-        startAutoStartAgents: vi.fn(async () => {
-          throw new Error("simulated mid-startup failure")
-        }),
+        startAutoStartAgents: vi.fn(async () => undefined),
         stopAll: vi.fn(async () => undefined),
         startAgent: vi.fn(async () => undefined),
         sendToAgent: vi.fn(),
@@ -168,10 +166,11 @@ describe("nerves start_end_pairing — daemon.start() error path", () => {
         mode: "dev", // skip update checker so we only test the startInner throw path
       } as any)
 
-      await expect(daemon.start()).rejects.toThrow("simulated mid-startup failure")
+      await expect(daemon.start()).rejects.toThrow()
 
       expect(cap.events.some((e) => e.event === "daemon.server_start")).toBe(true)
       expect(cap.events.some((e) => e.event === "daemon.server_error")).toBe(true)
+      expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
 
       fs.rmSync(bundlesRoot, { recursive: true, force: true })
     } finally {

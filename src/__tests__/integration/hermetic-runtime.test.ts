@@ -45,11 +45,12 @@ describe("hermetic Ouro runtime integration", () => {
     expect(up.exitCode).toBe(1)
     expect(up.stdout).toContain("Provider checks need attention")
     expect(up.stdout).toContain("failed live check")
-    expect(up.stdout).toContain("daemon not started")
+    expect(up.stdout).not.toContain("daemon not started")
 
     const status = await harness.runCli(["status"])
     expect(status.exitCode).toBe(0)
-    expect(status.stdout.toLowerCase()).toContain("stopped")
+    expect(status.stdout).toContain("slugger")
+    expect(status.stdout.toLowerCase()).toContain("running")
   })
 
   it("renders the noninteractive connections screen from the built runtime with live provider truth", async () => {

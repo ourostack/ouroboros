@@ -434,6 +434,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         messageCount: count,
         trustLevel: ctx?.context?.friend?.trustLevel,
         summarize: ctx?.summarize,
+        archiveFallback: true,
       })
 
       if (sessionTail.kind === "missing") {

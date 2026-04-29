@@ -2909,7 +2909,10 @@ describe("runAgent", () => {
     await vi.advanceTimersByTimeAsync(100)
     await promise
 
-    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", { preserveCachedOnFailure: true })
+    expect(refreshProviderCredentialPool).toHaveBeenCalledWith("testagent", {
+      preserveCachedOnFailure: true,
+      providers: ["minimax"],
+    })
     expect(callCount).toBe(3)
     expect(chunks).toContain("recovered after refresh miss")
     expect(errors[0].severity).toBe("transient")
@@ -3595,7 +3598,7 @@ describe("getClient", () => {
       // Expected -- process.exit throws
     }
 
-    expect(fatal.mockExit).toHaveBeenCalledWith(1)
+    expect(fatal.mockExit).not.toHaveBeenCalled()
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("has no credentials for testagent"))
     expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("ouro auth --agent testagent --provider minimax"))
@@ -3638,7 +3641,7 @@ describe("getClient", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("azure endpoint/deployment is incomplete in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3825,7 +3828,7 @@ describe("getClient config integration", () => {
     expect(messages[1].content).toBe("just text")
   })
 
-  it("exits when neither provider configured in config", async () => {
+  it("throws when neither provider configured in config", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     // Empty config -- no providers at all (defaults have empty strings)
@@ -3849,10 +3852,10 @@ describe("getClient config integration", () => {
       }
       await core.runAgent([], callbacks).catch(() => {})
     } catch {
-      // Expected -- process.exit throws
+      // Expected -- provider init throws.
     }
 
-    expect(mockExit).toHaveBeenCalledWith(1)
+    expect(mockExit).not.toHaveBeenCalled()
     mockExit.mockRestore()
     mockError.mockRestore()
   })
@@ -3975,7 +3978,7 @@ describe("provider abstraction contract", () => {
       vi.spyOn(core as any, "createProviderRegistry").mockReturnValue({
         resolve: () => null,
       } as any)
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "error",
         event: "engine.provider_init_error",
@@ -4002,7 +4005,7 @@ describe("provider abstraction contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("provider exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4089,7 +4092,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("expected prefix sk-ant-oat01-"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4119,7 +4122,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("too short"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4149,7 +4152,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4181,8 +4184,8 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
-      expect(fatal.mockExit).toHaveBeenCalledWith(1)
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
+      expect(fatal.mockExit).not.toHaveBeenCalled()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -4813,7 +4816,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("anthropic.setupToken is missing in the agent vault"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -4963,7 +4966,7 @@ describe("anthropic setup-token provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("config-exploded"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5037,7 +5040,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5223,7 +5226,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("openai-codex.oauthAccessToken is missing in the agent vault"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5253,7 +5256,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5285,7 +5288,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       const msg = emitNervesEvent.mock.calls.find(
@@ -5315,7 +5318,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5346,7 +5349,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -5377,7 +5380,7 @@ describe("openai-codex oauth provider contract", () => {
 
     try {
       const core = await import("../../heart/core")
-      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow("process.exit called")
+      await expect(core.runAgent([], noopCallbacks)).rejects.toThrow()
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("[fatal]"))
       expect(fatal.mockError).toHaveBeenCalledWith(expect.stringContaining("chatgpt_account_id"))
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({

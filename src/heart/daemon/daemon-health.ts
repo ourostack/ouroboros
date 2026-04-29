@@ -131,6 +131,7 @@ export const HEALTH_TRACKED_EVENTS: ReadonlySet<string> = new Set([
   "daemon.agent_config_failure",
   "daemon.agent_entry_missing",
   "daemon.agent_spawn_failed",
+  "daemon.agent_startup_stale_recovered",
   "daemon.agent_restart_exhausted",
   "daemon.agent_permanent_failure",
   "daemon.agent_cooldown_recovery",

@@ -2,7 +2,7 @@ import fs from "node:fs"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { decryptMessages, type MailAccessLogEntry, type MailAccessLogListing, type MailroomStore } from "../mailroom/file-store"
-import { resolveMailroomReader, readMailroomRegistry, writeMailroomRegistry, type MailroomRuntimeConfig } from "../mailroom/reader"
+import { resolveMailroomReaderWithRefresh, readMailroomRegistry, writeMailroomRegistry, type MailroomRuntimeConfig } from "../mailroom/reader"
 import { confirmMailDraftSend, createMailDraft, resolveOutboundProviderClient, resolveOutboundTransport, type MailOutboundTransport } from "../mailroom/outbound"
 import { applyMailDecision, buildSenderPolicy, type MailDecisionAction, type MailDecisionActor, type MailScreenerCandidateStatus } from "../mailroom/policy"
 import { searchMailSearchCache, upsertMailSearchCacheDocument, type MailSearchCacheDocument } from "../mailroom/search-cache"
@@ -833,7 +833,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const blocked = delegatedHumanMailBlocked(ctx)
       if (blocked) return blocked
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       await resolved.store.recordAccess({
         agentId: resolved.agentName,
@@ -869,7 +869,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         const blocked = delegatedHumanMailBlocked(ctx)
         if (blocked) return blocked
       }
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       const scope = requestedScope === "all"
         ? undefined
@@ -926,7 +926,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       try {
         const draft = await createMailDraft({
@@ -983,7 +983,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (blocked) return blocked
       const draftId = (args.draft_id ?? "").trim()
       if (!draftId) return "draft_id is required."
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       try {
         const transport = resolveOutboundTransport(resolved.config)
@@ -1044,7 +1044,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       /* v8 ignore next -- defensive: reader resolution covered separately for read tools; mail_outbox tests use cached config @preserve */
       if (!resolved.ok) return resolved.error
       const limit = numberArg(args.limit, 20, 1, 50)
@@ -1116,7 +1116,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!familyOrAgentSelf(ctx) && explicitScope && requestedScope !== "native") {
         return "delegated human mail requires family trust."
       }
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       const scope = requestedScope === "all"
         ? undefined
@@ -1219,7 +1219,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const messageId = (args.message_id ?? "").trim()
       if (!messageId) return "message_id is required."
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
 
       const cached = getCachedMailBody(messageId)
@@ -1321,7 +1321,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         const blocked = delegatedHumanMailBlocked(ctx)
         if (blocked) return blocked
       }
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       const seedStored = await resolved.store.getMessage(messageId)
       const seedById = seedStored && seedStored.agentId === resolved.agentName ? seedStored : null
@@ -1407,7 +1407,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const blocked = delegatedHumanMailBlocked(ctx)
       if (blocked) return blocked
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       const candidates = await resolved.store.listScreenerCandidates({
         agentId: resolved.agentName,
@@ -1452,7 +1452,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!action) return "action is required and must be a supported mail decision."
       const reason = (args.reason ?? "").trim()
       if (!reason) return "reason is required."
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       let messageId = (args.message_id ?? "").trim()
       const candidateId = (args.candidate_id ?? "").trim()
@@ -1515,7 +1515,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (!trustAllowsMailRead(ctx)) return "mail is private; this tool is only available in trusted contexts."
       const blocked = delegatedHumanMailBlocked(ctx)
       if (blocked) return blocked
-      const resolved = resolveMailroomReader()
+      const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
       return renderAccessLog(await resolved.store.listAccessLog(resolved.agentName))
     },

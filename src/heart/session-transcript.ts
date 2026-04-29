@@ -1,11 +1,13 @@
 import type { TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
+  bestEventTimestamp,
   extractEventText,
   formatSessionEventTimestamp,
   loadFullEventHistory,
   loadSessionEnvelopeFile,
   type SessionEvent,
+  type SessionEventToolCall,
 } from "./session-events"
 
 export interface SessionTailOptions {
@@ -16,6 +18,7 @@ export interface SessionTailOptions {
   messageCount: number
   summarize?: (transcript: string, instruction: string) => Promise<string>
   trustLevel?: TrustLevel
+  archiveFallback?: boolean
 }
 
 export type SessionTailResult =
@@ -53,15 +56,75 @@ export type SessionSearchResult =
     matches: string[]
   }
 
-function normalizeSessionMessages(events: SessionEvent[]): Array<{ id: string; role: string; content: string; timestamp: string }> {
-  return events
+interface TranscriptContext {
+  friendId: string
+  channel: string
+  key: string
+  includeToolMessages?: boolean
+}
+
+function shouldIncludeToolMessages(friendId: string, channel: string): boolean {
+  return friendId === "self" && channel === "inner"
+}
+
+function sortEventsForTranscript(events: SessionEvent[]): SessionEvent[] {
+  return [...events].sort((a, b) => {
+    const byTime = Date.parse(bestEventTimestamp(a)) - Date.parse(bestEventTimestamp(b))
+    return byTime === 0 ? a.sequence - b.sequence : byTime
+  })
+}
+
+function parseToolArguments(toolCall: SessionEventToolCall): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function extractHumanVisibleToolText(event: SessionEvent, context: TranscriptContext): string {
+  if (event.role !== "assistant" || event.toolCalls.length === 0) return ""
+
+  for (const toolCall of event.toolCalls) {
+    const args = parseToolArguments(toolCall)
+    if (!args) continue
+
+    if (toolCall.function.name === "settle" && typeof args.answer === "string") {
+      return args.answer.trim()
+    }
+
+    if (toolCall.function.name === "send_message" && typeof args.content === "string") {
+      const targetChannel = typeof args.channel === "string" ? args.channel : ""
+      const targetFriendId = typeof args.friendId === "string" ? args.friendId : ""
+      const targetKey = typeof args.key === "string" ? args.key : "session"
+      if (targetChannel === context.channel && targetFriendId === context.friendId && targetKey === context.key) {
+        return args.content.trim()
+      }
+    }
+  }
+
+  return ""
+}
+
+function normalizeSessionMessages(
+  events: SessionEvent[],
+  context: TranscriptContext,
+): Array<{ id: string; role: string; content: string; timestamp: string }> {
+  return sortEventsForTranscript(events)
     .map((event) => ({
       id: event.id,
       role: event.role,
-      content: extractEventText(event),
+      content: extractEventText(event) || extractHumanVisibleToolText(event, context),
       timestamp: formatSessionEventTimestamp(event),
     }))
-    .filter((message) => message.role !== "system" && message.content.length > 0)
+    .filter((message) => {
+      if (message.role === "system") return false
+      if (message.role === "tool" && !context.includeToolMessages) return false
+      return message.content.length > 0
+    })
 }
 
 function buildSummaryInstruction(friendId: string, channel: string, trustLevel: TrustLevel): string {
@@ -90,6 +153,22 @@ function buildSnapshot(summary: string, tailMessages: Array<{ id: string; role: 
   }
 
   return lines.join("\n")
+}
+
+function selectSessionTailMessages(
+  messages: Array<{ id: string; role: string; content: string; timestamp: string }>,
+  messageCount: number,
+): Array<{ id: string; role: string; content: string; timestamp: string }> {
+  const requestedCount = Number.isFinite(messageCount) && messageCount > 0 ? Math.floor(messageCount) : 20
+  const tail = messages.slice(-requestedCount)
+  const selectedIds = new Set(tail.map((message) => message.id))
+
+  const latestUser = [...messages].reverse().find((message) => message.role === "user")
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant")
+  if (latestUser) selectedIds.add(latestUser.id)
+  if (latestAssistant) selectedIds.add(latestAssistant.id)
+
+  return messages.filter((message) => selectedIds.has(message.id))
 }
 
 function buildSearchSnapshot(
@@ -174,7 +253,20 @@ export async function summarizeSessionTail(options: SessionTailOptions): Promise
 
   const envelope = loadSessionEnvelopeFile(options.sessionPath)
   if (!envelope) return { kind: "missing" }
-  const tailMessages = normalizeSessionMessages(envelope.events).slice(-options.messageCount)
+
+  const transcriptContext = {
+    friendId: options.friendId,
+    channel: options.channel,
+    key: options.key,
+    includeToolMessages: shouldIncludeToolMessages(options.friendId, options.channel),
+  }
+  let visibleMessages = normalizeSessionMessages(envelope.events, transcriptContext)
+  if (options.archiveFallback && !visibleMessages.some((message) => message.role === "user")) {
+    const fullHistoryMessages = normalizeSessionMessages(loadFullEventHistory(options.sessionPath), transcriptContext)
+    if (fullHistoryMessages.length > 0) visibleMessages = fullHistoryMessages
+  }
+
+  const tailMessages = selectSessionTailMessages(visibleMessages, options.messageCount)
 
   if (tailMessages.length === 0) {
     return { kind: "empty" }
@@ -221,7 +313,12 @@ export async function searchSessionTranscript(options: SessionSearchOptions): Pr
     if (!envelope) return { kind: "missing" }
     return { kind: "empty" }
   }
-  const messages = normalizeSessionMessages(allEvents)
+  const messages = normalizeSessionMessages(allEvents, {
+    friendId: options.friendId,
+    channel: options.channel,
+    key: options.key,
+    includeToolMessages: shouldIncludeToolMessages(options.friendId, options.channel),
+  })
 
   if (messages.length === 0) {
     return { kind: "empty" }

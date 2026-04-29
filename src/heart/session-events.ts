@@ -1305,14 +1305,12 @@ export function loadFullEventHistory(sessPath: string): SessionEvent[] {
     // Archive file doesn't exist or can't be read -- that's fine
   }
 
-  // Merge, deduplicate by id, sort by sequence
-  const seen = new Set<string>()
-  const merged: SessionEvent[] = []
-  for (const event of [...archiveEvents, ...envelopeEvents]) {
-    if (seen.has(event.id)) continue
-    seen.add(event.id)
-    merged.push(event)
-  }
+  // Merge, deduplicate by id, sort by sequence. The live envelope is the
+  // current projection, so it wins if an older archive line has a colliding id.
+  const mergedById = new Map<string, SessionEvent>()
+  for (const event of archiveEvents) mergedById.set(event.id, event)
+  for (const event of envelopeEvents) mergedById.set(event.id, event)
+  const merged = [...mergedById.values()]
   merged.sort((a, b) => a.sequence - b.sequence)
   return merged
 }

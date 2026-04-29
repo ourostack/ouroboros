@@ -155,6 +155,27 @@ describe("provider credentials vault store", () => {
     expect(reloaded.ok ? reloaded.record.revision : undefined).toBe(record.revision)
   })
 
+  it("refreshes only the requested provider when a single credential record is missing from cache", async () => {
+    emitTestEvent("provider credential single record targeted refresh")
+    mockCredentialStore.items.set(providerCredentialItemName("minimax"), {
+      username: "minimax",
+      password: validPayload("minimax"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+    mockCredentialStore.items.set(providerCredentialItemName("azure"), {
+      username: "azure",
+      password: validPayload("azure"),
+      createdAt: "2026-04-13T00:00:00.000Z",
+    })
+    mockCredentialStore.store.getRawSecret.mockClear()
+
+    const reloaded = await readProviderCredentialRecord("slugger", "minimax")
+
+    expect(reloaded.ok).toBe(true)
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(1)
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("minimax"), "password")
+  })
+
   it("summarizes, redacts, and reads cached runtime credential pools", () => {
     emitTestEvent("provider credential cached pool helpers")
 
@@ -237,7 +258,7 @@ describe("provider credentials vault store", () => {
     expect(mockCredentialStore.store.list).not.toHaveBeenCalled()
   })
 
-  it("refreshes from vault on cache miss and ignores unrelated vault entries", async () => {
+  it("refreshes only the requested provider from vault on cache miss and ignores unrelated vault entries", async () => {
     emitTestEvent("provider credential refresh filters")
     mockCredentialStore.items.set("tools/calendar", {
       username: "calendar",
@@ -266,7 +287,7 @@ describe("provider credentials vault store", () => {
       },
     })
     expect(mockCredentialStore.store.list).not.toHaveBeenCalled()
-    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(5)
+    expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledTimes(1)
     expect(mockCredentialStore.store.getRawSecret).toHaveBeenCalledWith(providerCredentialItemName("azure"), "password")
   })
 

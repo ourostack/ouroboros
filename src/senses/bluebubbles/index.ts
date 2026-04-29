@@ -755,12 +755,11 @@ export function isAgentSelfHandle(senderExternalId: string | undefined, ownHandl
 }
 
 /**
- * In-memory store of agent iMessage handles auto-discovered from
- * `event.fromMe === true` events. Bluebubbles attributes the agent's
- * canonical handle as `event.sender.externalId` on outbound messages —
- * capturing it here makes the next `isFromMe`-missing group echo
- * (the bug that motivated `bluebubbles.ownHandles` originally) recoverable
- * even before the operator has populated the config.
+ * In-memory store of agent iMessage handles auto-discovered from group-chat
+ * `event.fromMe === true` events. Bluebubbles can attribute the peer's handle
+ * as `event.sender.externalId` on 1:1 outbound messages, so discovery is
+ * intentionally limited to the group echo bug that motivated
+ * `bluebubbles.ownHandles` originally.
  *
  * Per-process. A daemon restart re-learns from the next outbound. The
  * accompanying nerves event (`senses.bluebubbles_own_handle_discovered`)
@@ -797,6 +796,45 @@ export function recordDiscoveredOwnHandle(senderExternalId: string | undefined):
   return true
 }
 
+function isSelfFriendRecord(friend: FriendRecord | null, agentName: string): boolean {
+  if (!friend || friend.kind !== "agent") return false
+  const normalizedAgent = agentName.trim().toLowerCase()
+  const name = friend.name?.trim().toLowerCase()
+  const bundleName = friend.agentMeta?.bundleName?.trim().toLowerCase()
+  return name === normalizedAgent || bundleName === normalizedAgent
+}
+
+async function shouldFilterAgentSelfHandle(
+  event: BlueBubblesNormalizedEvent,
+  resolvedDeps: RuntimeDeps,
+): Promise<boolean> {
+  if (!event.chat.isGroup) return false
+  if (!isAgentSelfHandle(event.sender.externalId, resolvedDeps.getOwnHandles())) return false
+
+  const store = resolvedDeps.createFriendStore()
+  const knownFriend = await store
+    .findByExternalId("imessage-handle", event.sender.externalId)
+    .catch(() => null)
+
+  if (knownFriend && !isSelfFriendRecord(knownFriend, resolvedDeps.getAgentName())) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_self_handle_bypassed_known_friend",
+      message: "did not filter bluebubbles sender even though it matched ownHandles because it resolves to a known non-self friend",
+      meta: {
+        messageGuid: event.messageGuid,
+        kind: event.kind,
+        senderExternalId: event.sender.externalId,
+        friendId: knownFriend.id,
+      },
+    })
+    return false
+  }
+
+  return true
+}
+
 async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
@@ -814,15 +852,17 @@ async function handleBlueBubblesNormalizedEvent(
         kind: event.kind,
       },
     })
-    recordDiscoveredOwnHandle(event.sender.externalId)
+    if (event.chat.isGroup) recordDiscoveredOwnHandle(event.sender.externalId)
     return { handled: true, notifiedAgent: false, kind: event.kind, reason: "from_me" }
   }
   // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat
   // outbound message back through the webhook with `isFromMe` missing/false.
   // Without this guard the agent ingests its own message and replies to it
   // ("Slugger talking to himself"). Compare the sender's externalId against
-  // the agent's known iMessage handles.
-  if (isAgentSelfHandle(event.sender.externalId, resolvedDeps.getOwnHandles())) {
+  // the agent's known iMessage handles. Keep this group-only: 1:1 outbound
+  // echoes can be attributed to the peer handle, and stale ownHandles entries
+  // must not make real DMs disappear.
+  if (await shouldFilterAgentSelfHandle(event, resolvedDeps)) {
     emitNervesEvent({
       level: "warn",
       component: "senses",

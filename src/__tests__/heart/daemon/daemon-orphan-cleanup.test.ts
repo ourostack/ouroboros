@@ -231,4 +231,16 @@ describe("vitest guard for production pidfile (defense in depth)", () => {
     const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
     expect(after).toBe(before)
   })
+
+  it("custom-socket daemons never touch the production pidfile", () => {
+    const homeDir = os.homedir()
+    const pidfilePath = path.join(homeDir, OURO_CLI_SUBPATH, PIDFILE_NAME)
+    const before = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+
+    expect(() => killOrphanProcesses("/tmp/ouro-hermetic-runtime.sock")).not.toThrow()
+    expect(() => writePidfile([99997], "/tmp/ouro-hermetic-runtime.sock")).not.toThrow()
+
+    const after = fs.existsSync(pidfilePath) ? fs.readFileSync(pidfilePath, "utf-8") : null
+    expect(after).toBe(before)
+  })
 })

@@ -20,6 +20,7 @@ import { renderOverwriteFrame } from "./terminal-ui"
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 const STABILITY_THRESHOLD_MS = 5_000
 const POLL_INTERVAL_MS = 500
+const STARTUP_POLL_TIMEOUT_MS = 180_000
 
 // ── ANSI helpers ──
 
@@ -62,6 +63,8 @@ export interface PollDaemonStartupDeps {
   onProgress?: (message: string) => void
   /** Whether this poller should render its own TUI. Defaults to true. */
   render?: boolean
+  /** Maximum time to wait before reporting unresolved startup state. */
+  maxWaitMs?: number
 }
 
 export interface StartupRenderOptions {
@@ -191,6 +194,7 @@ function renderFinalSummary(result: StartupResult, isTTY: boolean): string {
  */
 export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<StartupResult> {
   const startTime = deps.now()
+  const maxWaitMs = deps.maxWaitMs ?? STARTUP_POLL_TIMEOUT_MS
   let prevLineCount = 0
   const isTTY = deps.isTTY ?? true
   const isAlive = deps.isProcessAlive ?? defaultIsProcessAlive
@@ -241,8 +245,30 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
         }
       }
 
-      // Show what the daemon is doing from its log
       const latestEvent = deps.readLatestDaemonEvent?.() ?? null
+      if (elapsed >= maxWaitMs) {
+        const errorMsg = latestEvent
+          ? `daemon did not answer within ${(maxWaitMs / 1000).toFixed(0)}s; latest event: ${latestEvent}`
+          : `daemon did not answer within ${(maxWaitMs / 1000).toFixed(0)}s`
+        const result = {
+          stable: [],
+          degraded: [{ agent: "daemon", errorReason: errorMsg, fixHint: "check daemon logs or run `ouro doctor`" }],
+        }
+        if (shouldRender) {
+          const summary = renderFinalSummary(result, isTTY)
+          deps.writeRaw(summary)
+        }
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.startup_poll_timeout",
+          message: "daemon startup polling timed out before the daemon answered",
+          meta: { socketPath: deps.socketPath, daemonPid: deps.daemonPid, elapsedMs: elapsed, maxWaitMs, lastEvent: latestEvent },
+        })
+        return result
+      }
+
+      // Show what the daemon is doing from its log
       reportProgress([
         "waiting for Ouro to answer",
         latestEvent ? `- latest daemon event: ${latestEvent}` : "- background service is still starting",
@@ -285,10 +311,59 @@ export async function pollDaemonStartup(deps: PollDaemonStartupDeps): Promise<St
         })
         return result
       }
+      if (elapsed >= maxWaitMs) {
+        const result = buildTimedOutStartupResult(payload, assessment, maxWaitMs)
+        if (shouldRender) {
+          const summary = renderFinalSummary(result, isTTY)
+          deps.writeRaw(summary)
+        }
+
+        emitNervesEvent({
+          level: "error",
+          component: "daemon",
+          event: "daemon.startup_poll_timeout",
+          message: "daemon startup polling timed out with unresolved workers",
+          meta: {
+            socketPath: deps.socketPath,
+            daemonPid: deps.daemonPid,
+            elapsedMs: elapsed,
+            maxWaitMs,
+            stableCount: result.stable.length,
+            degradedCount: result.degraded.length,
+          },
+        })
+        return result
+      }
     }
 
     await deps.sleep(POLL_INTERVAL_MS)
   }
+}
+
+function buildTimedOutStartupResult(
+  payload: StatusPayload,
+  assessment: StabilityAssessment,
+  maxWaitMs: number,
+): StartupResult {
+  const stable = [...assessment.stable]
+  const degraded = [...assessment.degraded]
+  const stableAgents = new Set(stable)
+  const degradedAgents = new Set<string>()
+  for (const worker of degraded) degradedAgents.add(worker.agent)
+  const seconds = (maxWaitMs / 1000).toFixed(0)
+
+  for (const worker of payload.workers) {
+    if (stableAgents.has(worker.agent) || degradedAgents.has(worker.agent)) continue
+    degraded.push({
+      agent: worker.agent,
+      errorReason: `startup timed out after ${seconds}s while worker was ${worker.status}`,
+      fixHint: worker.errorReason
+        ? worker.fixHint ?? "check daemon logs"
+        : "run `ouro status` or `ouro doctor` for current worker details; the daemon is still answering",
+    })
+  }
+
+  return { stable, degraded }
 }
 
 function formatStartupWorkerLine(payload: StatusPayload["workers"][number]): string {

@@ -9,7 +9,9 @@ import {
   refreshMachineRuntimeCredentialConfig,
   refreshRuntimeCredentialConfig,
   type RuntimeCredentialConfigReadResult,
+  type RuntimeCredentialConfig,
 } from "../runtime-credentials"
+import { readProviderCredentialPool, type ProviderCredentialRecord } from "../provider-credentials"
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
@@ -27,6 +29,7 @@ export interface DaemonSenseRow {
 
 export interface DaemonSenseManagerLike {
   startAutoStartSenses(): Promise<void>
+  triggerAutoStartSenses?(): void
   stopAll(): Promise<void>
   listSenseRows(): DaemonSenseRow[]
   listHealthProbes?(): SenseProbe[]
@@ -38,6 +41,8 @@ export interface DaemonSenseManagerOptions {
   bundlesRoot?: string
   processManager?: {
     startAutoStartAgents(): Promise<void>
+    triggerAutoStartAgents?(): void
+    startAgent?(agent: string): Promise<void>
     stopAll(): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
@@ -256,6 +261,31 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
   return "senses/mail-entry.js"
 }
 
+function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli">): {
+  agentName: string
+  runtimeConfig?: RuntimeCredentialConfig
+  machineRuntimeConfig?: RuntimeCredentialConfig
+  machineId?: string
+  providerCredentialRecords?: ProviderCredentialRecord[]
+} | null {
+  const runtime = readRuntimeCredentialConfig(agent)
+  const machineId = sense === "bluebubbles" ? currentMachineId() : undefined
+  const machine = sense === "bluebubbles" ? readMachineRuntimeCredentialConfig(agent) : null
+  const providerPool = readProviderCredentialPool(agent)
+  const providerCredentialRecords = providerPool.ok
+    ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
+    : []
+  const bootstrap = {
+    agentName: agent,
+    runtimeConfig: runtime.ok ? runtime.config : undefined,
+    machineRuntimeConfig: machine?.ok ? machine.config : undefined,
+    machineId,
+    providerCredentialRecords: providerCredentialRecords.length > 0 ? providerCredentialRecords : undefined,
+  }
+  if (!bootstrap.runtimeConfig && !bootstrap.machineRuntimeConfig && !bootstrap.providerCredentialRecords) return null
+  return bootstrap
+}
+
 function blueBubblesRuntimeStateIsFresh(lastCheckedAt?: string, now = Date.now()): boolean {
   if (!lastCheckedAt) {
     return false
@@ -332,6 +362,7 @@ function readBlueBubblesRuntimeFacts(
 export class DaemonSenseManager implements DaemonSenseManagerLike {
   private readonly processManager: NonNullable<DaemonSenseManagerOptions["processManager"]>
   private readonly contexts: Map<string, AgentSenseContext>
+  private readonly pendingConfigRefreshes = new Set<string>()
   private readonly bundlesRoot: string
 
   constructor(options: DaemonSenseManagerOptions) {
@@ -354,6 +385,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
+          getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })
 
@@ -364,13 +396,15 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         if (!parsed) return { ok: true }
         const context = this.contexts.get(parsed.agent)
         if (!context) return { ok: true }
-        const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-        const machineRefreshed = parsed.sense === "bluebubbles"
-          ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
-          : readMachineRuntimeCredentialConfig(parsed.agent)
-        context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+        context.facts = senseFactsFromRuntimeConfig(
+          parsed.agent,
+          context.senses,
+          readRuntimeCredentialConfig(parsed.agent),
+          readMachineRuntimeCredentialConfig(parsed.agent),
+        )
         const fact = context.facts[parsed.sense]
         if (fact.configured) return { ok: true }
+        this.scheduleSenseConfigRefresh(name, parsed)
         if (fact.optional) {
           return {
             ok: false,
@@ -380,6 +414,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         }
         return {
           ok: false,
+          skip: true,
           error: `${parsed.sense} is enabled for ${parsed.agent} but runtime credentials are not ready: ${fact.detail}`,
           fix: senseRepairHint(parsed.agent, parsed.sense),
         }
@@ -397,8 +432,67 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     })
   }
 
+  private scheduleSenseConfigRefresh(name: string, parsed: { agent: string; sense: SenseName }): void {
+    if (this.pendingConfigRefreshes.has(name)) return
+    this.pendingConfigRefreshes.add(name)
+    void this.refreshSenseConfigAndRetry(name, parsed)
+  }
+
+  private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
+    try {
+      const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
+      const machineRefreshed = parsed.sense === "bluebubbles"
+        ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
+        : readMachineRuntimeCredentialConfig(parsed.agent)
+      const context = this.contexts.get(parsed.agent)
+      /* v8 ignore next -- defensive: config refreshes are only scheduled for known agent contexts @preserve */
+      if (!context) return
+      context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed)
+      if (!context.facts[parsed.sense].configured) return
+      setTimeout(() => {
+        void this.processManager.startAgent?.(name).catch((error) => {
+          emitNervesEvent({
+            level: "error",
+            component: "channels",
+            event: "channel.daemon_sense_autostart_error",
+            message: "sense autostart failed",
+            /* v8 ignore next -- defensive: process manager rejects with Error instances in normal use @preserve */
+            meta: { error: error instanceof Error ? error.message : String(error) },
+          })
+        })
+      }, 0)
+    } catch (error) {
+      emitNervesEvent({
+        level: "error",
+        component: "channels",
+        event: "channel.daemon_sense_autostart_error",
+        message: "sense config refresh failed",
+        /* v8 ignore next -- defensive: runtime credential refresh rejects with Error instances in normal use @preserve */
+        meta: { error: error instanceof Error ? error.message : String(error) },
+      })
+    } finally {
+      this.pendingConfigRefreshes.delete(name)
+    }
+  }
+
   async startAutoStartSenses(): Promise<void> {
     await this.processManager.startAutoStartAgents()
+  }
+
+  triggerAutoStartSenses(): void {
+    if (this.processManager.triggerAutoStartAgents) {
+      this.processManager.triggerAutoStartAgents()
+      return
+    }
+    void this.processManager.startAutoStartAgents().catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "channels",
+          event: "channel.daemon_sense_autostart_error",
+          message: "sense autostart failed",
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      })
   }
 
   async stopAll(): Promise<void> {

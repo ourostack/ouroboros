@@ -227,7 +227,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result).toMatchObject({ ok: true })
     expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
       providers: ["anthropic", "github-copilot"],
-      skipCache: true,
+      preserveCachedOnFailure: true,
     }))
     expect(pingProvider).toHaveBeenCalledTimes(2)
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
@@ -243,7 +243,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(result).toMatchObject({ ok: true })
     expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
       providers: ["anthropic"],
-      skipCache: true,
+      preserveCachedOnFailure: true,
     }))
     expect(pingProvider).toHaveBeenCalledOnce()
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
@@ -571,7 +571,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(callArgs?.[1]).toEqual(expect.objectContaining({
       onProgress: expect.any(Function),
       providers: ["anthropic"],
-      skipCache: true,
+      preserveCachedOnFailure: true,
     }))
 
     const refreshProgress = callArgs?.[1]?.onProgress as ((message: string) => void) | undefined
