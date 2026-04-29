@@ -124,7 +124,6 @@ write it like a post-incident note: cause, mitigation, suggested
 next action. See `buildSyntheticToolResultMessage` in
 `src/heart/session-events.ts` for the pattern.
 
-<<<<<<< HEAD
 ## Regression test bundle
 
 Provider replay-rejection bugs have a dedicated regression bundle
@@ -137,7 +136,7 @@ When you encounter a NEW replay rejection: capture the shape from
 the daemon log, write the test BEFORE the fix (it should fail),
 land the fix, verify the test passes. Each entry there cites the
 PR + the runbook entry above.
-=======
+
 ## Sanitize-pass repair quick reference
 
 `sanitizeProviderMessages` runs before every replay and applies a
@@ -159,4 +158,3 @@ specific repairs *would* run on a saved session without committing,
 the sanitize pipeline is testable as a pure function (see
 `src/__tests__/heart/provider-replay-regressions.test.ts` for the
 shape of an isolated repro).
->>>>>>> d741b661 (docs(known-issues): sanitize-pass repair quick reference table)
