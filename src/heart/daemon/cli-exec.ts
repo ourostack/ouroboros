@@ -137,7 +137,7 @@ import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
 import type { DegradedAgent } from "./interactive-repair"
-import { createAgenticDiagnosisProviderRuntime, runAgenticRepair } from "./agentic-repair"
+import { createAgenticDiagnosisProviderRuntime, runAgenticRepair, shouldFireRepairGuide } from "./agentic-repair"
 import {
   genericReadinessIssue,
   isKnownReadinessIssue,
@@ -6718,6 +6718,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     //
     // Errors in the probe path itself are caught and logged — they must not
     // break the boot, since the probe is best-effort visibility, not a gate.
+    // Layer 3: hoist sync-probe findings to outer scope so the
+    // RepairGuide diagnostic call later in this function can include
+    // them in its prompt. Default to [] when the probe was skipped or
+    // threw — the runAgenticRepair callsite then sees "no sync
+    // findings to report" rather than missing data.
+    let bootSyncFindings: BootSyncProbeFinding[] = []
     progress.startPhase("sync probe")
     try {
       const syncProbeImpl = deps.runBootSyncProbeImpl ?? runBootSyncProbe
@@ -6725,6 +6731,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const syncProbeResult = await syncProbeImpl(syncRows, {
         bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
       })
+      bootSyncFindings = syncProbeResult.findings
       progress.completePhase("sync probe", summarizeSyncProbeFindings(syncProbeResult.findings))
       if (syncProbeResult.findings.length > 0) {
         writeSyncProbeSummary(deps, syncProbeResult.findings)
@@ -6851,8 +6858,35 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           }
         }
 
-        if (untypedDegraded.length > 0) {
-          const repairResult = await runAgenticRepair(untypedDegraded, {
+        // Layer 3: extended activation contract — fires when there are
+        // untyped degraded entries OR when typed entries stack to ≥3 (compound
+        // situations that warrant a RepairGuide-driven proposal pass). The
+        // `--no-repair` flag short-circuits the entire decision via
+        // `shouldFireRepairGuide`. The set passed into `runAgenticRepair` is
+        // the union of typed + untyped so the diagnostic prompt has the full
+        // picture. When the gate fires solely on typed-stacking,
+        // `runAgenticRepair` is told via `forceDiagnosis: true` to bypass the
+        // early-return that normally defers typed-only sets to the
+        // deterministic typed repair flow that already ran above.
+        const repairGuideShouldFire = shouldFireRepairGuide({
+          untypedDegraded,
+          typedDegraded,
+          noRepair: Boolean(command.noRepair),
+        })
+        if (repairGuideShouldFire) {
+          const repairInput = [...untypedDegraded, ...typedDegraded]
+          const forceDiagnosis = untypedDegraded.length === 0 && typedDegraded.length >= 3
+          // Layer 3: collect drift findings here so the RepairGuide
+          // prompt receives them as a structured JSON block. Drift is
+          // already collected for the no-repair path above; we collect
+          // again here because the repair path is a separate branch.
+          // Filter to agents in repairInput so the diagnostic prompt
+          // doesn't carry drift from healthy peers — narrows the
+          // signal to the set being diagnosed.
+          const repairAgentNames = new Set(repairInput.map((entry) => entry.agent))
+          const repairDriftFindings = (await collectAgentDriftAdvisories(deps))
+            .filter((finding) => repairAgentNames.has(finding.agent))
+          const repairResult = await runAgenticRepair(repairInput, {
             /* v8 ignore start -- production provider discovery wiring @preserve */
             discoverWorkingProvider: async (agentName: string) => {
               const { discoverWorkingProvider: discover } = await import("./provider-discovery")
@@ -6894,6 +6928,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             skipQueueSummary: true,
             isTTY: deps.isTTY ?? process.stdout.isTTY === true,
             stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
+            forceDiagnosis,
+            driftFindings: repairDriftFindings,
+            syncFindings: bootSyncFindings,
           })
           if (repairResult.repairsAttempted) {
             repairsAttempted = true

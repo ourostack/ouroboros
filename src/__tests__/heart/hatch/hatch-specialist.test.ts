@@ -82,18 +82,48 @@ describe("hatch specialist identities", () => {
     expect(target).toContain(path.join("SerpentGuide.ouro", "psyche", "identities"))
   })
 
-  it("falls back to __dirname-relative path when ~/AgentBundles/ does not exist", () => {
+  it("always returns __dirname-relative path (in-repo is the only source)", () => {
+    // Layer 3: the `~/AgentBundles/SerpentGuide.ouro/` override is removed.
+    // `getSpecialistIdentitySourceDir()` returns the in-repo path
+    // unconditionally — even when an override directory exists on disk.
     const tempHome = makeTempDir("specialist-home")
     cleanup.push(tempHome)
+    // Materialize an override path that previously would have been preferred.
+    const overrideDir = path.join(tempHome, "AgentBundles", "SerpentGuide.ouro", "psyche", "identities")
+    fs.mkdirSync(overrideDir, { recursive: true })
     vi.stubEnv("HOME", tempHome)
 
     try {
       const source = getSpecialistIdentitySourceDir()
+      // Override is IGNORED — the function returns the in-repo path.
       expect(source.startsWith(path.join(tempHome, "AgentBundles"))).toBe(false)
       expect(source).toContain(path.join("SerpentGuide.ouro", "psyche", "identities"))
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+
+  it("returns the same path regardless of whether ~/AgentBundles/ exists", () => {
+    // Symmetric to the test above but without materializing an override —
+    // the result must match exactly. (Without this test, the implementation
+    // could read `~/AgentBundles/` and silently succeed without using it.)
+    const tempHome1 = makeTempDir("specialist-home-empty")
+    const tempHome2 = makeTempDir("specialist-home-with-override")
+    cleanup.push(tempHome1, tempHome2)
+    fs.mkdirSync(
+      path.join(tempHome2, "AgentBundles", "SerpentGuide.ouro", "psyche", "identities"),
+      { recursive: true },
+    )
+
+    vi.stubEnv("HOME", tempHome1)
+    const source1 = getSpecialistIdentitySourceDir()
+    vi.unstubAllEnvs()
+
+    vi.stubEnv("HOME", tempHome2)
+    const source2 = getSpecialistIdentitySourceDir()
+    vi.unstubAllEnvs()
+
+    expect(source1).toBe(source2)
   })
 
   it("returns an empty identity list when source directory is missing", () => {

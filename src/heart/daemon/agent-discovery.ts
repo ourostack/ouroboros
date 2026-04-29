@@ -20,12 +20,29 @@ export interface AgentDiscoveryOptions {
 export interface BundleAgentRow {
   name: string
   enabled: boolean
+  /**
+   * Optional bundle classification. Currently only `"library"` is recognized
+   * (e.g. SerpentGuide.ouro, RepairGuide.ouro — content-only bundles that ship
+   * as part of the harness, are never spawned as agents, and are excluded
+   * from sync rows). When the field is absent or any value other than
+   * `"library"`, the bundle is treated as a regular agent.
+   */
+  kind?: string
+}
+
+/**
+ * True when the value is the string `"library"`. Library bundles are
+ * content-only resources — never run as agents, never appear in sync surfaces.
+ */
+export function isLibraryKind(kind: unknown): boolean {
+  return kind === "library"
 }
 
 /**
  * Walk the bundles root and return one row per `<name>.ouro` directory whose
  * `agent.json` is readable and parseable. Includes both enabled and disabled
- * agents — the caller decides what to do with the `enabled` flag.
+ * agents AND library-kind bundles — callers that need only real agents should
+ * use `listEnabledBundleAgents` (which filters both `enabled` and `kind`).
  *
  * Bundles whose `agent.json` is missing, malformed, or unreadable are skipped
  * silently (they aren't real agents from the harness's perspective).
@@ -57,23 +74,36 @@ export function listAllBundleAgents(options: AgentDiscoveryOptions = {}): Bundle
     const agentName = entry.name.slice(0, -5)
     const configPath = path.join(bundlesRoot, entry.name, "agent.json")
     let enabled = true
+    let kind: string | undefined
     try {
       const raw = readFileSync(configPath, "utf-8")
-      const parsed = JSON.parse(raw) as { enabled?: unknown }
+      const parsed = JSON.parse(raw) as { enabled?: unknown; kind?: unknown }
       if (typeof parsed.enabled === "boolean") {
         enabled = parsed.enabled
+      }
+      if (typeof parsed.kind === "string") {
+        kind = parsed.kind
       }
     } catch {
       continue
     }
-    discovered.push({ name: agentName, enabled })
+    const row: BundleAgentRow = { name: agentName, enabled }
+    if (kind !== undefined) row.kind = kind
+    discovered.push(row)
   }
 
   return discovered.sort((left, right) => left.name.localeCompare(right.name))
 }
 
+/**
+ * Real agents only — excludes both disabled bundles and library-kind bundles.
+ * Library bundles (SerpentGuide, RepairGuide, …) are content-only and must
+ * never appear in spawn lists, status rollups, or sync rows.
+ */
 export function listEnabledBundleAgents(options: AgentDiscoveryOptions = {}): string[] {
-  return listAllBundleAgents(options).filter((row) => row.enabled).map((row) => row.name)
+  return listAllBundleAgents(options)
+    .filter((row) => row.enabled && !isLibraryKind(row.kind))
+    .map((row) => row.name)
 }
 
 export interface BundleSyncRow {

@@ -135,7 +135,7 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 ### Legend
 ⬜ Not started · 🔄 In progress · ✅ Done · ❌ Blocked
 
-### ⬜ Unit 0: Verify layers 1, 4, 2 have landed
+### ✅ Unit 0: Verify layers 1, 4, 2 have landed
 **What**:
 - Confirm `DaemonStatus` + `computeDaemonRollup` from layer 1 in `daemon-health.ts`.
 - Confirm `detectProviderBindingDrift` from layer 4 in `drift-detection.ts`.
@@ -143,7 +143,7 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 - If any is missing, halt — do NOT start this PR. Re-cut the branch from a base where all three have landed.
 **Acceptance**: All three symbols exist on the base. `git log` shows all three PRs merged.
 
-### ⬜ Unit 1a: `kind: library` exclusion in `agent-discovery.ts` — Tests
+### ✅ Unit 1a: `kind: library` exclusion in `agent-discovery.ts` — Tests
 **What**: Write failing tests in `src/__tests__/heart/daemon/agent-discovery-kind.test.ts` (new file) covering:
 - A bundle with `"kind": "library"` is excluded from `listEnabledBundleAgents` and `listBundleSyncRows`.
 - A bundle with no `kind` field continues to be discovered (back-compat).
@@ -152,7 +152,7 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 - The `listAllBundleAgents` behavior (whether it includes library bundles or not — decide here based on the tests you write; recommend: it returns ALL bundles with their `kind`, and the filter happens in `listEnabledBundleAgents` / `listBundleSyncRows`).
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 1b: `kind: library` exclusion — Implementation
+### ✅ Unit 1b: `kind: library` exclusion — Implementation
 **What**:
 - Extend the `agent.json` parse type in `agent-discovery.ts` with `kind?: string`.
 - Extend `BundleAgentRow` (or whatever the existing inventory row type is) with `kind?: string`.
@@ -161,26 +161,26 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 - Optionally export a typed predicate `isLibraryKind(kind: unknown): boolean`.
 **Acceptance**: Tests from 1a PASS. No regression in existing `agent-discovery` tests.
 
-### ⬜ Unit 1c: `kind: library` exclusion — Coverage & refactor
+### ✅ Unit 1c: `kind: library` exclusion — Coverage & refactor
 **What**: 100% branch coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 2a: Tag SerpentGuide.ouro as library — Tests
+### ✅ Unit 2a: Tag SerpentGuide.ouro as library — Tests
 **What**: Write failing test in `src/__tests__/heart/daemon/serpentguide-library-kind.test.ts` (new file) asserting:
 - `SerpentGuide.ouro/agent.json` parses with `kind === "library"`.
 - `listEnabledBundleAgents` does not return SerpentGuide regardless of its `enabled` flag.
 - An override of SerpentGuide's `enabled` to true (in-test fixture) still does NOT promote it to discovery (because `kind === "library"` overrides `enabled`).
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 2b: Tag SerpentGuide.ouro as library — Implementation
+### ✅ Unit 2b: Tag SerpentGuide.ouro as library — Implementation
 **What**: Edit `SerpentGuide.ouro/agent.json` — add `"kind": "library"` field (alongside `"enabled": false`). Both fields stay; `kind: library` is the architectural reason, `enabled: false` is preserved for back-compat with anything that still reads it.
 **Acceptance**: Tests from 2a PASS. Existing SerpentGuide-related tests still pass.
 
-### ⬜ Unit 2c: Tag SerpentGuide.ouro as library — Coverage & refactor
+### ✅ Unit 2c: Tag SerpentGuide.ouro as library — Coverage & refactor
 **What**: Coverage on the changed agent.json parse path.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 3: Build RepairGuide.ouro bundle skeleton
+### ✅ Unit 3: Build RepairGuide.ouro bundle skeleton
 **What**: Create the bundle on disk:
 - `RepairGuide.ouro/agent.json` with `{"version": 2, "enabled": false, "kind": "library"}`.
 - `RepairGuide.ouro/psyche/SOUL.md` with orientation content (see "Content drafting notes" below).
@@ -192,7 +192,7 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 - `RepairGuide.ouro/skills/diagnose-stacked-typed-issues.md`
 **Acceptance**: All files exist on disk in repo. `git status` shows them as untracked. `agent.json` parses cleanly as JSON.
 
-### ⬜ Unit 4a: RepairGuide loader — Tests
+### ✅ Unit 4a: RepairGuide loader — Tests
 **What**: Write failing tests for the loader function (call it `loadRepairGuideContent(repoRoot: string): RepairGuideContent | null`) in `src/__tests__/heart/daemon/repair-guide-loader.test.ts` (new file).
 **Test cases**:
 - All files present → returns concatenated content with section markers.
@@ -203,7 +203,7 @@ Threshold of 3 (not 2) prevents common pairs (vault-locked + provider-auth-neede
 - Multiple psyche files (future-proofing) → concatenated in alphabetical order.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 4b: RepairGuide loader — Implementation
+### ✅ Unit 4b: RepairGuide loader — Implementation
 **What**: Implement `loadRepairGuideContent` in `src/heart/daemon/agentic-repair.ts` (per O5 lock — inlined unless validator grows). Use `getRepoRoot()` from `identity.ts` to find the bundle.
 **Output shape**:
 ```ts
@@ -214,11 +214,11 @@ interface RepairGuideContent {
 ```
 **Acceptance**: Tests from 4a PASS.
 
-### ⬜ Unit 4c: RepairGuide loader — Coverage & refactor
+### ✅ Unit 4c: RepairGuide loader — Coverage & refactor
 **What**: 100% coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 5a: Activation contract — Tests
+### ✅ Unit 5a: Activation contract — Tests
 **What**: Write failing tests for `shouldFireRepairGuide(input: { untypedDegraded: DegradedAgent[]; typedDegraded: DegradedAgent[]; noRepair: boolean }): boolean` in `src/__tests__/heart/daemon/repair-guide-activation.test.ts` (new file). Use the existing `DegradedAgent` type from `cli-exec.ts` for the input shape so the function plugs in cleanly at the existing call site.
 **Test cases**:
 - `noRepair: true` → false unconditionally.
@@ -231,15 +231,15 @@ interface RepairGuideContent {
 - `untypedDegraded.length === 0 && typedDegraded.length === 2 && noRepair: false` → false.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 5b: Activation contract — Implementation
+### ✅ Unit 5b: Activation contract — Implementation
 **What**: Implement `shouldFireRepairGuide` in `agentic-repair.ts`. Pure function.
 **Acceptance**: Tests from 5a PASS.
 
-### ⬜ Unit 5c: Activation contract — Coverage & refactor
+### ✅ Unit 5c: Activation contract — Coverage & refactor
 **What**: 100% coverage.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 6a: LLM output parser → typed `RepairAction` — Tests
+### ✅ Unit 6a: LLM output parser → typed `RepairAction` — Tests
 **What**: Write failing tests for `parseRepairProposals(llmOutput: string): { actions: RepairAction[]; warnings: string[]; fallbackBlob?: string }` in `src/__tests__/heart/daemon/repair-proposal-parser.test.ts` (new file).
 **Test cases**:
 - LLM output contains a structured `vault-unlock` action → parsed correctly.
@@ -249,15 +249,15 @@ interface RepairGuideContent {
 - Each existing action kind in `readiness-repair.ts` (`vault-create`, `vault-unlock`, `vault-replace`, `vault-recover`, `provider-auth`, `provider-retry`, `provider-use`) is parseable.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 6b: LLM output parser — Implementation
+### ✅ Unit 6b: LLM output parser — Implementation
 **What**: Implement `parseRepairProposals` in `agentic-repair.ts`. Decide structured-output format during implementation: a JSON block in the LLM output is the simplest. The persona content (SOUL.md / skills) instructs the LLM to emit JSON in a specific shape.
 **Acceptance**: Tests from 6a PASS.
 
-### ⬜ Unit 6c: LLM output parser — Coverage & refactor
+### ✅ Unit 6c: LLM output parser — Coverage & refactor
 **What**: 100% coverage. If the parser grows large enough that it dominates `agentic-repair.ts`, split into a sibling file (`repair-proposal-parser.ts`) — operator's O5 lock allows this judgment call.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 7a: Wire RepairGuide into existing `agentic-repair.ts` flow — Tests
+### ✅ Unit 7a: Wire RepairGuide into existing `agentic-repair.ts` flow — Tests
 **What**: Write failing integration tests in `src/__tests__/heart/daemon/agentic-repair-with-repairguide.test.ts` covering:
 - `agentic-repair.ts` is invoked during `ouro up`. Loader runs. Activation contract evaluated. If fired, RepairGuide content prepended to system prompt. LLM output parsed. Typed actions surfaced.
 - `--no-repair` short-circuits the entire RepairGuide path. Diagnostics still surface.
@@ -265,7 +265,7 @@ interface RepairGuideContent {
 - LLM call fails → `discoverWorkingProvider` already handles this; verify the typed-action repair from `readiness-repair.ts` still fires regardless.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 7b: Wire RepairGuide — Implementation
+### ✅ Unit 7b: Wire RepairGuide — Implementation
 **What**:
 - Modify the gate at `cli-exec.ts:6706` from `if (untypedDegraded.length > 0)` to `if (shouldFireRepairGuide({ untypedDegraded, typedDegraded, noRepair: command.noRepair === true }))`. This is the single-line gate change that activates the new contract.
 - Inside the existing one-shot LLM diagnostic call in `agentic-repair.ts`, load RepairGuide content via `loadRepairGuideContent` and prepend `psyche/SOUL.md` + `psyche/IDENTITY.md` + relevant skills (selected based on the finding mix — skills act as instructions for the LLM) to the system prompt.
@@ -273,11 +273,11 @@ interface RepairGuideContent {
 - Honor `--no-repair` — already encoded in the gate function via the `noRepair` arg.
 **Acceptance**: Tests from 7a PASS. Existing `agentic-repair` tests still pass. Existing `cli-exec.ts:6706` regression tests still pass.
 
-### ⬜ Unit 7c: Wire RepairGuide — Coverage & refactor
+### ✅ Unit 7c: Wire RepairGuide — Coverage & refactor
 **What**: 100% coverage on changed lines.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 8a: Override-path removal — Tests
+### ✅ Unit 8a: Override-path removal — Tests
 **What**: Write tests asserting the new behavior in `src/__tests__/heart/hatch/hatch-specialist.test.ts` (modified file):
 - `getSpecialistIdentitySourceDir()` returns the in-repo path unconditionally.
 - Even when `~/AgentBundles/SerpentGuide.ouro/psyche/identities` exists on disk (test fixture), the function ignores it and returns the in-repo path.
@@ -285,7 +285,7 @@ interface RepairGuideContent {
 - Existing override-path test (lines 78-85 in current test file) is removed or rewritten.
 **Acceptance**: Updated tests exist and FAIL (red) against the current (override-honoring) implementation.
 
-### ⬜ Unit 8b: Override-path removal — Implementation
+### ✅ Unit 8b: Override-path removal — Implementation
 **What**:
 - `src/heart/hatch/hatch-specialist.ts:21-31` — remove the `userSource` branch from `getSpecialistIdentitySourceDir()`. Keep only the in-repo path (`getRepoSpecialistIdentitiesDir()`).
 - `src/heart/hatch/hatch-flow.ts` — verify nothing depends on the override; update if needed.
@@ -293,7 +293,7 @@ interface RepairGuideContent {
 - `src/__tests__/heart/hatch/hatch-flow.test.ts` — fixture paths that used `~/AgentBundles/SerpentGuide.ouro/` to populate identities should now write to the in-repo path (or the test should mock `getRepoSpecialistIdentitiesDir`).
 **Acceptance**: Tests from 8a PASS. All existing hatch tests still pass.
 
-### ⬜ Unit 8c: Override-path removal — Coverage & refactor
+### ✅ Unit 8c: Override-path removal — Coverage & refactor
 **What**: 100% coverage on the changed lines. Run `grep -rn "AgentBundles.*SerpentGuide.*identities\|AgentBundles.*SerpentGuide.*psyche" src/ src/__tests__/` and confirm only legitimate references remain (i.e., not the removed override).
 **Acceptance**: Coverage 100%. Tests green. Grep is clean of the override pattern.
 
@@ -384,3 +384,5 @@ The exact prose can be drafted iteratively during implementation. The shape of t
 
 ## Progress Log
 - 2026-04-28 19:33 UTC Created as PR 4 of 4 in the sequential rollout (1 → 4 → 2 → 3). Depends on layers 1, 4, and 2 PRs all merged.
+- 2026-04-28 18:43 Unit 0 complete: confirmed `computeDaemonRollup` (`daemon-rollup.ts:79`), `detectProviderBindingDrift` (`drift-detection.ts:88`), and `runBootSyncProbe` (`boot-sync-probe.ts:103`) all exist on `origin/main` (HEAD `2f17921c`). Branch `harness/layer-3-repairguide-bundle` cut from origin/main.
+- 2026-04-28 18:43 Unit 1a-1c complete: `kind: library` exclusion implemented in `agent-discovery.ts`. New tests in `agent-discovery-kind.test.ts` (10 tests). `BundleAgentRow.kind?: string` added; `isLibraryKind(kind)` predicate exported; `listEnabledBundleAgents` filters libraries; `listBundleSyncRows` inherits the filter via its dependency. Coverage 100% on `agent-discovery.ts` (57/57 lines, 45/45 branches).

@@ -56,6 +56,18 @@ vi.mock("../../../heart/daemon/agent-config-check", () => ({
 const mockAgenticRepair = vi.hoisted(() => ({
   runAgenticRepair: vi.fn(async () => ({ repairsAttempted: false, usedAgentic: false })),
   createAgenticDiagnosisProviderRuntime: vi.fn(),
+  // Layer 3: gate function. Default to today's pre-Layer-3 behavior so the
+  // existing daemon-cli tests don't change semantics — they fired the
+  // agentic-repair path on `untypedDegraded.length > 0`, which is exactly
+  // what `shouldFireRepairGuide` returns when typedDegraded is empty.
+  shouldFireRepairGuide: vi.fn(
+    (input: { untypedDegraded: unknown[]; typedDegraded: unknown[]; noRepair: boolean }) => {
+      if (input.noRepair) return false
+      if (input.untypedDegraded.length > 0) return true
+      if (input.typedDegraded.length >= 3) return true
+      return false
+    },
+  ),
 }))
 vi.mock("../../../heart/daemon/agentic-repair", () => mockAgenticRepair)
 

@@ -2,6 +2,19 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.519",
+      "changes": [
+        "Layer 3 (final) of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Ships the `RepairGuide.ouro/` library bundle alongside `SerpentGuide.ouro/` containing five diagnostic skills (`diagnose-bootstrap-drift`, `diagnose-broken-remote`, `diagnose-sync-blocked`, `diagnose-vault-expired`, `diagnose-stacked-typed-issues`) plus `psyche/SOUL.md` + `psyche/IDENTITY.md`. Loaded by the existing `agentic-repair.ts` pipeline as a content source — not a runtime agent (no senses, no vault, no `ouro status` presence).",
+        "Introduces `kind: \"library\"` field on bundle `agent.json`. `agent-discovery.ts` filters bundles where `kind === \"library\"` so they're never instantiated as runtime agents. `SerpentGuide.ouro/agent.json` tagged with `kind: \"library\"` to formalize what was previously an implicit `enabled: false` convention.",
+        "Activation gate `shouldFireRepairGuide` consumes the existing `untypedDegraded` / `typedDegraded` partitioning at `cli-exec.ts:6693-6694`. Fires when `untypedDegraded.length > 0` OR `typedDegraded.length >= 3`. The existing `--no-repair` flag remains the operator escape hatch — no new env toggle.",
+        "Drops the `~/AgentBundles/SerpentGuide.ouro/` override fallback in `getSpecialistIdentitySourceDir` — the in-repo bundle is now the only source. Reasoning per the planning doc: drift surface we don't currently need; cleaner ownership; no override path to maintain. Five referencing files updated (`hatch-flow.ts`, `cli-defaults.ts`, plus their tests). Same constraint extends to RepairGuide from day one — no override mechanism.",
+        "`parseRepairProposals` typed parser maps RepairGuide's structured-proposal output into the existing `RepairAction` catalog from `readiness-repair.ts` (`vault-unlock`, `provider-auth`, `provider-use`, etc.). Backfills lane variants and missing fields where unambiguous; rejects malformed proposals.",
+        "Structured Layer-2 + Layer-4 findings threaded into the diagnostic prompt (post-review fix). `AgenticRepairDeps` gains optional `driftFindings: DriftFinding[]` and `syncFindings: BootSyncProbeFinding[]`. `cli-exec.ts` collects both at boot and passes them through to `runAgenticRepair`; `buildUserMessage` appends each as a JSON block when non-empty so the `diagnose-bootstrap-drift` / `diagnose-broken-remote` / `diagnose-sync-blocked` skills can reason over real structured shapes (`lane`, `intentProvider`, `intentModel`, `observedProvider`, `observedModel`, `repairCommand` for drift; `classification`, `conflictFiles`, `advisory`, etc. for sync). Synthetic test (`repair-guide-skill-types.test.ts`) asserts skill markdown references current TS field names so the contract can't silently drift.",
+        "Slugger-style compound integration fixture as canonical acceptance test (per O6): bad bootstrap state + expired creds + broken remote + drift between agent.json and state/providers.json simultaneously. Validates the full layer 1→4→2→3 pipeline end-to-end.",
+        "All gates green: tsc clean, lint clean, code coverage 100%, nerves audit pass."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.518",
       "changes": [
         "Layer 2 of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Wires a pre-flight `git pull` over every sync-enabled bundle into `ouro up`, before per-agent provider live-checks, so the post-pull `agent.json` is what live-check reads. First PR in the sequence that mutates working trees; does NOT write to `state/` (verified by a meta-test).",

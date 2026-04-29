@@ -1,5 +1,4 @@
 import * as fs from "fs"
-import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
@@ -19,10 +18,10 @@ export interface SpecialistIdentityPick {
 }
 
 export function getSpecialistIdentitySourceDir(): string {
-  // Prefer ~/AgentBundles/ if it exists (user may have customized identities)
-  const userSource = path.join(os.homedir(), "AgentBundles", "SerpentGuide.ouro", "psyche", "identities")
-  if (fs.existsSync(userSource)) return userSource
-  // Fall back to the bundled copy shipped with the npm package
+  // Layer 3: in-repo is the only source. The previous `~/AgentBundles/`
+  // override branch was removed because there's no scenario where an
+  // operator should be editing identities outside the repo — they should
+  // edit the in-repo copy and let the daemon read from there.
   return path.join(__dirname, "..", "..", "..", "SerpentGuide.ouro", "psyche", "identities")
 }
 

@@ -448,7 +448,10 @@ export async function defaultRunSerpentGuide(): Promise<string | null> {
     setRuntimeLogger(createLogger({ level: "error" }))
 
     // Configure runtime: set agent identity + config override so runAgent
-    // doesn't try to read from ~/AgentBundles/SerpentGuide.ouro/
+    // doesn't try to read from ~/AgentBundles/SerpentGuide.ouro/. (As of
+    // Layer 3, SerpentGuide identities live in-repo only — the
+    // `~/AgentBundles/SerpentGuide.ouro/psyche/identities` override path
+    // was removed. The override path is no longer read or honored.)
     setAgentName("SerpentGuide")
     // Build specialist system prompt
     const soulText = loadSoulText(bundleSourceDir)
