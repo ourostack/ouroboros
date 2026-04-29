@@ -759,6 +759,9 @@ function bootPhasePlan(_daemonAlive: boolean): readonly string[] {
   return ["update check", "system setup", "sync probe", "starting daemon", "provider checks", "final daemon check"]
 }
 
+const FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS = 20_000
+const FINAL_DAEMON_HEALTH_SETTLE_POLL_INTERVAL_MS = 500
+
 /**
  * Layer 2: brief, scannable summary of a boot-sync-probe finding for the
  * progress reporter. Renderer-style hints (full repair guidance) live in
@@ -813,6 +816,8 @@ interface FinalDaemonCheckResult {
   ok: boolean
   summary: string
   message?: string
+  retryable?: boolean
+  reason?: string
 }
 
 function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
@@ -827,6 +832,37 @@ function finalDaemonFailureMessage(deps: OuroCliDeps, reason: string): string {
 }
 
 async function verifyDaemonReadyForHandoff(
+  deps: OuroCliDeps,
+  options: {
+    allowDegradedHealth?: boolean
+    settleTimeoutMs: number
+    settlePollIntervalMs: number
+    onSettling?: (reason: string) => void
+  },
+): Promise<FinalDaemonCheckResult> {
+  const settleTimeoutMs = options.settleTimeoutMs
+  const settlePollIntervalMs = options.settlePollIntervalMs
+  const settleDeadlineMs = cliNowMs(deps) + settleTimeoutMs
+  for (;;) {
+    const result = await verifyDaemonReadyForHandoffOnce(deps, options)
+    if (result.ok || !result.retryable || settleTimeoutMs === 0) return result
+    if (cliNowMs(deps) >= settleDeadlineMs) {
+      const reason = result.reason as string
+      return {
+        ...result,
+        message: finalDaemonFailureMessage(
+          deps,
+          `${reason} after waiting ${Math.ceil(settleTimeoutMs / 1_000)}s`,
+        ),
+      }
+    }
+    const reason = result.reason as string
+    options.onSettling?.(reason)
+    await cliSleep(deps, settlePollIntervalMs)
+  }
+}
+
+async function verifyDaemonReadyForHandoffOnce(
   deps: OuroCliDeps,
   options: { allowDegradedHealth?: boolean } = {},
 ): Promise<FinalDaemonCheckResult> {
@@ -878,13 +914,13 @@ async function verifyDaemonReadyForHandoff(
           summary: `runtime health ${payload.overview.health}`,
         }
       }
+      const reason = `runtime health is ${payload.overview.health}${detail}`
       return {
         ok: false,
         summary: `daemon health ${payload.overview.health}`,
-        message: finalDaemonFailureMessage(
-          deps,
-          `runtime health is ${payload.overview.health}${detail}`,
-        ),
+        message: finalDaemonFailureMessage(deps, reason),
+        retryable: true,
+        reason,
       }
     }
     const workerCount = payload.workers.length
@@ -6855,6 +6891,9 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         command.noRepair
         && ((daemonResult.stability?.degraded.length ?? 0) > 0 || providerDegraded.length > 0),
       ),
+      settleTimeoutMs: deps.finalDaemonHealthSettleTimeoutMs ?? FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS,
+      settlePollIntervalMs: deps.finalDaemonHealthSettlePollIntervalMs ?? FINAL_DAEMON_HEALTH_SETTLE_POLL_INTERVAL_MS,
+      onSettling: (reason) => progress.updateDetail(`${reason}\nwaiting for enabled senses to prove healthy`),
     })
     if (!finalDaemonCheck.ok) {
       ;(progress as { failPhase?: (label: string, detail?: string) => void }).failPhase?.(

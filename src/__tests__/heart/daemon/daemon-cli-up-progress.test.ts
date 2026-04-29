@@ -299,6 +299,7 @@ describe("ouro up: UpProgress integration", () => {
 
   it("does not hand off when the daemon answers with degraded runtime health", async () => {
     const deps = makeDeps({
+      finalDaemonHealthSettleTimeoutMs: 0,
       checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
       sendCommand: vi.fn(async (_socketPath, command) => {
         if (command.kind === "daemon.status") {
@@ -337,6 +338,117 @@ describe("ouro up: UpProgress integration", () => {
     expect(result).toContain("background service stopped before boot finished")
     expect(result).toContain("runtime health is warn")
     expect(result).toContain("slugger/bluebubbles: error - listener unreachable")
+  })
+
+  it("waits for transient degraded runtime health before handing off", async () => {
+    mocks.upProgressUpdateDetail.mockClear()
+    mocks.upProgressCompletePhase.mockClear()
+    let now = 0
+    let statusCalls = 0
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms
+    })
+    const deps = makeDeps({
+      now: () => now,
+      sleep,
+      finalDaemonHealthSettleTimeoutMs: 1_000,
+      finalDaemonHealthSettlePollIntervalMs: 100,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          statusCalls += 1
+          if (statusCalls === 2) {
+            return {
+              ok: true,
+              summary: "running",
+              data: {
+                overview: {
+                  daemon: "running",
+                  health: "warn",
+                  socketPath: "/tmp/ouro-test.sock",
+                  version: "0.1.0-alpha.20",
+                  lastUpdated: "2026-03-09T11:00:00.000Z",
+                  workerCount: 0,
+                  senseCount: 1,
+                },
+                senses: [
+                  {
+                    agent: "slugger",
+                    sense: "bluebubbles",
+                    enabled: true,
+                    status: "error",
+                    detail: "listener still starting",
+                  },
+                ],
+                workers: [],
+              },
+            }
+          }
+          return daemonStatusOk()
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).not.toContain("background service stopped before boot finished")
+    expect(sleep).toHaveBeenCalledWith(100)
+    expect(mocks.upProgressUpdateDetail).toHaveBeenCalledWith(
+      "runtime health is warn; slugger/bluebubbles: error - listener still starting\nwaiting for enabled senses to prove healthy",
+    )
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("final daemon check", "daemon answered")
+  })
+
+  it("reports the last degraded runtime health after the settle window expires", async () => {
+    let now = 0
+    let statusCalls = 0
+    const deps = makeDeps({
+      now: () => now,
+      sleep: vi.fn(async (ms: number) => {
+        now += ms
+      }),
+      finalDaemonHealthSettleTimeoutMs: 1_000,
+      finalDaemonHealthSettlePollIntervalMs: 1_000,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          statusCalls += 1
+          if (statusCalls === 1) return daemonStatusOk()
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 0,
+                senseCount: 1,
+              },
+              senses: [
+                {
+                  agent: "slugger",
+                  sense: "mail",
+                  enabled: true,
+                  status: "needs_config",
+                  detail: "missing vault runtime/config (slugger)",
+                },
+              ],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("runtime health is warn; slugger/mail: needs_config - missing vault runtime/config (slugger) after waiting 1s")
   })
 
   it("keeps daemon startup unresolved and surfaces replacement breadcrumbs when a drift restart does not answer", async () => {

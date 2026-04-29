@@ -173,6 +173,8 @@ export interface OuroCliDeps {
   startupStabilityWindowMs?: number
   startupTimeoutMs?: number
   startupRetryLimit?: number
+  finalDaemonHealthSettleTimeoutMs?: number
+  finalDaemonHealthSettlePollIntervalMs?: number
   reportDaemonStartupPhase?: (text: string) => void
   /**
    * Layer 2 boot sync probe injection — when set, called instead of the
