@@ -146,6 +146,15 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // Diagnostics-only utility; output is human-readable summary.
   "heart/session-stats-cli-main",
   "heart/session-stats",
+  // Layer 2 sync classifier: pure pattern-matcher mapping (error, context)
+  // to a SyncClassification. The orchestrator (boot-sync-probe.ts) owns
+  // observability via daemon.boot_sync_probe_start/end events; the
+  // post-turn push path (sync.ts) emits its own classification events.
+  "heart/sync-classification",
+  // Layer 2 timeout wrapper: pure soft/hard timeout abstraction over
+  // AbortController + setTimeout. Callers (boot-sync-probe.ts and any
+  // future consumer) own observability; the wrapper itself is mechanical.
+  "heart/timeouts",
 ]
 
 function isDispatchExempt(filePath: string): boolean {

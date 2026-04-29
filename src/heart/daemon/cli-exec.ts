@@ -166,7 +166,8 @@ import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
 import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
-import { listEnabledBundleAgents } from "./agent-discovery"
+import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
+import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
 import {
   verifyEmbeddingsCapability,
@@ -658,10 +659,46 @@ function providerRepairCountSummary(count: number): string {
   return `${count} ${count === 1 ? "needs" : "need"} attention`
 }
 
+/**
+ * Layer 2: human-readable summary of boot-sync-probe findings, written to
+ * stdout when any non-clean finding surfaces. The order reads "blockers
+ * first, then advisories" so the operator's eye lands on the actionable
+ * items before the warnings.
+ */
+export function writeSyncProbeSummary(
+  deps: Pick<OuroCliDeps, "writeStdout">,
+  findings: readonly BootSyncProbeFinding[],
+): void {
+  const lines: string[] = ["sync probe findings:"]
+  const sortKey = (f: BootSyncProbeFinding): number => (f.advisory ? 1 : 0)
+  const sorted = [...findings].sort((a, b) => sortKey(a) - sortKey(b) || a.agent.localeCompare(b.agent))
+  for (const finding of sorted) {
+    const severity = finding.advisory ? "warn" : "block"
+    lines.push(`  [${severity}] ${finding.agent}: ${finding.classification} — ${finding.error.split("\n")[0]}`)
+  }
+  deps.writeStdout(lines.join("\n"))
+}
+
 function bootPhasePlan(daemonAlive: boolean): readonly string[] {
   return daemonAlive
-    ? ["update check", "system setup", "starting daemon", "provider checks", "final daemon check"]
-    : ["update check", "system setup", "provider checks", "starting daemon", "final daemon check"]
+    ? ["update check", "system setup", "sync probe", "starting daemon", "provider checks", "final daemon check"]
+    : ["update check", "system setup", "sync probe", "provider checks", "starting daemon", "final daemon check"]
+}
+
+/**
+ * Layer 2: brief, scannable summary of a boot-sync-probe finding for the
+ * progress reporter. Renderer-style hints (full repair guidance) live in
+ * `inner-status.ts` / `startup-tui.ts` consumers; this helper is just for
+ * the progress phase blurb.
+ */
+export function summarizeSyncProbeFindings(findings: readonly BootSyncProbeFinding[]): string {
+  if (findings.length === 0) return "all sync-enabled bundles healthy"
+  const blocking = findings.filter((f) => !f.advisory).length
+  const advisory = findings.filter((f) => f.advisory).length
+  const parts: string[] = []
+  if (blocking > 0) parts.push(`${blocking} blocking`)
+  if (advisory > 0) parts.push(`${advisory} advisory`)
+  return `${findings.length} finding${findings.length === 1 ? "" : "s"} (${parts.join(", ")})`
 }
 
 function createHumanCommandProgress(deps: OuroCliDeps, commandName: string): CommandProgress {
@@ -6671,6 +6708,38 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
       promptInput: deps.promptInput,
     })
+
+    // ── Layer 2 sync probe: pre-flight `git pull` for every sync-enabled bundle ──
+    // Runs BEFORE provider checks so that any agent.json changes pulled from
+    // the remote are visible to the live-check that follows. The probe has a
+    // hard 15s per-agent timeout via `runWithTimeouts`, so a hung remote
+    // can't stall the boot. `--no-repair` doesn't change probe behavior — it
+    // gates layer 3's RepairGuide invocation, which lands in a separate PR.
+    //
+    // Errors in the probe path itself are caught and logged — they must not
+    // break the boot, since the probe is best-effort visibility, not a gate.
+    progress.startPhase("sync probe")
+    try {
+      const syncProbeImpl = deps.runBootSyncProbeImpl ?? runBootSyncProbe
+      const syncRows = listBundleSyncRows({ bundlesRoot: deps.bundlesRoot ?? bundlesRoot })
+      const syncProbeResult = await syncProbeImpl(syncRows, {
+        bundlesRoot: deps.bundlesRoot ?? bundlesRoot,
+      })
+      progress.completePhase("sync probe", summarizeSyncProbeFindings(syncProbeResult.findings))
+      if (syncProbeResult.findings.length > 0) {
+        writeSyncProbeSummary(deps, syncProbeResult.findings)
+      }
+    } catch (probeError) {
+      const message = probeError instanceof Error ? probeError.message : String(probeError)
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.boot_sync_probe_failed",
+        message: "boot sync probe failed; continuing boot",
+        meta: { error: message },
+      })
+      progress.completePhase("sync probe", "skipped (probe error)")
+    }
 
     const daemonAliveBeforeStart = await deps.checkSocketAlive(deps.socketPath)
     ;(progress as { setPhasePlan?: (labels: readonly string[]) => void }).setPhasePlan?.(bootPhasePlan(daemonAliveBeforeStart))

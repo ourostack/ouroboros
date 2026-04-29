@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.518",
+      "changes": [
+        "Layer 2 of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Wires a pre-flight `git pull` over every sync-enabled bundle into `ouro up`, before per-agent provider live-checks, so the post-pull `agent.json` is what live-check reads. First PR in the sequence that mutates working trees; does NOT write to `state/` (verified by a meta-test).",
+        "New sync failure taxonomy in `src/heart/sync-classification.ts`: `auth-failed`, `not-found-404`, `network-down`, `dirty-working-tree`, `non-fast-forward`, `merge-conflict`, `timeout-soft`, `timeout-hard`, `unknown` — extends `PendingSyncRecord.classification` additively (legacy `push_rejected`/`pull_rebase_conflict` still work). Pure pattern-matcher: priority order is abort → 404 → auth → network → dirty → conflict → non-fast-forward → unknown.",
+        "End-to-end `AbortSignal` plumbing. New `runWithTimeouts<T>` wrapper in `src/heart/timeouts.ts` (soft 8s warns, hard 15s aborts via `AbortController`); new async sibling `preTurnPullAsync` in `src/heart/sync.ts` that uses `child_process.execFile(..., { signal })` so the kernel kills the git child when the hard timeout fires. Original sync `preTurnPull` preserved for the per-turn pipeline. Two env knobs for the boot-sync probe: `OURO_BOOT_TIMEOUT_GIT_SOFT` (8000ms) and `OURO_BOOT_TIMEOUT_GIT_HARD` (15000ms).",
+        "New `runBootSyncProbe` orchestrator in `src/heart/daemon/boot-sync-probe.ts` aggregates per-bundle findings (each tagged `advisory: true|false`). Wired into `daemon.up` as a new \"sync probe\" boot phase between manual-clone-detection and provider checks. Failures during the probe itself are caught and surfaced as a warning event without blocking the boot. Tests inject `runBootSyncProbeImpl` to keep CI off the developer's home bundles.",
+        "9903 tests pass (518 files; +19 new). Coverage gate clean (cli-exec.ts 99.33% → 100%). Slow-remote integration test proves boot doesn't hang on a hung remote (probe aborts within `hardMs`). Unit 7 meta-test enforces no-state-writes invariant on the three new files."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.517",
       "changes": [
         "Layer 4 of the harness-hardening sequence (PR 2 of 4 in 1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Detects per-lane drift between each agent's intent (committed `agent.json`) and the observed binding on this machine (`state/providers.json`), surfaces the drift through the existing `EffectiveProviderReadiness.reason: \"provider-model-changed\"` vocabulary, and emits a copy-pasteable `ouro use` repair proposal. Read-only: the PR never mutates `state/providers.json` and never invokes the `ouro use` CLI surface.",

@@ -88,6 +88,9 @@ function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
     checkSocketAlive: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
     cleanupStaleSocket: vi.fn(),
     fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+    // Layer 2: stub the boot sync probe so tests don't hit the real git op
+    // path against the developer's home bundles.
+    runBootSyncProbeImpl: vi.fn(async () => ({ findings: [], durationMs: 0 })),
     ...overrides,
   }
 }

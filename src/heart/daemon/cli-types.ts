@@ -174,6 +174,12 @@ export interface OuroCliDeps {
   startupTimeoutMs?: number
   startupRetryLimit?: number
   reportDaemonStartupPhase?: (text: string) => void
+  /**
+   * Layer 2 boot sync probe injection — when set, called instead of the
+   * real `runBootSyncProbe`. Tests inject a no-op stub so they don't trigger
+   * real `git pull` invocations against the developer's home bundles.
+   */
+  runBootSyncProbeImpl?: typeof import("./boot-sync-probe").runBootSyncProbe
 }
 
 export interface SessionEntry {

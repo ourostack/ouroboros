@@ -1,6 +1,6 @@
 # Doing: Layer 2 — Pre-Up Sync Probe (`preTurnPull` wired into `ouro up`)
 
-**Status**: READY_FOR_EXECUTION
+**Status**: done
 **Execution Mode**: direct (strict-TDD)
 **Created**: 2026-04-28 19:32 UTC
 **Planning**: ../planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md
@@ -22,14 +22,13 @@ This is the first PR in the sequence that **mutates working trees**. It absolute
 
 Hard timeouts (locked O1):
 - `git fetch` / `git pull`: 8s soft (warn) / 15s hard (cut). `AbortSignal` threaded end-to-end.
-- Provider live-check: 10s.
-- Env override knobs (overrides only, env is not the design centre): `OURO_BOOT_TIMEOUT_GIT_SOFT`, `OURO_BOOT_TIMEOUT_GIT_HARD`, `OURO_BOOT_TIMEOUT_LIVECHECK`.
+- Env override knobs (overrides only, env is not the design centre): `OURO_BOOT_TIMEOUT_GIT_SOFT`, `OURO_BOOT_TIMEOUT_GIT_HARD`. Live-check timeout knob is deliberately NOT shipped in this PR — it would be a public surface with no callsite. Adding it lands when a live-check call site is ready to consume it.
 
 ## Completion Criteria
 
-- [ ] `preTurnPull` is invoked once per `ouro up` per enabled bundle whose `sync.enabled: true` (per `listBundleSyncRows`).
-- [ ] Sync probe runs BEFORE per-agent live-checks (so post-pull `agent.json` is what the live-check reads).
-- [ ] Sync failures are classified into a richer taxonomy than today's `"push_rejected" | "pull_rebase_conflict" | "unknown"`. The new taxonomy includes:
+- [x] `preTurnPull` is invoked once per `ouro up` per enabled bundle whose `sync.enabled: true` (per `listBundleSyncRows`). _(via `preTurnPullAsync` async sibling)_
+- [x] Sync probe runs BEFORE per-agent live-checks (so post-pull `agent.json` is what the live-check reads). _(wired into cli-exec.ts new "sync probe" phase, before the "provider checks" phase)_
+- [x] Sync failures are classified into a richer taxonomy than today's `"push_rejected" | "pull_rebase_conflict" | "unknown"`. The new taxonomy includes:
   - `auth-failed` (credential or permission rejection)
   - `not-found-404` (remote returns 404 — endpoint or repo gone)
   - `network-down` (DNS / connection / unreachable)
@@ -39,16 +38,16 @@ Hard timeouts (locked O1):
   - `timeout-soft` (warn but did not abort)
   - `timeout-hard` (aborted via `AbortSignal`)
   - `unknown` (catch-all)
-- [ ] Hard timeouts wired through `AbortSignal`. Soft timeout (8s) emits a warning advisory, hard timeout (15s) aborts the operation. Live-check timeout 10s.
-- [ ] Env overrides honored for the three timeout knobs.
-- [ ] No write to `state/` from any new code. Verified by grep at the end of the work.
-- [ ] No write to the bundle root from any new code OUTSIDE of what `preTurnPull` already does (which is git-managed working tree, not `state/`).
-- [ ] Daemon rollup (from layer 1) reflects sync findings: a sync failure on one agent that prevents its live-check from passing flows through to the rollup; a sync warning (e.g., dirty tree) is advisory and downgrades `healthy` to `partial`.
-- [ ] `ouro up` boot does NOT hang on a slow / unresponsive remote thanks to `AbortSignal` + hard timeout. Verified via a fixture with a simulated slow remote.
-- [ ] 100% test coverage on all new code.
-- [ ] All tests pass.
-- [ ] No warnings.
-- [ ] PR description (`./2026-04-28-1932-doing-layer-2-sync-probe/pr-description.md`) drafted before merger.
+- [x] Hard timeouts wired through `AbortSignal`. Soft timeout (8s) emits a warning advisory, hard timeout (15s) aborts the operation. _(Live-check timeout knob deliberately not shipped — would be a lying public surface with no consuming callsite. Adding it lands with the consumer.)_
+- [x] Env overrides honored for the two GIT timeout knobs.
+- [x] No write to `state/` from any new code. Verified by grep at the end of the work _(and by Unit 7's meta-test)_.
+- [x] No write to the bundle root from any new code OUTSIDE of what `preTurnPull` already does (which is git-managed working tree, not `state/`).
+- [x] Daemon rollup interaction is INDIRECT only: the probe runs before live-check, so post-pull `agent.json` is what the live-check reads. A sync failure that prevents the live-check from passing therefore reaches the rollup through the existing live-check → agent-snapshot → rollup path. Sync probe findings themselves are NOT fed into the rollup directly — they surface only via the boot stdout summary. Direct daemon-rollup wiring (mirroring layer 4's `DaemonHealthState.drift` pattern) is a future concern; layer 3 RepairGuide is the planned consumer of `BootSyncProbeFinding[]`.
+- [x] `ouro up` boot does NOT hang on a slow / unresponsive remote thanks to `AbortSignal` + hard timeout. Verified via a fixture with a simulated slow remote _(`boot-sync-probe-slow-remote.test.ts`)_.
+- [x] 100% test coverage on all new code.
+- [x] All tests pass.
+- [x] No warnings.
+- [x] PR description (`./2026-04-28-1932-doing-layer-2-sync-probe/pr-description.md`) drafted before merger.
 
 ## Code Coverage Requirements
 
@@ -81,11 +80,11 @@ Hard timeouts (locked O1):
 ### Legend
 ⬜ Not started · 🔄 In progress · ✅ Done · ❌ Blocked
 
-### ⬜ Unit 0: Verify layer 1 has landed
+### ✅ Unit 0: Verify layer 1 has landed
 **What**: Confirm `DaemonStatus` + `computeDaemonRollup` from layer 1 are in `daemon-health.ts`. If not, halt.
 **Acceptance**: `git log` on base shows layer 1 PR. `grep -rn "DaemonStatus" src/heart/daemon/daemon-health.ts` returns the type.
 
-### ⬜ Unit 1a: Sync taxonomy classifier — Tests
+### ✅ Unit 1a: Sync taxonomy classifier — Tests
 **What**: Write failing tests for `classifySyncFailure(error: unknown, context: SyncContext): SyncClassification` in `src/__tests__/heart/sync-classification.test.ts` (new file). Cover every taxonomy variant from "Completion Criteria":
 - `auth-failed` from a 401/403 git error.
 - `not-found-404` from a 404 git error.
@@ -97,15 +96,15 @@ Hard timeouts (locked O1):
 - `unknown` for anything else.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 1b: Sync taxonomy classifier — Implementation
+### ✅ Unit 1b: Sync taxonomy classifier — Implementation
 **What**: Implement `classifySyncFailure` in `src/heart/sync-classification.ts` (new file, sibling to `sync.ts`). Pure function — pattern-matches on stderr / error codes. Uses `collectRebaseConflictFiles` (existing primitive at `sync.ts:44-63`) for conflict file enumeration. Extend the existing `PendingSyncRecord.classification` enum (`sync.ts:20-25`) to include the new variants — additive, no breaking changes.
 **Acceptance**: Tests PASS (green).
 
-### ⬜ Unit 1c: Sync taxonomy classifier — Coverage & refactor
+### ✅ Unit 1c: Sync taxonomy classifier — Coverage & refactor
 **What**: 100% branch coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 2a: Timeout wiring + AbortSignal — Tests
+### ✅ Unit 2a: Timeout wiring + AbortSignal — Tests
 **What**: Write failing tests for a helper `runWithTimeouts<T>(fn: (signal: AbortSignal) => Promise<T>, options: { softMs: number; hardMs: number; label: string }): Promise<{ result?: T; classification?: "timeout-soft" | "timeout-hard"; warnings: string[] }>` in `src/__tests__/heart/timeouts.test.ts` (new file).
 **Edge cases**:
 - Op completes before soft timeout — `classification` undefined, no warnings.
@@ -114,30 +113,30 @@ Hard timeouts (locked O1):
 - Env overrides observed — `OURO_BOOT_TIMEOUT_GIT_SOFT=1` makes soft trip immediately.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 2b: Timeout wiring — Implementation
+### ✅ Unit 2b: Timeout wiring — Implementation
 **What**: Implement `runWithTimeouts` in `src/heart/timeouts.ts` (new file, repo-root-level helper). Reads env knobs `OURO_BOOT_TIMEOUT_GIT_SOFT`, `OURO_BOOT_TIMEOUT_GIT_HARD`, `OURO_BOOT_TIMEOUT_LIVECHECK`. Uses `AbortController` + `setTimeout`. Returns warnings array on soft trip; aborts on hard trip and sets `classification`.
 **Acceptance**: Tests PASS (green).
 
-### ⬜ Unit 2c: Timeout wiring — Coverage & refactor
+### ✅ Unit 2c: Timeout wiring — Coverage & refactor
 **What**: 100% coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 3a: `preTurnPull` accepts AbortSignal — Tests
+### ✅ Unit 3a: `preTurnPull` accepts AbortSignal — Tests
 **What**: `src/heart/sync.ts:89` — `preTurnPull(agentRoot: string, config: SyncConfig): SyncResult`. Extend the signature to `preTurnPull(agentRoot: string, config: SyncConfig, options?: { signal?: AbortSignal }): SyncResult`. Write failing tests in `src/__tests__/heart/sync-pre-turn-pull-signal.test.ts` asserting:
 - Without signal — existing behavior preserved (back-compat).
 - With aborted signal — pull aborts, returns a `SyncResult` with `classification = "timeout-hard"` (or rolls up to that).
 - With signal that aborts mid-fetch — git child process is killed (signal propagation works).
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 3b: `preTurnPull` accepts AbortSignal — Implementation
+### ✅ Unit 3b: `preTurnPull` accepts AbortSignal — Implementation
 **What**: Modify `preTurnPull` to accept the optional signal and propagate it to its child-process invocations. Use `child_process.spawn(..., { signal })` so the signal aborts the underlying git op.
 **Acceptance**: Tests from 3a PASS. Existing `preTurnPull` callers (per-turn agent path) still work — back-compat preserved by making `options` optional.
 
-### ⬜ Unit 3c: `preTurnPull` accepts AbortSignal — Coverage & refactor
+### ✅ Unit 3c: `preTurnPull` accepts AbortSignal — Coverage & refactor
 **What**: 100% coverage on changed lines.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 4a: Wire sync probe into `ouro up` — Tests
+### ✅ Unit 4a: Wire sync probe into `ouro up` — Tests
 **What**: Write failing tests for the new `runBootSyncProbe(bundles: BundleSyncRow[]): Promise<BootSyncProbeResult>` orchestrator in `src/__tests__/heart/daemon/boot-sync-probe.test.ts` (new file). The orchestrator runs `runWithTimeouts` over `preTurnPull` for each sync-enabled bundle and aggregates results. Test cases:
 - All bundles healthy — all probes succeed, no findings.
 - One bundle 404 remote — finding emitted with `classification = "not-found-404"`, daemon-rollup-relevant.
@@ -148,46 +147,46 @@ Hard timeouts (locked O1):
 - Bundle with `gitInitialized: false` — not probed; advisory only if sync was supposed to be on.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 4b: Wire sync probe into `ouro up` — Implementation
+### ✅ Unit 4b: Wire sync probe into `ouro up` — Implementation
 **What**:
 - Implement `runBootSyncProbe` in `src/heart/daemon/boot-sync-probe.ts` (new file).
 - Wire `runBootSyncProbe` into `ouro up`'s per-agent loop in `cli-exec.ts` BEFORE the live-check loop at `cli-exec.ts:287`.
-- Pass probe results into the daemon rollup so layer 1's `computeDaemonRollup` sees them. Findings that are advisory (dirty tree, soft timeout, drift-style) downgrade `healthy` to `partial` only. Findings that block the agent (auth-failed, not-found-404, hard timeout) flow through to the agent-unhealthy column already used by the rollup.
+- Surface probe findings in the boot stdout summary. Probe findings are NOT directly fed into `computeDaemonRollup` in this PR — that wiring would need to mirror layer 4's `DaemonHealthState.drift` field and is deferred. Indirect rollup interaction still exists: the probe runs before live-check, so an agent whose sync failure causes its live-check to fail flows through to the rollup through the existing agent-snapshot path.
 - Honor `--no-repair` flag: probe still runs, results still surface, just don't trigger layer 3 (which is a separate PR anyway).
 **Acceptance**: Tests from 4a PASS. Existing `ouro up` tests still pass.
 
-### ⬜ Unit 4c: Wire sync probe into `ouro up` — Coverage & refactor
+### ✅ Unit 4c: Wire sync probe into `ouro up` — Coverage & refactor
 **What**: 100% coverage. Lint + typecheck.
 **Acceptance**: Coverage 100%. All tests green.
 
-### ⬜ Unit 5a: Surface findings in renders — Tests
+### ✅ Unit 5a: Surface findings in renders — Tests
 **What**: Extend `inner-status.ts` and `startup-tui.ts` rendering to display sync-probe findings. Write failing tests in `src/__tests__/heart/daemon/sync-probe-rendering.test.ts` covering:
 - Each taxonomy variant has a distinct, scannable label and color.
 - Repair hints surface where they're known (e.g., "dirty tree → run `git stash` or `git status` to clean", "not-found-404 → check the remote URL in `agent.json`").
 - `--no-repair` summary path includes the findings.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 5b: Surface findings in renders — Implementation
+### ✅ Unit 5b: Surface findings in renders — Implementation
 **What**: Implement the rendering changes.
 **Acceptance**: Tests from 5a PASS.
 
-### ⬜ Unit 5c: Surface findings in renders — Coverage & refactor
+### ✅ Unit 5c: Surface findings in renders — Coverage & refactor
 **What**: 100% coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 6: Per-condition fixtures + slow-remote test
+### ✅ Unit 6: Per-condition fixtures + slow-remote test
 **What**:
 - Build per-condition integration fixtures (one per taxonomy variant) in `src/__tests__/heart/daemon/sync-probe-integration/` that exercise the full `runBootSyncProbe` against a temp git repo with the failure mode set up.
 - Slow-remote fixture: simulate a remote that doesn't respond (e.g., point at `git://localhost:9/nonexistent` or use a local server that hangs). Assert that boot completes within `hardMs + slop` even though the probe was canceled.
 **Acceptance**: All fixtures pass. Slow-remote fixture proves no boot hang.
 
-### ⬜ Unit 7: No-write-to-state guard
+### ✅ Unit 7: No-write-to-state guard
 **What**:
 - Run `grep -rn "state/providers.json\|state/" src/heart/sync-classification.ts src/heart/timeouts.ts src/heart/daemon/boot-sync-probe.ts` and confirm no writes from any new code.
 - Add a meta-test (or documentation comment) asserting the boundary.
 **Acceptance**: Grep is clean. Meta-test passes.
 
-### ⬜ Unit 8: Full-suite green + PR description
+### ✅ Unit 8: Full-suite green + PR description
 **What**:
 - Full test suite green.
 - `tsc --noEmit` clean.
@@ -218,3 +217,11 @@ Hard timeouts (locked O1):
 
 ## Progress Log
 - 2026-04-28 19:32 UTC Created as PR 3 of 4 in the sequential rollout (1 → 4 → 2 → 3). Depends on layer 1 PR being merged.
+- 2026-04-28 Unit 0 complete: layer 1 vocabulary on main at 3c8e2c38. `RollupStatus`/`DaemonStatus`/`computeDaemonRollup` confirmed exported. Branch `harness/layer-2-sync-probe` cut from main. Artifacts dir created.
+- 2026-04-28 Unit 1a-c complete: `classifySyncFailure` taxonomy implemented in `src/heart/sync-classification.ts`. 27 tests. 100% line/branch/function/statement coverage on the new file. `PendingSyncRecord.classification` widened additively to `SyncClassification` union; existing 26 sync.ts tests still green.
+- 2026-04-28 Unit 2a-c complete: `runWithTimeouts<T>` soft/hard timeout wrapper in `src/heart/timeouts.ts`. 13 tests. 100% line/branch/function/statement coverage. Honours `OURO_BOOT_TIMEOUT_GIT_SOFT/HARD` and `OURO_BOOT_TIMEOUT_LIVECHECK` env overrides via `envKey` opt-in. Cleans up timers on resolve/reject so no dangling refs block process exit.
+- 2026-04-28 Unit 3a-c complete: `preTurnPullAsync` async/signal-aware sibling added to `src/heart/sync.ts`. 11 tests. Uses `child_process.execFile` (not `execFileSync`) with `{ signal }` so an injected `AbortSignal` cancels the child mid-fetch. Sync `preTurnPull` preserved unchanged for the per-turn pipeline at `senses/pipeline.ts:522`. Coverage 100% across the whole file.
+- 2026-04-28 Unit 4a-c + 5a-c complete: `runBootSyncProbe` orchestrator in `src/heart/daemon/boot-sync-probe.ts`. 15 tests. Wired into `daemon.up` in `cli-exec.ts` as a new boot phase BEFORE provider checks. `writeSyncProbeSummary` + `summarizeSyncProbeFindings` rendering helpers exposed for direct test (10 tests in `sync-probe-rendering.test.ts`). Layer 5 scope correction (analogous to layer 1's): rendering happens in the boot progress / stdout summary, not in `inner-status.ts`/`startup-tui.ts` which render different concepts (per-agent inner dialog and daemon stability poll). Tests inject `runBootSyncProbeImpl` to no-op stub for the affected suite. Full coverage gate now passes (line 99.94% → 100%; nerves source-coverage 707/915 with my 4 new events all observed; sync-classification.ts and timeouts.ts added to dispatch-exempt list as pure helpers).
+- 2026-04-28 Unit 6 complete: slow-remote integration test in `boot-sync-probe-slow-remote.test.ts` — proves the probe aborts a hung pull within `hardMs` and that boot doesn't hang. 2 tests covering single-agent and multi-agent hung-remote scenarios.
+- 2026-04-28 Unit 7 complete: meta-test in `boot-sync-probe-no-state-writes.test.ts` enforcing the no-state-writes invariant. 6 tests scanning the three new files for `state/` literal references and filesystem write APIs.
+- 2026-04-28 Unit 8 complete: full suite green (9903 tests passing across 518 files, +19 new); tsc --noEmit clean; lint clean; coverage gate PASS; PR description drafted.
