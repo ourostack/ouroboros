@@ -1393,6 +1393,10 @@ function countPendingRecoveryCandidates(agentName: string): number {
 }
 
 function countPendingCapturedInboundMessages(agentName: string): number {
+  return listPendingCapturedInboundMessages(agentName).length
+}
+
+function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeof listRecordedBlueBubblesInbound> {
   const seenMessageGuids = new Set<string>()
   return listRecordedBlueBubblesInbound(agentName)
     .filter((entry) => {
@@ -1401,7 +1405,6 @@ function countPendingCapturedInboundMessages(agentName: string): number {
       return true
     })
     .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
-    .length
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -1429,6 +1432,29 @@ function formatBlueBubblesRuntimeDetail(queued: number, failed: number): string 
   return "upstream reachable"
 }
 
+function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now()): {
+  pendingRecoveryCount: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
+} {
+  const pendingRecordedAt = [
+    ...listPendingCapturedInboundMessages(agentName).map((entry) => entry.recordedAt),
+    ...listBlueBubblesRecoveryCandidates(agentName)
+      .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
+      .map((entry) => entry.recordedAt),
+  ]
+    .map((value) => ({ value, ms: Date.parse(value) }))
+    .filter((entry): entry is { value: string; ms: number } => Number.isFinite(entry.ms))
+    .sort((left, right) => left.ms - right.ms)
+
+  const oldest = pendingRecordedAt[0]
+  return {
+    pendingRecoveryCount: countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName),
+    oldestPendingRecoveryAt: oldest?.value,
+    oldestPendingRecoveryAgeMs: oldest ? Math.max(0, nowMs - oldest.ms) : undefined,
+  }
+}
+
 async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<void> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -1438,13 +1464,13 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
 
   try {
     await client.checkHealth()
-    const capturedPending = countPendingCapturedInboundMessages(agentName)
-    const recoveryPending = countPendingRecoveryCandidates(agentName)
+    const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
       detail: "upstream reachable; recovery pass running",
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: capturedPending + recoveryPending,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingBeforeCatchup,
       lastRecoveredAt: previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
@@ -1452,7 +1478,8 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       processTurns: false,
     })
     const failed = catchUp.failed
-    const queued = capturedPending + recoveryPending + (catchUp.queued ?? 0)
+    const pendingAfterCatchup = blueBubblesPendingRecoverySnapshot(agentName)
+    const queued = pendingAfterCatchup.pendingRecoveryCount
     // upstreamStatus reflects whether BlueBubbles itself and the local bridge
     // can answer webhook traffic. The daemon status layer treats
     // pendingRecoveryCount as unhealthy for user-facing iMessage reachability,
@@ -1461,6 +1488,8 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       upstreamStatus: "ok",
       detail: formatBlueBubblesRuntimeDetail(queued, failed),
       lastCheckedAt: checkedAt,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingAfterCatchup,
       pendingRecoveryCount: queued,
       failedRecoveryCount: failed,
       lastRecoveredAt: previousState.lastRecoveredAt,
@@ -1471,7 +1500,8 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       upstreamStatus: "error",
       detail: error instanceof Error ? error.message : String(error),
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName),
+      proofMethod: "bluebubbles.checkHealth",
+      ...blueBubblesPendingRecoverySnapshot(agentName),
       failedRecoveryCount: 0,
     })
   }
@@ -1490,14 +1520,15 @@ export async function recoverQueuedBlueBubblesMessages(
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
   const previousState = readBlueBubblesRuntimeState(agentName)
-  const initialPending = countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName)
+  const initialPending = blueBubblesPendingRecoverySnapshot(agentName).pendingRecoveryCount
   if (initialPending === 0) {
     return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 }
   }
 
   const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps)
   const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
-  const pendingRecoveryCount = countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName)
+  const pendingSnapshot = blueBubblesPendingRecoverySnapshot(agentName)
+  const pendingRecoveryCount = pendingSnapshot.pendingRecoveryCount
   const failed = captured.failed + recovery.failed
   const recovered = captured.recovered + recovery.recovered
   const skipped = captured.skipped + recovery.skipped
@@ -1509,7 +1540,8 @@ export async function recoverQueuedBlueBubblesMessages(
       upstreamStatus: "ok",
       detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed),
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingSnapshot,
       failedRecoveryCount: failed,
       lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
@@ -1519,7 +1551,8 @@ export async function recoverQueuedBlueBubblesMessages(
       upstreamStatus: "error",
       detail: error instanceof Error ? error.message : String(error),
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount,
+      proofMethod: "bluebubbles.checkHealth",
+      ...pendingSnapshot,
       failedRecoveryCount: failed,
       lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
@@ -1902,10 +1935,26 @@ export function createBlueBubblesWebhookHandler(
       return
     }
 
+    let normalized: BlueBubblesNormalizedEvent
     try {
-      const result = await handleBlueBubblesEvent(payload, deps)
-      writeJson(res, 200, result)
+      normalized = normalizeBlueBubblesEvent(payload)
     } catch (error) {
+      if (error instanceof BlueBubblesIgnoredEventError) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_event_skipped",
+          message: "skipped ignorable bluebubbles event",
+          meta: {
+            eventType: error.eventType,
+          },
+        })
+        writeJson(res, 200, {
+          handled: true,
+          notifiedAgent: false,
+          reason: "ignored",
+        })
+        return
+      }
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -1918,7 +1967,51 @@ export function createBlueBubblesWebhookHandler(
       writeJson(res, 500, {
         error: error instanceof Error ? error.message : String(error),
       })
+      return
     }
+
+    const resolvedDeps = { ...defaultDeps, ...deps }
+    if (normalized.kind === "message" && !normalized.fromMe) {
+      recordBlueBubblesInbound(resolvedDeps.getAgentName(), normalized, "webhook")
+    } else if (normalized.kind === "mutation") {
+      try {
+        resolvedDeps.recordMutation(resolvedDeps.getAgentName(), normalized)
+      } catch (error) {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_mutation_log_error",
+          message: "failed recording bluebubbles mutation sidecar",
+          meta: {
+            messageGuid: normalized.messageGuid,
+            mutationType: normalized.mutationType,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+    }
+
+    writeJson(res, 200, {
+      handled: true,
+      notifiedAgent: false,
+      kind: normalized.kind,
+      queued: true,
+      reason: "queued",
+    })
+
+    setTimeout(() => {
+      void handleBlueBubblesEvent(payload, deps).catch((error) => {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.bluebubbles_webhook_async_error",
+          message: "bluebubbles webhook async handling failed after durable capture",
+          meta: {
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      })
+    }, 0)
   }
 }
 

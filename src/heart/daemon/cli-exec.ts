@@ -864,6 +864,20 @@ async function verifyDaemonReadyForHandoff(deps: OuroCliDeps): Promise<FinalDaem
         ),
       }
     }
+    if (payload.overview.health !== "ok") {
+      const degradedSenses = payload.senses
+        .filter((sense) => sense.enabled && !["running", "interactive", "disabled", "not_attached"].includes(sense.status))
+        .map((sense) => `${sense.agent}/${sense.sense}: ${sense.status} - ${sense.detail}`)
+      const detail = degradedSenses.length > 0 ? `; ${degradedSenses.join("; ")}` : ""
+      return {
+        ok: false,
+        summary: `daemon health ${payload.overview.health}`,
+        message: finalDaemonFailureMessage(
+          deps,
+          `runtime health is ${payload.overview.health}${detail}`,
+        ),
+      }
+    }
     const workerCount = payload.workers.length
     return {
       ok: true,

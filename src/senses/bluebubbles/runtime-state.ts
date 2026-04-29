@@ -7,8 +7,11 @@ export interface BlueBubblesRuntimeState {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  proofMethod?: string
   pendingRecoveryCount: number
   failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
   lastRecoveredAt?: string
   lastRecoveredMessageGuid?: string
 }
@@ -45,10 +48,19 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
         ? parsed.detail
         : DEFAULT_RUNTIME_STATE.detail,
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
+        ? parsed.proofMethod
+        : undefined,
       pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
         ? parsed.pendingRecoveryCount
         : 0,
       ...(typeof failedRecoveryCount === "number" ? { failedRecoveryCount } : {}),
+      oldestPendingRecoveryAt: typeof parsed.oldestPendingRecoveryAt === "string"
+        ? parsed.oldestPendingRecoveryAt
+        : undefined,
+      oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
+        ? parsed.oldestPendingRecoveryAgeMs
+        : undefined,
       lastRecoveredAt: typeof parsed.lastRecoveredAt === "string" ? parsed.lastRecoveredAt : undefined,
       lastRecoveredMessageGuid: typeof parsed.lastRecoveredMessageGuid === "string"
         ? parsed.lastRecoveredMessageGuid

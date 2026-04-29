@@ -40,6 +40,16 @@ interface StatusSenseRow {
   enabled: boolean
   status: string
   detail: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
 }
 
 interface StatusWorkerRow {
@@ -147,14 +157,35 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const detail = stringField(row.detail)
     const enabled = booleanField(row.enabled)
     if (!agent || !sense || !status || detail === null || enabled === null) return null
-    return {
+    const parsed: StatusSenseRow = {
       agent,
       sense,
       label: stringField(row.label) ?? undefined,
       enabled,
       status,
       detail,
-    } satisfies StatusSenseRow
+    }
+    const proofMethod = stringField(row.proofMethod)
+    const lastProofAt = stringField(row.lastProofAt)
+    const proofAgeMs = numberField(row.proofAgeMs)
+    const lastFailure = stringField(row.lastFailure)
+    const failureLayer = stringField(row.failureLayer)
+    const recoveryAction = stringField(row.recoveryAction)
+    const pendingRecoveryCount = numberField(row.pendingRecoveryCount)
+    const failedRecoveryCount = numberField(row.failedRecoveryCount)
+    const oldestPendingRecoveryAt = stringField(row.oldestPendingRecoveryAt)
+    const oldestPendingRecoveryAgeMs = numberField(row.oldestPendingRecoveryAgeMs)
+    if (proofMethod !== null) parsed.proofMethod = proofMethod
+    if (lastProofAt !== null) parsed.lastProofAt = lastProofAt
+    if (proofAgeMs !== null) parsed.proofAgeMs = proofAgeMs
+    if (lastFailure !== null) parsed.lastFailure = lastFailure
+    if (failureLayer !== null) parsed.failureLayer = failureLayer
+    if (recoveryAction !== null) parsed.recoveryAction = recoveryAction
+    if (pendingRecoveryCount !== null) parsed.pendingRecoveryCount = pendingRecoveryCount
+    if (failedRecoveryCount !== null) parsed.failedRecoveryCount = failedRecoveryCount
+    if (oldestPendingRecoveryAt !== null) parsed.oldestPendingRecoveryAt = oldestPendingRecoveryAt
+    if (oldestPendingRecoveryAgeMs !== null) parsed.oldestPendingRecoveryAgeMs = oldestPendingRecoveryAgeMs
+    return parsed
   })
 
   const parsedWorkers = workers.map((entry) => {

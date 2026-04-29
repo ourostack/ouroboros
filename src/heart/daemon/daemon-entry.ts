@@ -127,6 +127,10 @@ const healthMonitor = new HealthMonitor({
   onCriticalAgent: (agentName) => {
     try { processManager.restartAgent(agentName) } catch { /* recovery is best-effort */ }
   },
+  /* v8 ignore next 3 -- wiring: delegates to senseManager.restartSense which has focused tests @preserve */
+  onCriticalSense: (managedName) => {
+    try { void senseManager.restartSense(managedName) } catch { /* recovery is best-effort */ }
+  },
 })
 
 const habitSchedulers: HabitScheduler[] = []

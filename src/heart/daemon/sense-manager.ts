@@ -25,6 +25,16 @@ export interface DaemonSenseRow {
   enabled: boolean
   status: SenseStatus
   detail: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
 }
 
 export interface DaemonSenseManagerLike {
@@ -34,6 +44,7 @@ export interface DaemonSenseManagerLike {
   listSenseRows(): DaemonSenseRow[]
   listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
+  restartSense?(managedName: string): Promise<void>
 }
 
 export interface DaemonSenseManagerOptions {
@@ -43,6 +54,7 @@ export interface DaemonSenseManagerOptions {
     startAutoStartAgents(): Promise<void>
     triggerAutoStartAgents?(): void
     startAgent?(agent: string): Promise<void>
+    restartAgent?(agent: string): Promise<void>
     stopAll(): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
@@ -57,6 +69,16 @@ interface SenseConfigFacts {
 interface SenseRuntimeFacts {
   runtime?: "running" | "error"
   detail?: string
+  proofMethod?: string
+  lastProofAt?: string
+  proofAgeMs?: number
+  lastFailure?: string
+  failureLayer?: string
+  recoveryAction?: string
+  pendingRecoveryCount?: number
+  failedRecoveryCount?: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
 }
 
 interface AgentSenseContext {
@@ -305,8 +327,11 @@ interface BlueBubblesRuntimeStateSlice {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  proofMethod?: string
   pendingRecoveryCount: number
   failedRecoveryCount: number
+  oldestPendingRecoveryAt?: string
+  oldestPendingRecoveryAgeMs?: number
 }
 
 function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStateSlice {
@@ -322,12 +347,19 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         ? parsed.detail
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      proofMethod: typeof parsed.proofMethod === "string" && parsed.proofMethod.trim()
+        ? parsed.proofMethod
+        : undefined,
       pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
         ? parsed.pendingRecoveryCount
         : 0,
       failedRecoveryCount: typeof parsed.failedRecoveryCount === "number" && Number.isFinite(parsed.failedRecoveryCount)
         ? parsed.failedRecoveryCount
         : 0,
+      oldestPendingRecoveryAt: typeof parsed.oldestPendingRecoveryAt === "string" ? parsed.oldestPendingRecoveryAt : undefined,
+      oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
+        ? parsed.oldestPendingRecoveryAgeMs
+        : undefined,
     }
     /* v8 ignore stop */
   /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
@@ -349,14 +381,32 @@ function readBlueBubblesRuntimeFacts(
   }
 
   const state = readBlueBubblesRuntimeJson(runtimePath)
+  const checkedAtMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : Number.NaN
+  const proofFacts = {
+    proofMethod: state.proofMethod ?? "bluebubbles.checkHealth",
+    lastProofAt: state.lastCheckedAt,
+    proofAgeMs: Number.isFinite(checkedAtMs) ? Math.max(0, Date.now() - checkedAtMs) : undefined,
+    pendingRecoveryCount: state.pendingRecoveryCount,
+    failedRecoveryCount: state.failedRecoveryCount,
+    oldestPendingRecoveryAt: state.oldestPendingRecoveryAt,
+    oldestPendingRecoveryAgeMs: state.oldestPendingRecoveryAgeMs,
+  }
   if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
-    return { runtime: snapshot?.runtime }
+    return {
+      runtime: snapshot?.runtime,
+      lastFailure: state.lastCheckedAt ? "BlueBubbles proof is stale" : undefined,
+      failureLayer: state.lastCheckedAt ? "proof_freshness" : undefined,
+    }
   }
 
   if (snapshot?.runtime !== "running") {
     return {
       runtime: "error",
       detail: "BlueBubbles listener is not running",
+      ...proofFacts,
+      lastFailure: "listener process is not running",
+      failureLayer: "listener",
+      recoveryAction: "daemon health monitor will restart the BlueBubbles listener when its probe fails",
     }
   }
 
@@ -364,6 +414,10 @@ function readBlueBubblesRuntimeFacts(
     return {
       runtime: "error",
       detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "upstream",
+      recoveryAction: "verify BlueBubbles server/app auth and local machine attachment, then retry the listener",
     }
   }
 
@@ -371,17 +425,27 @@ function readBlueBubblesRuntimeFacts(
     return {
       runtime: "error",
       detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "recovery_queue",
+      recoveryAction: "queued recovery will retry; inspect BlueBubbles inbound/recovery sidecar logs if age keeps growing",
     }
   }
 
   if (state.upstreamStatus === "ok") {
     return {
       runtime: "running",
+      ...proofFacts,
       ...(state.failedRecoveryCount > 0 ? { detail: state.detail } : {}),
+      ...(state.failedRecoveryCount > 0 ? {
+        lastFailure: state.detail,
+        failureLayer: "recovery_quarantine",
+        recoveryAction: "inspect quarantined BlueBubbles recovery failures; live transport remains reachable",
+      } : {}),
     }
   }
 
-  return { runtime: snapshot?.runtime }
+  return { runtime: snapshot?.runtime, ...proofFacts }
 }
 
 export class DaemonSenseManager implements DaemonSenseManagerLike {
@@ -545,9 +609,20 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       const machinePayload = machineRuntimeConfig.config
       const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
       const port = numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT)
-      probes.push(createHttpHealthProbe(`bluebubbles:${agent}`, port))
+      probes.push({
+        ...createHttpHealthProbe(`bluebubbles:${agent}`, port),
+        managedName: `${agent}:bluebubbles`,
+      })
     }
     return probes
+  }
+
+  async restartSense(managedName: string): Promise<void> {
+    if (this.processManager.restartAgent) {
+      await this.processManager.restartAgent(managedName)
+      return
+    }
+    await this.processManager.startAgent?.(managedName)
   }
 
   listSenseRows(): DaemonSenseRow[] {
@@ -592,6 +667,18 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
               ?? context.facts[entry.sense].detail
             : context.facts[entry.sense].detail
           : "not enabled in agent.json",
+        ...(entry.sense === "bluebubbles" ? {
+          proofMethod: blueBubblesRuntimeFacts.proofMethod,
+          lastProofAt: blueBubblesRuntimeFacts.lastProofAt,
+          proofAgeMs: blueBubblesRuntimeFacts.proofAgeMs,
+          lastFailure: blueBubblesRuntimeFacts.lastFailure,
+          failureLayer: blueBubblesRuntimeFacts.failureLayer,
+          recoveryAction: blueBubblesRuntimeFacts.recoveryAction,
+          pendingRecoveryCount: blueBubblesRuntimeFacts.pendingRecoveryCount,
+          failedRecoveryCount: blueBubblesRuntimeFacts.failedRecoveryCount,
+          oldestPendingRecoveryAt: blueBubblesRuntimeFacts.oldestPendingRecoveryAt,
+          oldestPendingRecoveryAgeMs: blueBubblesRuntimeFacts.oldestPendingRecoveryAgeMs,
+        } : {}),
       }))
     })
 

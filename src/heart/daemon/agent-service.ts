@@ -111,13 +111,22 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
   const innerStatus = readInnerDialogStatus(params.agent)
   const sessions = enumerateSessions(params.agent)
   emit("daemon.agent_service_end", "completed agent.status", { agent: params.agent })
+  const innerStatusValue = innerStatus?.status ?? "unknown"
+  const lastThoughtAt = innerStatus?.lastCompletedAt ?? null
+  const message = [
+    `agent=${params.agent}`,
+    `innerStatus=${innerStatusValue}`,
+    `lastThoughtAt=${lastThoughtAt ?? "never"}`,
+    `sessionCount=${sessions.length}`,
+    `diaryEntries=${facts.length}`,
+  ].join("\t")
   return {
     ok: true,
-    message: `Agent ${params.agent} status`,
+    message,
     data: {
       agent: params.agent,
-      innerStatus: innerStatus?.status ?? "unknown",
-      lastThoughtAt: innerStatus?.lastCompletedAt ?? null,
+      innerStatus: innerStatusValue,
+      lastThoughtAt,
       sessionCount: sessions.length,
       hasDiaryEntries: facts.length > 0,
       factCount: facts.length,

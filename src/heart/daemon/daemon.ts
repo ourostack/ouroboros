@@ -498,17 +498,33 @@ function buildWorkerRows(
   }))
 }
 
+function unhealthySenseRows(senses: DaemonSenseRow[]): DaemonSenseRow[] {
+  return senses.filter((row) => {
+    if (!row.enabled) return false
+    if (row.status === "disabled" || row.status === "not_attached") return false
+    if (row.status === "interactive" || row.status === "running") return false
+    return true
+  })
+}
+
+function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[]): "ok" | "warn" {
+  if (!workers.every((worker) => worker.status === "running")) return "warn"
+  if (unhealthySenseRows(senses).length > 0) return "warn"
+  return "ok"
+}
+
 function formatStatusSummary(payload: DaemonStatusPayload): string {
   if (payload.overview.workerCount === 0 && payload.overview.senseCount === 0) {
     return "no managed agents"
   }
-  const rows = [
-    ...payload.workers.map((row) => `${row.agent}/${row.worker}:${row.status}`),
-    ...payload.senses
-      .filter((row) => row.enabled)
-      .map((row) => `${row.agent}/${row.sense}:${row.status}`),
+  const degraded = [
+    ...payload.workers
+      .filter((row) => row.status !== "running")
+      .map((row) => `worker:${row.agent}/${row.worker}:${row.status}`),
+    ...unhealthySenseRows(payload.senses)
+      .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),
   ]
-  const detail = rows.length > 0 ? `\titems=${rows.join(",")}` : ""
+  const detail = degraded.length > 0 ? `\tdegraded=${degraded.join(",")}` : ""
   return `daemon=${payload.overview.daemon}\tworkers=${payload.overview.workerCount}\tsenses=${payload.overview.senseCount}\thealth=${payload.overview.health}${detail}`
 }
 
@@ -645,7 +661,7 @@ export class OuroDaemon {
     return {
       overview: {
         daemon: "running",
-        health: workers.every((worker) => worker.status === "running") ? "ok" : "warn",
+        health: overviewHealth(workers, senses),
         socketPath: this.socketPath,
         mailboxUrl,
         outlookUrl: mailboxUrl,
