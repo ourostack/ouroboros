@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
 import * as path from "path"
 
 const {
@@ -9,6 +11,9 @@ const {
   runPublishedBinVersionSmoke,
   runReleaseSmokeSuite,
 } = require(path.resolve(__dirname, "../../../scripts/release-smoke.cjs"))
+const {
+  REQUIRED_PACKAGE_ASSET_PATHS,
+} = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 function makeDeps(outputs: Array<string | Error>) {
   const calls: Array<{ command: string; args: string[]; cwd: string }> = []
@@ -25,6 +30,40 @@ function makeDeps(outputs: Array<string | Error>) {
     tmpdir: vi.fn(() => "/tmp"),
   }
   return { deps, calls }
+}
+
+function makePublishedPackageDeps(outputs: Array<string | Error>, options: { withAssets: boolean }) {
+  const prefixDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-release-smoke-test-"))
+  const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
+  const binDir = path.join(prefixDir, "node_modules", ".bin")
+  const binPath = path.join(binDir, "ouro")
+  fs.mkdirSync(binDir, { recursive: true })
+  fs.mkdirSync(packageRoot, { recursive: true })
+  fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ name: "@ouro.bot/cli" }))
+  fs.writeFileSync(binPath, "#!/usr/bin/env node\n")
+  if (options.withAssets) {
+    for (const relativePath of REQUIRED_PACKAGE_ASSET_PATHS) {
+      const filePath = path.join(packageRoot, relativePath)
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, "ok")
+    }
+  }
+
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const deps = {
+    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string }) => {
+      calls.push({ command, args, cwd: options.cwd })
+      const next = outputs.shift()
+      if (next instanceof Error) throw next
+      if (next === "__BIN__\n") return `${binPath}\n`
+      return next
+    }),
+    mkdtempSync: vi.fn(() => prefixDir),
+    rmSync: vi.fn((target: string, options: fs.RmOptions) => fs.rmSync(target, options)),
+    sleepSync: vi.fn(),
+    tmpdir: vi.fn(() => os.tmpdir()),
+  }
+  return { deps, calls, binPath }
 }
 
 function makeNpmNetworkError(code: string): Error {
@@ -159,15 +198,35 @@ describe("release-smoke", () => {
   })
 
   it("smokes both supported published binaries", () => {
-    const { deps } = makeDeps([
-      "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro\n",
+    const { deps } = makePublishedPackageDeps([
+      "__BIN__\n",
+      "__BIN__\n",
       "0.1.0-alpha.327\n",
       "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
       "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
-    ])
+    ], { withAssets: true })
 
     const results = runReleaseSmokeSuite("0.1.0-alpha.327", deps)
 
-    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true])
+    expect(results.map((result: { ok: boolean }) => result.ok)).toEqual([true, true, true])
+    expect(results[0].message).toContain("package assets verified")
+  })
+
+  it("reports published cli package asset failures", () => {
+    const { deps } = makePublishedPackageDeps([
+      "__BIN__\n",
+      "__BIN__\n",
+      "0.1.0-alpha.327\n",
+      "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
+      "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
+    ], { withAssets: false })
+
+    const results = runReleaseSmokeSuite("0.1.0-alpha.327", deps)
+
+    expect(results).toHaveLength(3)
+    expect(results[0].ok).toBe(false)
+    expect(results[0].message).toContain("missing required package assets")
+    expect(results[1].ok).toBe(true)
+    expect(results[2].ok).toBe(true)
   })
 })

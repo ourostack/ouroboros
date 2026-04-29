@@ -5,6 +5,7 @@ const fs = require("fs")
 const os = require("os")
 const path = require("path")
 const { lastNonEmptyLine } = require("./release-smoke.cjs")
+const { validatePackageAssets } = require("./package-assets.cjs")
 
 function buildLocalInstallArgs(prefixDir, tarballPath) {
   return [
@@ -99,6 +100,30 @@ function runLocalTarballCommandSmoke(input, deps = defaultDeps()) {
   }
 }
 
+function runLocalTarballAssetSmoke(input, deps = defaultDeps()) {
+  const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-package-e2e-"))
+
+  try {
+    deps.execFileSync("npm", buildLocalInstallArgs(prefixDir, input.tarballPath), {
+      cwd: prefixDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
+    const result = validatePackageAssets(packageRoot)
+    return {
+      ok: result.ok,
+      binName: input.binName,
+      resolvedPath: packageRoot,
+      output: "",
+      message: result.message,
+    }
+  } finally {
+    deps.rmSync(prefixDir, { recursive: true, force: true })
+  }
+}
+
 function runPackageE2ESuite(input, deps = defaultDeps()) {
   return [
     runLocalTarballBinVersionSmoke({
@@ -111,6 +136,10 @@ function runPackageE2ESuite(input, deps = defaultDeps()) {
       binName: "ouro",
       args: ["help"],
       expectOutput: "Set up providers, portable integrations, and local senses from one guided screen",
+    }, deps),
+    runLocalTarballAssetSmoke({
+      tarballPath: input.tarballPath,
+      binName: "ouro",
     }, deps),
   ]
 }
@@ -189,6 +218,7 @@ module.exports = {
   localBinPath,
   runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
+  runLocalTarballAssetSmoke,
   runPackageE2ESuite,
   packCurrentRepo,
 }

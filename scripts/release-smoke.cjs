@@ -13,6 +13,10 @@ const childProcess = require("child_process")
 const fs = require("fs")
 const os = require("os")
 const path = require("path")
+const {
+  packageRootFromBinPath,
+  validatePackageAssets,
+} = require("./package-assets.cjs")
 
 function lastNonEmptyLine(text) {
   const lines = String(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -149,8 +153,41 @@ function runPublishedBinVersionSmoke(input, deps = defaultDeps()) {
   }
 }
 
+function runPublishedPackageAssetSmoke(input, deps = defaultDeps()) {
+  const packageRef = `${input.packageName}@${input.version}`
+  const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-release-smoke-"))
+
+  try {
+    const resolvedPath = runNpmExec(deps, prefixDir, packageRef, "which", [input.binName]).trim()
+    if (!isNpmExecBinPath(resolvedPath, input.binName)) {
+      return {
+        ok: false,
+        packageRef,
+        binName: input.binName,
+        resolvedPath,
+        output: "",
+        message: `${packageRef} ${input.binName} resolved to ${resolvedPath}, not an npm exec package binary`,
+      }
+    }
+
+    const packageRoot = packageRootFromBinPath(resolvedPath, input.packageName)
+    const result = validatePackageAssets(packageRoot)
+    return {
+      ok: result.ok,
+      packageRef,
+      binName: input.binName,
+      resolvedPath: packageRoot,
+      output: "",
+      message: result.message,
+    }
+  } finally {
+    deps.rmSync(prefixDir, { recursive: true, force: true })
+  }
+}
+
 function runReleaseSmokeSuite(version, deps = defaultDeps()) {
   return [
+    runPublishedPackageAssetSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
     runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
     runPublishedBinVersionSmoke({
       packageRef: "ouro.bot@latest",
@@ -197,6 +234,7 @@ module.exports = {
   isRetryableNpmExecError,
   lastNonEmptyLine,
   runPublishedBinResolutionSmoke,
+  runPublishedPackageAssetSmoke,
   runPublishedBinVersionSmoke,
   runReleaseSmokeSuite,
 }

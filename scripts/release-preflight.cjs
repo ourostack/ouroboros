@@ -5,6 +5,7 @@ const path = require("path")
 const fs = require("fs")
 
 const { validateChangelog } = require("./changelog-gate.cjs")
+const { validatePackageAssets } = require("./package-assets.cjs")
 
 function splitLines(output) {
   return output
@@ -33,7 +34,10 @@ function parseArgs(argv) {
 
 function versionBumpRequired(changedFiles) {
   return changedFiles.some(
-    (file) => file.startsWith("skills/") || (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
+    (file) => file === "package.json" ||
+      file.startsWith("skills/") ||
+      file.startsWith("scripts/") ||
+      (file.startsWith("src/") && !file.startsWith("src/__tests__/")),
   )
 }
 
@@ -103,6 +107,7 @@ function runReleasePreflight(options = {}, deps = {}) {
   const execSyncImpl = deps.execSyncImpl ?? execSync
   const readFileSyncImpl = deps.readFileSyncImpl ?? fs.readFileSync
   const packageJsonPath = deps.packageJsonPath ?? path.resolve(__dirname, "../package.json")
+  const packageRoot = deps.packageRoot ?? path.resolve(__dirname, "..")
   const wrapperPackageJsonPath =
     deps.wrapperPackageJsonPath ?? path.resolve(__dirname, "../packages/ouro.bot/package.json")
   const changelogPath = deps.changelogPath ?? path.resolve(__dirname, "../changelog.json")
@@ -149,6 +154,13 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(wrapperResult.message)
   } else {
     messages.push(wrapperResult.message)
+  }
+
+  const packageAssetResult = validatePackageAssets(packageRoot)
+  if (!packageAssetResult.ok) {
+    errors.push(packageAssetResult.message)
+  } else {
+    messages.push(packageAssetResult.message)
   }
 
   return {

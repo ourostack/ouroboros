@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.521",
+      "changes": [
+        "Ships the `RepairGuide.ouro/` library bundle in the npm package so production `ouro up` repair guidance can load the same source-truth recovery materials that tests exercise.",
+        "Adds shared package asset checks to local package e2e, release preflight, and published release smoke so required runtime bundles are verified from one package-truth definition.",
+        "Makes Outlook UI package output deterministic by copying built assets through a clean destination, preventing stale nested `dist/outlook-ui/dist/...` artifacts from surviving repeated builds."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.520",
       "changes": [
         "`ouro up` now prints the current runtime version in the update-check phase before asking npm for newer bits, so a stalled registry or update path no longer hides what is actually running.",
