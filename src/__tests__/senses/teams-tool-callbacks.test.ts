@@ -328,3 +328,122 @@ describe("Teams createTeamsCallbacks - flushNow (speak tool)", () => {
     await expect((callbacks as any).flushNow()).rejects.toThrow(/string-not-error-thrown-from-sendMessage/)
   })
 })
+
+describe("Teams: rejected settle args do NOT leak into visible chat (regression: PR #642 Blocker D)", () => {
+  // Same root cause and fix as src/__tests__/senses/bluebubbles/rejected-settle-leak.test.ts.
+  // Teams reaches the bug via a different visible surface (mockStream.update via
+  // safeUpdate), but the leak source is the shared createToolActivityCallbacks
+  // factory. Asserts the symmetric hidden-tool END suppression also protects Teams.
+  let mockStream: { emit: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }
+  let controller: AbortController
+
+  beforeEach(() => {
+    vi.resetModules()
+    mockStream = { emit: vi.fn(), update: vi.fn(), close: vi.fn() }
+    controller = new AbortController()
+  })
+
+  function leakSubstrings(): string[] {
+    return ["answer=", "intent=", "found it secret answer"]
+  }
+
+  function extractText(arg: unknown): string {
+    if (typeof arg === "string") return arg
+    if (arg && typeof arg === "object" && "text" in arg) return String((arg as { text: unknown }).text ?? "")
+    return ""
+  }
+
+  function snapshotCounts(): { updateCount: number; emitCount: number } {
+    return { updateCount: mockStream.update.mock.calls.length, emitCount: mockStream.emit.mock.calls.length }
+  }
+
+  function newCallTextsSince(snapshot: { updateCount: number; emitCount: number }): string[] {
+    const updateTexts = mockStream.update.mock.calls.slice(snapshot.updateCount).map((c) => extractText(c[0]))
+    const emitTexts = mockStream.emit.mock.calls.slice(snapshot.emitCount).map((c) => extractText(c[0]))
+    return [...updateTexts, ...emitTexts]
+  }
+
+  it("rejected sole-call settle (after a prior visible read_file) does NOT leak args via mockStream.update or mockStream.emit", async () => {
+    const teams = await import("../../senses/teams")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock cast
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+
+    // Prior visible tool primes lastDescription via safeUpdate.
+    callbacks.onToolStart("read_file", { path: "audit.ts" })
+    const snap = snapshotCounts()
+
+    // Rejected settle: same callback shape core.ts uses on the rejection paths.
+    callbacks.onToolStart("settle", {
+      answer: "found it secret answer that should not appear in Teams chat",
+      intent: "complete",
+    })
+    callbacks.onToolEnd(
+      "settle",
+      "answer=found it secret answer that should not appear in Teams chat intent=complete",
+      false,
+    )
+
+    // No NEW updates triggered by the hidden settle. (Emits may include a ⏳
+    // placeholder unrelated to the args leak; that is the Teams 15s timeout
+    // workaround, not a content leak. The leak path was always
+    // safeUpdate(failureLine), which goes to mockStream.update.)
+    const newUpdates = mockStream.update.mock.calls.slice(snap.updateCount).map((c) => extractText(c[0]))
+    expect(newUpdates).toEqual([])
+
+    // Defense-in-depth: across EVERY recorded update and emit, no leak substring.
+    const allTexts = newCallTextsSince({ updateCount: 0, emitCount: 0 })
+    for (const text of allTexts) {
+      for (const leak of leakSubstrings()) {
+        expect(text).not.toContain(leak)
+      }
+      expect(text).not.toContain("found it secret answer")
+    }
+  })
+
+  it("rejected settle from inner-dialog attention-queue gate does NOT leak via update/emit", async () => {
+    const teams = await import("../../senses/teams")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock cast
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+
+    callbacks.onToolStart("read_file", { path: "audit.ts" })
+    const snap = snapshotCounts()
+
+    callbacks.onToolStart("settle", {
+      answer: "draft answer the user must not see yet",
+      intent: "complete",
+    })
+    callbacks.onToolEnd("settle", "answer=draft answer the user must not see yet intent=complete", false)
+
+    const newUpdates = mockStream.update.mock.calls.slice(snap.updateCount).map((c) => extractText(c[0]))
+    expect(newUpdates).toEqual([])
+    const allTexts = newCallTextsSince({ updateCount: 0, emitCount: 0 })
+    for (const text of allTexts) {
+      expect(text).not.toContain("draft answer")
+      for (const leak of leakSubstrings()) {
+        expect(text).not.toContain(leak)
+      }
+    }
+  })
+
+  it("a successful hidden settle is also NOT surfaced as a Teams tool-activity status", async () => {
+    const teams = await import("../../senses/teams")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock cast
+    const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
+
+    callbacks.onToolStart("read_file", { path: "audit.ts" })
+    const snap = snapshotCounts()
+
+    callbacks.onToolStart("settle", { answer: "delivered text", intent: "complete" })
+    callbacks.onToolEnd("settle", "answer=delivered text intent=complete", true)
+
+    const newUpdates = mockStream.update.mock.calls.slice(snap.updateCount).map((c) => extractText(c[0]))
+    expect(newUpdates).toEqual([])
+    const allTexts = newCallTextsSince({ updateCount: 0, emitCount: 0 })
+    for (const text of allTexts) {
+      expect(text).not.toContain("delivered text")
+      for (const leak of leakSubstrings()) {
+        expect(text).not.toContain(leak)
+      }
+    }
+  })
+})
