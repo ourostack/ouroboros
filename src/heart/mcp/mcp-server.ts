@@ -452,7 +452,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     if (serviceHandler && typeof agentService[serviceHandler] === "function") {
       const handlerFn = agentService[serviceHandler] as (p: agentService.AgentServiceParams) => Promise<DaemonResponse>
       try {
-        response = await handlerFn({ agent, friendId, ...toolArgs })
+        response = await handlerFn({ agent, friendId, socketPath, ...toolArgs })
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
         response = { ok: false, error: `Service error: ${errorMessage}` }

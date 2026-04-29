@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.529",
+      "changes": [
+        "MCP agent status now asks the daemon for proof-bearing runtime health, including per-agent worker rows and enabled sense rows with proof method, proof age, failure layer, and recovery counters.",
+        "MCP status reports daemon/socket unreachability as an explicit status line instead of hiding it behind otherwise successful diary/session facts.",
+        "MCP status now includes its own package version and flags MCP-vs-daemon version mismatches so stale long-lived MCP servers are visible during reliability checks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.528",
       "changes": [
         "Daemon overview health now degrades whenever an enabled sense is configured but not externally proven healthy, and `ouro up` refuses a healthy handoff when runtime senses are degraded instead of treating unreachable iMessage as green.",

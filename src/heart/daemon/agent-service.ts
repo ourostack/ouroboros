@@ -12,10 +12,12 @@ import type { DaemonResponse } from "./daemon"
 import { getAgentRoot } from "../identity"
 import { readDiaryEntries, searchDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../../mind/diary"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "./socket-client"
 
 export interface AgentServiceParams {
   agent: string
   friendId: string
+  socketPath?: string
   [key: string]: unknown
 }
 
@@ -102,6 +104,184 @@ function emit(event: string, message: string, meta: Record<string, unknown>): vo
   emitNervesEvent({ component: "daemon", event, message, meta })
 }
 
+interface RuntimeStatusSummary {
+  daemonReachable: boolean
+  overview?: {
+    daemon: string
+    health: string
+    version: string | null
+    mode: string | null
+  }
+  workers: Array<{ worker: string; status: string }>
+  senses: Array<{
+    sense: string
+    status: string
+    enabled: boolean
+    detail: string | null
+    proofMethod: string | null
+    lastProofAt: string | null
+    proofAgeMs: number | null
+    pendingRecoveryCount: number | null
+    failedRecoveryCount: number | null
+    failureLayer: string | null
+    lastFailure: string | null
+    recoveryAction: string | null
+  }>
+  error?: string
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null
+}
+
+function booleanValue(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function readMcpRuntimeVersion(): string | null {
+  const packagePath = path.resolve(__dirname, "..", "..", "..", "package.json")
+  try {
+    const parsed = JSON.parse(fs.readFileSync(packagePath, "utf-8")) as { version?: unknown }
+    return stringValue(parsed.version)
+  } catch {
+    return null
+  }
+}
+
+function summarizeRuntimeStatus(data: unknown, agent: string): RuntimeStatusSummary | null {
+  const payload = objectRecord(data)
+  if (!payload) return null
+  const overview = objectRecord(payload.overview)
+  const workers = Array.isArray(payload.workers) ? payload.workers : []
+  const senses = Array.isArray(payload.senses) ? payload.senses : []
+
+  return {
+    daemonReachable: true,
+    overview: overview
+      ? {
+          daemon: stringValue(overview.daemon) ?? "unknown",
+          health: stringValue(overview.health) ?? "unknown",
+          version: stringValue(overview.version),
+          mode: stringValue(overview.mode),
+        }
+      : undefined,
+    workers: workers.flatMap((row) => {
+      const record = objectRecord(row)
+      if (!record || stringValue(record.agent) !== agent) return []
+      const worker = stringValue(record.worker)
+      const status = stringValue(record.status)
+      return worker && status ? [{ worker, status }] : []
+    }),
+    senses: senses.flatMap((row) => {
+      const record = objectRecord(row)
+      if (!record || stringValue(record.agent) !== agent) return []
+      const sense = stringValue(record.sense)
+      const status = stringValue(record.status)
+      const enabled = booleanValue(record.enabled)
+      if (!sense || !status || enabled === null) return []
+      return [{
+        sense,
+        status,
+        enabled,
+        detail: stringValue(record.detail),
+        proofMethod: stringValue(record.proofMethod),
+        lastProofAt: stringValue(record.lastProofAt),
+        proofAgeMs: numberValue(record.proofAgeMs),
+        pendingRecoveryCount: numberValue(record.pendingRecoveryCount),
+        failedRecoveryCount: numberValue(record.failedRecoveryCount),
+        failureLayer: stringValue(record.failureLayer),
+        lastFailure: stringValue(record.lastFailure),
+        recoveryAction: stringValue(record.recoveryAction),
+      }]
+    }),
+  }
+}
+
+async function readRuntimeStatus(socketPath: string | undefined, agent: string): Promise<RuntimeStatusSummary | null> {
+  if (!socketPath) return null
+  try {
+    const response = await sendDaemonCommand(socketPath, { kind: "daemon.status" })
+    if (!response.ok) {
+      return {
+        daemonReachable: false,
+        workers: [],
+        senses: [],
+        error: response.error ?? response.message ?? "daemon status did not answer cleanly",
+      }
+    }
+    return summarizeRuntimeStatus(response.data, agent)
+  } catch (error) {
+    return {
+      daemonReachable: false,
+      workers: [],
+      senses: [],
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+function formatRuntimeStatusLines(
+  runtime: RuntimeStatusSummary | null,
+  mcpVersion: string | null,
+): string[] {
+  if (!runtime) return mcpVersion ? [`mcpVersion=${mcpVersion}`] : []
+  if (!runtime.daemonReachable) {
+    return [
+      `daemon=unreachable${runtime.error ? `\terror=${runtime.error}` : ""}`,
+      ...(mcpVersion ? [`mcpVersion=${mcpVersion}`] : []),
+    ]
+  }
+
+  const lines: string[] = []
+  if (runtime.overview) {
+    const versionPart = runtime.overview.version ? `\tdaemonVersion=${runtime.overview.version}` : ""
+    const modePart = runtime.overview.mode ? `\tmode=${runtime.overview.mode}` : ""
+    const mcpVersionPart = mcpVersion ? `\tmcpVersion=${mcpVersion}` : ""
+    const mismatchPart = mcpVersion && runtime.overview.version && mcpVersion !== runtime.overview.version
+      ? `\tversionMismatch=mcp:${mcpVersion},daemon:${runtime.overview.version}`
+      : ""
+    lines.push(`daemon=${runtime.overview.daemon}\thealth=${runtime.overview.health}${versionPart}${modePart}${mcpVersionPart}${mismatchPart}`)
+  }
+  for (const worker of runtime.workers) {
+    lines.push(`worker=${worker.worker}:${worker.status}`)
+  }
+  for (const sense of runtime.senses) {
+    const detailPart = sense.detail ? `\tdetail=${sense.detail}` : ""
+    const proofPart = sense.proofMethod ? `\tproof=${sense.proofMethod}` : ""
+    const lastProofPart = sense.lastProofAt ? `\tlastProofAt=${sense.lastProofAt}` : ""
+    const proofAgePart = sense.proofAgeMs !== null ? `\tproofAgeMs=${sense.proofAgeMs}` : ""
+    const pendingPart = sense.pendingRecoveryCount !== null ? `\tpendingRecovery=${sense.pendingRecoveryCount}` : ""
+    const failedPart = sense.failedRecoveryCount !== null ? `\tfailedRecovery=${sense.failedRecoveryCount}` : ""
+    const failureLayerPart = sense.failureLayer ? `\tfailureLayer=${sense.failureLayer}` : ""
+    const failurePart = sense.lastFailure ? `\tlastFailure=${sense.lastFailure}` : ""
+    const recoveryPart = sense.recoveryAction ? `\trecovery=${sense.recoveryAction}` : ""
+    lines.push(
+      `sense=${sense.sense}:${sense.enabled ? sense.status : "disabled"}`
+      + detailPart
+      + proofPart
+      + lastProofPart
+      + proofAgePart
+      + pendingPart
+      + failedPart
+      + failureLayerPart
+      + failurePart
+      + recoveryPart,
+    )
+  }
+  if (lines.length === 0 && mcpVersion) lines.push(`mcpVersion=${mcpVersion}`)
+  return lines
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 export async function handleAgentStatus(params: AgentServiceParams): Promise<DaemonResponse> {
@@ -110,16 +290,20 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
   const facts = readDiaryEntries(diaryRoot)
   const innerStatus = readInnerDialogStatus(params.agent)
   const sessions = enumerateSessions(params.agent)
+  const mcpVersion = readMcpRuntimeVersion()
+  const runtime = await readRuntimeStatus(params.socketPath ?? DEFAULT_DAEMON_SOCKET_PATH, params.agent)
   emit("daemon.agent_service_end", "completed agent.status", { agent: params.agent })
   const innerStatusValue = innerStatus?.status ?? "unknown"
   const lastThoughtAt = innerStatus?.lastCompletedAt ?? null
-  const message = [
+  const agentLine = [
     `agent=${params.agent}`,
     `innerStatus=${innerStatusValue}`,
     `lastThoughtAt=${lastThoughtAt ?? "never"}`,
     `sessionCount=${sessions.length}`,
     `diaryEntries=${facts.length}`,
   ].join("\t")
+  const runtimeLines = formatRuntimeStatusLines(runtime, mcpVersion)
+  const message = [agentLine, ...runtimeLines].join("\n")
   return {
     ok: true,
     message,
@@ -130,6 +314,8 @@ export async function handleAgentStatus(params: AgentServiceParams): Promise<Dae
       sessionCount: sessions.length,
       hasDiaryEntries: facts.length > 0,
       factCount: facts.length,
+      runtime,
+      mcpVersion,
     },
   }
 }

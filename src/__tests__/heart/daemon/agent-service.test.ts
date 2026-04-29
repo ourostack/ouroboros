@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
+const mockSendDaemonCommand = vi.fn()
+
 // Mock diary module — shared functions the service layer reuses
 vi.mock("../../../mind/diary", () => ({
   readDiaryEntries: vi.fn(() => []),
@@ -21,6 +23,11 @@ vi.mock("fs", () => ({
   mkdirSync: vi.fn(),
 }))
 
+vi.mock("../../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
+  sendDaemonCommand: (...args: any[]) => mockSendDaemonCommand(...args),
+}))
+
 import * as fs from "fs"
 import { readDiaryEntries, searchDiaryEntries, resolveDiaryRoot } from "../../../mind/diary"
 
@@ -31,6 +38,8 @@ describe("agent-service handlers", () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readFileSync).mockReturnValue("")
     vi.mocked(fs.readdirSync).mockReturnValue([])
+    mockSendDaemonCommand.mockReset()
+    mockSendDaemonCommand.mockResolvedValue({ ok: true, data: null })
     emitNervesEvent({ component: "daemon", event: "daemon.agent_service_test_start", message: "test starting", meta: {} })
   })
 
@@ -75,6 +84,235 @@ describe("agent-service handlers", () => {
       const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentStatus({ agent: "test", friendId: "f1" })
       expect(r.data).toMatchObject({ innerStatus: "thinking" })
+    })
+
+    it("includes daemon and sense proof details when runtime status is reachable", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          overview: { daemon: "running", health: "ok", version: "0.1.0-alpha.528", mode: "production" },
+          workers: [
+            { agent: "test", worker: "inner-dialog", status: "running" },
+            { agent: "other", worker: "inner-dialog", status: "crashed" },
+          ],
+          senses: [
+            {
+              agent: "test",
+              sense: "bluebubbles",
+              enabled: true,
+              status: "running",
+              detail: ":18789 /bluebubbles-webhook",
+              proofMethod: "bluebubbles.checkHealth",
+              lastProofAt: "2026-04-29T21:05:52.423Z",
+              proofAgeMs: 7382,
+              pendingRecoveryCount: 0,
+              failedRecoveryCount: 0,
+            },
+            { agent: "test", sense: "mail", enabled: true, status: "running", detail: "test@ouro.bot" },
+            { agent: "other", sense: "bluebubbles", enabled: true, status: "error", detail: "not ours" },
+          ],
+        },
+      })
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.528" })
+        return ""
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(mockSendDaemonCommand).toHaveBeenCalledWith("/tmp/test-daemon.sock", { kind: "daemon.status" })
+      expect(r.message).toContain("daemon=running")
+      expect(r.message).toContain("health=ok")
+      expect(r.message).toContain("worker=inner-dialog:running")
+      expect(r.message).toContain("sense=bluebubbles:running")
+      expect(r.message).toContain("proof=bluebubbles.checkHealth")
+      expect(r.message).toContain("proofAgeMs=7382")
+      expect(r.message).toContain("sense=mail:running")
+      expect(r.message).not.toContain("not ours")
+      expect(r.data).toMatchObject({ mcpVersion: "0.1.0-alpha.528" })
+    })
+
+    it("makes daemon unreachability explicit without failing agent status", async () => {
+      mockSendDaemonCommand.mockRejectedValueOnce(new Error("transport closed"))
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.ok).toBe(true)
+      expect(r.message).toContain("daemon=unreachable")
+      expect(r.message).toContain("transport closed")
+      expect(r.data).toMatchObject({
+        runtime: {
+          daemonReachable: false,
+          error: "transport closed",
+        },
+      })
+    })
+
+    it("flags MCP and daemon version mismatch in status output", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          overview: { daemon: "running", health: "ok", version: "0.1.0-alpha.529", mode: "production" },
+          workers: [],
+          senses: [],
+        },
+      })
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.528" })
+        return ""
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("versionMismatch=mcp:0.1.0-alpha.528,daemon:0.1.0-alpha.529")
+    })
+
+    it("surfaces daemon status command failures with MCP version context", async () => {
+      mockSendDaemonCommand
+        .mockResolvedValueOnce({ ok: false, error: "socket rejected" })
+        .mockResolvedValueOnce({ ok: false, message: "daemon busy" })
+        .mockResolvedValueOnce({ ok: false })
+        .mockResolvedValueOnce({ ok: false, error: "" })
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.529" })
+        return ""
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const errorStatus = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+      const messageStatus = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+      const defaultStatus = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+      const blankErrorStatus = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(errorStatus.message).toContain("daemon=unreachable\terror=socket rejected")
+      expect(errorStatus.message).toContain("mcpVersion=0.1.0-alpha.529")
+      expect(messageStatus.message).toContain("daemon=unreachable\terror=daemon busy")
+      expect(defaultStatus.message).toContain("daemon=unreachable\terror=daemon status did not answer cleanly")
+      expect(blankErrorStatus.message).toContain("daemon=unreachable\nmcpVersion=0.1.0-alpha.529")
+    })
+
+    it("keeps malformed runtime rows out while rendering degraded and disabled sense proof details", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          overview: { daemon: "running", health: "degraded" },
+          workers: [
+            { agent: "test", worker: "inner-dialog", status: "running" },
+            { agent: "test", worker: "ignored-missing-status" },
+            "not a worker row",
+          ],
+          senses: [
+            {
+              agent: "test",
+              sense: "bluebubbles",
+              enabled: false,
+              status: "error",
+              detail: "disabled by config",
+              proofMethod: "bluebubbles.checkHealth",
+              lastProofAt: "2026-04-29T21:05:52.423Z",
+              proofAgeMs: 456,
+              pendingRecoveryCount: 2,
+              failedRecoveryCount: 1,
+              failureLayer: "probe",
+              lastFailure: "health check failed",
+              recoveryAction: "restart",
+            },
+            { agent: "test", sense: "ignored-missing-enabled", status: "running" },
+            ["not a sense row"],
+          ],
+        },
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("daemon=running\thealth=degraded")
+      expect(r.message).toContain("worker=inner-dialog:running")
+      expect(r.message).not.toContain("ignored-missing-status")
+      expect(r.message).toContain("sense=bluebubbles:disabled")
+      expect(r.message).toContain("failureLayer=probe")
+      expect(r.message).toContain("lastFailure=health check failed")
+      expect(r.message).toContain("recovery=restart")
+      expect(r.message).not.toContain("ignored-missing-enabled")
+    })
+
+    it("defaults incomplete daemon overview labels and omits absent optional sense detail", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          overview: {},
+          workers: [],
+          senses: [
+            { agent: "test", sense: "mail", enabled: true, status: "running" },
+          ],
+        },
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("daemon=unknown\thealth=unknown")
+      expect(r.message).toContain("sense=mail:running")
+      expect(r.message).not.toContain("detail=")
+    })
+
+    it("treats non-array worker and sense payloads as empty", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          overview: { daemon: "running", health: "ok" },
+          workers: "not workers",
+          senses: { not: "senses" },
+        },
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("daemon=running\thealth=ok")
+      expect(r.message).not.toContain("worker=")
+      expect(r.message).not.toContain("sense=")
+    })
+
+    it("renders MCP version alone when daemon returns an empty runtime shape", async () => {
+      mockSendDaemonCommand.mockResolvedValueOnce({
+        ok: true,
+        data: { workers: [], senses: [] },
+      })
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.529" })
+        return ""
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("mcpVersion=0.1.0-alpha.529")
+    })
+
+    it("records non-Error daemon transport failures as explicit unreachability", async () => {
+      mockSendDaemonCommand.mockRejectedValueOnce("transport closed")
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "/tmp/test-daemon.sock" })
+
+      expect(r.message).toContain("daemon=unreachable\terror=transport closed")
+    })
+
+    it("can skip runtime probing when an explicit empty socket path is supplied", async () => {
+      vi.mocked(fs.readFileSync).mockImplementation((p) => {
+        if (String(p).endsWith("package.json")) return JSON.stringify({ version: "0.1.0-alpha.529" })
+        return ""
+      })
+
+      const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentStatus({ agent: "test", friendId: "f1", socketPath: "" })
+
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+      expect(r.message).toContain("mcpVersion=0.1.0-alpha.529")
     })
 
     it("handles malformed runtime.json gracefully (JSON parse error)", async () => {
