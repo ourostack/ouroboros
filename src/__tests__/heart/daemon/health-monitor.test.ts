@@ -353,12 +353,15 @@ describe("HealthMonitor", () => {
 
     it("includes critical result and calls alertSink for a probe that returns ok: false", async () => {
       const alertSink = vi.fn(async () => undefined)
+      const onCriticalSense = vi.fn()
       const monitor = new HealthMonitor({
         ...createBaseOptions(),
         alertSink,
+        onCriticalSense,
         senseProbes: [
           {
             name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
             check: async () => ({ ok: false, detail: "connection refused" }),
           },
         ],
@@ -374,6 +377,7 @@ describe("HealthMonitor", () => {
       expect(alertSink).toHaveBeenCalledWith(
         "[critical] sense-probe:bluebubbles: bluebubbles failed: connection refused",
       )
+      expect(onCriticalSense).toHaveBeenCalledWith("slugger:bluebubbles", "bluebubbles")
     })
 
     it("includes results from multiple probes", async () => {
@@ -451,12 +455,15 @@ describe("HealthMonitor", () => {
 
     it("treats a throwing probe as critical with error message as detail", async () => {
       const alertSink = vi.fn(async () => undefined)
+      const onCriticalSense = vi.fn()
       const monitor = new HealthMonitor({
         ...createBaseOptions(),
         alertSink,
+        onCriticalSense,
         senseProbes: [
           {
             name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
             check: async () => {
               throw new Error("ECONNREFUSED")
             },
@@ -474,6 +481,25 @@ describe("HealthMonitor", () => {
       expect(alertSink).toHaveBeenCalledWith(
         "[critical] sense-probe:bluebubbles: bluebubbles error: ECONNREFUSED",
       )
+      expect(onCriticalSense).toHaveBeenCalledWith("slugger:bluebubbles", "bluebubbles")
+    })
+
+    it("does not restart a sense probe when no managed sense mapping is provided", async () => {
+      const onCriticalSense = vi.fn()
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        onCriticalSense,
+        senseProbes: [
+          {
+            name: "external-proof-only",
+            check: async () => ({ ok: false, detail: "reverse path blocked" }),
+          },
+        ],
+      })
+
+      await monitor.runChecks()
+
+      expect(onCriticalSense).not.toHaveBeenCalled()
     })
 
     it("uses 'unknown' when a failed probe omits detail", async () => {

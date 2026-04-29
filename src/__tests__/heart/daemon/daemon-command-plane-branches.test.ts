@@ -306,6 +306,40 @@ describe("daemon command plane branches", () => {
     const disabledOnlyStatus = await daemon.handleCommand({ kind: "daemon.status" })
     expect(disabledOnlyStatus.summary).toBe("daemon=running\tworkers=0\tsenses=1\thealth=ok")
 
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "bluebubbles",
+        label: "BlueBubbles",
+        enabled: true,
+        status: "error",
+        detail: "listener unreachable",
+      },
+    ])
+
+    const unhealthySenseStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(unhealthySenseStatus.summary).toBe(
+      "daemon=running\tworkers=0\tsenses=1\thealth=warn\tdegraded=sense:slugger/bluebubbles:error",
+    )
+    expect(unhealthySenseStatus.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "warn" }),
+    }))
+
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "mail",
+        label: "Mail",
+        enabled: true,
+        status: "ready",
+        detail: "configured but worker has no proof yet",
+      },
+    ])
+
+    const readyOnlySenseStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(readyOnlySenseStatus.summary).toContain("health=warn")
+    expect(readyOnlySenseStatus.summary).toContain("sense:slugger/mail:ready")
+
     processManager.listAgentSnapshots.mockReturnValueOnce([
       {
         name: "slugger",

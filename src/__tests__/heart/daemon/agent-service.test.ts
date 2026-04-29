@@ -40,6 +40,9 @@ describe("agent-service handlers", () => {
       const r = await handleAgentStatus({ agent: "test", friendId: "f1" })
       expect(r.ok).toBe(true)
       expect(r.data).toMatchObject({ agent: "test", hasDiaryEntries: false, sessionCount: 0 })
+      expect(r.message).toContain("innerStatus=unknown")
+      expect(r.message).toContain("sessionCount=0")
+      expect(r.message).not.toBe("Agent test status")
     })
 
     it("resolves diary root via diary/ path, not psyche/notes/", async () => {

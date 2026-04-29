@@ -297,6 +297,48 @@ describe("ouro up: UpProgress integration", () => {
     )
   })
 
+  it("does not hand off when the daemon answers with degraded runtime health", async () => {
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn().mockResolvedValueOnce(true).mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          return {
+            ok: true,
+            summary: "running",
+            data: {
+              overview: {
+                daemon: "running",
+                health: "warn",
+                socketPath: "/tmp/ouro-test.sock",
+                version: "0.1.0-alpha.20",
+                lastUpdated: "2026-03-09T11:00:00.000Z",
+                workerCount: 0,
+                senseCount: 1,
+              },
+              senses: [
+                {
+                  agent: "slugger",
+                  sense: "bluebubbles",
+                  enabled: true,
+                  status: "error",
+                  detail: "listener unreachable",
+                },
+              ],
+              workers: [],
+            },
+          }
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service stopped before boot finished")
+    expect(result).toContain("runtime health is warn")
+    expect(result).toContain("slugger/bluebubbles: error - listener unreachable")
+  })
+
   it("keeps daemon startup unresolved and surfaces replacement breadcrumbs when a drift restart does not answer", async () => {
     vi.useFakeTimers()
     mocks.upProgressCompletePhase.mockClear()

@@ -2600,8 +2600,44 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(authorizedRes.res.statusCode).toBe(200)
     expect(authorizedRes.getHeader("content-type")).toContain("application/json")
-    expect(authorizedRes.getBody()).toContain("\"handled\":true")
+    expect(authorizedRes.getBody()).toContain("\"queued\":true")
+    await waitFor(() => mocks.runAgent.mock.calls.length === 1)
     expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("durably captures valid webhook messages and responds before slow turn handling completes", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const deferred = createDeferred()
+    mocks.runAgent.mockImplementationOnce(() => deferred.promise)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+
+    const req = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      dmThreadPayload,
+    )
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(res.getBody()).toContain("\"queued\":true")
+    const { listRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    expect(listRecordedBlueBubblesInbound("testagent")).toEqual([
+      expect.objectContaining({
+        messageGuid: expect.any(String),
+        source: "webhook",
+      }),
+    ])
+    expect(mocks.runAgent).toHaveBeenCalledTimes(0)
+
+    await waitFor(() => mocks.runAgent.mock.calls.length === 1)
+    deferred.resolve(undefined)
+    await flushAsyncWork()
   })
 
   it("returns explicit webhook errors for missing routes, methods, bad json, and runtime failures", async () => {
@@ -2650,16 +2686,18 @@ describe("BlueBubbles sense runtime", () => {
     const boomRes = createMockResponse()
     await handler(boomReq as any, boomRes.res as any)
     await boomRes.done
-    expect(boomRes.res.statusCode).toBe(500)
-    expect(boomRes.getBody()).toContain("repair blew up")
+    expect(boomRes.res.statusCode).toBe(200)
+    expect(boomRes.getBody()).toContain("\"queued\":true")
+    await flushAsyncWork()
 
     mocks.repairEvent.mockRejectedValueOnce("repair string blew up")
     const stringBoomReq = createMockRequest("POST", "/bluebubbles-webhook", dmThreadPayload)
     const stringBoomRes = createMockResponse()
     await handler(stringBoomReq as any, stringBoomRes.res as any)
     await stringBoomRes.done
-    expect(stringBoomRes.res.statusCode).toBe(500)
-    expect(stringBoomRes.getBody()).toContain("repair string blew up")
+    expect(stringBoomRes.res.statusCode).toBe(200)
+    expect(stringBoomRes.getBody()).toContain("\"queued\":true")
+    await flushAsyncWork()
   })
 
   it("treats known guidless BlueBubbles chat state events as ignorable webhook noise", async () => {

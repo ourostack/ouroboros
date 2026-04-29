@@ -578,6 +578,74 @@ describe("daemon sense manager", () => {
     ])
   })
 
+  it("surfaces BlueBubbles proof metadata and oldest pending recovery age", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const freshCheckedAt = new Date().toISOString()
+    const oldestPendingAt = new Date(Date.now() - 120_000).toISOString()
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/hooks/bb",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        lastCheckedAt: freshCheckedAt,
+        proofMethod: "bluebubbles.checkHealth",
+        pendingRecoveryCount: 1,
+        failedRecoveryCount: 0,
+        oldestPendingRecoveryAt: oldestPendingAt,
+        oldestPendingRecoveryAgeMs: 120_000,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:bluebubbles", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
+      expect.objectContaining({
+        status: "error",
+        proofMethod: "bluebubbles.checkHealth",
+        lastProofAt: freshCheckedAt,
+        oldestPendingRecoveryAt: oldestPendingAt,
+        oldestPendingRecoveryAgeMs: 120_000,
+        pendingRecoveryCount: 1,
+        recoveryAction: "queued recovery will retry; inspect BlueBubbles inbound/recovery sidecar logs if age keeps growing",
+      }),
+    )
+  })
+
   it("keeps BlueBubbles running while surfacing quarantined recovery failures", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const freshCheckedAt = new Date().toISOString()
