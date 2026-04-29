@@ -224,7 +224,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
       providers: ["anthropic", "github-copilot"],
       skipCache: true,
@@ -240,7 +240,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("myagent", expect.objectContaining({
       providers: ["anthropic"],
       skipCache: true,
@@ -260,7 +260,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
       },
     })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({
       model: "claude-opus-4-6",
       attemptPolicy: { maxAttempts: 1, baseDelayMs: 0, backoffMultiplier: 2 },
@@ -318,13 +318,13 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(started).toEqual(["anthropic", "github-copilot"])
 
     releaseFirst()
-    await expect(resultPromise).resolves.toEqual({ ok: true })
+    await expect(resultPromise).resolves.toMatchObject({ ok: true })
   })
 
   it("uses the default live provider ping when no ping dependency is supplied", async () => {
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES)
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(providerPingMock).toHaveBeenCalledOnce()
     expect(providerPingMock).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
   })
@@ -565,7 +565,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider, onProgress })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     const callArgs = refreshProviderCredentialPoolMock.mock.calls[0]
     expect(callArgs?.[0]).toBe("myagent")
     expect(callArgs?.[1]).toEqual(expect.objectContaining({
@@ -590,7 +590,7 @@ describe("checkAgentConfigWithProviderHealth", () => {
 
     const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     // refreshProviderCredentialPool should be called without onProgress in options
     const callArgs = refreshProviderCredentialPoolMock.mock.calls[0]
     expect(callArgs[0]).toBe("myagent")

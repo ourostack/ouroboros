@@ -27,6 +27,7 @@ import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfigWithProviderHealth } from "./agent-config-check"
+import { detectProviderBindingDrift, loadDriftInputsForAgent, type DriftFinding } from "./drift-detection"
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
@@ -166,6 +167,33 @@ function buildDaemonHealthState(): DaemonHealthState {
     ...agentDegradedComponents,
   ]
 
+  // Layer 4: probe each enabled agent for drift between agent.json
+  // (intent) and state/providers.json (observed binding). The result is
+  // a single boolean — driftDetected — that downgrades the rollup from
+  // healthy to partial when true. Per-finding detail is consumed by
+  // render-side surfaces (inner-status, --no-repair summary) and by
+  // Layer 3 RepairGuide; the rollup itself only cares about presence.
+  // Best-effort: a single agent's read failure is not blocking — the
+  // function returns "no drift detected for that agent" and continues.
+  const bundlesRoot = getAgentBundlesRoot()
+  const drift: DriftFinding[] = []
+  for (const snapshot of snapshots) {
+    try {
+      const inputs = loadDriftInputsForAgent(bundlesRoot, snapshot.name)
+      const findings = detectProviderBindingDrift({
+        agentName: snapshot.name,
+        agentJson: inputs.agentJson,
+        providerState: inputs.providerState,
+      })
+      if (findings.length > 0) {
+        drift.push(...findings)
+      }
+    } catch {
+      // best-effort: continue scanning
+    }
+  }
+  const driftDetected = drift.length > 0
+
   // Layer 1 rollup: project per-agent snapshots into the minimal
   // AgentRollupInput shape and let computeDaemonRollup decide. The
   // input is "every enabled agent" — managedAgents was filtered via
@@ -188,6 +216,7 @@ function buildDaemonHealthState(): DaemonHealthState {
     })),
     bootstrapDegraded: degradedComponents,
     safeMode: false,
+    driftDetected,
   })
 
   return {
@@ -198,6 +227,7 @@ function buildDaemonHealthState(): DaemonHealthState {
     uptimeSeconds: Math.floor(process.uptime()),
     safeMode: null,
     degraded,
+    drift,
     agents: Object.fromEntries(snapshots.map((snapshot) => [
       snapshot.name,
       {

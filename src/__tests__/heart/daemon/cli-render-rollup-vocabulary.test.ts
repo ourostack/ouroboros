@@ -112,6 +112,7 @@ describe("cli-render rollup vocabulary — daemonUnavailableStatusOutput", () =>
       uptimeSeconds: 60,
       safeMode: null,
       degraded: [],
+      drift: [],
       agents: {},
       habits: {},
       ...overrides,
@@ -138,6 +139,79 @@ describe("cli-render rollup vocabulary — daemonUnavailableStatusOutput", () =>
       writeHealth(healthPath, "partial")
       const result = await runStatus(healthPath)
       expect(result).toContain("Last known status: partial")
+    })
+
+    it("'partial' includes drift detail when health.drift is non-empty (drift-only case)", async () => {
+      // Layer 4 surfaces drift through the rollup (healthy → partial when drift
+      // is detected). The renderer must distinguish drift-induced partial from
+      // agent-failure-induced partial — otherwise `ouro status` shows "partial
+      // — some agents unhealthy" when in fact every agent is healthy and the
+      // only anomaly is configuration drift.
+      const dir = makeTmpDir()
+      const healthPath = path.join(dir, "daemon-health.json")
+      writeHealth(healthPath, "partial", {
+        agents: {
+          alpha: { status: "running", pid: 1234, crashes: 0 },
+        },
+        drift: [
+          {
+            agent: "alpha",
+            lane: "outward",
+            intentProvider: "openai-codex",
+            intentModel: "gpt-5.4",
+            observedProvider: "openai-codex",
+            observedModel: "gpt-5.3",
+            reason: "provider-model-changed",
+            repairCommand: "ouro use --agent alpha --lane outward --provider openai-codex --model gpt-5.4",
+          },
+        ],
+      })
+      const result = await runStatus(healthPath)
+      expect(result).toContain("Last known status: partial")
+      expect(result).toContain("drift")
+      expect(result).not.toContain("some agents unhealthy")
+    })
+
+    it("'partial' surfaces both unhealthy-count and drift-count when both are present", async () => {
+      const dir = makeTmpDir()
+      const healthPath = path.join(dir, "daemon-health.json")
+      writeHealth(healthPath, "partial", {
+        agents: {
+          alpha: { status: "running", pid: 1234, crashes: 0 },
+          beta: { status: "crashed", pid: null, crashes: 3 },
+        },
+        drift: [
+          {
+            agent: "alpha",
+            lane: "outward",
+            intentProvider: "openai-codex",
+            intentModel: "gpt-5.4",
+            observedProvider: "openai-codex",
+            observedModel: "gpt-5.3",
+            reason: "provider-model-changed",
+            repairCommand: "ouro use --agent alpha --lane outward --provider openai-codex --model gpt-5.4",
+          },
+        ],
+      })
+      const result = await runStatus(healthPath)
+      expect(result).toContain("Last known status: partial")
+      expect(result).toContain("unhealthy")
+      expect(result).toContain("drift")
+    })
+
+    it("'partial' falls back to 'some agents unhealthy' copy when drift is absent", async () => {
+      const dir = makeTmpDir()
+      const healthPath = path.join(dir, "daemon-health.json")
+      writeHealth(healthPath, "partial", {
+        agents: {
+          alpha: { status: "running", pid: 1234, crashes: 0 },
+          beta: { status: "crashed", pid: null, crashes: 3 },
+        },
+      })
+      const result = await runStatus(healthPath)
+      expect(result).toContain("Last known status: partial")
+      expect(result).toContain("unhealthy")
+      expect(result).not.toContain("drift")
     })
 
     it("renders 'safe-mode' label when status is 'safe-mode'", async () => {

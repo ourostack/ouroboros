@@ -28,12 +28,26 @@ import {
   type AgentReadinessIssue,
 } from "./readiness-repair"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
+import {
+  detectProviderBindingDrift,
+  loadDriftInputsForAgent,
+  type DriftFinding,
+} from "./drift-detection"
 
 export interface ConfigCheckResult {
   ok: boolean
   error?: string
   fix?: string
   issue?: AgentReadinessIssue
+  /**
+   * Layer 4 drift findings: per-lane intent (`agent.json`) vs observed
+   * (`state/providers.json`) mismatches. Populated only when the function
+   * advanced far enough to read both inputs (a state-setup failure or
+   * agent.json parse error returns the result without ever computing
+   * drift, so this field stays `undefined` in those branches). Drift is
+   * advisory — its presence does NOT flip `ok` to false.
+   */
+  driftFindings?: DriftFinding[]
 }
 
 export type ProviderPing = (
@@ -495,6 +509,26 @@ export async function checkAgentConfigWithProviderHealth(
   if (!stateResult.ok) return stateResult.result
   if (stateResult.disabled) return { ok: true }
 
+  // Layer 4 drift detection. Runs once per call after state setup so that
+  // drift findings ride along regardless of ping outcome — consumers
+  // (Layer 4 rollup, Layer 3 RepairGuide) want to see drift even when a
+  // live-check is failing for unrelated reasons. Drift detection is pure
+  // and never throws on a malformed agent.json: any read error here would
+  // indicate the bundle disappeared between state setup and now (a
+  // race), which we surface as `[]` rather than a hard failure.
+  let driftFindings: DriftFinding[] = []
+  try {
+    const inputs = loadDriftInputsForAgent(bundlesRoot, agentName)
+    driftFindings = detectProviderBindingDrift({
+      agentName,
+      agentJson: inputs.agentJson,
+      providerState: inputs.providerState,
+    })
+  } catch {
+    /* v8 ignore next 1 -- defensive race-window guard: agent.json went away after state setup. Tested via Unit 5 integration when at all. @preserve */
+    driftFindings = []
+  }
+
   deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
@@ -520,16 +554,16 @@ export async function checkAgentConfigWithProviderHealth(
     const binding = stateResult.state.lanes[lane]
     if (!poolResult.ok) {
       if (poolResult.reason === "missing") {
-        return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
+        return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
       }
-      return invalidPoolResult(agentName, lane, binding.provider, binding.model, {
+      return { ...invalidPoolResult(agentName, lane, binding.provider, binding.model, {
         ...poolResult,
         reason: poolResult.reason,
-      })
+      }), driftFindings }
     }
     const record = credentialRecordForLane(poolResult.pool, binding.provider)
     if (!record) {
-      return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
+      return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
     }
     const key = `${binding.provider}\0${binding.model}\0${record.revision}`
     const group = pingGroups.get(key)
@@ -597,7 +631,7 @@ export async function checkAgentConfigWithProviderHealth(
     }
   }
 
-  if (firstFailure) return firstFailure
+  if (firstFailure) return { ...firstFailure, driftFindings }
 
   emitNervesEvent({
     component: "daemon",
@@ -607,7 +641,8 @@ export async function checkAgentConfigWithProviderHealth(
       agent: agentName,
       providers: [...new Set([...pingGroups.values()].map((group) => group.provider))],
       liveProviderCheck: true,
+      driftCount: driftFindings.length,
     },
   })
-  return { ok: true }
+  return { ok: true, driftFindings }
 }

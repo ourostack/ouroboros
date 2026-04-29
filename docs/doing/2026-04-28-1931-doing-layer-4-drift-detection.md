@@ -1,6 +1,6 @@
 # Doing: Layer 4 — Provider-Binding Drift Detection (read-only)
 
-**Status**: READY_FOR_EXECUTION
+**Status**: done
 **Execution Mode**: direct (strict-TDD)
 **Created**: 2026-04-28 19:31 UTC
 **Planning**: ../planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md
@@ -22,19 +22,19 @@ This PR is **read-only**: it never writes to `state/providers.json` and never in
 
 ## Completion Criteria
 
-- [ ] Drift detection runs once per `ouro up` per enabled agent.
-- [ ] For each enabled agent, compare `agent.json`'s `humanFacing`/`agentFacing` (legacy) or `outward`/`inner` (new) lane bindings against `state/providers.json`'s observed binding.
-- [ ] Read side tolerates legacy `humanFacing`/`agentFacing` keys AND new `outward`/`inner` keys (`normalizeProviderLane` already does this — use it, do not reinvent).
-- [ ] On mismatch, populate `EffectiveProviderReadiness.reason = "provider-model-changed"` (existing field; populate, don't invent).
-- [ ] Emit a per-agent drift advisory rolled up via the layer 1 vocabulary. Drift alone does NOT promote an agent past `partial`; it is advisory.
-- [ ] Repair proposal: a copy-pasteable `ouro use --agent {name} --lane {outward|inner} --provider {name} --model {id}` string surfaced through `inner-status.ts` and any `--no-repair` summary path.
-- [ ] If `state/providers.json` is absent (fresh install), emit no drift signal — there is nothing to drift against.
-- [ ] Slugger fixture (full slugger-shape from planning Layer 1 fixture, when available — for this PR a synthetic per-condition fixture is acceptable) shows correct drift detection on the `agent.json` ↔ `state/providers.json` mismatch.
-- [ ] No writes to `state/` from any code added in this PR.
-- [ ] 100% test coverage on all new code.
-- [ ] All tests pass.
-- [ ] No warnings.
-- [ ] PR description (`./2026-04-28-1931-doing-layer-4-drift-detection/pr-description.md`) drafted before merger.
+- [x] Drift detection runs once per `ouro up` per enabled agent.
+- [x] For each enabled agent, compare `agent.json`'s `humanFacing`/`agentFacing` (legacy) or `outward`/`inner` (new) lane bindings against `state/providers.json`'s observed binding.
+- [x] Read side tolerates legacy `humanFacing`/`agentFacing` keys AND new `outward`/`inner` keys (`normalizeProviderLane` already does this — use it, do not reinvent).
+- [x] On mismatch, populate `EffectiveProviderReadiness.reason = "provider-model-changed"` (existing field; populate, don't invent).
+- [x] Emit a per-agent drift advisory rolled up via the layer 1 vocabulary. Drift alone does NOT promote an agent past `partial`; it is advisory.
+- [x] Repair proposal: a copy-pasteable `ouro use --agent {name} --lane {outward|inner} --provider {name} --model {id}` string surfaced through `inner-status.ts` and any `--no-repair` summary path.
+- [x] If `state/providers.json` is absent (fresh install), emit no drift signal — there is nothing to drift against.
+- [x] Slugger fixture (full slugger-shape from planning Layer 1 fixture, when available — for this PR a synthetic per-condition fixture is acceptable) shows correct drift detection on the `agent.json` ↔ `state/providers.json` mismatch.
+- [x] No writes to `state/` from any code added in this PR.
+- [x] 100% test coverage on all new code.
+- [x] All tests pass.
+- [x] No warnings.
+- [x] PR description (`./2026-04-28-1931-doing-layer-4-drift-detection/pr-description.md`) drafted before merger.
 
 ## Code Coverage Requirements
 
@@ -67,11 +67,11 @@ This PR is **read-only**: it never writes to `state/providers.json` and never in
 ### Legend
 ⬜ Not started · 🔄 In progress · ✅ Done · ❌ Blocked
 
-### ⬜ Unit 0: Verify layer 1 has landed
+### ✅ Unit 0: Verify layer 1 has landed
 **What**: Confirm `DaemonStatus` union type from layer 1 is in `daemon-health.ts` and `computeDaemonRollup` exists. If not, halt — do not start this PR.
 **Acceptance**: `git log` shows layer 1 PR merged on the base branch. `grep -rn "DaemonStatus" src/heart/daemon/daemon-health.ts` returns the type definition.
 
-### ⬜ Unit 1a: Drift comparator — Tests
+### ✅ Unit 1a: Drift comparator — Tests
 **What**: Write failing tests for `detectProviderBindingDrift(input: { agentName: string; agentJson: AgentConfig; providerState: ProviderState | null }): DriftFinding[]` in `src/__tests__/heart/daemon/drift-detection.test.ts` (new file). Cover every edge case from "Code Coverage Requirements".
 
 Use existing types: `AgentConfig` from `src/heart/identity.ts`; `ProviderState` from `src/heart/provider-state.ts:27`. Use `readProviderState(agentRoot)` (`provider-state.ts:156`) for I/O — it returns `ProviderStateReadResult` (a discriminated union — handle the `null` case as "no observed binding for this agent").
@@ -91,27 +91,27 @@ interface DriftFinding {
 ```
 **Acceptance**: Tests exist and FAIL (red). All edge cases covered.
 
-### ⬜ Unit 1b: Drift comparator — Implementation
+### ✅ Unit 1b: Drift comparator — Implementation
 **What**: Implement `detectProviderBindingDrift` in `src/heart/daemon/drift-detection.ts` (new file). Use `normalizeProviderLane` from `provider-binding-resolver.ts` for legacy/new lane key handling. Pure function — no I/O. Caller is responsible for reading `state/providers.json` and `agent.json` and passing them in.
 **Acceptance**: Tests PASS (green). Function is pure.
 
-### ⬜ Unit 1c: Drift comparator — Coverage & refactor
+### ✅ Unit 1c: Drift comparator — Coverage & refactor
 **What**: Verify 100% branch coverage. Refactor for clarity if needed.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 2a: Drift loader — Tests
+### ✅ Unit 2a: Drift loader — Tests
 **What**: Write failing tests for `loadDriftInputsForAgent(bundleRoot: string, agentName: string): { agentJson: AgentConfig; providerState: ProviderState | null }` in `src/__tests__/heart/daemon/drift-loader.test.ts`. Cover: missing `state/providers.json` (use `readProviderState` which returns `ProviderStateReadResult` — map the absent/error cases to null), malformed `state/providers.json`, missing `agent.json`, malformed `agent.json` (these last two should throw — caller decides whether to swallow), legacy `humanFacing/agentFacing` keys handled by `normalizeProviderLane`, new `outward/inner` keys handled.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 2b: Drift loader — Implementation
+### ✅ Unit 2b: Drift loader — Implementation
 **What**: Implement `loadDriftInputsForAgent` in `src/heart/daemon/drift-detection.ts` (same file). Use `readProviderState(agentRoot)` from `provider-state.ts:156` for the observed-state read. Use the existing `agent.json` reader path (`agent-config-check.ts` or `agent-discovery.ts` already have one — pick the most appropriate; do not reinvent). Reads files; never writes.
 **Acceptance**: Tests PASS (green).
 
-### ⬜ Unit 2c: Drift loader — Coverage & refactor
+### ✅ Unit 2c: Drift loader — Coverage & refactor
 **What**: Verify 100% coverage. Refactor.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 3a: Wire into `agent-config-check.ts` — Tests
+### ✅ Unit 3a: Wire into `agent-config-check.ts` — Tests
 **What**: `checkAgentConfigWithProviderHealth` in `src/heart/daemon/agent-config-check.ts` is the existing per-agent boot-time validator. Add drift-detection invocation immediately after the live-ping. Write failing tests in `src/__tests__/heart/daemon/agent-config-check-drift.test.ts` asserting:
 - Healthy agent with no drift → no drift findings reported.
 - Healthy agent with intent/observed mismatch → drift finding emitted, `reason = "provider-model-changed"`, `repairCommand` populated.
@@ -119,15 +119,15 @@ interface DriftFinding {
 - `agent.json` provider lane parse failure → propagate as existing error path; no drift finding.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 3b: Wire into `agent-config-check.ts` — Implementation
+### ✅ Unit 3b: Wire into `agent-config-check.ts` — Implementation
 **What**: Modify `checkAgentConfigWithProviderHealth` to call `loadDriftInputsForAgent` + `detectProviderBindingDrift` and append findings to its return type. Extend the return type with `driftFindings: DriftFinding[]` (additive, non-breaking).
 **Acceptance**: Tests from 3a PASS. Existing tests for `checkAgentConfigWithProviderHealth` still pass.
 
-### ⬜ Unit 3c: Wire into `agent-config-check.ts` — Coverage & refactor
+### ✅ Unit 3c: Wire into `agent-config-check.ts` — Coverage & refactor
 **What**: Verify coverage on changed lines.
 **Acceptance**: Coverage 100% on new lines. All tests green.
 
-### ⬜ Unit 4a: Surface drift in rollup + render — Tests
+### ✅ Unit 4a: Surface drift in rollup + render — Tests
 **What**: Write failing tests asserting:
 - Drift findings present + agent live-check healthy → daemon rollup is `partial` (downgrade rule from layer 1; drift is advisory).
 - Drift findings absent + agent live-check healthy → daemon rollup is `healthy`.
@@ -137,21 +137,21 @@ interface DriftFinding {
 Place in `src/__tests__/heart/daemon/drift-rollup.test.ts` and extend `inner-status-vocabulary.test.ts` from layer 1.
 **Acceptance**: Tests exist and FAIL (red).
 
-### ⬜ Unit 4b: Surface drift in rollup + render — Implementation
+### ✅ Unit 4b: Surface drift in rollup + render — Implementation
 **What**:
 - Pass drift findings into `computeDaemonRollup` (extend the input shape if necessary). Encode the rule "any drift finding downgrades `healthy` → `partial`, no further escalation."
 - Update `inner-status.ts` render to print drift advisories with the copy-pasteable `ouro use` command.
 **Acceptance**: Tests from 4a PASS.
 
-### ⬜ Unit 4c: Surface drift in rollup + render — Coverage & refactor
+### ✅ Unit 4c: Surface drift in rollup + render — Coverage & refactor
 **What**: 100% coverage on changes. Lint + typecheck clean.
 **Acceptance**: Coverage 100%. Tests green.
 
-### ⬜ Unit 5: Per-condition fixture for drift — Tests
+### ✅ Unit 5: Per-condition fixture for drift — Tests
 **What**: Build an integration-style test fixture that creates a temp `agent.json` with intent X and a temp `state/providers.json` with observation Y, runs `checkAgentConfigWithProviderHealth`, and asserts the drift finding + the rolled-up daemon status. Place in `src/__tests__/heart/daemon/drift-detection-integration.test.ts`. Use `serpentguide-bootstrap.test.ts` as the structural precedent for filesystem fixtures.
 **Acceptance**: Test exists and PASSES (this is the integration-level acceptance test, not a unit-level red→green).
 
-### ⬜ Unit 6: Full-suite green + PR description
+### ✅ Unit 6: Full-suite green + PR description
 **What**:
 - Run full test suite. All green.
 - `tsc --noEmit` clean.
@@ -182,3 +182,10 @@ Place in `src/__tests__/heart/daemon/drift-rollup.test.ts` and extend `inner-sta
 
 ## Progress Log
 - 2026-04-28 19:31 UTC Created as PR 2 of 4 in the sequential rollout (1 → 4 → 2 → 3). Depends on layer 1 PR being merged.
+- Unit 0 complete: verified Layer 1 vocabulary at HEAD — `DaemonStatus`/`RollupStatus` in `src/heart/daemon/daemon-health.ts:56-57`, `computeDaemonRollup` in `src/heart/daemon/daemon-rollup.ts:67`. Branch `harness/layer-4-drift-detection` cut from `3c8e2c38`.
+- Unit 1a–1c complete: pure intent-vs-observed comparator in `src/heart/daemon/drift-detection.ts` with 14 unit tests. 100% coverage. Handles legacy `humanFacing`/`agentFacing`, new `outward`/`inner`, mixed, and missing-intent edge cases.
+- Unit 2a–2c complete: I/O loader `loadDriftInputsForAgent` colocated in same file with 11 unit tests. Maps missing/invalid `state/providers.json` to null; throws on missing/malformed `agent.json`. Read-only invariant pinned by tests. 100% coverage.
+- Unit 3a–3c complete: wired into `checkAgentConfigWithProviderHealth`. Added optional `driftFindings: DriftFinding[]` to `ConfigCheckResult`. Drift detection runs once after state setup; findings ride along with both ok and error returns. 6 new tests; 7 existing tests loosened from `toEqual({ok:true})` to `toMatchObject({ok:true})` for additive non-breaking compatibility.
+- Unit 4a–4c complete: `computeDaemonRollup` gains optional `driftDetected` (downgrade-only — never escalates past partial). `buildInnerStatusOutput` gains optional `driftFindings` and renders advisory section. `cli-exec.ts` adds `collectAgentDriftAdvisories` + `writeDriftAdvisorySummary` helpers; wired into `--no-repair` boot path (preflight + post-startup) and the `inner.status` command. `daemon-entry.ts` probes drift before each rollup. 100% coverage on all changed modules. End-to-end downgrade test in `daemon-entry-rollup.test.ts`.
+- Unit 5 complete: fixture-driven on-disk integration test in `drift-detection-integration.test.ts` with 4 cases — single-lane drift, no drift, both lanes drift, and read-only invariant. All green.
+- Unit 6 complete: full test suite green (9871 passing). `tsc --noEmit` clean. `npm run lint` clean. No `state/` writes added in this PR. PR description drafted at `./2026-04-28-1931-doing-layer-4-drift-detection/pr-description.md`. Coverage gate passes (100% on all new code).

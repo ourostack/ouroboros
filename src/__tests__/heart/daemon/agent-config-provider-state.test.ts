@@ -207,7 +207,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     const stateResult = readProviderState(agentRoot)
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
@@ -259,7 +259,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     const expectedModel = getDefaultModelForProvider("minimax")
     const stateResult = readProviderState(agentRoot)
     expect(stateResult.ok).toBe(true)
@@ -326,7 +326,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(fs.existsSync(getProviderStatePath(agentRoot))).toBe(false)
     expect(pingProvider).not.toHaveBeenCalled()
   })
@@ -371,7 +371,7 @@ describe("checkAgentConfigWithProviderHealth provider state integration", () => 
 
     const result = await checkAgentConfigWithProviderHealth("slugger", bundlesRoot, { homeDir, pingProvider })
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toMatchObject({ ok: true })
     expect(pingProvider).toHaveBeenCalledTimes(1)
     expect(pingProvider).toHaveBeenCalledWith(
       "minimax",

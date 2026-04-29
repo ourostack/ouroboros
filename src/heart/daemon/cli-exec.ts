@@ -128,6 +128,11 @@ import {
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
 import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
+import {
+  detectProviderBindingDrift,
+  loadDriftInputsForAgent,
+  type DriftFinding,
+} from "./drift-detection"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -586,6 +591,66 @@ function writeProviderRepairSummary(
 ): void {
   const blocks = degraded.map((entry) => renderReadinessIssueNextSteps(readinessIssueFromDegraded(entry)).join("\n"))
   deps.writeStdout([title, ...blocks].join("\n\n"))
+}
+
+/**
+ * Layer 4: render a per-agent drift advisory block to stdout. Called from
+ * the `--no-repair` summary path when one or more enabled agents have a
+ * mismatch between `agent.json` (intent) and `state/providers.json`
+ * (observation). The block surfaces the lane, intent vs observed
+ * binding, and the copy-pasteable `ouro use` repair command per finding.
+ *
+ * Drift is advisory: this helper only PRINTS the advisory; running the
+ * repair command is the operator's call (and is Layer 3 RepairGuide's
+ * domain when the daemon does it automatically).
+ *
+ * Exported for direct unit-testing; the production callers are
+ * inside this module.
+ */
+export function writeDriftAdvisorySummary(
+  deps: Pick<OuroCliDeps, "writeStdout">,
+  advisories: DriftFinding[],
+): void {
+  if (advisories.length === 0) return
+  const lines: string[] = ["Drift advisory: agent intent does not match this machine's observed binding"]
+  for (const advisory of advisories) {
+    lines.push("")
+    lines.push(`  ${advisory.agent} (${advisory.lane}):`)
+    lines.push(`    intent:   ${advisory.intentProvider}/${advisory.intentModel}`)
+    lines.push(`    observed: ${advisory.observedProvider}/${advisory.observedModel}`)
+    lines.push(`    repair:   ${advisory.repairCommand}`)
+  }
+  deps.writeStdout(lines.join("\n"))
+}
+
+/**
+ * Collect drift findings across every enabled agent in the bundles
+ * directory. Used by the `--no-repair` summary path so that drift
+ * advisories ride along with (or stand alone in place of) the existing
+ * provider-repair summary. Errors during a single agent's load (e.g.
+ * malformed `agent.json`) are swallowed: drift detection is advisory
+ * and must not block the rest of the boot path.
+ */
+export async function collectAgentDriftAdvisories(
+  deps: OuroCliDeps,
+): Promise<DriftFinding[]> {
+  const agents = await listCliAgents(deps)
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const findings: DriftFinding[] = []
+  for (const agent of [...new Set(agents)]) {
+    try {
+      const inputs = loadDriftInputsForAgent(bundlesRoot, agent)
+      const agentFindings = detectProviderBindingDrift({
+        agentName: agent,
+        agentJson: inputs.agentJson,
+        providerState: inputs.providerState,
+      })
+      findings.push(...agentFindings)
+    } catch {
+      // Best-effort: a per-agent read failure is not blocking.
+    }
+  }
+  return findings
 }
 
 function providerRepairCountSummary(count: number): string {
@@ -6620,6 +6685,13 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         progress.end()
         if (command.noRepair) {
           writeProviderRepairSummary(deps, "Provider checks need attention", preflightProviderDegraded)
+          // Layer 4: drift advisories ride along with the provider-repair
+          // summary under --no-repair. Non-blocking; failure to collect
+          // findings (e.g. malformed agent.json on one bundle) is swallowed
+          // by `collectAgentDriftAdvisories` so the rest of the boot path
+          // is unaffected.
+          const driftAdvisories = await collectAgentDriftAdvisories(deps)
+          writeDriftAdvisorySummary(deps, driftAdvisories)
           const message = "daemon not started: provider checks need repair. Run `ouro repair` or rerun `ouro up` to choose a repair path."
           return returnCliFailure(deps, message)
         }
@@ -6682,12 +6754,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (command.noRepair) {
         // --no-repair: write degraded summary and skip interactive repair
         writeProviderRepairSummary(deps, "Provider checks need attention", daemonResult.stability.degraded)
+        // Layer 4: drift advisories ride along with the post-startup
+        // degraded summary too — same rationale as the preflight path.
+        const driftAdvisories = await collectAgentDriftAdvisories(deps)
+        writeDriftAdvisorySummary(deps, driftAdvisories)
         emitNervesEvent({
           level: "warn",
           component: "daemon",
           event: "daemon.no_repair_degraded_summary",
           message: "degraded agents detected with --no-repair, skipping interactive repair",
-          meta: { degradedCount: daemonResult.stability.degraded.length },
+          meta: {
+            degradedCount: daemonResult.stability.degraded.length,
+            driftCount: driftAdvisories.length,
+          },
         })
       } else {
         const typedDegraded = daemonResult.stability.degraded.filter((entry) => isKnownReadinessIssue(entry.issue))
@@ -6761,6 +6840,12 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           progress.completePhase("post-repair check", providerRepairCountSummary(repairedAgents.size))
         }
       }
+    } else if (command.noRepair) {
+      // Layer 4: no degraded agents to summarize, but --no-repair still
+      // surfaces drift advisories so the operator sees them without
+      // having to run `ouro inner status` per agent.
+      const driftAdvisories = await collectAgentDriftAdvisories(deps)
+      writeDriftAdvisorySummary(deps, driftAdvisories)
     }
 
     // Persist boot startup AFTER daemon is running — bootstrap is safe now
@@ -7924,6 +8009,22 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Attention count
       const activeObligations = listActiveReturnObligations(command.agent)
 
+      // Layer 4 drift findings for this agent. Best-effort: if agent.json
+      // is unreadable mid-call we just suppress the advisory rather than
+      // failing the inner-status render.
+      let driftFindings: DriftFinding[] = []
+      try {
+        const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+        const inputs = loadDriftInputsForAgent(bundlesRoot, command.agent)
+        driftFindings = detectProviderBindingDrift({
+          agentName: command.agent,
+          agentJson: inputs.agentJson,
+          providerState: inputs.providerState,
+        })
+      } catch {
+        driftFindings = []
+      }
+
       const message = buildInnerStatusOutput({
         agentName: command.agent,
         runtimeState,
@@ -7931,6 +8032,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         heartbeat,
         attentionCount: activeObligations.length,
         now: Date.now(),
+        driftFindings,
       })
       deps.writeStdout(message)
       return message
