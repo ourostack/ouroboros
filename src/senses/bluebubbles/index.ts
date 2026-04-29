@@ -29,6 +29,7 @@ import {
 } from "./model"
 import { createBlueBubblesClient, type BlueBubblesClient } from "./client"
 import {
+  hasRecordedBlueBubblesInbound,
   listRecordedBlueBubblesInbound,
   recordBlueBubblesInbound,
   type BlueBubblesInboundSource,
@@ -1301,12 +1302,25 @@ export interface BlueBubblesCatchUpResult {
   inspected: number
   recovered: number
   skipped: number
+  queued?: number
   failed: number
   lastRecoveredMessageGuid?: string
 }
 
 function countPendingRecoveryCandidates(agentName: string): number {
   return listBlueBubblesRecoveryCandidates(agentName)
+    .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
+    .length
+}
+
+function countPendingCapturedInboundMessages(agentName: string): number {
+  const seenMessageGuids = new Set<string>()
+  return listRecordedBlueBubblesInbound(agentName)
+    .filter((entry) => {
+      if (seenMessageGuids.has(entry.messageGuid)) return false
+      seenMessageGuids.add(entry.messageGuid)
+      return true
+    })
     .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
     .length
 }
@@ -1330,10 +1344,6 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
   return nowMs - BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS
 }
 
-function formatRecoveredCount(count: number): string {
-  return `caught up ${count} missed message(s)`
-}
-
 async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<void> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -1343,11 +1353,13 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
 
   try {
     await client.checkHealth()
-    const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps)
-    const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
-    const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState)
-    const failed = captured.failed + recovery.failed + catchUp.failed
-    const recovered = captured.recovered + recovery.recovered + catchUp.recovered
+    const capturedPending = countPendingCapturedInboundMessages(agentName)
+    const recoveryPending = countPendingRecoveryCandidates(agentName)
+    const catchUp = await catchUpMissedBlueBubblesMessages(resolvedDeps, previousState, {
+      processTurns: false,
+    })
+    const failed = catchUp.failed
+    const queued = capturedPending + recoveryPending + (catchUp.queued ?? 0)
     // upstreamStatus reflects whether BlueBubbles itself is healthy and we
     // have unprocessed work (pendingRecoveryCount). Per-cycle recovery
     // failures are noted in `detail` for transparency but do NOT flip the
@@ -1355,25 +1367,23 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
     // otherwise stick the sense in "error" forever, contradicting `ouro
     // doctor` which only checks upstream reachability.
     writeBlueBubblesRuntimeState(agentName, {
-      upstreamStatus: recovery.pending > 0 ? "error" : "ok",
-      detail: recovery.pending > 0
-        ? `pending recovery: ${recovery.pending}`
+      upstreamStatus: queued > 0 ? "error" : "ok",
+      detail: queued > 0
+        ? `pending recovery: ${queued}`
         : failed > 0
           ? `${failed} message(s) unrecoverable this cycle; upstream ok`
-          : catchUp.recovered > 0
-            ? formatRecoveredCount(catchUp.recovered)
           : "upstream reachable",
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: recovery.pending,
-      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
-      lastRecoveredMessageGuid: catchUp.lastRecoveredMessageGuid ?? previousState.lastRecoveredMessageGuid,
+      pendingRecoveryCount: queued,
+      lastRecoveredAt: previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
   } catch (error) {
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "error",
       detail: error instanceof Error ? error.message : String(error),
       lastCheckedAt: checkedAt,
-      pendingRecoveryCount: countPendingRecoveryCandidates(agentName),
+      pendingRecoveryCount: countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName),
     })
   }
 }
@@ -1381,6 +1391,7 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
 export async function catchUpMissedBlueBubblesMessages(
   deps: Partial<RuntimeDeps> = {},
   previousState?: BlueBubblesRuntimeState,
+  options: { processTurns?: boolean } = {},
 ): Promise<BlueBubblesCatchUpResult> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -1388,6 +1399,7 @@ export async function catchUpMissedBlueBubblesMessages(
   const result: BlueBubblesCatchUpResult = { inspected: 0, recovered: 0, skipped: 0, failed: 0 }
   const state = previousState ?? readBlueBubblesRuntimeState(agentName)
   const catchUpSince = resolveBlueBubblesCatchUpSince(state)
+  const processTurns = options.processTurns !== false
 
   /* v8 ignore next -- older injected test doubles may omit the catch-up query method */
   if (!client.listRecentMessages) return result
@@ -1468,6 +1480,16 @@ export async function catchUpMissedBlueBubblesMessages(
       || isBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     ) {
       result.skipped++
+      continue
+    }
+
+    if (!processTurns) {
+      if (hasRecordedBlueBubblesInbound(agentName, event.chat.sessionKey, event.messageGuid)) {
+        result.skipped++
+        continue
+      }
+      recordBlueBubblesInbound(agentName, event, "upstream-catchup")
+      result.queued = (result.queued ?? 0) + 1
       continue
     }
 

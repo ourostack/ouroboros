@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.522",
+      "changes": [
+        "Keeps the BlueBubbles production HTTP worker responsive by changing runtime health sync to queue/discover missed iMessage recovery work instead of running full recovered agent turns inline.",
+        "Counts captured inbound sidecars and mutation backlog as pending recovery in BlueBubbles runtime state, so `ouro status`/health truth can show that live transport is up while old messages still need recovery.",
+        "Queues upstream catch-up candidates into the inbound sidecar during runtime sync without hydrating or invoking the agent, preserving idempotent recovery while preventing startup catch-up from starving live webhooks."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.521",
       "changes": [
         "Ships the `RepairGuide.ouro/` library bundle in the npm package so production `ouro up` repair guidance can load the same source-truth recovery materials that tests exercise.",
