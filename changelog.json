@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.526",
+      "changes": [
+        "Marks BlueBubbles/iMessage as unhealthy in daemon status whenever fresh runtime state has queued recovery work, even if the BlueBubbles process and upstream health probe are answering.",
+        "Keeps the runtime `upstreamStatus` scoped to transport reachability while rendering pending iMessage recovery as a user-facing service failure through `pendingRecoveryCount`.",
+        "Requires a running BlueBubbles listener process before fresh healthy runtime state can make daemon status green, and hard-times out queued recovery turns so one stuck message cannot wedge backlog draining.",
+        "Quarantines timed-out recovery messages with a `recovery-timeout` processed outcome, allowing later queued iMessage recovery to continue while preserving the audit trail.",
+        "Clarifies BlueBubbles runtime detail text so queued recovery reads as iMessage not caught up instead of implying the sense is healthy."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.525",
       "changes": [
         "`ouro status --json` now returns parseable daemon status JSON instead of the human ANSI status board, giving automation and review gates a truthful machine-readable status surface.",

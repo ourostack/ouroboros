@@ -193,11 +193,30 @@ const defaultDeps: RuntimeDeps = {
 }
 
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
+const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
+const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
+const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 60_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
 const BLUEBUBBLES_RECOVERY_CATCHUP_LOOKBACK_MS = 24 * 60 * 60 * 1000
 const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
+
+interface BlueBubblesHandleOptions {
+  timeoutMs?: number
+}
+
+class BlueBubblesRecoveryTurnTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`bluebubbles recovery turn timed out after ${timeoutMs}ms`)
+    this.name = "BlueBubblesRecoveryTurnTimeoutError"
+  }
+}
+
+function isBlueBubblesRecoveryTurnTimeoutError(error: unknown): boolean {
+  return error instanceof BlueBubblesRecoveryTurnTimeoutError
+    || (error instanceof Error && error.name === "BlueBubblesRecoveryTurnTimeoutError")
+}
 
 function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverParams {
   if (event.chat.isGroup) {
@@ -840,6 +859,7 @@ async function handleBlueBubblesNormalizedEvent(
   event: BlueBubblesNormalizedEvent,
   resolvedDeps: RuntimeDeps,
   source: BlueBubblesInboundSource,
+  options: BlueBubblesHandleOptions = {},
 ): Promise<BlueBubblesHandleResult> {
   const client = resolvedDeps.createClient()
   const agentName = resolvedDeps.getAgentName()
@@ -1048,6 +1068,10 @@ async function handleBlueBubblesNormalizedEvent(
       event.chat.isGroup,
     )
     const controller = new AbortController()
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+    let timeoutPromise: Promise<never> | null = null
+    let timeoutReject: ((error: Error) => void) | undefined
+    let recoveryTimedOut = false
 
     // BB-specific tool context wrappers
     const summarize = createSummarize("human")
@@ -1081,7 +1105,36 @@ async function handleBlueBubblesNormalizedEvent(
     /* v8 ignore stop */
 
     try {
-      const result = await handleInboundTurn({
+      const timeoutMs = options.timeoutMs
+      if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutReject = reject
+        })
+        timeoutTimer = setTimeout(() => {
+          const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+          recoveryTimedOut = true
+          controller.abort(reason)
+          timeoutReject?.(reason)
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_turn_timeout",
+            message: "bluebubbles recovery turn timed out",
+            meta: {
+              messageGuid: event.messageGuid,
+              sessionKey: event.chat.sessionKey,
+              source,
+              timeoutMs,
+            },
+          })
+        }, timeoutMs)
+        /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+        if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
+          (timeoutTimer as { unref: () => void }).unref()
+        }
+      }
+
+      const turnPromise = handleInboundTurn({
         channel: "bluebubbles",
         sessionKey: event.chat.sessionKey,
         capabilities: bbCapabilities,
@@ -1142,6 +1195,28 @@ async function handleBlueBubblesNormalizedEvent(
           return bbFailoverStates.get(event.chat.sessionKey)!
         })(),
       })
+      /* v8 ignore start -- detached late-rejection telemetry is asserted in timeout tests, but V8 does not reliably attribute Promise.catch callbacks @preserve */
+      if (timeoutPromise) {
+        void turnPromise.catch((error) => {
+          if (!recoveryTimedOut) return
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_recovery_error",
+            message: "bluebubbles recovery turn rejected after timeout",
+            meta: {
+              messageGuid: event.messageGuid,
+              sessionKey: event.chat.sessionKey,
+              source,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          })
+        })
+      }
+      /* v8 ignore stop */
+      const result = timeoutPromise
+        ? await Promise.race([turnPromise, timeoutPromise])
+        : await turnPromise
 
       /* v8 ignore start -- failover display + error replay @preserve */
       if (result.failoverMessage) {
@@ -1205,6 +1280,10 @@ async function handleBlueBubblesNormalizedEvent(
         bufferedTerminalError = null
       }
       /* v8 ignore stop */
+      if (timeoutTimer !== null) {
+        clearTimeout(timeoutTimer)
+        timeoutTimer = null
+      }
       await callbacks.finish()
     }
     })
@@ -1344,6 +1423,12 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
   return nowMs - BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS
 }
 
+function formatBlueBubblesRuntimeDetail(queued: number, failed: number): string {
+  if (queued > 0) return `upstream reachable but iMessage is not caught up; ${queued} recovery item(s) queued`
+  if (failed > 0) return `${failed} message(s) unrecoverable this cycle; upstream ok`
+  return "upstream reachable"
+}
+
 async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<void> {
   const resolvedDeps = { ...defaultDeps, ...deps }
   const agentName = resolvedDeps.getAgentName()
@@ -1368,21 +1453,16 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
     })
     const failed = catchUp.failed
     const queued = capturedPending + recoveryPending + (catchUp.queued ?? 0)
-    // upstreamStatus reflects whether BlueBubbles itself is healthy and
-    // whether the local bridge can answer webhook traffic. Queued recovery work
-    // and per-cycle failures are noted in `detail` for transparency but do NOT
-    // flip the status to error: a single permanently-unrecoverable message
-    // would otherwise stick the sense in "error" forever, contradicting `ouro
-    // doctor` which only checks upstream reachability.
+    // upstreamStatus reflects whether BlueBubbles itself and the local bridge
+    // can answer webhook traffic. The daemon status layer treats
+    // pendingRecoveryCount as unhealthy for user-facing iMessage reachability,
+    // while this field stays scoped to upstream transport reachability.
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: queued > 0
-        ? `upstream reachable; ${queued} recovery item(s) queued`
-        : failed > 0
-          ? `${failed} message(s) unrecoverable this cycle; upstream ok`
-          : "upstream reachable",
+      detail: formatBlueBubblesRuntimeDetail(queued, failed),
       lastCheckedAt: checkedAt,
       pendingRecoveryCount: queued,
+      failedRecoveryCount: failed,
       lastRecoveredAt: previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
@@ -1392,8 +1472,61 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       detail: error instanceof Error ? error.message : String(error),
       lastCheckedAt: checkedAt,
       pendingRecoveryCount: countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName),
+      failedRecoveryCount: 0,
     })
   }
+}
+
+export interface BlueBubblesQueuedRecoveryResult {
+  recovered: number
+  skipped: number
+  failed: number
+  pendingRecoveryCount: number
+}
+
+export async function recoverQueuedBlueBubblesMessages(
+  deps: Partial<RuntimeDeps> = {},
+): Promise<BlueBubblesQueuedRecoveryResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps }
+  const agentName = resolvedDeps.getAgentName()
+  const previousState = readBlueBubblesRuntimeState(agentName)
+  const initialPending = countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName)
+  if (initialPending === 0) {
+    return { recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 }
+  }
+
+  const captured = await recoverCapturedBlueBubblesInboundMessages(resolvedDeps)
+  const recovery = await recoverMissedBlueBubblesMessages(resolvedDeps)
+  const pendingRecoveryCount = countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName)
+  const failed = captured.failed + recovery.failed
+  const recovered = captured.recovered + recovery.recovered
+  const skipped = captured.skipped + recovery.skipped
+  const checkedAt = new Date().toISOString()
+
+  try {
+    await resolvedDeps.createClient().checkHealth()
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "ok",
+      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed),
+      lastCheckedAt: checkedAt,
+      pendingRecoveryCount,
+      failedRecoveryCount: failed,
+      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
+  } catch (error) {
+    writeBlueBubblesRuntimeState(agentName, {
+      upstreamStatus: "error",
+      detail: error instanceof Error ? error.message : String(error),
+      lastCheckedAt: checkedAt,
+      pendingRecoveryCount,
+      failedRecoveryCount: failed,
+      lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
+      lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
+    })
+  }
+
+  return { recovered, skipped, failed, pendingRecoveryCount }
 }
 
 export async function catchUpMissedBlueBubblesMessages(
@@ -1501,14 +1634,18 @@ export async function catchUpMissedBlueBubblesMessages(
       continue
     }
 
+    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(event)
       if (repaired.kind !== "message") {
         result.skipped++
         continue
       }
+      repairedMessage = repaired
 
-      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup")
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup", {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
       if (handled.reason === "already_processed") {
         result.skipped++
       } else {
@@ -1517,6 +1654,9 @@ export async function catchUpMissedBlueBubblesMessages(
       }
     } catch (error) {
       result.failed++
+      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
+        recordProcessedBlueBubblesMessage(agentName, repairedMessage, "upstream-catchup", "recovery-timeout")
+      }
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -1609,14 +1749,18 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       continue
     }
 
+    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(inboundEntryToRecoveryEvent(entry))
       if (repaired.kind !== "message") {
         result.skipped++
         continue
       }
+      repairedMessage = repaired
 
-      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source)
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source, {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
       if (handled.reason === "already_processed") {
         result.skipped++
       } else {
@@ -1624,6 +1768,9 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       }
     } catch (error) {
       result.failed++
+      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
+        recordProcessedBlueBubblesMessage(agentName, repairedMessage, entry.source, "recovery-timeout")
+      }
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -1658,14 +1805,18 @@ export async function recoverMissedBlueBubblesMessages(
       continue
     }
 
+    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(mutationEntryToEvent(candidate))
       if (repaired.kind !== "message") {
         result.pending++
         continue
       }
+      repairedMessage = repaired
 
-      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery")
+      const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery", {
+        timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
+      })
       if (handled.reason === "already_processed") {
         result.skipped++
       } else {
@@ -1673,6 +1824,9 @@ export async function recoverMissedBlueBubblesMessages(
       }
     } catch (error) {
       result.failed++
+      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
+        recordProcessedBlueBubblesMessage(agentName, repairedMessage, "mutation-recovery", "recovery-timeout")
+      }
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -2169,11 +2323,50 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
   resolvedDeps.createClient()
   const channelConfig = getBlueBubblesChannelConfig()
   const server = resolvedDeps.createServer(createBlueBubblesWebhookHandler(deps))
+  let recoveryPassRunning = false
+  let recoveryDelayTimer: ReturnType<typeof setTimeout> | null = null
+
+  function triggerRecoveryPass(): void {
+    /* v8 ignore next -- re-entrant timer guard; difficult to force deterministically without timing the turn lock @preserve */
+    if (recoveryPassRunning) return
+    recoveryPassRunning = true
+    void recoverQueuedBlueBubblesMessages(resolvedDeps)
+      /* v8 ignore start -- defensive wrapper; expected per-message failures are handled inside recovery helpers @preserve */
+      .catch((error) => {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_recovery_error",
+          message: "bluebubbles queued recovery pass failed",
+          meta: { reason: error instanceof Error ? error.message : String(error) },
+        })
+      })
+      /* v8 ignore stop */
+      .finally(() => {
+        recoveryPassRunning = false
+      })
+  }
+
+  function scheduleRecoveryPass(): void {
+    /* v8 ignore next -- duplicate scheduling guard for overlapping health sync completions @preserve */
+    if (recoveryDelayTimer !== null) return
+    recoveryDelayTimer = setTimeout(() => {
+      recoveryDelayTimer = null
+      triggerRecoveryPass()
+    }, BLUEBUBBLES_RECOVERY_PASS_DELAY_MS)
+  }
+
   const runtimeTimer = setInterval(() => {
-    void syncBlueBubblesRuntime(resolvedDeps)
+    void syncBlueBubblesRuntime(resolvedDeps).then(scheduleRecoveryPass)
   }, BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS)
+  const recoveryTimer = setInterval(triggerRecoveryPass, BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS)
   server.on?.("close", () => {
     clearInterval(runtimeTimer)
+    clearInterval(recoveryTimer)
+    if (recoveryDelayTimer !== null) {
+      clearTimeout(recoveryDelayTimer)
+      recoveryDelayTimer = null
+    }
   })
   server.listen(channelConfig.port, () => {
     emitNervesEvent({
@@ -2183,6 +2376,6 @@ export function startBlueBubblesApp(deps: Partial<RuntimeDeps> = {}): http.Serve
       meta: { port: channelConfig.port, webhookPath: channelConfig.webhookPath },
     })
   })
-  void syncBlueBubblesRuntime(resolvedDeps)
+  void syncBlueBubblesRuntime(resolvedDeps).then(scheduleRecoveryPass)
   return server
 }

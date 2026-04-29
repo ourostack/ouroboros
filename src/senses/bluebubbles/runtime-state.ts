@@ -8,6 +8,7 @@ export interface BlueBubblesRuntimeState {
   detail: string
   lastCheckedAt?: string
   pendingRecoveryCount: number
+  failedRecoveryCount?: number
   lastRecoveredAt?: string
   lastRecoveredMessageGuid?: string
 }
@@ -33,6 +34,9 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
   try {
     const raw = fs.readFileSync(filePath, "utf-8")
     const parsed = JSON.parse(raw) as Partial<BlueBubblesRuntimeState>
+    const failedRecoveryCount = typeof parsed.failedRecoveryCount === "number" && Number.isFinite(parsed.failedRecoveryCount)
+      ? parsed.failedRecoveryCount
+      : undefined
     return {
       upstreamStatus: parsed.upstreamStatus === "ok" || parsed.upstreamStatus === "error"
         ? parsed.upstreamStatus
@@ -44,6 +48,7 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
       pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
         ? parsed.pendingRecoveryCount
         : 0,
+      ...(typeof failedRecoveryCount === "number" ? { failedRecoveryCount } : {}),
       lastRecoveredAt: typeof parsed.lastRecoveredAt === "string" ? parsed.lastRecoveredAt : undefined,
       lastRecoveredMessageGuid: typeof parsed.lastRecoveredMessageGuid === "string"
         ? parsed.lastRecoveredMessageGuid
@@ -82,6 +87,7 @@ export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubbl
       agentName,
       upstreamStatus: state.upstreamStatus,
       pendingRecoveryCount: state.pendingRecoveryCount,
+      failedRecoveryCount: state.failedRecoveryCount ?? 0,
       path: filePath,
     },
   })

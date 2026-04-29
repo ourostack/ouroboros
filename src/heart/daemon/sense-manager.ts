@@ -305,6 +305,8 @@ interface BlueBubblesRuntimeStateSlice {
   upstreamStatus: "unknown" | "ok" | "error"
   detail: string
   lastCheckedAt?: string
+  pendingRecoveryCount: number
+  failedRecoveryCount: number
 }
 
 function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStateSlice {
@@ -320,11 +322,17 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
         ? parsed.detail
         : "startup health probe pending",
       lastCheckedAt: typeof parsed.lastCheckedAt === "string" ? parsed.lastCheckedAt : undefined,
+      pendingRecoveryCount: typeof parsed.pendingRecoveryCount === "number" && Number.isFinite(parsed.pendingRecoveryCount)
+        ? parsed.pendingRecoveryCount
+        : 0,
+      failedRecoveryCount: typeof parsed.failedRecoveryCount === "number" && Number.isFinite(parsed.failedRecoveryCount)
+        ? parsed.failedRecoveryCount
+        : 0,
     }
     /* v8 ignore stop */
   /* v8 ignore start -- defensive: catch for missing/corrupt BB runtime state file @preserve */
   } catch {
-    return { upstreamStatus: "unknown", detail: "startup health probe pending" }
+    return { upstreamStatus: "unknown", detail: "startup health probe pending", pendingRecoveryCount: 0, failedRecoveryCount: 0 }
   }
   /* v8 ignore stop */
 }
@@ -345,6 +353,13 @@ function readBlueBubblesRuntimeFacts(
     return { runtime: snapshot?.runtime }
   }
 
+  if (snapshot?.runtime !== "running") {
+    return {
+      runtime: "error",
+      detail: "BlueBubbles listener is not running",
+    }
+  }
+
   if (state.upstreamStatus === "error") {
     return {
       runtime: "error",
@@ -352,8 +367,18 @@ function readBlueBubblesRuntimeFacts(
     }
   }
 
+  if (state.pendingRecoveryCount > 0) {
+    return {
+      runtime: "error",
+      detail: state.detail,
+    }
+  }
+
   if (state.upstreamStatus === "ok") {
-    return { runtime: "running" }
+    return {
+      runtime: "running",
+      ...(state.failedRecoveryCount > 0 ? { detail: state.detail } : {}),
+    }
   }
 
   return { runtime: snapshot?.runtime }

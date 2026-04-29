@@ -440,7 +440,216 @@ describe("daemon sense manager", () => {
     ])
   })
 
-  it("prefers healthy BlueBubbles runtime state over a stale crashed process snapshot", async () => {
+  it("marks BlueBubbles unhealthy when fresh healthy runtime state has no running listener snapshot", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const freshCheckedAt = new Date().toISOString()
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/hooks/bb",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        lastCheckedAt: freshCheckedAt,
+        pendingRecoveryCount: 0,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows()).toEqual([
+      expect.objectContaining({ sense: "cli", status: "interactive", detail: "local interactive terminal" }),
+      expect.objectContaining({
+        sense: "teams",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "bluebubbles",
+        status: "error",
+        detail: "BlueBubbles listener is not running",
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+    ])
+  })
+
+  it("marks BlueBubbles unhealthy when fresh runtime state has pending recovery", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const freshCheckedAt = new Date().toISOString()
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/hooks/bb",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "upstream reachable but iMessage is not caught up; 3 recovery item(s) queued",
+        lastCheckedAt: freshCheckedAt,
+        pendingRecoveryCount: 3,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:bluebubbles", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toEqual([
+      expect.objectContaining({ sense: "cli", status: "interactive", detail: "local interactive terminal" }),
+      expect.objectContaining({
+        sense: "teams",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "bluebubbles",
+        status: "error",
+        detail: "upstream reachable but iMessage is not caught up; 3 recovery item(s) queued",
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+    ])
+  })
+
+  it("keeps BlueBubbles running while surfacing quarantined recovery failures", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const freshCheckedAt = new Date().toISOString()
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/hooks/bb",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "2 message(s) unrecoverable this cycle; upstream ok",
+        lastCheckedAt: freshCheckedAt,
+        pendingRecoveryCount: 0,
+        failedRecoveryCount: 2,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:bluebubbles", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toEqual([
+      expect.objectContaining({ sense: "cli", status: "interactive", detail: "local interactive terminal" }),
+      expect.objectContaining({
+        sense: "teams",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "bluebubbles",
+        status: "running",
+        detail: "2 message(s) unrecoverable this cycle; upstream ok",
+      }),
+      expect.objectContaining({
+        sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+    ])
+  })
+
+  it("marks BlueBubbles unhealthy when fresh healthy runtime state has a crashed listener snapshot", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const freshCheckedAt = new Date().toISOString()
     writeAgentJson(bundlesRoot, "slugger", {
@@ -499,8 +708,8 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "bluebubbles",
-        status: "running",
-        detail: ":18888 /hooks/bb",
+        status: "error",
+        detail: "BlueBubbles listener is not running",
       }),
       expect.objectContaining({
         sense: "mail",
