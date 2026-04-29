@@ -112,6 +112,37 @@ function booleanField(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null
 }
 
+function formatDurationMs(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${Math.round(ms / 1_000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`
+  return `${Math.round(ms / 86_400_000)}d`
+}
+
+function formatSenseDetail(row: StatusSenseRow): string {
+  const details = [row.detail]
+  const proofParts: string[] = []
+  if (row.proofMethod) proofParts.push(`proof=${row.proofMethod}`)
+  if (row.lastProofAt) proofParts.push(`lastProof=${row.lastProofAt}`)
+  if (row.proofAgeMs !== undefined) proofParts.push(`proofAge=${formatDurationMs(row.proofAgeMs)}`)
+  if (proofParts.length > 0) details.push(proofParts.join(" "))
+
+  const recoveryParts: string[] = []
+  if (row.pendingRecoveryCount !== undefined) recoveryParts.push(`pendingRecovery=${row.pendingRecoveryCount}`)
+  if (row.failedRecoveryCount !== undefined) recoveryParts.push(`failedRecovery=${row.failedRecoveryCount}`)
+  if (row.oldestPendingRecoveryAt) recoveryParts.push(`oldestPending=${row.oldestPendingRecoveryAt}`)
+  if (row.oldestPendingRecoveryAgeMs !== undefined) recoveryParts.push(`oldestPendingAge=${formatDurationMs(row.oldestPendingRecoveryAgeMs)}`)
+  if (recoveryParts.length > 0) details.push(recoveryParts.join(" "))
+
+  const failureParts: string[] = []
+  if (row.failureLayer) failureParts.push(`failureLayer=${row.failureLayer}`)
+  if (row.lastFailure) failureParts.push(`lastFailure=${row.lastFailure}`)
+  if (row.recoveryAction) failureParts.push(`recovery=${row.recoveryAction}`)
+  if (failureParts.length > 0) details.push(failureParts.join(" "))
+  return details.filter(Boolean).join("; ")
+}
+
 // ── Parsers ──
 
 export function parseStatusPayload(data: unknown): StatusPayload | null {
@@ -436,7 +467,7 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
         const name = humanizeSenseName(row.sense, row.label).padEnd(nameWidth)
         const dot = row.enabled ? statusDot(row.status) : dim("○")
         const statusText = (row.enabled ? row.status : "disabled").padEnd(statusWidth)
-        lines.push(`    ${name} ${dot} ${statusText}  ${dim(row.detail)}`)
+        lines.push(`    ${name} ${dot} ${statusText}  ${dim(formatSenseDetail(row))}`)
       }
     }
     lines.push("")

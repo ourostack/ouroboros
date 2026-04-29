@@ -2342,6 +2342,14 @@ describe("ouro CLI execution", () => {
               enabled: true,
               status: "running",
               detail: ":18790 /bluebubbles-webhook",
+              proofMethod: "bluebubbles.checkHealth",
+              lastProofAt: "2026-04-29T19:30:00.000Z",
+              proofAgeMs: 4_000,
+              pendingRecoveryCount: 0,
+              failedRecoveryCount: 1,
+              failureLayer: "recovery_quarantine",
+              lastFailure: "previous recovery timeout",
+              recoveryAction: "inspect quarantined recovery logs",
             },
             {
               agent: "slugger",
@@ -2380,6 +2388,14 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("BlueBubbles")
     expect(result).toContain("interactive")
     expect(result).toContain("/bluebubbles-webhook")
+    expect(result).toContain("proof=bluebubbles.checkHealth")
+    expect(result).toContain("lastProof=2026-04-29T19:30:00.000Z")
+    expect(result).toContain("proofAge=4s")
+    expect(result).toContain("pendingRecovery=0")
+    expect(result).toContain("failedRecovery=1")
+    expect(result).toContain("failureLayer=recovery_quarantine")
+    expect(result).toContain("lastFailure=previous recovery timeout")
+    expect(result).toContain("recovery=inspect quarantined recovery logs")
     expect(result).toContain("inner-dialog")
     expect(result).toContain("restarts: 0")
     expect(result).toContain("Mailbox")
