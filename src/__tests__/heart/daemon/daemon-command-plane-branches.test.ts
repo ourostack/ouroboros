@@ -312,6 +312,21 @@ describe("daemon command plane branches", () => {
         sense: "bluebubbles",
         label: "BlueBubbles",
         enabled: true,
+        status: "not_attached",
+        detail: "not attached on this machine",
+      },
+    ])
+
+    const notAttachedStatus = await daemon.handleCommand({ kind: "daemon.status" })
+    expect(notAttachedStatus.summary).toContain("health=ok")
+    expect(notAttachedStatus.summary).toContain("items=slugger/bluebubbles:not_attached")
+
+    senseManager.listSenseRows.mockReturnValueOnce([
+      {
+        agent: "slugger",
+        sense: "bluebubbles",
+        label: "BlueBubbles",
+        enabled: true,
         status: "error",
         detail: "listener unreachable",
       },

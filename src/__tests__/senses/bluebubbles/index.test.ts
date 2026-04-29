@@ -2640,6 +2640,149 @@ describe("BlueBubbles sense runtime", () => {
     await flushAsyncWork()
   })
 
+  it("acks from-me webhook messages without capturing inbound sidecars", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", fromMePayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(res.getBody()).toContain("\"kind\":\"message\"")
+    expect(res.getBody()).toContain("\"queued\":true")
+    const { listRecordedBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    expect(listRecordedBlueBubblesInbound("testagent")).toEqual([])
+    await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
+      (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_from_me_ignored",
+    ))
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("durably records webhook mutations before acknowledging", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({
+      getAgentName: () => "testagent",
+      recordMutation: mocks.recordMutation,
+    } as any)
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", readPayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(res.getBody()).toContain("\"kind\":\"mutation\"")
+    expect(res.getBody()).toContain("\"queued\":true")
+    expect(mocks.recordMutation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        kind: "mutation",
+        mutationType: "read",
+        messageGuid: "174D57C8-5985-4528-8539-E4DBD777FE59",
+      }),
+    )
+    await flushAsyncWork()
+  })
+
+  it("keeps webhook mutation ACKs durable when sidecar recording fails", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    mocks.recordMutation.mockImplementationOnce(() => {
+      throw new Error("webhook mutation disk full")
+    })
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({
+      getAgentName: () => "testagent",
+      recordMutation: mocks.recordMutation,
+    } as any)
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", readPayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(res.getBody()).toContain("\"queued\":true")
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        event: "senses.bluebubbles_mutation_log_error",
+        meta: expect.objectContaining({
+          messageGuid: "174D57C8-5985-4528-8539-E4DBD777FE59",
+          mutationType: "read",
+          reason: "webhook mutation disk full",
+        }),
+      }),
+    )
+    await flushAsyncWork()
+  })
+
+  it("records string-thrown webhook mutation sidecar failures", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    mocks.recordMutation.mockImplementationOnce(() => {
+      throw "webhook mutation disk offline"
+    })
+    const handler = bluebubbles.createBlueBubblesWebhookHandler({
+      getAgentName: () => "testagent",
+      recordMutation: mocks.recordMutation,
+    } as any)
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", readPayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        event: "senses.bluebubbles_mutation_log_error",
+        meta: expect.objectContaining({
+          reason: "webhook mutation disk offline",
+        }),
+      }),
+    )
+    await flushAsyncWork()
+  })
+
+  it("logs asynchronous webhook processing failures after durable ACK", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    mocks.repairEvent.mockRejectedValueOnce(new Error("async repair blew up"))
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
+      (call: unknown[]) => (call[0] as { event?: string; meta?: { reason?: string } })?.event === "senses.bluebubbles_webhook_async_error"
+        && (call[0] as { meta?: { reason?: string } }).meta?.reason === "async repair blew up",
+    ))
+  })
+
+  it("logs string-thrown asynchronous webhook processing failures after durable ACK", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    mocks.repairEvent.mockRejectedValueOnce("async repair string blew up")
+    const handler = bluebubbles.createBlueBubblesWebhookHandler()
+
+    const req = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload)
+    const res = createMockResponse()
+    await handler(req as any, res.res as any)
+    await res.done
+
+    expect(res.res.statusCode).toBe(200)
+    await waitFor(() => mocks.emitNervesEvent.mock.calls.some(
+      (call: unknown[]) => (call[0] as { event?: string; meta?: { reason?: string } })?.event === "senses.bluebubbles_webhook_async_error"
+        && (call[0] as { meta?: { reason?: string } }).meta?.reason === "async repair string blew up",
+    ))
+  })
+
   it("returns explicit webhook errors for missing routes, methods, bad json, and runtime failures", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
     const handler = bluebubbles.createBlueBubblesWebhookHandler()
@@ -2680,6 +2823,30 @@ describe("BlueBubbles sense runtime", () => {
     await handler(brokenStreamReq as any, brokenStreamRes.res as any)
     await brokenStreamRes.done
     expect(brokenStreamRes.res.statusCode).toBe(400)
+
+    const malformedPayloadReq = createMockRequest(
+      "POST",
+      "/bluebubbles-webhook?password=secret-token",
+      {
+        type: "new-message",
+        data: {
+          text: "missing guid",
+        },
+      },
+    )
+    const malformedPayloadRes = createMockResponse()
+    await handler(malformedPayloadReq as any, malformedPayloadRes.res as any)
+    await malformedPayloadRes.done
+    expect(malformedPayloadRes.res.statusCode).toBe(500)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        event: "senses.bluebubbles_webhook_error",
+        meta: expect.objectContaining({
+          reason: "BlueBubbles payload is missing data.guid",
+        }),
+      }),
+    )
 
     mocks.repairEvent.mockRejectedValueOnce(new Error("repair blew up"))
     const boomReq = createMockRequest("POST", "/bluebubbles-webhook?password=secret-token", dmThreadPayload)
@@ -2725,6 +2892,31 @@ describe("BlueBubbles sense runtime", () => {
       (call: unknown[]) => (call[0] as { event?: string })?.event === "senses.bluebubbles_webhook_error",
     )
     expect(webhookErrors).toHaveLength(0)
+  })
+
+  it("returns an explicit ignored result for guidless BlueBubbles state events", async () => {
+    const bluebubbles = await import("../../../senses/bluebubbles")
+
+    const result = await bluebubbles.handleBlueBubblesEvent({
+      type: "chat-read-status-changed",
+      data: {
+        chatGuid: "any;-;ari@mendelow.me",
+      },
+    })
+
+    expect(result).toEqual({
+      handled: true,
+      notifiedAgent: false,
+      reason: "ignored",
+    })
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_event_skipped",
+        meta: expect.objectContaining({
+          eventType: "chat-read-status-changed",
+        }),
+      }),
+    )
   })
 
   it("rethrows unexpected normalization failures from handleBlueBubblesEvent", async () => {
@@ -4977,6 +5169,31 @@ describe("BlueBubbles sense runtime", () => {
       textForAgent: "delivery update still needs hydration",
       requiresRepair: false,
     })
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "queued-still-pending-guid-2",
+      timestamp: Date.parse("2026-04-24T23:23:40.289Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "second delivery update still needs hydration",
+      requiresRepair: false,
+    })
     mocks.repairEvent.mockResolvedValueOnce({
       kind: "mutation",
       eventType: "updated-message",
@@ -5001,18 +5218,44 @@ describe("BlueBubbles sense runtime", () => {
       shouldNotifyAgent: false,
       textForAgent: "delivery update still needs hydration",
       requiresRepair: false,
+    }).mockResolvedValueOnce({
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: "queued-still-pending-guid-2",
+      timestamp: Date.parse("2026-04-24T23:23:40.289Z"),
+      fromMe: false,
+      sender: {
+        provider: "imessage-handle",
+        externalId: "ari@mendelow.me",
+        rawId: "ari@mendelow.me",
+        displayName: "ari@mendelow.me",
+      },
+      chat: {
+        chatGuid: "any;-;ari@mendelow.me",
+        chatIdentifier: "ari@mendelow.me",
+        isGroup: false,
+        sessionKey: "chat:any;-;ari@mendelow.me",
+        sendTarget: { kind: "chat_guid", value: "any;-;ari@mendelow.me" },
+        participantHandles: [],
+      },
+      shouldNotifyAgent: false,
+      textForAgent: "second delivery update still needs hydration",
+      requiresRepair: false,
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     const result = await bluebubbles.recoverQueuedBlueBubblesMessages()
 
-    expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 1 })
+    expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 2 })
     expect(readBlueBubblesRuntimeState("testagent")).toEqual(expect.objectContaining({
       upstreamStatus: "ok",
-      detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
-      pendingRecoveryCount: 1,
+      detail: "upstream reachable but iMessage is not caught up; 2 recovery item(s) queued",
+      pendingRecoveryCount: 2,
       failedRecoveryCount: 0,
       lastRecoveredAt: "2026-04-24T22:00:00.000Z",
+      oldestPendingRecoveryAt: expect.any(String),
+      oldestPendingRecoveryAgeMs: expect.any(Number),
     }))
   })
 

@@ -502,6 +502,27 @@ describe("HealthMonitor", () => {
       expect(onCriticalSense).not.toHaveBeenCalled()
     })
 
+    it("uses a default no-op sense recovery callback when no handler is configured", async () => {
+      const monitor = new HealthMonitor({
+        ...createBaseOptions(),
+        senseProbes: [
+          {
+            name: "bluebubbles",
+            managedName: "slugger:bluebubbles",
+            check: async () => ({ ok: false, detail: "listener down" }),
+          },
+        ],
+      })
+
+      const results = await monitor.runChecks()
+
+      expect(results.find((r) => r.name === "sense-probe:bluebubbles")).toEqual({
+        name: "sense-probe:bluebubbles",
+        status: "critical",
+        message: "bluebubbles failed: listener down",
+      })
+    })
+
     it("uses 'unknown' when a failed probe omits detail", async () => {
       const monitor = new HealthMonitor({
         ...createBaseOptions(),

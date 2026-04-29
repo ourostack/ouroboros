@@ -1961,10 +1961,12 @@ export function createBlueBubblesWebhookHandler(
         event: "senses.bluebubbles_webhook_error",
         message: "bluebubbles webhook handling failed",
         meta: {
+          /* v8 ignore next -- normalizeBlueBubblesEvent throws Error subclasses; String fallback is defensive @preserve */
           reason: error instanceof Error ? error.message : String(error),
         },
       })
       writeJson(res, 500, {
+        /* v8 ignore next -- normalizeBlueBubblesEvent throws Error subclasses; String fallback is defensive @preserve */
         error: error instanceof Error ? error.message : String(error),
       })
       return

@@ -2402,6 +2402,81 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("http://127.0.0.1:4310/mailbox")
   })
 
+  it("renders proof ages across compact duration units in sense details", async () => {
+    const deps: OuroCliDeps = {
+      socketPath: "/tmp/ouro-test.sock",
+      sendCommand: vi.fn(async () => ({
+        ok: true,
+        summary: "daemon=running\tworkers=0\tsenses=4\thealth=ok",
+        data: {
+          overview: {
+            daemon: "running",
+            socketPath: "/tmp/ouro-test.sock",
+            workerCount: 0,
+            senseCount: 4,
+            health: "ok",
+          },
+          senses: [
+            {
+              agent: "slugger",
+              sense: "probe-ms",
+              enabled: true,
+              status: "running",
+              detail: "milliseconds",
+              proofMethod: "unit",
+              proofAgeMs: 500,
+            },
+            {
+              agent: "slugger",
+              sense: "probe-minutes",
+              enabled: true,
+              status: "running",
+              detail: "minutes",
+              proofMethod: "unit",
+              proofAgeMs: 120_000,
+            },
+            {
+              agent: "slugger",
+              sense: "probe-hours",
+              enabled: true,
+              status: "running",
+              detail: "hours",
+              proofMethod: "unit",
+              proofAgeMs: 7_200_000,
+            },
+            {
+              agent: "slugger",
+              sense: "probe-days",
+              enabled: true,
+              status: "running",
+              detail: "days",
+              proofMethod: "unit",
+              proofAgeMs: 172_800_000,
+              oldestPendingRecoveryAt: "2026-04-29T18:00:00.000Z",
+              oldestPendingRecoveryAgeMs: 172_800_000,
+            },
+          ],
+          workers: [],
+        },
+      })),
+      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(async () => true),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+
+    }
+
+    const result = await runOuroCli(["status"], deps)
+
+    expect(result).toContain("proofAge=500ms")
+    expect(result).toContain("proofAge=2m")
+    expect(result).toContain("proofAge=2h")
+    expect(result).toContain("proofAge=2d")
+    expect(result).toContain("oldestPending=2026-04-29T18:00:00.000Z")
+    expect(result).toContain("oldestPendingAge=2d")
+  })
+
   it("falls back to the raw sense name when daemon status includes an unknown sense label", async () => {
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",

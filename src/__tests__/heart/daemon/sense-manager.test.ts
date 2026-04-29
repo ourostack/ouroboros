@@ -91,6 +91,50 @@ describe("daemon sense manager", () => {
     expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
   })
 
+  it("restarts managed sense workers through the process manager when available", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      restartAgent: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    await manager.restartSense("slugger:bluebubbles")
+
+    expect(processManager.restartAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+  })
+
+  it("falls back to starting a managed sense worker when restart is unavailable", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    await manager.restartSense("slugger:bluebubbles")
+
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+  })
+
   it("contains fallback sense autostart errors", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const firstProcessManager = {
