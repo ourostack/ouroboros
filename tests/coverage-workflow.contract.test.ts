@@ -71,13 +71,21 @@ describe("coverage workflow contract", () => {
       join(process.cwd(), ".github", "workflows", "coverage.yml"),
       "utf8",
     )
+    const tagPolicy = readFileSync(
+      join(process.cwd(), "scripts", "npm-dist-tag-policy.cjs"),
+      "utf8",
+    )
 
     expect(workflow).toContain("Resolve npm publish tag")
-    expect(workflow).toContain("semver.prerelease(version)")
+    expect(workflow).toContain("node scripts/npm-dist-tag-policy.cjs publish-tag")
+    expect(tagPolicy).toContain("semver.prerelease(version)")
+    expect(tagPolicy).toContain("repair-latest-if-prerelease")
     expect(workflow).toContain('npm publish --access public --provenance --tag "$TAG"')
     expect(workflow).toContain('npm publish --access public --provenance --tag "${{ steps.publish-tag.outputs.tag }}"')
     expect(workflow).toContain('npm dist-tag add "@ouro.bot/cli@${LOCAL}" "$TAG"')
     expect(workflow).toContain('npm dist-tag add "ouro.bot@${LOCAL}" "$TAG"')
+    expect(workflow).toContain('repair-latest-if-prerelease "@ouro.bot/cli" "$LOCAL" "$TAG"')
+    expect(workflow).toContain('repair-latest-if-prerelease "ouro.bot" "$LOCAL" "$TAG"')
     expect(workflow).toContain('verify_tag "@ouro.bot/cli@${TAG}" "$LOCAL"')
     expect(workflow).toContain('verify_tag "ouro.bot@${TAG}" "$LOCAL"')
   })
