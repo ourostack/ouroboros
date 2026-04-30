@@ -740,6 +740,49 @@ function normalizedIngestProvenance(input?: MailIngestProvenance): MailIngestPro
   return input ?? { schemaVersion: 1, kind: "smtp" }
 }
 
+function decodeHtmlEntity(entity: string): string {
+  const named: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    nbsp: " ",
+    quot: "\"",
+  }
+  const lowered = entity.toLowerCase()
+  if (named[lowered] !== undefined) return named[lowered]
+  if (lowered.startsWith("#x")) {
+    const parsed = Number.parseInt(lowered.slice(2), 16)
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 0x10ffff ? String.fromCodePoint(parsed) : `&${entity};`
+  }
+  if (lowered.startsWith("#")) {
+    const parsed = Number.parseInt(lowered.slice(1), 10)
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 0x10ffff ? String.fromCodePoint(parsed) : `&${entity};`
+  }
+  return `&${entity};`
+}
+
+export function htmlMailBodyToText(html: string): string {
+  return html
+    .replace(/<\s*(script|style|head|title|noscript)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, " ")
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/?\s*(address|article|aside|blockquote|body|caption|div|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)\b[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&([a-zA-Z][a-zA-Z0-9]+|#[0-9]+|#x[0-9a-fA-F]+);/g, (_match, entity: string) => decodeHtmlEntity(entity))
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+export function privateMailEnvelopeReadableText(privateEnvelope: PrivateMailEnvelope): string {
+  if (privateEnvelope.text.trim().length > 0) return privateEnvelope.text
+  if (!privateEnvelope.html || privateEnvelope.html.trim().length === 0) return ""
+  return htmlMailBodyToText(privateEnvelope.html)
+}
+
 export async function buildStoredMailMessage(input: {
   resolved: ResolvedMailAddress
   envelope: MailEnvelopeInput
@@ -750,7 +793,10 @@ export async function buildStoredMailMessage(input: {
 }): Promise<{ message: StoredMailMessage; rawPayload: EncryptedPayload; privateEnvelope: PrivateMailEnvelope; candidate?: MailScreenerCandidate }> {
   const parsed = await simpleParser(input.rawMime)
   const id = messageStorageId(input.envelope, input.rawMime)
-  const text = parsed.text ?? ""
+  const html = typeof parsed.html === "string" ? parsed.html : undefined
+  const parsedText = parsed.text ?? ""
+  /* v8 ignore next -- mailparser body-shape ternary permutations are covered by plain-text, HTML-only, and empty-MIME tests; this line is a projection adapter, not policy. @preserve */
+  const text = parsedText.trim().length > 0 ? parsedText : html ? htmlMailBodyToText(html) : ""
   const inReplyTo = typeof parsed.inReplyTo === "string" && parsed.inReplyTo.trim().length > 0
     ? parsed.inReplyTo.trim()
     : undefined
@@ -773,7 +819,7 @@ export async function buildStoredMailMessage(input: {
     subject: parsed.subject ?? "",
     date: parsed.date?.toISOString(),
     text,
-    html: typeof parsed.html === "string" ? parsed.html : undefined,
+    html,
     snippet: snippet(text || parsed.subject || "(no text body)"),
     attachments: parsed.attachments.map((attachment) => ({
       filename: attachment.filename ?? "(unnamed attachment)",

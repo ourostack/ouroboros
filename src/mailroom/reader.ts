@@ -238,7 +238,11 @@ export function resolveMailroomReader(agentName: string = getAgentName()): Mailr
 
 export async function resolveMailroomReaderWithRefresh(agentName: string = getAgentName()): Promise<MailroomReaderResolution> {
   const resolved = resolveMailroomReader(agentName)
-  if (resolved.ok || resolved.reason !== "auth-required" || !resolved.error.includes(" is unavailable")) {
+  if (
+    resolved.ok
+    || resolved.reason !== "auth-required"
+    || (!resolved.error.includes(" is unavailable") && !resolved.error.includes(" is missing"))
+  ) {
     return resolved
   }
 

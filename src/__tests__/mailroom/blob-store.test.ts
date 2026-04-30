@@ -9,11 +9,12 @@ interface FakeBlobState {
   downloads: number
   uploads: number
   deletes: number
-  stall?: boolean
-  downloadDelayMs?: number
-  downloadFailuresRemaining?: number
-  downloadFailureMessage?: string
-}
+	  stall?: boolean
+	  downloadDelayMs?: number
+	  downloadFailuresRemaining?: number
+	  downloadFailureMessage?: string
+	  downloadFailureError?: unknown
+	}
 
 class FakeBlockBlobClient {
   constructor(private readonly container: FakeContainerClient, readonly name: string) {}
@@ -36,10 +37,10 @@ class FakeBlockBlobClient {
     this.container.activeDownloads += 1
     this.container.maxConcurrentDownloads = Math.max(this.container.maxConcurrentDownloads, this.container.activeDownloads)
     try {
-      if (state.downloadFailuresRemaining && state.downloadFailuresRemaining > 0) {
-        state.downloadFailuresRemaining -= 1
-        throw new Error(state.downloadFailureMessage ?? "synthetic download failure")
-      }
+	      if (state.downloadFailuresRemaining && state.downloadFailuresRemaining > 0) {
+	        state.downloadFailuresRemaining -= 1
+	        throw state.downloadFailureError ?? new Error(state.downloadFailureMessage ?? "synthetic download failure")
+	      }
       if (state.stall) {
         await new Promise<never>((_resolve, reject) => {
           options?.abortSignal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true })
@@ -249,10 +250,25 @@ describe("AzureBlobMailroomStore", () => {
     expect(await store.listScreenerCandidates({ agentId: "slugger", status: "discarded", placement: "discarded" })).toEqual([
       expect.objectContaining({ id: candidates[0].id, resolvedByDecisionId: "decision_blob" }),
     ])
-    expect(await store.listScreenerCandidates({ agentId: "nobody" })).toEqual([])
-    expect(await store.getMessage(created.message.id)).toEqual(expect.objectContaining({ id: created.message.id }))
-    expect(await store.getMessage("missing")).toBeNull()
-    expect(await store.updateMessagePlacement("missing", "discarded")).toBeNull()
+	    expect(await store.listScreenerCandidates({ agentId: "nobody" })).toEqual([])
+	    expect(await store.getMessage(created.message.id)).toEqual(expect.objectContaining({ id: created.message.id }))
+	    expect(await store.getIndexedMessageById(created.message.id)).toEqual(expect.objectContaining({ id: created.message.id }))
+	    expect(await store.getIndexedMessageById("missing")).toBeNull()
+	    duplicateState.downloadFailuresRemaining = 1
+	    duplicateState.downloadFailureError = { statusCode: 404 }
+	    expect(await store.getIndexedMessageById(created.message.id)).toBeNull()
+	    duplicateState.downloadFailuresRemaining = 1
+	    duplicateState.downloadFailureError = "BlobNotFound: vanished"
+	    expect(await store.getIndexedMessageById(created.message.id)).toBeNull()
+	    duplicateState.downloadFailureError = undefined
+	    duplicateState.downloadFailuresRemaining = 1
+	    duplicateState.downloadFailureMessage = "socket closed early"
+	    expect(await store.getIndexedMessageById(created.message.id)).toEqual(expect.objectContaining({ id: created.message.id }))
+	    duplicateState.downloadFailuresRemaining = 1
+	    duplicateState.downloadFailureMessage = "permission denied"
+	    await expect(store.getIndexedMessageById(created.message.id)).rejects.toThrow(/permission denied/)
+	    expect(await store.getMessage("missing")).toBeNull()
+	    expect(await store.updateMessagePlacement("missing", "discarded")).toBeNull()
     expect(await store.updateMessagePlacement(created.message.id, "imbox")).toEqual(expect.objectContaining({
       id: created.message.id,
       placement: "imbox",

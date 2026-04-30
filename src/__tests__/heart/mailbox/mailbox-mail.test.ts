@@ -12,6 +12,7 @@ import { applyMailDecision } from "../../../mailroom/policy"
 import { readMailMessageView, readMailView } from "../../../heart/mailbox/readers/mail"
 
 const tempRoots: string[] = []
+const originalHome = process.env.HOME
 
 function tempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mailbox-mail-"))
@@ -54,6 +55,8 @@ async function seedMailbox(storePath: string) {
 }
 
 afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME
+  else process.env.HOME = originalHome
   vi.restoreAllMocks()
   resetIdentity()
   resetRuntimeCredentialConfigCache()
@@ -64,6 +67,7 @@ afterEach(() => {
 
 describe("Mailbox mail reader", () => {
   it("returns auth-required and misconfigured statuses without throwing", async () => {
+    process.env.HOME = tempDir()
     const missing = await readMailView("slugger")
     expect(missing.status).toBe("auth-required")
     expect(missing.error).toContain("AUTH_REQUIRED:mailroom")

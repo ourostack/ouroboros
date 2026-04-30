@@ -77,6 +77,165 @@ function renderTripSummary(trip: TripRecord): string {
   return lines.join("\n")
 }
 
+function compact(parts: Array<string | undefined>): string {
+  return parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => !!part)
+    .join(" ")
+}
+
+function routeLabel(origin: string | undefined, destination: string | undefined): string | undefined {
+  if (origin && destination) return `${origin} -> ${destination}`
+  return origin ?? destination
+}
+
+interface TripCalendarEntry {
+  tripId: string
+  tripName: string
+  legId: string
+  kind: TripLeg["kind"]
+  status: TripLeg["status"]
+  start?: string
+  end?: string
+  title: string
+  where?: string
+  evidenceIds: string[]
+}
+
+function tripLegCalendarEntry(trip: TripRecord, leg: TripLeg): TripCalendarEntry {
+  switch (leg.kind) {
+    case "lodging":
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.checkInDate,
+        end: leg.checkOutDate,
+        title: leg.vendor ?? "lodging",
+        where: leg.city,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    case "flight": {
+      const route = routeLabel(leg.origin, leg.destination)
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.departureAt,
+        end: leg.arrivalAt,
+        title: compact([leg.vendor ?? "flight", leg.flightNumber, route]),
+        where: route,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+    case "train": {
+      const route = routeLabel(leg.originStation, leg.destinationStation)
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.departureAt,
+        end: leg.arrivalAt,
+        title: compact([leg.vendor ?? "train", leg.trainNumber, route]),
+        where: route,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+    case "ground-transport": {
+      const route = routeLabel(leg.origin, leg.destination)
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.departureAt,
+        end: leg.arrivalAt,
+        title: compact([leg.operator ?? leg.vendor ?? "ground transport", route]),
+        where: route,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+    case "rental-car": {
+      const route = routeLabel(leg.pickupLocation, leg.dropoffLocation)
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.pickupAt,
+        end: leg.dropoffAt,
+        title: compact([leg.rentalVendor ?? leg.vendor ?? "rental car", route]),
+        where: route,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+    case "ferry": {
+      const route = routeLabel(leg.originPort, leg.destinationPort)
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.departureAt,
+        end: leg.arrivalAt,
+        title: compact([leg.operator ?? leg.vendor ?? "ferry", route]),
+        where: route,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+    case "event": {
+      const where = [leg.venue, leg.city].filter(Boolean).join(", ") || undefined
+      return {
+        tripId: trip.tripId,
+        tripName: trip.name,
+        legId: leg.legId,
+        kind: leg.kind,
+        status: leg.status,
+        start: leg.startsAt,
+        end: leg.endsAt,
+        title: leg.vendor ?? "event",
+        where,
+        evidenceIds: leg.evidence.map((entry) => entry.messageId),
+      }
+    }
+  }
+}
+
+function calendarEntryRange(entry: TripCalendarEntry): string {
+  if (entry.start && entry.end && entry.start !== entry.end) return `${entry.start} -> ${entry.end}`
+  return entry.start ?? entry.end ?? "(undated)"
+}
+
+function renderTripCalendar(trips: TripRecord[], includeUndated: boolean): string {
+  const entries = trips
+    .flatMap((trip) => trip.legs.map((leg) => tripLegCalendarEntry(trip, leg)))
+    .filter((entry) => includeUndated || entry.start || entry.end)
+    .sort((left, right) => {
+      const leftKey = left.start ?? left.end ?? "9999-99-99T99:99:99.999Z"
+      const rightKey = right.start ?? right.end ?? "9999-99-99T99:99:99.999Z"
+      return leftKey.localeCompare(rightKey) || left.tripName.localeCompare(right.tripName) || left.legId.localeCompare(right.legId)
+    })
+  if (entries.length === 0) return includeUndated ? "no calendar entries on the trip ledger yet." : "no dated calendar entries on the trip ledger yet."
+  const noun = entries.length === 1 ? "entry" : "entries"
+  const lines = [`${entries.length} trip calendar ${noun}:`]
+  for (const entry of entries) {
+    lines.push(`- ${calendarEntryRange(entry)} | ${entry.kind} | ${entry.status} | ${entry.title}`)
+    lines.push(`  trip: ${entry.tripName} (${entry.tripId}); leg: ${entry.legId}`)
+    if (entry.where) lines.push(`  where: ${entry.where}`)
+    if (entry.evidenceIds.length > 0) lines.push(`  evidence: ${entry.evidenceIds.join(", ")}`)
+  }
+  return lines.join("\n")
+}
+
 export const tripToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -352,6 +511,38 @@ export const tripToolDefinitions: ToolDefinition[] = [
       } /* v8 ignore stop */
     },
     summaryKeys: ["tripId", "legId", "reason"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "trip_calendar",
+        description: "Render a chronological calendar/agenda projection from the trip ledger. Use this after extracting mail-backed trip facts so the agent can track dates across lodging, travel, events, and local transport.",
+        parameters: {
+          type: "object",
+          properties: {
+            tripId: { type: "string", description: "Optional canonical trip id. Omit to render all trips on the ledger." },
+            includeUndated: { type: "string", enum: ["true", "false"], description: "Set true to include legs that have no start/end dates yet. Defaults to false." },
+          },
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      const includeUndated = args.includeUndated === "true"
+      const tripId = typeof args.tripId === "string" ? args.tripId.trim() : ""
+      try {
+        const trips = tripId
+          ? [readTripRecord(getAgentName(), tripId)]
+          : listTripIds(getAgentName()).map((id) => readTripRecord(getAgentName(), id))
+        if (trips.length === 0) return "no trips on the ledger yet."
+        return renderTripCalendar(trips, includeUndated)
+      } catch (error) {
+        if (error instanceof TripNotFoundError) return error.message
+        throw error
+      }
+    },
+    summaryKeys: ["tripId"],
   },
   {
     tool: {

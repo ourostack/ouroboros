@@ -47,6 +47,16 @@ export interface MailListFilters {
   limit?: number
 }
 
+export interface MailMessageIndexRecord {
+  schemaVersion: 1
+  id: string
+  agentId: string
+  compartmentKind: MailCompartmentKind
+  placement: MailPlacement
+  source?: string
+  receivedAt: string
+}
+
 export interface MailScreenerCandidateFilters {
   agentId: string
   status?: MailScreenerCandidateStatus
@@ -65,6 +75,8 @@ export interface MailroomStore {
   }): Promise<{ created: boolean; message: StoredMailMessage }>
   getMessage(id: string): Promise<StoredMailMessage | null>
   listMessages(filters: MailListFilters): Promise<StoredMailMessage[]>
+  listMessageIndexRecords?(filters: MailListFilters): Promise<MailMessageIndexRecord[] | null>
+  getIndexedMessageById?(id: string): Promise<StoredMailMessage | null>
   updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null>
   readRawPayload(objectName: string): Promise<EncryptedPayload | null>
   putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate>

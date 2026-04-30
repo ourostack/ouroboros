@@ -135,6 +135,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("mail_send");
     expect(names).toContain("mail_outbox");
     expect(names).toContain("mail_access_log");
+    expect(names).toContain("mail_index_refresh");
     expect(names).toContain("claude");
     expect(names).toContain("coding_spawn");
     expect(names).toContain("coding_status");
@@ -192,7 +193,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Added in trip ledger Step 4: 7 trip tools
+    // Added in trip ledger Step 4: 8 trip tools
     expect(names).toContain("trip_ensure_ledger");
     expect(names).toContain("trip_status");
     expect(names).toContain("trip_get");
@@ -200,11 +201,12 @@ describe("tool registry contract", () => {
     expect(names).toContain("trip_attach_evidence");
     expect(names).toContain("trip_update_leg");
     expect(names).toContain("trip_remove_leg");
+    expect(names).toContain("trip_calendar");
     expect(names).toContain("trip_new_id");
 
     expect(names).toContain("mail_outbox");
     expect(names).toContain("friend_list");
-    // Exact count: 78 tools (77 prior + friend_list)
-    expect(names).toHaveLength(78);
+    // Exact count: 80 tools (78 prior + mail_index_refresh + trip_calendar)
+    expect(names).toHaveLength(80);
   });
 });

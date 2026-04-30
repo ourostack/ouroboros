@@ -9,6 +9,7 @@ describe("mail tool registration and trust boundaries", () => {
       "mail_status",
       "mail_recent",
       "mail_search",
+      "mail_index_refresh",
       "mail_body",
       "mail_access_log",
       "mail_screener",
@@ -41,6 +42,13 @@ describe("mail tool registration and trust boundaries", () => {
     })
     expect(screener.allowed).toBe(false)
     expect(screener.reason).toContain("family")
+
+    const indexRefresh = guardInvocation("mail_index_refresh", { scope: "delegated" }, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    expect(indexRefresh.allowed).toBe(false)
+    expect(indexRefresh.reason).toContain("family")
 
     const decision = guardInvocation("mail_decide", {
       candidate_id: "candidate_mail_1",

@@ -37,6 +37,8 @@ Current production proof state as of April 23, 2026:
 
 `mail_recent` is a recency inspector, not a proof surface for absence. When a delegated lane has thousands of imported messages, older itineraries can disappear from the newest slice while still existing in the archive. `mail_search` should search the full visible corpus inside the requested scope and source filter so historical work mail stays discoverable even after hundreds of newer receipts or newsletters arrive. Natural anchor lists are valid search input: literal phrases, `OR` disjunctions, and simple comma-separated booking-code/vendor lists should all work. Imported-archive fallback must search parsed message text, not only raw archive bytes, so quoted-printable or HTML-heavy booking mail remains discoverable.
 
+Delegated-mail absence proof has a stricter contract than ordinary convenience search. Local search-cache hits are seeds, never corpus coverage: a partial cache must not end a delegated search early, and `No matching mail.` is only meaningful after the live visible mailbox and any available imported archives for the requested scope/source have also been searched or the tool says why they could not be searched. For delegated/source-bound searches, preserve the `search coverage:` line in tool output and treat it as part of the evidence. If the coverage line says only cache was searched, or cannot account for the delegated lane, do not call a travel booking, receipt, or other work fact a gap; repair search/import visibility first.
+
 ## Operator Posture
 
 Agent-runnable:

@@ -116,7 +116,7 @@ Mirrors the mail substrate exactly:
 
 ## Harness tools
 
-The agent has seven tools for working with the ledger
+The agent has eight tools for working with the ledger
 (`src/repertoire/tools-trip.ts`):
 
 | Tool | Purpose |
@@ -127,9 +127,10 @@ The agent has seven tools for working with the ledger
 | `trip_upsert` | Create or replace a whole `TripRecord`. Validates shape before persisting. |
 | `trip_update_leg` | Update specific fields of an existing leg without re-emitting the whole record. Cannot change `legId` or `kind`. |
 | `trip_attach_evidence` | Append a `TripEvidence` entry to a specific leg's evidence array. The natural follow-up to "I just extracted a fact from a mail message and need to remember where it came from." |
+| `trip_calendar` | Render a chronological calendar/agenda projection from ledger legs, preserving leg status and evidence ids so mail-derived plans are trackable over time. |
 | `trip_new_id` | Compute a deterministic trip id from `agentId + name + createdAt`. Useful before constructing a new record so the id is stable. |
 
-All seven tools gate behind the same trust check used by other private
+All eight tools gate behind the same trust check used by other private
 surfaces (mail, vault): only callers in trusted contexts (operator
 loopback, family friend records) can invoke them.
 

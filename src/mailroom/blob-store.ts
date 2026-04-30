@@ -14,7 +14,7 @@ import {
   type MailScreenerCandidate,
   type StoredMailMessage,
 } from "./core"
-import type { MailAccessLogEntry, MailAccessLogListing, MailListFilters, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
+import type { MailAccessLogEntry, MailAccessLogListing, MailListFilters, MailMessageIndexRecord, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
 import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument } from "./search-cache"
 
 const MESSAGE_INDEX_PREFIX = "message-index"
@@ -32,16 +32,6 @@ const DEFAULT_BLOB_DOWNLOAD_ATTEMPTS = 2
 const DEFAULT_MESSAGE_FETCH_CONCURRENCY = 20
 const DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY = 8
 const MESSAGE_LIST_SCAN_CONCURRENCY = 32
-
-interface StoredMailMessageIndexRecord {
-  schemaVersion: 1
-  id: string
-  agentId: string
-  compartmentKind: StoredMailMessage["compartmentKind"]
-  placement: MailPlacement
-  source?: string
-  receivedAt: string
-}
 
 export interface AzureBlobMailroomStoreOptions {
   serviceClient: BlobServiceClient
@@ -133,6 +123,17 @@ function isRetryableBlobDownloadError(error: unknown): boolean {
     message.includes("socket closed")
 }
 
+function isBlobNotFoundError(error: unknown): boolean {
+  const maybeStatus = typeof error === "object" && error !== null && "statusCode" in error
+    ? (error as { statusCode?: unknown }).statusCode
+    : undefined
+  if (maybeStatus === 404) return true
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  return message.includes("blobnotfound") ||
+    message.includes("the specified blob does not exist") ||
+    message.includes("missing blob")
+}
+
 async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
   if (!await blob.exists()) return null
   let lastError: unknown = null
@@ -143,6 +144,23 @@ async function downloadJson<T>(blob: DownloadBlobClientLike, timeoutMs: number):
       })
       return JSON.parse(buffer.toString("utf-8")) as T
     } catch (error) {
+      lastError = error
+      if (attempt >= DEFAULT_BLOB_DOWNLOAD_ATTEMPTS || !isRetryableBlobDownloadError(error)) break
+    }
+  }
+  throw normalizeBlobOperationError("download", blob, timeoutMs, lastError)
+}
+
+async function downloadIndexedJson<T>(blob: DownloadBlobClientLike, timeoutMs: number): Promise<T | null> {
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= DEFAULT_BLOB_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const buffer = await withBlobOperationTimeout(timeoutMs, (abortSignal) => {
+        return blob.downloadToBuffer(undefined, undefined, { abortSignal })
+      })
+      return JSON.parse(buffer.toString("utf-8")) as T
+    } catch (error) {
+      if (isBlobNotFoundError(error)) return null
       lastError = error
       if (attempt >= DEFAULT_BLOB_DOWNLOAD_ATTEMPTS || !isRetryableBlobDownloadError(error)) break
     }
@@ -205,7 +223,7 @@ function messageIndexBlobName(message: Pick<StoredMailMessage, "id" | "agentId" 
   return `${messageIndexPrefix(message.agentId)}${sortKey}__${message.compartmentKind}__${message.placement}__${encodeSourceToken(message.source)}__${message.id}.json`
 }
 
-function messageIndexRecord(message: Pick<StoredMailMessage, "id" | "agentId" | "compartmentKind" | "placement" | "source" | "receivedAt">): StoredMailMessageIndexRecord {
+function messageIndexRecord(message: Pick<StoredMailMessage, "id" | "agentId" | "compartmentKind" | "placement" | "source" | "receivedAt">): MailMessageIndexRecord {
   return {
     schemaVersion: 1,
     id: message.id,
@@ -217,7 +235,7 @@ function messageIndexRecord(message: Pick<StoredMailMessage, "id" | "agentId" | 
   }
 }
 
-function parseMessageIndexBlobName(name: string): StoredMailMessageIndexRecord | null {
+function parseMessageIndexBlobName(name: string): MailMessageIndexRecord | null {
   if (!name.startsWith(`${MESSAGE_INDEX_PREFIX}/`) || !name.endsWith(".json")) return null
   const parts = name.split("/")
   if (parts.length !== 3) return null
@@ -244,7 +262,7 @@ function sourceMatchesFilter(source: string | undefined, filter: string | undefi
   return source.toLowerCase() === filter.toLowerCase()
 }
 
-function messageMatchesFilters<T extends Pick<StoredMailMessageIndexRecord, "agentId" | "placement" | "compartmentKind" | "source">>(message: T, filters: MailListFilters): boolean {
+function messageMatchesFilters<T extends Pick<MailMessageIndexRecord, "agentId" | "placement" | "compartmentKind" | "source">>(message: T, filters: MailListFilters): boolean {
   return message.agentId === filters.agentId &&
     (filters.placement ? message.placement === filters.placement : true) &&
     (filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true) &&
@@ -344,17 +362,32 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return applyOptionalLimit(matches.sort(compareNewestFirst), filters.limit)
   }
 
-  private async listMessagesFromIndexes(filters: MailListFilters): Promise<StoredMailMessage[] | null> {
-    const messageIds: string[] = []
+  async listMessageIndexRecords(filters: MailListFilters): Promise<MailMessageIndexRecord[] | null> {
+    await this.ensureContainer()
+    const records: MailMessageIndexRecord[] = []
     let sawIndex = false
     for await (const item of this.container.listBlobsFlat({ prefix: messageIndexPrefix(filters.agentId) })) {
       sawIndex = true
       const parsed = parseMessageIndexBlobName(item.name)
       if (!parsed || !messageMatchesFilters(parsed, filters)) continue
-      messageIds.push(parsed.id)
-      if (typeof filters.limit === "number" && messageIds.length >= filters.limit) break
+      records.push(parsed)
+      if (typeof filters.limit === "number" && records.length >= filters.limit) break
     }
     if (!sawIndex) return null
+    const sorted = records.sort((left, right) => Date.parse(right.receivedAt) - Date.parse(left.receivedAt))
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_store_message_indexes_listed",
+      message: "azure blob mailroom store listed message indexes",
+      meta: { agentId: filters.agentId, count: sorted.length },
+    })
+    return applyOptionalLimit(sorted, filters.limit)
+  }
+
+  private async listMessagesFromIndexes(filters: MailListFilters): Promise<StoredMailMessage[] | null> {
+    const records = await this.listMessageIndexRecords(filters)
+    if (records === null) return null
+    const messageIds = records.map((record) => record.id)
     const messages = (await mapWithConcurrency(messageIds, this.messageFetchConcurrency, async (id) => {
       return downloadJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
     }))
@@ -477,6 +510,18 @@ export class AzureBlobMailroomStore implements MailroomStore {
       component: "senses",
       event: "senses.mail_blob_store_message_read",
       message: "azure blob mailroom store read message",
+      meta: { id, found: message !== null },
+    })
+    return message
+  }
+
+  async getIndexedMessageById(id: string): Promise<StoredMailMessage | null> {
+    await this.ensureContainer()
+    const message = await downloadIndexedJson<StoredMailMessage>(this.messageBlob(id), this.blobOperationTimeoutMs)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_blob_store_indexed_message_read",
+      message: "azure blob mailroom store read message from known index",
       meta: { id, found: message !== null },
     })
     return message

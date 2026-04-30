@@ -29,19 +29,33 @@ function writeOperation(agentRoot: string, name: string, record: Record<string, 
   fs.writeFileSync(path.join(dir, `${name}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
 }
 
-function writeArchive(filePath: string, subject: string, body: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, [
-    "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
+	function writeArchive(filePath: string, subject: string, body: string): void {
+	  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+	  fs.writeFileSync(filePath, [
+	    "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
     "From: Travel Desk <travel@example.com>",
     "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
     "Date: Wed, 24 Apr 2026 10:00:00 -0700",
     `Subject: ${subject}`,
     "",
     body,
-    "",
-  ].join("\n"), "utf-8")
-}
+	    "",
+	  ].join("\n"), "utf-8")
+	}
+
+	function writeArchiveMessages(filePath: string, messages: Array<{ subject: string; body: string; date: string }>): void {
+	  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+	  fs.writeFileSync(filePath, messages.flatMap((message) => [
+	    "From MAILER-DAEMON Thu Jan  1 00:00:00 1970",
+	    "From: Travel Desk <travel@example.com>",
+	    "To: Slugger <me.mendelow.ari.slugger@ouro.bot>",
+	    `Date: ${message.date}`,
+	    `Subject: ${message.subject}`,
+	    "",
+	    message.body,
+	    "",
+	  ]).join("\n"), "utf-8")
+	}
 
 function writeQuotedPrintableArchive(filePath: string, subject: string, encodedBody: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -273,7 +287,7 @@ describe("searchSuccessfulImportArchives", () => {
     expect(cached.length).toBeGreaterThanOrEqual(1)
   })
 
-  it("stops after reaching the limit and can resolve owner-only delegated archives", async () => {
+	  it("stops after reaching the limit and can resolve owner-only delegated archives", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     setAgentName("slugger")
@@ -345,10 +359,55 @@ describe("searchSuccessfulImportArchives", () => {
       queryTerms: ["travel change"],
       limit: 10,
     })
-    expect(cached.length).toBeGreaterThanOrEqual(1)
-  })
+	    expect(cached.length).toBeGreaterThanOrEqual(1)
+	  })
 
-  it("searches parsed imported messages instead of relying on raw archive bytes", async () => {
+	  it("continues scanning a single archive past the requested limit to keep the best imported match", async () => {
+	    const homeRoot = tempDir()
+	    process.env.HOME = homeRoot
+	    setAgentName("slugger")
+
+	    const archivePath = path.join(homeRoot, "Downloads", "HEY-emails-ari-mendelow-me-many.mbox")
+	    const { registry } = provisionMailboxRegistry({
+	      agentId: "slugger",
+	      ownerEmail: "ari@mendelow.me",
+	      source: "hey",
+	    })
+	    writeArchiveMessages(archivePath, [
+	      {
+	        subject: "Travel mention",
+	        body: "The trip thread mentions rarecode but not the booking proof.",
+	        date: "Wed, 24 Apr 2026 10:00:00 -0700",
+	      },
+	      {
+	        subject: "Booking confirmation rarecode",
+	        body: "Your reservation is confirmed. Confirmation rarecode. Total: $420.00.",
+	        date: "Wed, 24 Apr 2026 11:00:00 -0700",
+	      },
+	    ])
+
+	    const { cacheMatchingMailSearchDocumentsFromMboxFile } = await import("../../mailroom/mbox-import")
+	    const matches = await cacheMatchingMailSearchDocumentsFromMboxFile({
+	      registry,
+	      agentId: "slugger",
+	      filePath: archivePath,
+	      ownerEmail: "ari@mendelow.me",
+	      source: "hey",
+	      queryTerms: ["rarecode"],
+	      limit: 1,
+	    })
+
+	    expect(matches).toHaveLength(1)
+	    expect(matches[0]?.subject).toBe("Booking confirmation rarecode")
+	    expect(searchMailSearchCache({
+	      agentId: "slugger",
+	      queryTerms: ["rarecode"],
+	      source: "hey",
+	      limit: 10,
+	    })).toHaveLength(2)
+	  })
+
+	  it("searches parsed imported messages instead of relying on raw archive bytes", async () => {
     const homeRoot = tempDir()
     process.env.HOME = homeRoot
     setAgentName("slugger")

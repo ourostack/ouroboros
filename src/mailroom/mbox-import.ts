@@ -413,7 +413,11 @@ export async function cacheMatchingMailSearchDocumentsFromMboxFile(input: Search
     if (!queryTerms.some((term) => document.searchText.includes(term))) continue
     upsertMailSearchCacheDocument(message, privateEnvelope)
     matches.push(document)
-    if (matches.length >= input.limit) break
+    matches.sort((left, right) => compareByRelevanceThenRecency(
+      { document: left, relevance: scoreMailSearchDocument(left, queryTerms) },
+      { document: right, relevance: scoreMailSearchDocument(right, queryTerms) },
+    ))
+    if (matches.length > input.limit) matches.length = input.limit
   }
   return matches
     .map((document) => ({ document, relevance: scoreMailSearchDocument(document, queryTerms) }))

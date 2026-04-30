@@ -306,7 +306,7 @@ const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 // advisory and geocode are public APIs but gated for consistency)
 // Flight search is also friend+ (read-only, no payment)
 const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search", "flight_search"])
-const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send"])
+const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
 function mailTrustGuardrail(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {

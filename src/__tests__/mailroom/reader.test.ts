@@ -213,25 +213,56 @@ describe("mailroom reader", () => {
     expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
   })
 
-  it("does not refresh a missing runtime credential item", async () => {
-    const refreshRuntimeCredentialConfig = vi.fn()
-    vi.doMock("../../heart/runtime-credentials", () => ({
-      readRuntimeCredentialConfig: (agentName: string) => ({
-        ok: false,
-        reason: "missing",
+  it("refreshes a missing local runtime credential cache before giving up", async () => {
+    let refreshed = false
+    const refreshRuntimeCredentialConfig = vi.fn(async (agentName: string) => {
+      refreshed = true
+      return {
+        ok: true,
         itemPath: `vault:${agentName}:runtime/config`,
-        error: "missing runtime config",
-      }),
+        config: {
+          mailroom: {
+            mailboxAddress: "slugger@ouro.bot",
+            storePath: "/tmp/mailroom",
+            privateKeys: { mail_slugger_primary: "secret" },
+          },
+        },
+        revision: "runtime_loaded_after_missing_cache",
+        updatedAt: "2026-04-28T00:00:00.000Z",
+      }
+    })
+    vi.doMock("../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => refreshed
+        ? {
+            ok: true,
+            itemPath: `vault:${agentName}:runtime/config`,
+            config: {
+              mailroom: {
+                mailboxAddress: "slugger@ouro.bot",
+                storePath: "/tmp/mailroom",
+                privateKeys: { mail_slugger_primary: "secret" },
+              },
+            },
+            revision: "runtime_loaded_after_missing_cache",
+            updatedAt: "2026-04-28T00:00:00.000Z",
+          }
+        : {
+            ok: false,
+            reason: "missing",
+            itemPath: `vault:${agentName}:runtime/config`,
+            error: "runtime config is missing",
+          },
       refreshRuntimeCredentialConfig,
     }))
 
     const { resolveMailroomReaderWithRefresh } = await import("../../mailroom/reader")
 
     await expect(resolveMailroomReaderWithRefresh("slugger")).resolves.toEqual(expect.objectContaining({
-      ok: false,
-      reason: "auth-required",
+      ok: true,
+      storeKind: "file",
+      storeLabel: "/tmp/mailroom",
     }))
-    expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+    expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
   })
 
   it("keeps the original auth-required reader error when refresh fails", async () => {

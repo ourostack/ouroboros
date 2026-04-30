@@ -8,9 +8,37 @@ import { drainPending, getPendingDir } from "../../mind/pending"
 
 export const SENSE_TURN_MAX_RETRIES = 3
 export const SENSE_TURN_RETRY_DELAYS_MS = [1000, 2000, 4000]
+export const SENSE_TURN_COMMAND_TIMEOUT_MS = 10 * 60 * 1000
 // Allow test override
 export let _senseTurnRetryDelays = SENSE_TURN_RETRY_DELAYS_MS
 export function _setSenseTurnRetryDelays(delays: number[]): void { _senseTurnRetryDelays = delays }
+export let _senseTurnCommandTimeoutMs = SENSE_TURN_COMMAND_TIMEOUT_MS
+export function _setSenseTurnCommandTimeoutMs(timeoutMs: number): void { _senseTurnCommandTimeoutMs = timeoutMs }
+
+async function withSenseTurnTimeout<T>(promise: Promise<T>, timeoutMs: number, command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error(`MCP send_message to ${command.agent} timed out after ${timeoutMs}ms waiting for daemon response; command status is unknown.`)
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.mcp_sense_turn_timeout",
+            message: "MCP senseTurn timed out waiting for daemon response",
+            meta: { agent: command.agent, friendId: command.friendId, sessionKey: command.sessionKey, timeoutMs },
+          })
+          reject(error)
+        }, timeoutMs)
+      }),
+    ])
+	  } finally {
+	    /* v8 ignore next -- Promise.race installs the timer synchronously; null is only a defensive cleanup guard @preserve */
+	    if (timer) clearTimeout(timer)
+	  }
+	}
 
 /**
  * Send a senseTurn command to the daemon with retry logic.
@@ -25,7 +53,7 @@ async function sendSenseTurnWithRetry(
   /* v8 ignore start -- retry loop: functionally tested via mcp-send-message retry tests @preserve */
   for (let attempt = 0; attempt <= SENSE_TURN_MAX_RETRIES; attempt++) {
     try {
-      const response = await sendDaemonCommand(socketPath, command)
+      const response = await withSenseTurnTimeout(sendDaemonCommand(socketPath, command), _senseTurnCommandTimeoutMs, command)
       return response
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error))

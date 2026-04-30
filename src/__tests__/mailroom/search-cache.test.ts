@@ -4,12 +4,15 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { PrivateMailEnvelope, StoredMailMessage } from "../../mailroom/core"
 import {
-  buildMailSearchCacheDocument,
-  resetMailSearchCacheForTests,
-  searchMailSearchCache,
-  syncMailSearchCacheMetadata,
-  upsertMailSearchCacheDocument,
-} from "../../mailroom/search-cache"
+	  MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+	  buildMailSearchCacheDocument,
+	  readMailSearchCoverageRecord,
+	  resetMailSearchCacheForTests,
+	  searchMailSearchCache,
+	  syncMailSearchCacheMetadata,
+	  upsertMailSearchCacheDocument,
+	  writeMailSearchCoverageRecord,
+	} from "../../mailroom/search-cache"
 
 const tempRoots: string[] = []
 const originalHome = process.env.HOME
@@ -124,6 +127,25 @@ describe("mail search cache", () => {
     expect(native[0]?.messageId).toBe("mail_native_1")
   })
 
+  it("projects html-only legacy envelopes into searchable text", () => {
+    const document = buildMailSearchCacheDocument(
+      message({ id: "mail_html_only" }),
+      privateEnvelope({
+        subject: "HTML-only booking",
+        text: "",
+        html: "<html><head><style>.hidden{display:none}</style></head><body><h1>Booking overview</h1><p>Seattle&nbsp;to&nbsp;Zurich</p><div>Confirmation &#35;5313227</div></body></html>",
+        snippet: "HTML-only booking",
+      }),
+    )
+
+    expect(document.textExcerpt).toContain("Booking overview")
+    expect(document.textExcerpt).toContain("Seattle to Zurich")
+    expect(document.textExcerpt).toContain("Confirmation #5313227")
+    expect(document.searchText).toContain("confirmation #5313227")
+    expect(document.searchText).not.toContain("display:none")
+    expect(document.textProjectionVersion).toBe(MAIL_SEARCH_TEXT_PROJECTION_VERSION)
+  })
+
   it("syncs cached placement metadata after a message moves", () => {
     process.env.HOME = tempDir()
     const stored = message()
@@ -142,12 +164,28 @@ describe("mail search cache", () => {
       limit: 5,
     })
     expect(quarantined).toHaveLength(1)
-    expect(quarantined[0]).toMatchObject({
-      messageId: "mail_trip_1",
-      placement: "quarantine",
-      receivedAt: "2026-04-24T20:00:00.000Z",
-    })
-  })
+	    expect(quarantined[0]).toMatchObject({
+	      messageId: "mail_trip_1",
+	      placement: "quarantine",
+	      receivedAt: "2026-04-24T20:00:00.000Z",
+	    })
+
+	    syncMailSearchCacheMetadata({
+	      ...stored,
+	      placement: "imbox",
+	      receivedAt: "2026-04-24T21:00:00.000Z",
+	    })
+	    expect(searchMailSearchCache({
+	      agentId: "slugger",
+	      placement: "imbox",
+	      queryTerms: ["2433516539"],
+	      limit: 5,
+	    })[0]).toMatchObject({
+	      messageId: "mail_trip_1",
+	      placement: "imbox",
+	      receivedAt: "2026-04-24T21:00:00.000Z",
+	    })
+	  })
 
   it("loads cache defensively from disk and tolerates missing metadata updates", () => {
     const homeRoot = tempDir()
@@ -197,10 +235,10 @@ describe("mail search cache", () => {
     expect(matches.map((m) => m.messageId)).toEqual(["mail_newer", "mail_older"])
   })
 
-  it("excludes cached docs whose source is undefined when a source filter is applied", () => {
-    process.env.HOME = tempDir()
-    // Native mail has no source — should be excluded when a source filter is set.
-    upsertMailSearchCacheDocument(
+	  it("excludes cached docs whose source is undefined when a source filter is applied", () => {
+	    process.env.HOME = tempDir()
+	    // Native mail has no source — should be excluded when a source filter is set.
+	    upsertMailSearchCacheDocument(
       message({
         id: "mail_native_no_source",
         compartmentKind: "native",
@@ -224,11 +262,70 @@ describe("mail search cache", () => {
       source: "hey",
       queryTerms: [],
       limit: 5,
-    })
-    expect(matches.map((m) => m.messageId)).toEqual(["mail_trip_1"])
-  })
+	    })
+	    expect(matches.map((m) => m.messageId)).toEqual(["mail_trip_1"])
+	  })
 
-  describe("booking-aware ranking benchmark", () => {
+	  it("normalizes and validates hosted search coverage records", () => {
+	    const homeRoot = tempDir()
+	    process.env.HOME = homeRoot
+
+	    const scoped = writeMailSearchCoverageRecord({
+	      schemaVersion: 1,
+	      agentId: "slugger",
+	      storeKind: "azure-blob",
+	      placement: "imbox",
+	      source: "HEY",
+	      indexedAt: "2026-04-24T18:00:00.000Z",
+	      visibleMessageCount: 2,
+	      cachedMessageCount: 2,
+	      decryptableMessageCount: 2,
+	      skippedMessageCount: 0,
+	      messageIndexFingerprint: "fingerprint-a",
+	      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+	      oldestReceivedAt: "2026-04-24T18:00:00.000Z",
+	      newestReceivedAt: "2026-04-24T19:00:00.000Z",
+	    })
+	    expect(scoped.source).toBe("hey")
+	    expect(readMailSearchCoverageRecord({
+	      agentId: "slugger",
+	      storeKind: "azure-blob",
+	      placement: "imbox",
+	      source: "hey",
+	    })).toEqual(scoped)
+
+	    const unscoped = writeMailSearchCoverageRecord({
+	      schemaVersion: 1,
+	      agentId: "slugger",
+	      storeKind: "azure-blob",
+	      indexedAt: "2026-04-24T20:00:00.000Z",
+	      visibleMessageCount: 0,
+	      cachedMessageCount: 0,
+	      decryptableMessageCount: 0,
+	      skippedMessageCount: 0,
+	      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+	    })
+	    expect(unscoped.source).toBeUndefined()
+	    expect(unscoped.placement).toBeUndefined()
+	    expect(unscoped.compartmentKind).toBeUndefined()
+	    expect(readMailSearchCoverageRecord({
+	      agentId: "slugger",
+	      storeKind: "azure-blob",
+	    })).toEqual(unscoped)
+
+	    const normalizedKey = { agentId: "slugger", storeKind: "azure-blob", placement: "imbox", source: "hey" }
+	    const encoded = Buffer.from(JSON.stringify(normalizedKey)).toString("base64url")
+	    const coverageFile = path.join(homeRoot, "AgentBundles", "slugger.ouro", "state", "mail-search", "coverage", `${encoded}.json`)
+	    fs.writeFileSync(coverageFile, `${JSON.stringify({ ...scoped, source: "gmail" })}\n`, "utf-8")
+	    expect(readMailSearchCoverageRecord({
+	      agentId: "slugger",
+	      storeKind: "azure-blob",
+	      placement: "imbox",
+	      source: "hey",
+	    })).toBeNull()
+	  })
+
+	  describe("booking-aware ranking benchmark", () => {
     // Synthetic corpus that mirrors the failure shape Slugger named: an older
     // decisive booking confirmation buried under newer travel-ish noise
     // mentioning the same place. Pure-recency ranking returns the noise first;
