@@ -45,6 +45,24 @@ function readEntries(filePath: string): BlueBubblesProcessedLogEntry[] {
   }
 }
 
+function readAllEntries(agentName: string): BlueBubblesProcessedLogEntry[] {
+  const processedDir = path.join(
+    getAgentRoot(agentName),
+    "state",
+    "senses",
+    "bluebubbles",
+    "processed",
+  )
+  try {
+    return fs.readdirSync(processedDir)
+      .filter((name) => name.endsWith(".ndjson"))
+      .sort()
+      .flatMap((name) => readEntries(path.join(processedDir, name)))
+  } catch {
+    return []
+  }
+}
+
 export function hasProcessedBlueBubblesMessage(
   agentName: string,
   sessionKey: string,
@@ -53,6 +71,14 @@ export function hasProcessedBlueBubblesMessage(
   if (!messageGuid.trim()) return false
   const filePath = getBlueBubblesProcessedLogPath(agentName, sessionKey)
   return readEntries(filePath).some((entry) => entry.messageGuid === messageGuid)
+}
+
+export function hasProcessedBlueBubblesMessageGuid(
+  agentName: string,
+  messageGuid: string,
+): boolean {
+  if (!messageGuid.trim()) return false
+  return readAllEntries(agentName).some((entry) => entry.messageGuid === messageGuid)
 }
 
 export function recordProcessedBlueBubblesMessage(

@@ -36,7 +36,7 @@ import {
   type BlueBubblesInboundSource,
 } from "./inbound-log"
 import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type BlueBubblesMutationLogEntry } from "./mutation-log"
-import { hasProcessedBlueBubblesMessage, recordProcessedBlueBubblesMessage } from "./processed-log"
+import { hasProcessedBlueBubblesMessage, hasProcessedBlueBubblesMessageGuid, recordProcessedBlueBubblesMessage } from "./processed-log"
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
 import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
@@ -933,7 +933,10 @@ async function handleBlueBubblesNormalizedEvent(
 
   let ownsInFlightMessage = false
   if (event.kind === "message") {
-    if (hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)) {
+    if (
+      hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, event.messageGuid)
+    ) {
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_recovery_skip",
@@ -1345,6 +1348,7 @@ export async function handleBlueBubblesEvent(
   // normalizeBlueBubblesEvent rejects guidless payloads, so duplicate handling
   // only needs to discriminate between known processed, in-flight, or new.
   const duplicateReason = hasProcessedBlueBubblesMessage(agentName, normalized.chat.sessionKey, normalized.messageGuid)
+    || hasProcessedBlueBubblesMessageGuid(agentName, normalized.messageGuid)
     ? "processed"
     : isBlueBubblesMessageInFlight(normalized.chat.sessionKey, normalized.messageGuid)
       ? "in_flight"
@@ -1390,7 +1394,7 @@ export interface BlueBubblesCatchUpResult {
 
 function countPendingRecoveryCandidates(agentName: string): number {
   return listBlueBubblesRecoveryCandidates(agentName)
-    .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
+    .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
     .length
 }
 
@@ -1406,7 +1410,7 @@ function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeo
       seenMessageGuids.add(entry.messageGuid)
       return true
     })
-    .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
+    .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -1442,7 +1446,7 @@ function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now(
   const pendingRecordedAt = [
     ...listPendingCapturedInboundMessages(agentName).map((entry) => entry.recordedAt),
     ...listBlueBubblesRecoveryCandidates(agentName)
-      .filter((entry) => !hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid))
+      .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
       .map((entry) => entry.recordedAt),
   ]
     .map((value) => ({ value, ms: Date.parse(value) }))
@@ -1652,7 +1656,7 @@ export async function catchUpMissedBlueBubblesMessages(
     if (
       event.fromMe
       || event.timestamp < catchUpSince
-      || hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, event.messageGuid)
       || isBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     ) {
       result.skipped++
@@ -1778,6 +1782,7 @@ export async function recoverCapturedBlueBubblesInboundMessages(
   for (const entry of candidates) {
     if (
       hasProcessedBlueBubblesMessage(agentName, entry.sessionKey, entry.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid)
       || isBlueBubblesMessageInFlight(entry.sessionKey, entry.messageGuid)
     ) {
       result.skipped++
@@ -1834,6 +1839,7 @@ export async function recoverMissedBlueBubblesMessages(
   for (const candidate of listBlueBubblesRecoveryCandidates(agentName)) {
     if (
       hasProcessedBlueBubblesMessage(agentName, candidate.sessionKey, candidate.messageGuid)
+      || hasProcessedBlueBubblesMessageGuid(agentName, candidate.messageGuid)
       || isBlueBubblesMessageInFlight(candidate.sessionKey, candidate.messageGuid)
     ) {
       result.skipped++

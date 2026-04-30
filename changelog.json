@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.541",
+      "changes": [
+        "BlueBubbles recovery now treats message GUID completion as authoritative across repaired session keys, so stale `chat_identifier:unknown` mutation/capture sidecars stop keeping iMessage health in a false pending-recovery state after the real chat turn has completed.",
+        "Adds regression coverage for recovered captured-inbound and mutation backlog records whose original degraded session key differs from the canonical processed chat key."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.540",
       "changes": [
         "Runtime prompt rendering, MCP child-process startup, and BlueBubbles recovery now repair a deleted process cwd back to the runtime root instead of failing with `uv_cwd` after a transient worktree disappears.",

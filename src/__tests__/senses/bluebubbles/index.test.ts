@@ -4015,6 +4015,72 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
+  it("does not count recovered GUIDs as pending when recovery repaired the session key", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const canonicalInbound = makeCatchUpMessage({
+      messageGuid: "repaired-captured-guid",
+      textForAgent: "already recovered captured message",
+    })
+    const degradedInbound = {
+      ...canonicalInbound,
+      chat: {
+        ...canonicalInbound.chat,
+        chatGuid: undefined,
+        chatIdentifier: "unknown",
+        sessionKey: "chat_identifier:unknown",
+        sendTarget: { kind: "chat_identifier" as const, value: "unknown" },
+      },
+    }
+    const canonicalMutation = makeCatchUpMessage({
+      messageGuid: "repaired-mutation-guid",
+      textForAgent: "already recovered mutation message",
+    })
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
+    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+
+    recordBlueBubblesInbound("testagent", degradedInbound, "upstream-catchup")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: canonicalMutation.messageGuid,
+      timestamp: canonicalMutation.timestamp,
+      fromMe: false,
+      sender: canonicalMutation.sender,
+      chat: degradedInbound.chat,
+      shouldNotifyAgent: false,
+      textForAgent: canonicalMutation.textForAgent,
+      requiresRepair: false,
+    })
+    recordProcessedBlueBubblesMessage("testagent", canonicalInbound, "webhook", "turn-complete")
+    recordProcessedBlueBubblesMessage("testagent", canonicalMutation, "webhook", "turn-complete")
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail === "upstream reachable")
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
   it("keeps runtime healthy when catch-up discovery fails without pending recovery", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -5265,6 +5331,46 @@ describe("BlueBubbles sense runtime", () => {
       oldestPendingRecoveryAt: expect.any(String),
       oldestPendingRecoveryAgeMs: expect.any(Number),
     }))
+  })
+
+  it("does not rerun queued recovery for mutation GUIDs already processed under a repaired session key", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const canonical = makeCatchUpMessage({
+      messageGuid: "already-repaired-queued-guid",
+      textForAgent: "already recovered under canonical session",
+    })
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
+    const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: canonical.messageGuid,
+      timestamp: Date.parse("2026-04-24T23:23:41.289Z"),
+      fromMe: false,
+      sender: canonical.sender,
+      chat: {
+        ...canonical.chat,
+        chatGuid: undefined,
+        chatIdentifier: "unknown",
+        sessionKey: "chat_identifier:unknown",
+        sendTarget: { kind: "chat_identifier", value: "unknown" },
+      },
+      shouldNotifyAgent: false,
+      textForAgent: canonical.textForAgent,
+      requiresRepair: false,
+    })
+    recordProcessedBlueBubblesMessage("testagent", canonical, "webhook", "turn-complete")
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.recoverQueuedBlueBubblesMessages()
+
+    expect(result).toEqual({ recovered: 0, skipped: 0, failed: 0, pendingRecoveryCount: 0 })
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
   it("keeps queued recovery runtime state truthful when the final upstream health check fails", async () => {
