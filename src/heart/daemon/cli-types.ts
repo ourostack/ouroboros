@@ -80,6 +80,7 @@ export type OuroCliCommand =
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list" }
   | { kind: "mcp.call"; server: string; tool: string; args?: string }
+  | { kind: "mcp.canary"; agent: string; socketOverride?: string; requiredSenses?: string[]; json?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }
   | { kind: "hatch.start"; agentName?: string; humanName?: string; provider?: AgentProvider; credentials?: HatchCredentialsInput; migrationPath?: string }
@@ -256,6 +257,7 @@ export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
+export type McpCanaryCliCommand = Extract<OuroCliCommand, { kind: "mcp.canary" }>
 export type DoctorCliCommand = Extract<OuroCliCommand, { kind: "doctor" }>
 export type CloneCliCommand = Extract<OuroCliCommand, { kind: "clone" }>
 export type HelpCliCommand = Extract<OuroCliCommand, { kind: "help" }>

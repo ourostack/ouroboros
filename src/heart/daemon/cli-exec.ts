@@ -104,6 +104,7 @@ import type {
   AttentionCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
+  McpCanaryCliCommand,
   SetupCliCommand,
   HookCliCommand,
   HabitLocalCliCommand,
@@ -182,6 +183,7 @@ import {
   requireVaultItemSecret,
   vaultItemTemplateSecretFields,
 } from "./vault-items"
+import { formatMcpStatusCanaryResult, runMcpStatusCanary } from "./mcp-canary"
 
 // ── ensureDaemonRunning ──
 
@@ -1638,7 +1640,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
   return command
 }
 
@@ -7510,6 +7512,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       deps.writeStdout(message)
       return message
     }
+  }
+
+  if (command.kind === "mcp.canary") {
+    const canarySocketPath = command.socketOverride ?? deps.socketPath
+    const result = await runMcpStatusCanary({
+      agent: command.agent,
+      socketPath: canarySocketPath,
+      command: process.execPath,
+      commandArgs: [
+        path.join(__dirname, "ouro-bot-entry.js"),
+        "mcp-serve",
+        "--agent",
+        command.agent,
+        "--socket",
+        canarySocketPath,
+      ],
+      requiredSenses: command.requiredSenses ?? [],
+    })
+    if (!result.ok) deps.setExitCode?.(1)
+    const message = command.json ? JSON.stringify(result, null, 2) : formatMcpStatusCanaryResult(result)
+    deps.writeStdout(message)
+    return message
   }
 
   /* v8 ignore start — mcp-serve block binds to process.stdin/stdout; tested via mcp-server unit tests */

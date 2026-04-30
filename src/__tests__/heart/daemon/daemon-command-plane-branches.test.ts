@@ -49,6 +49,7 @@ describe("daemon command plane branches", () => {
 
     const healthMonitor = {
       runChecks: vi.fn(async () => [{ name: "agent-processes", status: "ok" as const, message: "good" }]),
+      getLastResults: vi.fn(() => []),
       stopPeriodicChecks: vi.fn(),
     }
 
@@ -422,6 +423,28 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("rolls last health monitor canary failures into daemon status", async () => {
+    const socketPath = tmpSocketPath("daemon-status-health-checks")
+    const isolatedBundles = path.join(os.tmpdir(), `daemon-status-health-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+    fs.mkdirSync(isolatedBundles, { recursive: true })
+    const { daemon, healthMonitor } = make(socketPath, isolatedBundles)
+    const canaryFailure = {
+      name: "sense-probe:mcp-canary:slugger",
+      status: "critical" as const,
+      message: "mcp canary failed: transport closed",
+    }
+    healthMonitor.getLastResults.mockReturnValueOnce([canaryFailure])
+
+    const status = await daemon.handleCommand({ kind: "daemon.status" })
+
+    expect(status.summary).toContain("health=warn")
+    expect(status.summary).toContain("health-check:sense-probe:mcp-canary:slugger:critical")
+    expect(status.data).toEqual(expect.objectContaining({
+      overview: expect.objectContaining({ health: "warn" }),
+      healthChecks: [canaryFailure],
+    }))
+  })
+
   it("includes provider rows in status when bundle agents exist", async () => {
     const socketPath = tmpSocketPath("daemon-status-providers")
     const isolatedBundles = path.join(os.tmpdir(), `daemon-status-provider-bundles-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -486,6 +509,7 @@ describe("daemon command plane branches", () => {
       sessionId: "session-1",
       taskRef: "task-7",
     }))
+    expect(processManager.startAgent).toHaveBeenCalledWith("ouroboros")
     expect(processManager.sendToAgent).toHaveBeenCalledWith("ouroboros", { type: "message" })
 
     const polled = await daemon.handleCommand({ kind: "message.poll", agent: "ouroboros" })

@@ -245,4 +245,34 @@ describe("parseStatusPayload extended worker fields", () => {
       detail: "fresh",
     })
   })
+
+  it("parses and rejects health check status payload rows", () => {
+    const base = {
+      overview: makeOverview(),
+      workers: [],
+      senses: [],
+    }
+
+    expect(parseStatusPayload({
+      ...base,
+      healthChecks: [{
+        name: "sense-probe:mcp-canary:slugger",
+        status: "critical",
+        message: "mcp canary failed",
+      }],
+    })?.healthChecks[0]).toEqual({
+      name: "sense-probe:mcp-canary:slugger",
+      status: "critical",
+      message: "mcp canary failed",
+    })
+    expect(parseStatusPayload({ ...base, healthChecks: { bad: true } })).toBeNull()
+    expect(parseStatusPayload({ ...base, healthChecks: [null] })).toBeNull()
+    expect(parseStatusPayload({
+      ...base,
+      healthChecks: [{
+        name: "sense-probe:mcp-canary:slugger",
+        status: "critical",
+      }],
+    })).toBeNull()
+  })
 })

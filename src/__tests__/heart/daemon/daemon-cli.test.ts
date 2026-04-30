@@ -2368,6 +2368,13 @@ describe("ouro CLI execution", () => {
               restartCount: 0,
             },
           ],
+          healthChecks: [
+            {
+              name: "sense-probe:mcp-canary:slugger",
+              status: "critical",
+              message: "mcp canary failed: transport closed",
+            },
+          ],
         },
       })),
       startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
@@ -2383,6 +2390,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("ouroboros daemon")
     expect(result).toContain("Senses")
     expect(result).toContain("Workers")
+    expect(result).toContain("Health Checks")
     expect(result).toContain(PACKAGE_VERSION.version)
     expect(result).toContain("2026-03-08T23:50:00.000Z")
     expect(result).toContain("BlueBubbles")
@@ -2398,6 +2406,8 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("recovery=inspect quarantined recovery logs")
     expect(result).toContain("inner-dialog")
     expect(result).toContain("restarts: 0")
+    expect(result).toContain("sense-probe:mcp-canary:slugger")
+    expect(result).toContain("mcp canary failed: transport closed")
     expect(result).toContain("Mailbox")
     expect(result).toContain("http://127.0.0.1:4310/mailbox")
   })

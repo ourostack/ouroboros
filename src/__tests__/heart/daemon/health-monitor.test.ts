@@ -20,6 +20,28 @@ describe("HealthMonitor", () => {
     ])
   })
 
+  it("keeps a defensive copy of the latest health results", async () => {
+    const monitor = new HealthMonitor({
+      processManager: {
+        listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+      },
+      scheduler: {
+        listJobs: () => [{ id: "daily-review", lastRun: "2026-03-07T00:00:00.000Z" }],
+      },
+    })
+
+    const results = await monitor.runChecks()
+    results[0]!.status = "critical"
+    const latest = monitor.getLastResults()
+    latest[0]!.status = "warn"
+
+    expect(monitor.getLastResults()[0]).toEqual({
+      name: "agent-processes",
+      status: "ok",
+      message: "all managed agents running",
+    })
+  })
+
   it("reports warnings for never-run jobs and high disk without paging alerts", async () => {
     const alertSink = vi.fn(async () => undefined)
     const monitor = new HealthMonitor({

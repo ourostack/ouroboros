@@ -31,7 +31,22 @@ interface JsonRpcResponse {
 }
 
 const MCP_PROTOCOL_VERSION = "2024-11-05"
+const DEFAULT_REQUEST_TIMEOUT = 10_000
 const DEFAULT_TOOL_CALL_TIMEOUT = 30_000
+
+export function isMcpTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  const normalized = message.toLowerCase()
+  return normalized.includes("disconnected")
+    || normalized.includes("transport")
+    || normalized.includes("closed")
+    || normalized.includes("econnreset")
+    || normalized.includes("econnrefused")
+    || normalized.includes("enoent")
+    || normalized.includes("epipe")
+    || normalized.includes("broken pipe")
+    || normalized.includes("not writable")
+}
 
 export class McpClient {
   private config: McpServerConfig
@@ -47,6 +62,9 @@ export class McpClient {
   }
 
   async connect(): Promise<void> {
+    if (this.connected) return
+    this.shutdownProcessOnly()
+
     emitNervesEvent({
       event: "mcp.connect_start",
       component: "repertoire",
@@ -75,6 +93,7 @@ export class McpClient {
       })
     } catch (error) {
       this.connected = false
+      this.shutdownProcessOnly()
       emitNervesEvent({
         level: "error",
         event: "mcp.connect_error",
@@ -115,6 +134,11 @@ export class McpClient {
 
     this.cachedTools = allTools
     return allTools
+  }
+
+  async refreshTools(): Promise<McpToolInfo[]> {
+    this.cachedTools = null
+    return this.listTools()
   }
 
   async callTool(
@@ -196,7 +220,7 @@ export class McpClient {
   private sendRequest(
     method: string,
     params?: Record<string, unknown>,
-    timeout?: number,
+    timeout: number = DEFAULT_REQUEST_TIMEOUT,
   ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.connected && method !== "initialize") {
@@ -223,15 +247,22 @@ export class McpClient {
         params,
       }
 
-      this.writeMessage(request)
+      if (!this.writeMessage(request)) {
+        this.pending.delete(id)
+        if (pending.timer) {
+          clearTimeout(pending.timer)
+        }
+        reject(new Error(`MCP transport is not writable for request: ${method}`))
+      }
     })
   }
 
-  private writeMessage(message: JsonRpcRequest): void {
-    /* v8 ignore next -- defensive: stdin always writable during active connection @preserve */
+  private writeMessage(message: JsonRpcRequest): boolean {
     if (this.process?.stdin?.writable) {
       this.process.stdin.write(JSON.stringify(message) + "\n")
+      return true
     }
+    return false
   }
 
   private setupLineReader(): void {
@@ -322,5 +353,14 @@ export class McpClient {
       pending.reject(error)
       this.pending.delete(id)
     }
+  }
+
+  private shutdownProcessOnly(): void {
+    this.rejectAllPending(new Error("MCP transport closed during reconnect"))
+    /* v8 ignore next -- defensive: process may already be absent @preserve */
+    if (this.process && !this.process.killed) {
+      this.process.kill()
+    }
+    this.process = null
   }
 }

@@ -1266,7 +1266,8 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
 }
 
 function parseMcpCommand(args: string[]): OuroCliCommand {
-  const [sub, ...rest] = args
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
   if (sub === "list") return { kind: "mcp.list" }
@@ -1280,6 +1281,34 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
     const mcpArgs = argsIdx !== -1 && rest[argsIdx + 1] ? rest[argsIdx + 1] : undefined
 
     return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}) }
+  }
+
+  if (sub === "canary") {
+    let socketOverride: string | undefined
+    let json = false
+    const requiredSenses: string[] = []
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--socket" && rest[i + 1]) {
+        socketOverride = rest[++i]
+        continue
+      }
+      if (rest[i] === "--require-sense" && rest[i + 1]) {
+        requiredSenses.push(rest[++i])
+        continue
+      }
+      if (rest[i] === "--json") {
+        json = true
+        continue
+      }
+    }
+    if (!agent) throw new Error("mcp canary requires --agent <name>")
+    return {
+      kind: "mcp.canary",
+      agent,
+      ...(socketOverride ? { socketOverride } : {}),
+      ...(requiredSenses.length > 0 ? { requiredSenses } : {}),
+      ...(json ? { json: true } : {}),
+    }
   }
 
   throw new Error(`Usage\n${usage()}`)

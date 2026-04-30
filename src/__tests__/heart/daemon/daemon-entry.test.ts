@@ -59,6 +59,13 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
   writeDaemonTombstone: writeDaemonTombstoneMock,
 }))
 
+vi.mock("../../../heart/daemon/mcp-canary", () => ({
+  createMcpStatusCanaryProbe: (options: { agent: string }) => ({
+    name: `mcp-canary:${options.agent}`,
+    check: async () => ({ ok: true }),
+  }),
+}))
+
 vi.mock("../../../heart/config", () => ({
   getBlueBubblesChannelConfig: vi.fn(() => ({
     port: 18790,
@@ -198,6 +205,8 @@ describe("daemon entrypoint", () => {
       { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
       { name: "disk-space", status: "ok", message: "disk usage healthy (0%)" },
       { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
+      { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },
+      { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
     ])
     await expect(daemonOptions.router.send({
       from: "slugger",
@@ -325,6 +334,10 @@ describe("daemon entrypoint", () => {
       expect(habitSchedulerStopWatchMock).toHaveBeenCalledTimes(1)
       expect(habitSchedulerStopMock).toHaveBeenCalledTimes(1)
       expect(healthMonitorStopPeriodicChecks).toHaveBeenCalledTimes(1)
+      const healthPath = path.join(testHomeRoot, ".ouro-cli", "daemon-health.json")
+      const healthState = JSON.parse(fs.readFileSync(healthPath, "utf-8")) as { status: string }
+      expect(healthState.status).toBe("down")
+      expect(writeDaemonTombstoneMock).not.toHaveBeenCalled()
       expect(exitSpy).not.toHaveBeenCalled()
 
       await vi.advanceTimersByTimeAsync(100)

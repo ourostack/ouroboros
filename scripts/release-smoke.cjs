@@ -190,7 +190,7 @@ function runReleaseSmokeSuite(version, deps = defaultDeps()) {
     runPublishedPackageAssetSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
     runPublishedBinVersionSmoke({ packageName: "@ouro.bot/cli", binName: "ouro", version }, deps),
     runPublishedBinVersionSmoke({
-      packageRef: "ouro.bot@latest",
+      packageRef: `ouro.bot@${version}`,
       binName: "ouro.bot",
       expectedVersion: version,
     }, deps),

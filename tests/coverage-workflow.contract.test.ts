@@ -66,18 +66,20 @@ describe("coverage workflow contract", () => {
     expect(script).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
   })
 
-  it("publishes the CLI and bootstrap wrapper on the supported latest npm channel", () => {
+  it("publishes prereleases on their prerelease npm channel", () => {
     const workflow = readFileSync(
       join(process.cwd(), ".github", "workflows", "coverage.yml"),
       "utf8",
     )
 
-    expect(workflow).toContain("npm publish --access public --provenance --tag latest")
-    expect(workflow).toContain('verify_tag "@ouro.bot/cli@latest" "$LOCAL"')
-    expect(workflow).toContain('verify_tag "ouro.bot@latest" "$LOCAL"')
-    expect(workflow).not.toContain("npm dist-tag add")
-    expect(workflow).not.toContain("npm publish --access public --provenance --tag alpha")
-    expect(workflow).not.toContain("@alpha")
+    expect(workflow).toContain("Resolve npm publish tag")
+    expect(workflow).toContain("semver.prerelease(version)")
+    expect(workflow).toContain('npm publish --access public --provenance --tag "$TAG"')
+    expect(workflow).toContain('npm publish --access public --provenance --tag "${{ steps.publish-tag.outputs.tag }}"')
+    expect(workflow).toContain('npm dist-tag add "@ouro.bot/cli@${LOCAL}" "$TAG"')
+    expect(workflow).toContain('npm dist-tag add "ouro.bot@${LOCAL}" "$TAG"')
+    expect(workflow).toContain('verify_tag "@ouro.bot/cli@${TAG}" "$LOCAL"')
+    expect(workflow).toContain('verify_tag "ouro.bot@${TAG}" "$LOCAL"')
   })
 
   it("runs the mailbox-ui package typecheck and test suite before the root coverage gate continues", () => {

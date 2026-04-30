@@ -31,6 +31,7 @@ import { detectProviderBindingDrift, loadDriftInputsForAgent, type DriftFinding 
 import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
+import { createMcpStatusCanaryProbe } from "./mcp-canary"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -113,7 +114,22 @@ const senseManager = new DaemonSenseManager({
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
-  senseProbeProvider: () => senseManager.listHealthProbes(),
+  senseProbeProvider: () => [
+    ...senseManager.listHealthProbes(),
+    ...managedAgents.map((agent) => createMcpStatusCanaryProbe({
+      agent,
+      socketPath,
+      command: process.execPath,
+      commandArgs: [
+        path.join(__dirname, "ouro-bot-entry.js"),
+        "mcp-serve",
+        "--agent",
+        agent,
+        "--socket",
+        socketPath,
+      ],
+    })),
+  ],
   alertSink: (message) => {
     emitNervesEvent({
       level: "error",
@@ -147,6 +163,10 @@ function stopEntryRuntime(): void {
 function scheduleCleanProcessExitAfterStopCommand(): void {
   if (stopCommandExitScheduled) return
   stopCommandExitScheduled = true
+  // Account for the explicit daemon.stop path so the process exit catch-all
+  // does not mislabel an operator-requested stop as an unexpected clean exit.
+  _tombstoneWritten = true
+  writeStopCommandHealthState()
   setTimeout(() => process.exit(0), 100)
 }
 
@@ -317,6 +337,18 @@ const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
 /* v8 ignore stop */
+
+function writeStopCommandHealthState(): void {
+  try {
+    healthWriter.writeHealth({
+      ...buildDaemonHealthState(),
+      status: "down",
+      uptimeSeconds: Math.floor(process.uptime()),
+    })
+  } catch {
+    // Health writes are best-effort during shutdown.
+  }
+}
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void daemon.start().then(() => {

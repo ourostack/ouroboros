@@ -89,10 +89,17 @@ interface StatusProviderRow {
   credential: string
 }
 
+interface StatusHealthCheckRow {
+  name: string
+  status: string
+  message: string
+}
+
 export interface StatusPayload {
   overview: StatusOverviewRow
   senses: StatusSenseRow[]
   workers: StatusWorkerRow[]
+  healthChecks: StatusHealthCheckRow[]
   sync: StatusSyncRow[]
   agents: StatusAgentRow[]
   providers: StatusProviderRow[]
@@ -154,12 +161,14 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
   const sync = raw.sync
   const agents = raw.agents
   const providers = raw.providers
+  const healthChecks = raw.healthChecks
   if (!overview || typeof overview !== "object" || Array.isArray(overview)) return null
   if (!Array.isArray(senses) || !Array.isArray(workers)) return null
   // sync, agents, and providers are optional for backward compatibility — older daemons may omit them
   if (sync !== undefined && !Array.isArray(sync)) return null
   if (agents !== undefined && !Array.isArray(agents)) return null
   if (providers !== undefined && !Array.isArray(providers)) return null
+  if (healthChecks !== undefined && !Array.isArray(healthChecks)) return null
 
   const parsedOverview: StatusOverviewRow = {
     daemon: stringField((overview as Record<string, unknown>).daemon) ?? "unknown",
@@ -293,18 +302,30 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     return parsed
   })
 
+  const parsedHealthChecks = (healthChecks ?? []).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null
+    const row = entry as Record<string, unknown>
+    const name = stringField(row.name)
+    const status = stringField(row.status)
+    const message = stringField(row.message)
+    if (!name || !status || !message) return null
+    return { name, status, message } satisfies StatusHealthCheckRow
+  })
+
   if (
     parsedSenses.some((row) => row === null) ||
     parsedWorkers.some((row) => row === null) ||
     parsedSync.some((row) => row === null) ||
     parsedAgents.some((row) => row === null) ||
-    parsedProviders.some((row) => row === null)
+    parsedProviders.some((row) => row === null) ||
+    parsedHealthChecks.some((row) => row === null)
   ) return null
 
   return {
     overview: parsedOverview,
     senses: parsedSenses as StatusSenseRow[],
     workers: parsedWorkers as StatusWorkerRow[],
+    healthChecks: parsedHealthChecks as StatusHealthCheckRow[],
     sync: parsedSync as StatusSyncRow[],
     agents: parsedAgents as StatusAgentRow[],
     providers: parsedProviders as StatusProviderRow[],
@@ -511,6 +532,17 @@ export function formatDaemonStatusOutput(response: DaemonResponse, fallback: str
     lines.push("")
   }
 
+  // ── Health Checks ──
+  if (payload.healthChecks.length > 0) {
+    lines.push(`  ${teal("──")} ${bold("Health Checks")} ${teal("─".repeat(29))}`)
+    const nameWidth = Math.max(16, ...payload.healthChecks.map((r) => r.name.length))
+    const statusWidth = Math.max(8, ...payload.healthChecks.map((r) => r.status.length))
+    for (const row of payload.healthChecks) {
+      lines.push(`    ${row.name.padEnd(nameWidth)} ${statusDot(row.status)} ${row.status.padEnd(statusWidth)}  ${dim(row.message)}`)
+    }
+    lines.push("")
+  }
+
   // ── Git Sync (per agent) ──
   if (payload.sync.length > 0) {
     lines.push(`  ${teal("──")} ${bold("Git Sync")} ${teal("─".repeat(35))}`)
@@ -580,6 +612,7 @@ export function buildStoppedStatusPayload(
     },
     senses: [],
     workers: [],
+    healthChecks: [],
     sync: syncRows,
     agents: agentRows,
     providers: [],

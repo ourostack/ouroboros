@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.532",
+      "changes": [
+        "MCP clients now classify dead transports, reconnect stale servers before tool calls, retry one transport-level failure, and expose live refresh canaries so closed MCP pipes recover instead of poisoning long-running sessions.",
+        "Adds `ouro mcp canary --agent <name>` plus daemon health-monitor wiring, surfacing fresh MCP status failures in `ouro status` and validating daemon/MCP version parity and required sense health.",
+        "Explicit `daemon.stop` now writes a last-known down health state instead of creating a misleading unexpected-clean-exit tombstone, daemon background update checks no longer self-restart the live runtime, and `ouro msg` wakes the target agent before IPC delivery.",
+        "Release publishing now tags prereleases with their prerelease channel and release smoke verifies exact wrapper versions, keeping npm dist-tags from driving surprise prerelease churn through the daemon updater."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.531",
       "changes": [
         "`ouro doctor` now recognizes the current nested trip ledger schema (`ledger.ledgerId`) as healthy while keeping backward compatibility with older top-level `ledgerId` ledgers.",

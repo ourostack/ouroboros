@@ -122,15 +122,30 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Resolve npm publish tag
+        id: publish-tag
+        run: |
+          TAG=$(node - <<'NODE'
+          const semver = require('semver')
+          const version = require('./package.json').version
+          const prerelease = semver.prerelease(version)
+          console.log(prerelease && prerelease.length > 0 ? String(prerelease[0]) : 'latest')
+          NODE
+          )
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "publishing npm packages with dist-tag ${TAG}"
+
       - name: Publish @ouro.bot/cli
         run: |
           LOCAL=$(node -p "require('./package.json').version")
+          TAG="${{ steps.publish-tag.outputs.tag }}"
           PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
           if [ "$LOCAL" = "$PUBLISHED" ]; then
             echo "@ouro.bot/cli@${LOCAL} already published — skipping"
           else
-            npm publish --access public --provenance --tag latest
+            npm publish --access public --provenance --tag "$TAG"
           fi
+          npm dist-tag add "@ouro.bot/cli@${LOCAL}" "$TAG"
 
       - name: Build for wrapper publish guard
         run: npm run build
@@ -177,11 +192,18 @@ jobs:
         if: steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
-          npm publish --access public --provenance --tag latest
+          npm publish --access public --provenance --tag "${{ steps.publish-tag.outputs.tag }}"
+
+      - name: Ensure ouro.bot wrapper dist-tag
+        run: |
+          LOCAL=$(node -p "require('./packages/ouro.bot/package.json').version")
+          TAG="${{ steps.publish-tag.outputs.tag }}"
+          npm dist-tag add "ouro.bot@${LOCAL}" "$TAG"
 
       - name: Verify supported npm dist-tags
         run: |
           LOCAL=$(node -p "require('./package.json').version")
+          TAG="${{ steps.publish-tag.outputs.tag }}"
 
           verify_tag() {
             package_ref="$1"
@@ -204,10 +226,10 @@ jobs:
             return 1
           }
 
-          verify_tag "@ouro.bot/cli@latest" "$LOCAL"
-          verify_tag "ouro.bot@latest" "$LOCAL"
+          verify_tag "@ouro.bot/cli@${TAG}" "$LOCAL"
+          verify_tag "ouro.bot@${TAG}" "$LOCAL"
 
-          echo "supported npm dist-tags verified for ${LOCAL}"
+          echo "supported npm dist-tags verified for ${LOCAL} on ${TAG}"
 
       - name: Smoke published package binaries
         run: npm run release:smoke

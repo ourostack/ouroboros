@@ -155,6 +155,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
         deps: expect.objectContaining({ distTag: "latest" }),
       }),
     )
+    expect(mocks.startUpdateChecker.mock.calls[0]?.[0]).not.toHaveProperty("onUpdate")
 
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })

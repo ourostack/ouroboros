@@ -269,8 +269,8 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "System",
     description: "Interact with MCP servers",
     usage: "ouro mcp <subcommand>",
-    example: "ouro mcp list",
-    subcommands: ["list", "call"],
+    example: "ouro mcp canary --agent ouroboros",
+    subcommands: ["list", "call", "canary"],
   },
   "mcp-serve": {
     category: "System",

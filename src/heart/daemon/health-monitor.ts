@@ -37,6 +37,7 @@ export class HealthMonitor {
   private readonly senseProbes: SenseProbe[]
   private readonly senseProbeProvider: () => SenseProbe[]
   private intervalHandle: ReturnType<typeof setInterval> | null = null
+  private lastResults: DaemonHealthResult[] = []
 
   constructor(options: HealthMonitorOptions) {
     this.processManager = options.processManager
@@ -201,6 +202,8 @@ export class HealthMonitor {
       }
     }
 
+    this.lastResults = results.map((result) => ({ ...result }))
+
     for (const result of results) {
       emitNervesEvent({
         level: result.status === "critical" ? "error" : result.status === "warn" ? "warn" : "info",
@@ -215,5 +218,9 @@ export class HealthMonitor {
     }
 
     return results
+  }
+
+  getLastResults(): DaemonHealthResult[] {
+    return this.lastResults.map((result) => ({ ...result }))
   }
 }

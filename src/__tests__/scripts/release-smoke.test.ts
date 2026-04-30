@@ -161,14 +161,14 @@ describe("release-smoke", () => {
     expect(result.message).toContain("reported 0.1.0-alpha.323")
   })
 
-  it("can verify the supported bootstrap package path at latest", () => {
+  it("can verify the supported bootstrap package path at an exact version", () => {
     const { deps } = makeDeps([
       "/Users/me/.npm/_npx/hash/node_modules/.bin/ouro.bot\n",
       "installing @ouro.bot/cli@0.1.0-alpha.327...\n\n0.1.0-alpha.327\n",
     ])
 
     const result = runPublishedBinVersionSmoke({
-      packageRef: "ouro.bot@latest",
+      packageRef: "ouro.bot@0.1.0-alpha.327",
       binName: "ouro.bot",
       expectedVersion: "0.1.0-alpha.327",
     }, deps)
@@ -186,7 +186,7 @@ describe("release-smoke", () => {
     ])
 
     const result = runPublishedBinVersionSmoke({
-      packageRef: "ouro.bot@latest",
+      packageRef: "ouro.bot@0.1.0-alpha.327",
       binName: "ouro.bot",
       expectedVersion: "0.1.0-alpha.327",
     }, deps)

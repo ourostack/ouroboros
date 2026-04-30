@@ -136,6 +136,16 @@ describe("McpClient", () => {
         stdio: ["pipe", "pipe", "pipe"],
       }))
     })
+
+    it("does not respawn when connect is called while already connected", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+      const spawnCount = vi.mocked(spawn).mock.calls.length
+
+      await client.connect()
+
+      expect(vi.mocked(spawn).mock.calls.length).toBe(spawnCount)
+    })
   })
 
   describe("listTools", () => {
@@ -227,6 +237,37 @@ describe("McpClient", () => {
       expect(cached).toEqual([{ name: "tool1", description: "Tool 1", inputSchema: { type: "object" } }])
       expect(mockProc.stdinWrites.length).toBe(writeCountBefore)
     })
+
+    it("refreshTools clears the cache and performs a live list request", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+
+      const firstList = client.listTools()
+      await tick()
+      const firstReq = lastStdinRequest(mockProc)
+      sendResponse(mockProc, {
+        jsonrpc: "2.0",
+        id: firstReq.id,
+        result: {
+          tools: [{ name: "old", description: "Old", inputSchema: {} }],
+        },
+      })
+      await firstList
+
+      const refreshed = client.refreshTools()
+      await tick()
+      const refreshReq = lastStdinRequest(mockProc)
+      expect(refreshReq.method).toBe("tools/list")
+      sendResponse(mockProc, {
+        jsonrpc: "2.0",
+        id: refreshReq.id,
+        result: {
+          tools: [{ name: "new", description: "New", inputSchema: {} }],
+        },
+      })
+
+      await expect(refreshed).resolves.toEqual([{ name: "new", description: "New", inputSchema: {} }])
+    })
   })
 
   describe("callTool", () => {
@@ -264,6 +305,42 @@ describe("McpClient", () => {
       const callPromise = client.callTool("slow_tool", {}, 50)
 
       await expect(callPromise).rejects.toThrow(/timeout/i)
+    })
+
+    it("rejects immediately when the transport is not writable", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+      mockProc.stdin.writable = false
+
+      await expect(client.callTool("get_items", {})).rejects.toThrow(/not writable/i)
+    })
+
+    it("rejects non-writable transports without a pending timer", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+      mockProc.stdin.writable = false
+
+      await expect(client.callTool("get_items", {}, 0)).rejects.toThrow(/not writable/i)
+    })
+
+    it("handles successful calls without request timers", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+
+      const callPromise = client.callTool("untimed_tool", {}, 0)
+      await tick()
+      const callReq = lastStdinRequest(mockProc)
+      sendResponse(mockProc, {
+        jsonrpc: "2.0",
+        id: callReq.id,
+        result: {
+          content: [{ type: "text", text: "untimed" }],
+        },
+      })
+
+      await expect(callPromise).resolves.toEqual({
+        content: [{ type: "text", text: "untimed" }],
+      })
     })
   })
 
@@ -309,6 +386,19 @@ describe("McpClient", () => {
       await tick()
 
       // Crash the process without responding (override kill to not emit close again)
+      mockProc.kill = vi.fn(() => true)
+      mockProc.emit("close", 1)
+
+      await expect(callPromise).rejects.toThrow(/close/i)
+    })
+
+    it("rejects untimed pending requests when process crashes", async () => {
+      const { McpClient } = await getMcpClient()
+      const client = await connectClient(McpClient, mockProc)
+
+      const callPromise = client.callTool("some_tool", {}, 0)
+      await tick()
+
       mockProc.kill = vi.fn(() => true)
       mockProc.emit("close", 1)
 
@@ -475,6 +565,16 @@ describe("McpClient", () => {
       mockProc.emit("close", 1)
 
       await expect(connectPromise).rejects.toThrow(/ENOENT|disconnected|close/i)
+    })
+  })
+
+  describe("transport error classification", () => {
+    it("recognizes transport failures from Error and non-Error values", async () => {
+      const { isMcpTransportError } = await getMcpClient()
+
+      expect(isMcpTransportError(new Error("Transport closed"))).toBe(true)
+      expect(isMcpTransportError("ECONNRESET from peer")).toBe(true)
+      expect(isMcpTransportError(new Error("Method not found"))).toBe(false)
     })
   })
 })

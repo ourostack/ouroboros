@@ -13,9 +13,7 @@ import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
-import { performStagedRestart } from "../versioning/staged-restart"
-import { installVersion, activateVersion, getOuroCliHome } from "../versioning/ouro-version-manager"
-import { execSync, spawn, spawnSync } from "child_process"
+import { execSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
   handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
@@ -331,6 +329,7 @@ export interface DaemonSchedulerLike {
 export interface DaemonHealthMonitorLike {
   runChecks(): Promise<DaemonHealthResult[]>
   stopPeriodicChecks?(): void
+  getLastResults?(): DaemonHealthResult[]
 }
 
 export interface DaemonRouterLike {
@@ -447,6 +446,7 @@ interface DaemonStatusPayload {
   overview: DaemonStatusOverview
   workers: DaemonWorkerRow[]
   senses: DaemonSenseRow[]
+  healthChecks?: DaemonHealthResult[]
   sync: BundleSyncRow[]
   /** Every discovered bundle (`<name>.ouro` with a parseable agent.json),
    * including disabled ones. The senses/workers/sync rows above only cover
@@ -507,14 +507,19 @@ function unhealthySenseRows(senses: DaemonSenseRow[]): DaemonSenseRow[] {
   })
 }
 
-function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[]): "ok" | "warn" {
+function unhealthyHealthChecks(healthChecks: DaemonHealthResult[]): DaemonHealthResult[] {
+  return healthChecks.filter((row) => row.status !== "ok")
+}
+
+function overviewHealth(workers: DaemonWorkerRow[], senses: DaemonSenseRow[], healthChecks: DaemonHealthResult[] = []): "ok" | "warn" {
   if (!workers.every((worker) => worker.status === "running")) return "warn"
   if (unhealthySenseRows(senses).length > 0) return "warn"
+  if (unhealthyHealthChecks(healthChecks).length > 0) return "warn"
   return "ok"
 }
 
 function formatStatusSummary(payload: DaemonStatusPayload): string {
-  if (payload.overview.workerCount === 0 && payload.overview.senseCount === 0) {
+  if (payload.overview.workerCount === 0 && payload.overview.senseCount === 0 && (payload.healthChecks ?? []).length === 0) {
     return "no managed agents"
   }
   const degraded = [
@@ -523,6 +528,9 @@ function formatStatusSummary(payload: DaemonStatusPayload): string {
       .map((row) => `worker:${row.agent}/${row.worker}:${row.status}`),
     ...unhealthySenseRows(payload.senses)
       .map((row) => `sense:${row.agent}/${row.sense}:${row.status}`),
+    ...(payload.healthChecks ?? [])
+      .filter((row) => row.status !== "ok")
+      .map((row) => `health-check:${row.name}:${row.status}`),
   ]
   const detail = degraded.length > 0 ? `\tdegraded=${degraded.join(",")}` : ""
   if (!detail) {
@@ -657,6 +665,7 @@ export class OuroDaemon {
     const snapshots = this.processManager.listAgentSnapshots()
     const workers = buildWorkerRows(snapshots)
     const senses = this.senseManager?.listSenseRows() ?? []
+    const healthChecks = this.healthMonitor.getLastResults?.() ?? []
     const repoRoot = getRepoRoot()
     const sync = listBundleSyncRows({ bundlesRoot: this.bundlesRoot })
     const agents = listAllBundleAgents({ bundlesRoot: this.bundlesRoot })
@@ -671,7 +680,7 @@ export class OuroDaemon {
     return {
       overview: {
         daemon: "running",
-        health: overviewHealth(workers, senses),
+        health: overviewHealth(workers, senses, healthChecks),
         socketPath: this.socketPath,
         mailboxUrl,
         outlookUrl: mailboxUrl,
@@ -683,6 +692,7 @@ export class OuroDaemon {
       },
       workers,
       senses,
+      ...(healthChecks.length > 0 ? { healthChecks } : {}),
       sync,
       agents,
       ...(providers.length > 0 ? { providers } : {}),
@@ -727,8 +737,6 @@ export class OuroDaemon {
 
     // Start periodic update checker (polls npm registry every 30 minutes)
     // Skip in dev mode — dev builds should not auto-update from npm
-    const bundlesRoot = this.bundlesRoot
-    const daemonSocketPath = this.socketPath
     if (this.mode === "dev") {
       emitNervesEvent({
         component: "daemon",
@@ -737,7 +745,6 @@ export class OuroDaemon {
         meta: { reason: "dev mode" },
       })
     } else {
-      const daemon = this
       startUpdateChecker({
         currentVersion,
         deps: {
@@ -747,54 +754,6 @@ export class OuroDaemon {
             return res.json()
           },
         },
-        onUpdate: /* v8 ignore start -- integration: real npm install + process spawn @preserve */ async (result) => {
-          if (!result.latestVersion) return
-          // Install via the version manager (NOT `npm install -g`). The
-          // global install path doesn't end up on the daemon process's
-          // NODE_PATH, so the previous `require.resolve('@ouro.bot/cli')`
-          // -based path lookup always returned null and the staged restart
-          // never actually completed. Verified live on 2026-04-08:
-          // alpha.268 daemon detected alpha.270 was available, ran the
-          // staged restart, and bailed at `staged_restart_path_failed` —
-          // meaning the daemon could never auto-update itself and required
-          // manual `ouro up` to pick up new versions.
-          //
-          // Switch to the version-managed layout the CLI itself uses:
-          // installVersion(version) puts files at
-          //   ~/.ouro-cli/versions/{version}/node_modules/@ouro.bot/cli
-          // which is a known path we can compute deterministically.
-          // Then activateVersion(version) flips the CurrentVersion symlink
-          // so the next `ouro up` from the user sees the same version
-          // the daemon is running.
-          const cliHome = getOuroCliHome()
-          await performStagedRestart(result.latestVersion, {
-            execSync: (cmd) => execSync(cmd, { stdio: "inherit" }),
-            spawnSync,
-            installNewVersion: (version) => {
-              installVersion(version, {})
-              activateVersion(version, {})
-            },
-            resolveNewCodePath: (version) => {
-              const versionPath = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli")
-              return fs.existsSync(versionPath) ? versionPath : null
-            },
-            gracefulShutdown: () => daemon.stop(),
-            spawnNewDaemon: (entryPath, sock) => {
-              const outFd = fs.openSync(os.devNull, "w")
-              const errFd = fs.openSync(os.devNull, "w")
-              const child = spawn(process.execPath, [entryPath, "--socket", sock], {
-                detached: true,
-                stdio: ["ignore", outFd, errFd],
-              })
-              child.unref()
-              return { pid: child.pid ?? null }
-            },
-            nodePath: process.execPath,
-            bundlesRoot,
-            socketPath: daemonSocketPath,
-          })
-        },
-        /* v8 ignore stop */
       })
     }
 
@@ -1324,6 +1283,7 @@ export class OuroDaemon {
           sessionId: command.sessionId,
           taskRef: command.taskRef,
         })
+        await this.processManager.startAgent(command.to)
         this.processManager.sendToAgent?.(command.to, { type: "message" })
         return { ok: true, message: `queued message ${receipt.id}`, data: receipt }
       }
