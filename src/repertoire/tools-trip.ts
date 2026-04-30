@@ -517,7 +517,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "trip_calendar",
-        description: "Render a chronological calendar/agenda projection from the trip ledger. Use this after extracting mail-backed trip facts so the agent can track dates across lodging, travel, events, and local transport.",
+        description: "Render a chronological calendar/agenda projection from the trip ledger. Use this before answering current itinerary, travel gap, or what-changed questions; friend notes and old handoffs may be stale. Also use this after extracting mail-backed trip facts so the agent can track dates across lodging, travel, events, and local transport.",
         parameters: {
           type: "object",
           properties: {

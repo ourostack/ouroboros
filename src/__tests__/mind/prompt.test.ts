@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as path from "path"
 import * as nodeFs from "node:fs"
 
+const tripStoreMocks = vi.hoisted(() => ({
+  listTripIds: vi.fn((): string[] => []),
+  readTripRecord: vi.fn(),
+}))
+
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
@@ -37,6 +42,8 @@ vi.mock("../../repertoire/tasks", () => ({
     getBoard: mockGetBoard,
   }),
 }))
+
+vi.mock("../../trips/store", () => tripStoreMocks)
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
@@ -158,6 +165,8 @@ describe("buildSystem", () => {
   beforeEach(() => {
     vi.resetModules()
     setAgentProvider("minimax")
+    tripStoreMocks.listTripIds.mockReset().mockReturnValue([])
+    tripStoreMocks.readTripRecord.mockReset()
     mockGetBoard.mockReset().mockReturnValue({
       compact: "",
       full: "",
@@ -5085,6 +5094,146 @@ describe("pre-implementation scrutiny", () => {
     expect(workspaceDisciplineIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(-1)
     expect(scrutinyIdx).toBeGreaterThan(workspaceDisciplineIdx)
+  })
+
+  describe("trip ledger truth", () => {
+    const tripRecord = {
+      tripId: "trip_summer-2026-europe-trip_82bdea2a9d088cbe",
+      agentId: "testagent",
+      ownerEmail: "ari@example.com",
+      name: "Summer 2026 Europe Trip",
+      status: "planning",
+      startDate: "2026-07-31",
+      endDate: "2026-08-15",
+      travellers: [],
+      legs: [
+        {
+          legId: "flight_lh489_sea_muc_2026-07-31",
+          kind: "flight",
+          status: "confirmed",
+          evidence: [],
+          createdAt: "2026-04-30T07:00:00.000Z",
+          updatedAt: "2026-04-30T07:00:00.000Z",
+        },
+      ],
+      createdAt: "2026-04-30T07:00:00.000Z",
+      updatedAt: "2026-04-30T07:33:06.000Z",
+    }
+
+    async function render(channel: string, context?: unknown): Promise<string> {
+      setupReadFileSync()
+      const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+      resetConfigCache()
+      patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+      const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+      resetPsycheCache()
+      return flattenSystemPrompt(await buildSystem(channel as any, {}, context as any))
+    }
+
+    async function renderTripTruth(channel: string, context?: unknown): Promise<string> {
+      const { tripLedgerTruthSection } = await import("../../mind/prompt")
+      return tripLedgerTruthSection(channel as any, context as any)
+    }
+
+    it("orients local channels to the trip ledger before stale notes or memory", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+
+      const result = await render("mcp")
+
+      expect(result).toContain("## trip ledger truth")
+      expect(result).toContain("canonical structured source for travel plans")
+      expect(result).toContain("trip_status")
+      expect(result).toContain("trip_get")
+      expect(result).toContain("trip_calendar")
+      expect(result).toContain("friend notes, old handoffs, and memory")
+      expect(result).toContain("trip_summer-2026-europe-trip_82bdea2a9d088cbe")
+      expect(result).toContain("Summer 2026 Europe Trip")
+      expect(result).toContain("legs: 1")
+    })
+
+    it("does not render private trip facts to untrusted remote contexts", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+      const context = makeOnboardingContext()
+      context.friend.trustLevel = "stranger"
+      tripStoreMocks.listTripIds.mockClear()
+      tripStoreMocks.readTripRecord.mockClear()
+
+      const result = await render("teams", context)
+
+      expect(result).not.toContain("## trip ledger truth")
+      expect(result).not.toContain("Summer 2026 Europe Trip")
+      expect(tripStoreMocks.listTripIds).not.toHaveBeenCalled()
+    })
+
+    it("renders private trip facts to trusted remote contexts", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue([tripRecord.tripId])
+      tripStoreMocks.readTripRecord.mockReturnValue(tripRecord)
+      const context = makeOnboardingContext()
+      context.friend.trustLevel = "friend"
+
+      const result = await render("teams", context)
+
+      expect(result).toContain("## trip ledger truth")
+      expect(result).toContain("Summer 2026 Europe Trip")
+    })
+
+    it("stays quiet when the ledger cannot list trips", async () => {
+      tripStoreMocks.listTripIds.mockImplementation(() => {
+        throw new Error("ledger unavailable")
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toBe("")
+    })
+
+    it("renders partial and undated trip records without turning them into gaps", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue(["start-only", "end-only", "undated"])
+      tripStoreMocks.readTripRecord.mockImplementation((_agentId: string, tripId: string) => {
+        if (tripId === "start-only") {
+          return { ...tripRecord, tripId, name: "Start Only", endDate: undefined }
+        }
+        if (tripId === "end-only") {
+          return { ...tripRecord, tripId, name: "End Only", startDate: undefined }
+        }
+        return { ...tripRecord, tripId, name: "Undated", startDate: undefined, endDate: undefined }
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain('start-only :: "Start Only" [planning; 2026-07-31; legs: 1')
+      expect(result).toContain('end-only :: "End Only" [planning; 2026-08-15; legs: 1')
+      expect(result).toContain('undated :: "Undated" [planning; undated; legs: 1')
+    })
+
+    it("keeps unreadable trip records visible with an explicit tool recovery path", async () => {
+      tripStoreMocks.listTripIds.mockReturnValue(["trip-bad"])
+      tripStoreMocks.readTripRecord.mockImplementation(() => {
+        throw new Error("bad trip record")
+      })
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain("trip-bad :: unreadable right now; use trip_get before reasoning from it.")
+    })
+
+    it("summarizes overflow trips instead of silently hiding them", async () => {
+      const tripIds = Array.from({ length: 9 }, (_unused, index) => `trip-${index + 1}`)
+      tripStoreMocks.listTripIds.mockReturnValue(tripIds)
+      tripStoreMocks.readTripRecord.mockImplementation((_agentId: string, tripId: string) => ({
+        ...tripRecord,
+        tripId,
+        name: `Trip ${tripId}`,
+      }))
+
+      const result = await renderTripTruth("mcp")
+
+      expect(result).toContain('trip-8 :: "Trip trip-8"')
+      expect(result).not.toContain('trip-9 :: "Trip trip-9"')
+      expect(result).toContain("1 more trip(s); use trip_status for the full list.")
+    })
   })
 
   // ── Unit 9a: speak system prompt nudge ─────────────────────────────────────

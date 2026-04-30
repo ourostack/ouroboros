@@ -26,6 +26,8 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { preImplementationScrutinySection } from "./scrutiny";
 import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
+import { listTripIds, readTripRecord } from "../trips/store";
+import type { TripRecord } from "../trips/core";
 
 export interface SystemPrompt {
   stable: string;
@@ -795,6 +797,56 @@ function pendingMessagesSection(options?: BuildSystemOptions): string {
   return lines.join("\n")
 }
 
+function tripPromptAccessAllowed(channel: Channel, context?: ResolvedContext): boolean {
+  const senseType = getChannelCapabilities(channel).senseType
+  if (senseType === "local" || senseType === "internal") return true
+  return !!context?.friend && isTrustedLevel(context.friend.trustLevel)
+}
+
+function tripRecordDateRange(trip: TripRecord): string {
+  if (trip.startDate && trip.endDate) return `${trip.startDate} -> ${trip.endDate}`
+  return trip.startDate ?? trip.endDate ?? "undated"
+}
+
+function renderTripLedgerSummary(trip: TripRecord): string {
+  return `- ${trip.tripId} :: "${trip.name}" [${trip.status}; ${tripRecordDateRange(trip)}; legs: ${trip.legs.length}; updated: ${trip.updatedAt}]`
+}
+
+export function tripLedgerTruthSection(channel: Channel, context?: ResolvedContext): string {
+  if (!tripPromptAccessAllowed(channel, context)) return ""
+
+  let tripIds: string[]
+  try {
+    tripIds = listTripIds(getAgentName())
+  } catch {
+    return ""
+  }
+
+  if (tripIds.length === 0) return ""
+
+  const lines = [
+    "## trip ledger truth",
+    "The trip ledger is the canonical structured source for travel plans. It outranks friend notes, old handoffs, and memory when those disagree.",
+    "When asked about travel plans, bookings, itinerary gaps, or what changed, I check `trip_status`, `trip_get`, or `trip_calendar` before answering from memory. I use `mail_search`/`mail_body` when the ledger is missing a needed fact or when verifying a claimed absence.",
+    "If a leg is `tentative`, I say it is tentative/inferred. I do not call it a booking or a gap unless the mail evidence supports that.",
+    "known trips:",
+  ]
+
+  const visibleTripIds = tripIds.slice(0, 8)
+  for (const tripId of visibleTripIds) {
+    try {
+      lines.push(renderTripLedgerSummary(readTripRecord(getAgentName(), tripId)))
+    } catch {
+      lines.push(`- ${tripId} :: unreadable right now; use trip_get before reasoning from it.`)
+    }
+  }
+  if (tripIds.length > visibleTripIds.length) {
+    lines.push(`- ${tripIds.length - visibleTripIds.length} more trip(s); use trip_status for the full list.`)
+  }
+
+  return lines.join("\n")
+}
+
 /**
  * The pulse section: machine-wide situational awareness shared across all
  * peer agents on this machine. Reads ~/.ouro-cli/pulse.json (written by
@@ -1482,6 +1534,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     "# dynamic state for this turn",
     startOfTurnPacketSection(options),
     pulseSection(channel),
+    tripLedgerTruthSection(channel, context),
     liveWorldStateSection(options),
     pendingMessagesSection(options),
     activeWorkSection(options),
