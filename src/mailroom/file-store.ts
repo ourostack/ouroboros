@@ -20,7 +20,7 @@ import {
   type MailScreenerCandidateStatus,
   type StoredMailMessage,
 } from "./core"
-import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument } from "./search-cache"
+import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument, type MailSearchCacheOptions } from "./search-cache"
 
 export interface MailAccessLogEntry {
   id: string
@@ -93,6 +93,7 @@ export interface MailroomStore {
 
 export interface FileMailroomStoreOptions {
   rootDir: string
+  mailSearchCache?: MailSearchCacheOptions
 }
 
 function ensureDir(dir: string): void {
@@ -132,9 +133,13 @@ function sourceMatchesFilter(source: string | undefined, filter: string | undefi
 
 export class FileMailroomStore implements MailroomStore {
   private readonly rootDir: string
+  private readonly mailSearchCache: MailSearchCacheOptions
 
   constructor(options: FileMailroomStoreOptions) {
     this.rootDir = options.rootDir
+    this.mailSearchCache = options.mailSearchCache ?? {
+      cacheDirForAgent: () => path.resolve(this.rootDir, "..", "mail-search"),
+    }
     ensureDir(this.messagesDir)
     ensureDir(this.rawDir)
     ensureDir(this.logsDir)
@@ -207,7 +212,7 @@ export class FileMailroomStore implements MailroomStore {
     const { message, rawPayload, privateEnvelope, candidate } = await buildStoredMailMessage(input)
     const existing = readJson<StoredMailMessage>(this.messagePath(message.id))
     if (existing) {
-      upsertMailSearchCacheDocument(existing, privateEnvelope)
+      upsertMailSearchCacheDocument(existing, privateEnvelope, this.mailSearchCache)
       emitNervesEvent({
         component: "senses",
         event: "senses.mail_store_dedupe",
@@ -218,7 +223,7 @@ export class FileMailroomStore implements MailroomStore {
     }
     writeJson(this.rawPath(message.rawObject), rawPayload)
     writeJson(this.messagePath(message.id), message)
-    upsertMailSearchCacheDocument(message, privateEnvelope)
+    upsertMailSearchCacheDocument(message, privateEnvelope, this.mailSearchCache)
     if (candidate) {
       writeJson(this.candidatePath(candidate.id), candidate)
     }
@@ -275,7 +280,7 @@ export class FileMailroomStore implements MailroomStore {
     }
     const updated: StoredMailMessage = { ...message, placement }
     writeJson(this.messagePath(id), updated)
-    syncMailSearchCacheMetadata(updated)
+    syncMailSearchCacheMetadata(updated, this.mailSearchCache)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_store_message_placement_updated",

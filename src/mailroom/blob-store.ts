@@ -10,12 +10,13 @@ import {
   type MailEnvelopeInput,
   type MailOutboundRecord,
   type MailPlacement,
+  type PrivateMailEnvelope,
   type ResolvedMailAddress,
   type MailScreenerCandidate,
   type StoredMailMessage,
 } from "./core"
 import type { MailAccessLogEntry, MailAccessLogListing, MailListFilters, MailMessageIndexRecord, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
-import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument } from "./search-cache"
+import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument, type MailSearchCacheOptions } from "./search-cache"
 
 const MESSAGE_INDEX_PREFIX = "message-index"
 const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
@@ -36,6 +37,7 @@ const MESSAGE_LIST_SCAN_CONCURRENCY = 32
 export interface AzureBlobMailroomStoreOptions {
   serviceClient: BlobServiceClient
   containerName: string
+  mailSearchCache?: MailSearchCacheOptions
   blobOperationTimeoutMs?: number
   messageFetchConcurrency?: number
   backfillConcurrency?: number
@@ -272,6 +274,7 @@ function messageMatchesFilters<T extends Pick<MailMessageIndexRecord, "agentId" 
 export class AzureBlobMailroomStore implements MailroomStore {
   private readonly serviceClient: BlobServiceClient
   private readonly containerName: string
+  private readonly mailSearchCache: MailSearchCacheOptions | null
   private readonly blobOperationTimeoutMs: number
   private readonly messageFetchConcurrency: number
   private readonly backfillConcurrency: number
@@ -280,6 +283,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
   constructor(options: AzureBlobMailroomStoreOptions) {
     this.serviceClient = options.serviceClient
     this.containerName = options.containerName
+    this.mailSearchCache = options.mailSearchCache ?? null
     this.blobOperationTimeoutMs = positiveInteger(options.blobOperationTimeoutMs, DEFAULT_BLOB_OPERATION_TIMEOUT_MS)
     this.messageFetchConcurrency = positiveInteger(options.messageFetchConcurrency, DEFAULT_MESSAGE_FETCH_CONCURRENCY)
     this.backfillConcurrency = positiveInteger(options.backfillConcurrency, DEFAULT_MESSAGE_INDEX_BACKFILL_CONCURRENCY)
@@ -336,6 +340,16 @@ export class AzureBlobMailroomStore implements MailroomStore {
 
   private async removeMessageIndex(message: StoredMailMessage): Promise<void> {
     await (this.messageIndexBlob(messageIndexBlobName(message)) as { deleteIfExists(): Promise<unknown> }).deleteIfExists()
+  }
+
+  private upsertMailSearchCache(message: StoredMailMessage, privateEnvelope: PrivateMailEnvelope): void {
+    if (!this.mailSearchCache) return
+    upsertMailSearchCacheDocument(message, privateEnvelope, this.mailSearchCache)
+  }
+
+  private syncMailSearchCache(message: StoredMailMessage): void {
+    if (!this.mailSearchCache) return
+    syncMailSearchCacheMetadata(message, this.mailSearchCache)
   }
 
   private async listMessagesLegacy(filters: MailListFilters): Promise<StoredMailMessage[]> {
@@ -477,7 +491,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
       throw error
     }
     if (existing) {
-      upsertMailSearchCacheDocument(existing, privateEnvelope)
+      this.upsertMailSearchCache(existing, privateEnvelope)
       await this.putMessageIndex(existing)
       emitNervesEvent({
         component: "senses",
@@ -490,7 +504,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await this.rawBlob(message.rawObject).uploadData(blobText(rawPayload))
     await this.messageBlob(message.id).uploadData(blobText(message))
     await this.putMessageIndex(message)
-    upsertMailSearchCacheDocument(message, privateEnvelope)
+    this.upsertMailSearchCache(message, privateEnvelope)
     if (candidate) {
       await this.candidateBlob(candidate.id).uploadData(blobText(candidate))
     }
@@ -561,7 +575,7 @@ export class AzureBlobMailroomStore implements MailroomStore {
     await blob.uploadData(blobText(updated))
     await this.removeMessageIndex(message)
     await this.putMessageIndex(updated)
-    syncMailSearchCacheMetadata(updated)
+    this.syncMailSearchCache(updated)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_message_placement_updated",

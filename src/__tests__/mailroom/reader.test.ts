@@ -105,6 +105,10 @@ describe("mailroom reader", () => {
       storeKind: "azure-blob",
       storeLabel: "https://mail.blob.core.windows.net/mailroom",
     }))
+    const cacheDir = (resolved as unknown as {
+      store: { mailSearchCache: { cacheDirForAgent(agentId: string): string } }
+    }).store.mailSearchCache.cacheDirForAgent("other")
+    expect(cacheDir).toContain("AgentBundles/other.ouro/state/mail-search")
     expect(credentialOptions).toEqual([{ managedIdentityClientId: "client-id" }])
     expect(serviceUrls).toEqual(["https://mail.blob.core.windows.net"])
   })

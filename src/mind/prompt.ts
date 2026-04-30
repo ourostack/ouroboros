@@ -6,6 +6,7 @@ import { buildChangelogCommand } from "../heart/versioning/ouro-version-manager"
 import { getToolsForChannel, observeTool, ponderTool, restTool, settleTool, surfaceToolDef } from "../repertoire/tools";
 import { listSkills } from "../repertoire/skills";
 import { getAgentRoot, getAgentName, getRepoRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "../heart/identity";
+import { recoverRuntimeCwd } from "../heart/runtime-cwd";
 import { loadConfig } from "../heart/config";
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../heart/runtime-credentials";
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
@@ -378,7 +379,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
   const sourceRoot = getRepoRoot()
   lines.push(`source root: ${sourceRoot}`);
   lines.push(`runtime mode: ${detectRuntimeMode(sourceRoot)}`);
-  lines.push(`cwd: ${process.cwd()}`);
+  lines.push(`cwd: ${recoverRuntimeCwd(sourceRoot)}`);
   lines.push(`channel: ${channel}`);
   lines.push(`current sense: ${channel}`);
   lines.push(`process type: ${processTypeLabel(channel)}`);

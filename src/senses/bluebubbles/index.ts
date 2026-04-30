@@ -5,6 +5,7 @@ import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
 import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
 import { loadSession, postTurnTrim, deferPostTurnPersist } from "../../mind/context"
 import { accumulateFriendTokens } from "../../mind/friends/tokens"
@@ -863,6 +864,7 @@ async function handleBlueBubblesNormalizedEvent(
 ): Promise<BlueBubblesHandleResult> {
   const client = resolvedDeps.createClient()
   const agentName = resolvedDeps.getAgentName()
+  recoverRuntimeCwd()
   if (event.fromMe) {
     emitNervesEvent({
       component: "senses",

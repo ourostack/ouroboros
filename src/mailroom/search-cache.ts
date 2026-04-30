@@ -65,18 +65,27 @@ interface MailSearchCacheState {
   docs: Map<string, MailSearchCacheDocument>
 }
 
+export interface MailSearchCacheOptions {
+  cacheDirForAgent?: (agentId: string) => string
+}
+
 const cacheStates = new Map<string, MailSearchCacheState>()
 
-function cacheDir(agentId: string): string {
+function defaultCacheDir(agentId: string): string {
   return path.join(getAgentRoot(agentId), "state", "mail-search")
 }
 
-function cachePath(agentId: string, messageId: string): string {
-  return path.join(cacheDir(agentId), `${messageId}.json`)
+function cacheDir(agentId: string, options: MailSearchCacheOptions = {}): string {
+  const resolve = options.cacheDirForAgent ?? defaultCacheDir
+  return resolve(agentId)
 }
 
-function coverageDir(agentId: string): string {
-  return path.join(cacheDir(agentId), "coverage")
+function cachePath(agentId: string, messageId: string, options?: MailSearchCacheOptions): string {
+  return path.join(cacheDir(agentId, options), `${messageId}.json`)
+}
+
+function coverageDir(agentId: string, options?: MailSearchCacheOptions): string {
+  return path.join(cacheDir(agentId, options), "coverage")
 }
 
 function normalizedCoverageKey(key: MailSearchCoverageKey): MailSearchCoverageKey {
@@ -89,10 +98,10 @@ function normalizedCoverageKey(key: MailSearchCoverageKey): MailSearchCoverageKe
   }
 }
 
-function coveragePath(key: MailSearchCoverageKey): string {
+function coveragePath(key: MailSearchCoverageKey, options?: MailSearchCacheOptions): string {
   const normalized = normalizedCoverageKey(key)
   const encoded = Buffer.from(JSON.stringify(normalized)).toString("base64url")
-  return path.join(coverageDir(normalized.agentId), `${encoded}.json`)
+  return path.join(coverageDir(normalized.agentId, options), `${encoded}.json`)
 }
 
 function normalizeSearchText(privateEnvelope: PrivateMailEnvelope): string {
@@ -113,8 +122,8 @@ function readJsonDocument(filePath: string): MailSearchCacheDocument | null {
   }
 }
 
-function cacheState(agentId: string): MailSearchCacheState {
-  const key = `${agentId}:${cacheDir(agentId)}`
+function cacheState(agentId: string, options?: MailSearchCacheOptions): MailSearchCacheState {
+  const key = `${agentId}:${cacheDir(agentId, options)}`
   let state = cacheStates.get(key)
   if (state) return state
   state = { loaded: false, docs: new Map() }
@@ -122,11 +131,11 @@ function cacheState(agentId: string): MailSearchCacheState {
   return state
 }
 
-function loadCache(agentId: string): Map<string, MailSearchCacheDocument> {
-  const state = cacheState(agentId)
+function loadCache(agentId: string, options?: MailSearchCacheOptions): Map<string, MailSearchCacheDocument> {
+  const state = cacheState(agentId, options)
   if (state.loaded) return state.docs
   state.loaded = true
-  const dir = cacheDir(agentId)
+  const dir = cacheDir(agentId, options)
   if (!fs.existsSync(dir)) return state.docs
   for (const entry of fs.readdirSync(dir)) {
     if (!entry.endsWith(".json")) continue
@@ -159,12 +168,16 @@ export function buildMailSearchCacheDocument(message: StoredMailMessage, private
   }
 }
 
-export function upsertMailSearchCacheDocument(message: StoredMailMessage, privateEnvelope: PrivateMailEnvelope): MailSearchCacheDocument {
+export function upsertMailSearchCacheDocument(
+  message: StoredMailMessage,
+  privateEnvelope: PrivateMailEnvelope,
+  options?: MailSearchCacheOptions,
+): MailSearchCacheDocument {
   const document = buildMailSearchCacheDocument(message, privateEnvelope)
-  const dir = cacheDir(message.agentId)
+  const dir = cacheDir(message.agentId, options)
   fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(cachePath(message.agentId, message.id), `${JSON.stringify(document)}\n`, "utf-8")
-  const state = cacheState(message.agentId)
+  fs.writeFileSync(cachePath(message.agentId, message.id, options), `${JSON.stringify(document)}\n`, "utf-8")
+  const state = cacheState(message.agentId, options)
   if (state.loaded) state.docs.set(document.messageId, document)
   emitNervesEvent({
     component: "senses",
@@ -180,8 +193,8 @@ export function upsertMailSearchCacheDocument(message: StoredMailMessage, privat
   return document
 }
 
-export function syncMailSearchCacheMetadata(message: StoredMailMessage): void {
-  const existing = readJsonDocument(cachePath(message.agentId, message.id))
+export function syncMailSearchCacheMetadata(message: StoredMailMessage, options?: MailSearchCacheOptions): void {
+  const existing = readJsonDocument(cachePath(message.agentId, message.id, options))
   if (!existing) return
   const updated: MailSearchCacheDocument = {
     ...existing,
@@ -191,8 +204,8 @@ export function syncMailSearchCacheMetadata(message: StoredMailMessage): void {
     ...(message.ownerEmail ? { ownerEmail: message.ownerEmail } : {}),
     ...(message.source ? { source: message.source } : {}),
   }
-  fs.writeFileSync(cachePath(message.agentId, message.id), `${JSON.stringify(updated)}\n`, "utf-8")
-  const state = cacheState(message.agentId)
+  fs.writeFileSync(cachePath(message.agentId, message.id, options), `${JSON.stringify(updated)}\n`, "utf-8")
+  const state = cacheState(message.agentId, options)
   if (state.loaded) state.docs.set(updated.messageId, updated)
 }
 
@@ -202,9 +215,9 @@ function sourceMatches(source: string | undefined, filter: string | undefined): 
   return source.toLowerCase() === filter.toLowerCase()
 }
 
-export function searchMailSearchCache(filters: MailSearchCacheFilters): MailSearchCacheDocument[] {
+export function searchMailSearchCache(filters: MailSearchCacheFilters, options?: MailSearchCacheOptions): MailSearchCacheDocument[] {
   const queryTerms = filters.queryTerms ?? []
-  const docs = [...loadCache(filters.agentId).values()]
+  const docs = [...loadCache(filters.agentId, options).values()]
     .filter((document) => filters.placement ? document.placement === filters.placement : true)
     .filter((document) => filters.compartmentKind ? document.compartmentKind === filters.compartmentKind : true)
     .filter((document) => sourceMatches(document.source, filters.source))
@@ -224,8 +237,8 @@ export function searchMailSearchCache(filters: MailSearchCacheFilters): MailSear
   return typeof filters.limit === "number" ? ordered.slice(0, filters.limit) : ordered
 }
 
-export function readMailSearchCoverageRecord(key: MailSearchCoverageKey): MailSearchCoverageRecord | null {
-  const document = readJsonDocument(coveragePath(key)) as MailSearchCoverageRecord | null
+export function readMailSearchCoverageRecord(key: MailSearchCoverageKey, options?: MailSearchCacheOptions): MailSearchCoverageRecord | null {
+  const document = readJsonDocument(coveragePath(key, options)) as MailSearchCoverageRecord | null
   if (!document || document.schemaVersion !== 1 || document.agentId !== key.agentId) return null
   const normalized = normalizedCoverageKey(key)
   const stored = normalizedCoverageKey(document)
@@ -233,7 +246,10 @@ export function readMailSearchCoverageRecord(key: MailSearchCoverageKey): MailSe
   return document
 }
 
-export function writeMailSearchCoverageRecord(record: MailSearchCoverageRecord): MailSearchCoverageRecord {
+export function writeMailSearchCoverageRecord(
+  record: MailSearchCoverageRecord,
+  options?: MailSearchCacheOptions,
+): MailSearchCoverageRecord {
   const normalized = normalizedCoverageKey(record)
   const document: MailSearchCoverageRecord = {
     schemaVersion: 1,
@@ -248,8 +264,8 @@ export function writeMailSearchCoverageRecord(record: MailSearchCoverageRecord):
     ...(record.oldestReceivedAt ? { oldestReceivedAt: record.oldestReceivedAt } : {}),
     ...(record.newestReceivedAt ? { newestReceivedAt: record.newestReceivedAt } : {}),
   }
-  fs.mkdirSync(coverageDir(document.agentId), { recursive: true })
-  fs.writeFileSync(coveragePath(document), `${JSON.stringify(document)}\n`, "utf-8")
+  fs.mkdirSync(coverageDir(document.agentId, options), { recursive: true })
+  fs.writeFileSync(coveragePath(document, options), `${JSON.stringify(document)}\n`, "utf-8")
   emitNervesEvent({
     component: "senses",
     event: "senses.mail_search_coverage_written",

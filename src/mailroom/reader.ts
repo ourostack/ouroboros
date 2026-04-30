@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { BlobServiceClient } from "@azure/storage-blob"
 import { DefaultAzureCredential } from "@azure/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import { getAgentMailroomRoot, getAgentName } from "../heart/identity"
+import { getAgentMailroomRoot, getAgentName, getAgentRoot } from "../heart/identity"
 import { readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { AzureBlobMailroomStore } from "./blob-store"
 import { FileMailroomStore, type MailroomStore } from "./file-store"
@@ -125,6 +125,9 @@ function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): 
       store: new AzureBlobMailroomStore({
         serviceClient: new BlobServiceClient(config.azureAccountUrl, createBlobCredential(config)),
         containerName,
+        mailSearchCache: {
+          cacheDirForAgent: (agentId) => path.join(getAgentRoot(agentId), "state", "mail-search"),
+        },
       }),
       storeKind: "azure-blob",
       storeLabel: `${config.azureAccountUrl}/${containerName}`,

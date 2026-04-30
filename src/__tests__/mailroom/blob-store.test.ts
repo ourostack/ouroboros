@@ -1,8 +1,12 @@
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { describe, expect, it } from "vitest"
 import type { BlobServiceClient } from "@azure/storage-blob"
 import { provisionMailboxRegistry, resolveMailAddress, type StoredMailMessage } from "../../mailroom/core"
 import { AzureBlobMailroomStore, decryptBlobMessages } from "../../mailroom/blob-store"
 import { decryptMessages } from "../../mailroom/file-store"
+import { resetMailSearchCacheForTests, searchMailSearchCache } from "../../mailroom/search-cache"
 
 interface FakeBlobState {
   data?: Buffer
@@ -1054,6 +1058,58 @@ describe("AzureBlobMailroomStore", () => {
     expect([...serviceClient.container.blobs.keys()]).toContain(
       `message-index/slugger/9999999999999__native__screener__~__${created.message.id}.json`,
     )
+  })
+
+  it("keeps hosted blob ingestion from writing local mail-search cache unless configured", async () => {
+    const originalHome = process.env.HOME
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-blob-store-home-"))
+    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-blob-store-cache-"))
+    try {
+      process.env.HOME = homeRoot
+      const { registry } = provisionMailboxRegistry({ agentId: "other" })
+      const resolved = resolveMailAddress(registry, "other@ouro.bot")
+      if (!resolved) throw new Error("expected other mailbox")
+
+      const store = new AzureBlobMailroomStore({
+        serviceClient: new FakeBlobServiceClient() as unknown as BlobServiceClient,
+        containerName: "mailroom",
+      })
+      await store.putRawMessage({
+        resolved,
+        envelope: { mailFrom: "third@example.com", rcptTo: ["other@ouro.bot"] },
+        rawMime: Buffer.from("From: Third <third@example.com>\r\nTo: other@ouro.bot\r\nSubject: Other\r\n\r\nHello three.\r\n"),
+        receivedAt: new Date("2024-03-03T00:00:00Z"),
+      })
+      expect(fs.existsSync(path.join(homeRoot, "AgentBundles", "other.ouro"))).toBe(false)
+
+      const cacheOptions = {
+        cacheDirForAgent: (agentId: string) => path.join(cacheRoot, agentId),
+      }
+      const cachedStore = new AzureBlobMailroomStore({
+        serviceClient: new FakeBlobServiceClient() as unknown as BlobServiceClient,
+        containerName: "mailroom",
+        mailSearchCache: cacheOptions,
+      })
+      const cached = await cachedStore.putRawMessage({
+        resolved,
+        envelope: { mailFrom: "third@example.com", rcptTo: ["other@ouro.bot"] },
+        rawMime: Buffer.from("From: Third <third@example.com>\r\nTo: other@ouro.bot\r\nSubject: Other\r\n\r\nHello three.\r\n"),
+        classification: { placement: "screener", trustReason: "new", candidate: true },
+        receivedAt: new Date("2024-03-03T00:00:00Z"),
+      })
+      expect(searchMailSearchCache({ agentId: "other" }, cacheOptions)).toEqual([
+        expect.objectContaining({ messageId: cached.message.id, placement: "screener" }),
+      ])
+
+      await cachedStore.updateMessagePlacement(cached.message.id, "imbox")
+      expect(searchMailSearchCache({ agentId: "other", placement: "imbox" }, cacheOptions)).toHaveLength(1)
+    } finally {
+      resetMailSearchCacheForTests()
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+      fs.rmSync(homeRoot, { recursive: true, force: true })
+      fs.rmSync(cacheRoot, { recursive: true, force: true })
+    }
   })
 
   it("exercises legacy scan and explicit index maintenance helpers for hosted stores", async () => {

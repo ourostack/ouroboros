@@ -3,6 +3,7 @@ import type { ChildProcess } from "child_process"
 import { createInterface } from "readline"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { McpServerConfig } from "../heart/identity"
+import { recoverRuntimeCwd } from "../heart/runtime-cwd"
 
 export interface McpToolInfo {
   name: string
@@ -73,10 +74,11 @@ export class McpClient {
     })
 
     const env = { ...process.env, ...this.config.env }
+    const spawnCwd = this.config.cwd ?? recoverRuntimeCwd()
     this.process = spawn(this.config.command, this.config.args ?? [], {
       env,
       stdio: ["pipe", "pipe", "pipe"],
-      cwd: this.config.cwd,
+      cwd: spawnCwd,
     })
 
     this.setupLineReader()

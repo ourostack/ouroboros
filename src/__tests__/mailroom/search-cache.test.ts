@@ -221,6 +221,39 @@ describe("mail search cache", () => {
     expect(searchMailSearchCache({ agentId: "slugger" })).toHaveLength(0)
   })
 
+  it("routes cache and coverage records through an explicit cache directory resolver", () => {
+    process.env.HOME = tempDir()
+    const cacheRoot = tempDir()
+    const cacheOptions = {
+      cacheDirForAgent: (agentId: string) => path.join(cacheRoot, `${agentId}-mail-search`),
+    }
+
+    const stored = message()
+    upsertMailSearchCacheDocument(stored, privateEnvelope(), cacheOptions)
+
+    expect(searchMailSearchCache({ agentId: "slugger" })).toHaveLength(0)
+    expect(searchMailSearchCache({ agentId: "slugger" }, cacheOptions)).toEqual([
+      expect.objectContaining({ messageId: "mail_trip_1", placement: "imbox" }),
+    ])
+
+    syncMailSearchCacheMetadata({ ...stored, placement: "quarantine" }, cacheOptions)
+    expect(searchMailSearchCache({ agentId: "slugger", placement: "quarantine" }, cacheOptions)).toHaveLength(1)
+
+    const coverage = writeMailSearchCoverageRecord({
+      schemaVersion: 1,
+      agentId: "slugger",
+      storeKind: "azure-blob",
+      indexedAt: "2026-04-24T20:00:00.000Z",
+      visibleMessageCount: 1,
+      cachedMessageCount: 1,
+      decryptableMessageCount: 1,
+      skippedMessageCount: 0,
+      textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
+    }, cacheOptions)
+    expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" })).toBeNull()
+    expect(readMailSearchCoverageRecord({ agentId: "slugger", storeKind: "azure-blob" }, cacheOptions)).toEqual(coverage)
+  })
+
   it("sorts results by recency desc when no query terms are provided", () => {
     process.env.HOME = tempDir()
     upsertMailSearchCacheDocument(
