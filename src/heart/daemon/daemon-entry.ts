@@ -128,6 +128,7 @@ const healthMonitor = new HealthMonitor({
         "--socket",
         socketPath,
       ],
+      ignoreOverviewHealth: true,
     })),
   ],
   alertSink: (message) => {

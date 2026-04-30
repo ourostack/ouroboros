@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.543",
+      "changes": [
+        "Daemon health-monitor MCP canaries now ignore the daemon's aggregate overview health while still validating MCP transport, daemon liveness, version alignment, and required sense health, preventing the canary's previous failure from keeping the daemon in a self-reinforcing warning state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.542",
       "changes": [
         "BlueBubbles recovery timeouts now leave iMessage messages pending instead of marking them processed, and legacy `recovery-timeout` processed records no longer suppress retries.",

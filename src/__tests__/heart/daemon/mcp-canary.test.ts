@@ -157,6 +157,43 @@ describe("mcp canary", () => {
     expect(result.summary).toContain("sense=bluebubbles:error")
   })
 
+  it("can ignore aggregate health while preserving transport and required-sense checks", async () => {
+    const child = createFakeChild([
+      "daemon=running\thealth=warn\tdaemonVersion=1\tmcpVersion=1",
+      "sense=bluebubbles:running\tdetail=:18789",
+      "sense=mail:running\tdetail=slugger@ouro.bot",
+    ].join("\n"))
+
+    const result = await runMcpStatusCanary({
+      agent: "slugger",
+      requiredSenses: ["bluebubbles", "mail"],
+      ignoreOverviewHealth: true,
+      spawnImpl: spawnFake(child),
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.summary).toContain("health=warn (overview ignored)")
+  })
+
+  it("still fails unhealthy required senses when aggregate health is ignored", async () => {
+    const child = createFakeChild([
+      "daemon=running\thealth=warn\tdaemonVersion=1\tmcpVersion=1",
+      "sense=bluebubbles:error\tdetail=listener down",
+    ].join("\n"))
+
+    const result = await runMcpStatusCanary({
+      agent: "slugger",
+      requiredSenses: ["bluebubbles"],
+      ignoreOverviewHealth: true,
+      spawnImpl: spawnFake(child),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.summary).not.toContain("health=warn")
+    expect(result.summary).toContain("sense=bluebubbles:error")
+    expect(result.summary).toContain("required sense unhealthy: bluebubbles:error")
+  })
+
   it("fails when the daemon is missing from status", async () => {
     const child = createFakeChild("sense=bluebubbles:running\tdetail=:18789")
 

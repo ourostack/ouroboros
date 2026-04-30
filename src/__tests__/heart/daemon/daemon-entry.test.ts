@@ -59,11 +59,18 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
   writeDaemonTombstone: writeDaemonTombstoneMock,
 }))
 
+const { createMcpStatusCanaryProbeMock } = vi.hoisted(() => ({
+  createMcpStatusCanaryProbeMock: vi.fn(),
+}))
+
 vi.mock("../../../heart/daemon/mcp-canary", () => ({
-  createMcpStatusCanaryProbe: (options: { agent: string }) => ({
-    name: `mcp-canary:${options.agent}`,
-    check: async () => ({ ok: true }),
-  }),
+  createMcpStatusCanaryProbe: (options: { agent: string; ignoreOverviewHealth?: boolean }) => {
+    createMcpStatusCanaryProbeMock(options)
+    return {
+      name: `mcp-canary:${options.agent}`,
+      check: async () => ({ ok: true }),
+    }
+  },
 }))
 
 vi.mock("../../../heart/config", () => ({
@@ -94,6 +101,7 @@ describe("daemon entrypoint", () => {
     habitSchedulerStartPeriodicReconciliationMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
+    createMcpStatusCanaryProbeMock.mockReset()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     fs.rmSync(testHomeRoot, { recursive: true, force: true })
@@ -208,6 +216,12 @@ describe("daemon entrypoint", () => {
       { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },
       { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
     ])
+    expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "slugger", ignoreOverviewHealth: true }),
+    )
+    expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "ouroboros", ignoreOverviewHealth: true }),
+    )
     await expect(daemonOptions.router.send({
       from: "slugger",
       to: "ouroboros",

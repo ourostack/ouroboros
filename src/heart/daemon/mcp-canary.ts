@@ -24,6 +24,7 @@ export interface McpStatusCanaryOptions {
   commandArgs?: string[]
   timeoutMs?: number
   requiredSenses?: string[]
+  ignoreOverviewHealth?: boolean
   spawnImpl?: SpawnImpl
 }
 
@@ -91,12 +92,16 @@ export function parseMcpStatusText(text: string): ParsedMcpStatus {
   return { daemon, senses, raw: text }
 }
 
-function validateMcpStatus(parsed: ParsedMcpStatus, requiredSenses: string[]): McpStatusCanaryResult {
+function validateMcpStatus(
+  parsed: ParsedMcpStatus,
+  requiredSenses: string[],
+  options: Pick<McpStatusCanaryOptions, "ignoreOverviewHealth"> = {},
+): McpStatusCanaryResult {
   const failures: string[] = []
   if (parsed.daemon.daemon !== "running") {
     failures.push(`daemon=${parsed.daemon.daemon ?? "missing"}`)
   }
-  if (parsed.daemon.health !== "ok") {
+  if (!options.ignoreOverviewHealth && parsed.daemon.health !== "ok") {
     failures.push(`health=${parsed.daemon.health ?? "missing"}`)
   }
   if (
@@ -128,7 +133,7 @@ function validateMcpStatus(parsed: ParsedMcpStatus, requiredSenses: string[]): M
     .map((row) => `${row.name}:${row.status}`)
     .join(",")
   const summary = failures.length === 0
-    ? `mcp canary ok: daemon=${parsed.daemon.daemon} health=${parsed.daemon.health} senses=${senseSummary}`
+    ? `mcp canary ok: daemon=${parsed.daemon.daemon} health=${parsed.daemon.health}${options.ignoreOverviewHealth ? " (overview ignored)" : ""} senses=${senseSummary}`
     : `mcp canary failed: ${failures.join("; ")}`
 
   return {
@@ -151,7 +156,14 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
     component: "daemon",
     event: "daemon.mcp_canary_start",
     message: "starting MCP status canary",
-    meta: { agent: options.agent, command, commandArgs, timeoutMs, requiredSenses },
+    meta: {
+      agent: options.agent,
+      command,
+      commandArgs,
+      timeoutMs,
+      requiredSenses,
+      ignoreOverviewHealth: options.ignoreOverviewHealth === true,
+    },
   })
 
   const child = spawnImpl(command, commandArgs, { stdio: ["pipe", "pipe", "pipe"] })
@@ -243,7 +255,9 @@ export async function runMcpStatusCanary(options: McpStatusCanaryOptions): Promi
       throw new Error(responseText(statusResponse))
     }
     const parsed = parseMcpStatusText(responseText(statusResponse))
-    const canary = validateMcpStatus(parsed, requiredSenses)
+    const canary = validateMcpStatus(parsed, requiredSenses, {
+      ignoreOverviewHealth: options.ignoreOverviewHealth,
+    })
     emitNervesEvent({
       component: "daemon",
       event: canary.ok ? "daemon.mcp_canary_end" : "daemon.mcp_canary_error",
