@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.535",
+      "changes": [
+        "Daemon orphan cleanup now recognizes managed mail sense workers, so stale `senses/mail-entry.js --agent <name>` processes from old runtimes are terminated on production daemon startup instead of lingering across restarts.",
+        "Adds regression coverage for the full daemon-managed entrypoint set used by orphan cleanup, including inner-dialog, daemon, BlueBubbles, Teams, and mail workers."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.534",
       "changes": [
         "`ouro up` now syncs the global `ouro.bot` wrapper to the exact running runtime version and repairs stale wrapper-owned binaries instead of trusting whatever package currently owns the executable.",

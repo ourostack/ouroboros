@@ -56,15 +56,16 @@ describe("parseOrphanPidsFromPs", () => {
     expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([5000])
   })
 
-  it("matches all four harness entry points: agent-entry, daemon-entry, bluebubbles/entry, teams-entry", () => {
+  it("matches all daemon-managed harness entry points", () => {
     const psOutput = [
       "  PID  PPID COMMAND",
       " 100     1 node /x/dist/heart/daemon/agent-entry.js --agent Alpha",
       " 101     1 node /x/dist/heart/daemon/daemon-entry.js --socket /tmp/x.sock",
       " 102     1 node /x/dist/senses/bluebubbles/entry.js --agent Alpha",
       " 103     1 node /x/dist/senses/teams-entry.js --agent Alpha",
+      " 104     1 node /x/dist/senses/mail-entry.js --agent Alpha",
     ].join("\n")
-    expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103])
+    expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104])
   })
 
   it("excludes mcp-serve processes even when they would otherwise match", () => {
