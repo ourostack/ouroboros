@@ -4,23 +4,28 @@
 const { execFileSync } = require("child_process");
 const semver = require("semver");
 
-function resolvePublishTag(version) {
+function prereleaseChannel(version) {
   const prerelease = semver.prerelease(version);
   return prerelease && prerelease.length > 0 ? String(prerelease[0]) : "latest";
 }
 
-function planLatestDistTagRepair({ publishTag, localVersion, latestVersion }) {
+function planPublishTag({ localVersion, latestVersion }) {
   if (!semver.valid(localVersion)) {
     return { action: "error", reason: `local version ${localVersion} is not valid semver` };
   }
 
-  if (publishTag === "latest") {
-    return { action: "skip", reason: "stable publish owns latest" };
+  const channel = prereleaseChannel(localVersion);
+  if (channel === "latest") {
+    return { action: "publish", tag: "latest", reason: "stable publish owns latest" };
   }
 
   const normalizedLatest = typeof latestVersion === "string" ? latestVersion.trim() : "";
   if (!normalizedLatest) {
-    return { action: "repair", reason: "latest dist-tag is missing" };
+    return {
+      action: "publish",
+      tag: "latest",
+      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
+    };
   }
 
   if (!semver.valid(normalizedLatest)) {
@@ -28,14 +33,18 @@ function planLatestDistTagRepair({ publishTag, localVersion, latestVersion }) {
   }
 
   if (!semver.prerelease(normalizedLatest)) {
-    return { action: "skip", reason: `latest dist-tag points at stable ${normalizedLatest}` };
+    return {
+      action: "publish",
+      tag: channel,
+      reason: `latest dist-tag points at stable ${normalizedLatest}; publishing prerelease on ${channel}`,
+    };
   }
 
-  if (semver.eq(normalizedLatest, localVersion)) {
-    return { action: "skip", reason: `latest dist-tag already points at ${localVersion}` };
-  }
-
-  return { action: "repair", reason: `latest dist-tag points at stale prerelease ${normalizedLatest}` };
+  return {
+    action: "publish",
+    tag: "latest",
+    reason: `latest dist-tag points at prerelease ${normalizedLatest}; keeping prerelease as the supported default channel`,
+  };
 }
 
 function npmViewLatestVersion(packageName, deps = {}) {
@@ -63,23 +72,11 @@ function npmViewLatestVersion(packageName, deps = {}) {
   return latestVersion;
 }
 
-function addLatestDistTag(packageName, localVersion, deps = {}) {
-  const execFileSyncImpl = deps.execFileSyncImpl ?? execFileSync;
-  execFileSyncImpl("npm", ["dist-tag", "add", `${packageName}@${localVersion}`, "latest"], {
-    stdio: "inherit",
-  });
-}
-
-function repairLatestDistTagIfNeeded(packageName, localVersion, publishTag, deps = {}) {
+function resolvePublishTag(packageName, localVersion, deps = {}) {
   const latestVersion = deps.latestVersion ?? npmViewLatestVersion(packageName, deps);
-  const plan = planLatestDistTagRepair({ publishTag, localVersion, latestVersion });
+  const plan = planPublishTag({ localVersion, latestVersion });
   if (plan.action === "error") {
     throw new Error(`${packageName}: ${plan.reason}`);
-  }
-
-  if (plan.action === "repair") {
-    addLatestDistTag(packageName, localVersion, deps);
-    return { ...plan, latestVersion, repairedTo: localVersion };
   }
 
   return { ...plan, latestVersion };
@@ -87,8 +84,7 @@ function repairLatestDistTagIfNeeded(packageName, localVersion, publishTag, deps
 
 function printUsageAndExit() {
   console.error("usage:");
-  console.error("  node scripts/npm-dist-tag-policy.cjs publish-tag <version>");
-  console.error("  node scripts/npm-dist-tag-policy.cjs repair-latest-if-prerelease <package> <version> <publish-tag>");
+  console.error("  node scripts/npm-dist-tag-policy.cjs publish-tag <package> <version>");
   process.exit(2);
 }
 
@@ -96,14 +92,11 @@ if (require.main === module) {
   const [command, ...args] = process.argv.slice(2);
   try {
     if (command === "publish-tag") {
-      const [version] = args;
-      if (!version) printUsageAndExit();
-      console.log(resolvePublishTag(version));
-    } else if (command === "repair-latest-if-prerelease") {
-      const [packageName, localVersion, publishTag] = args;
-      if (!packageName || !localVersion || !publishTag) printUsageAndExit();
-      const result = repairLatestDistTagIfNeeded(packageName, localVersion, publishTag);
-      console.log(`${packageName}: ${result.reason}`);
+      const [packageName, localVersion] = args;
+      if (!packageName || !localVersion) printUsageAndExit();
+      const result = resolvePublishTag(packageName, localVersion);
+      console.error(`${packageName}: ${result.reason}`);
+      console.log(result.tag);
     } else {
       printUsageAndExit();
     }
@@ -114,7 +107,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  planLatestDistTagRepair,
-  repairLatestDistTagIfNeeded,
+  planPublishTag,
   resolvePublishTag,
 };

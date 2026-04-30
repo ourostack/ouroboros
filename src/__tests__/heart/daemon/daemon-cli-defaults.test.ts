@@ -130,7 +130,7 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
-  it("uses the alpha dist-tag for default CLI update checks", async () => {
+  it("uses the latest dist-tag for default CLI update checks", async () => {
     vi.resetModules()
 
     const checkForUpdate = vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.534" }))
@@ -151,7 +151,7 @@ describe("daemon CLI default dependency branches", () => {
 
       expect(checkForUpdate).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ distTag: "alpha" }),
+        expect.objectContaining({ distTag: "latest" }),
       )
     } finally {
       vi.doUnmock("../../../heart/versioning/update-checker")

@@ -53,7 +53,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@alpha" >&2
+  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"

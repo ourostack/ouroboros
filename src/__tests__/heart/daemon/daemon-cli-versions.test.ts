@@ -54,7 +54,7 @@ describe("ouro versions: execution", () => {
     expect(result).toContain("0.1.0-alpha.79")
     expect(result).toContain("(previous)")
     expect(result).toContain("0.1.0-alpha.78")
-    expect(result).toContain("published alpha: 0.1.0-alpha.81 (update available)")
+    expect(result).toContain("published latest: 0.1.0-alpha.81 (update available)")
   })
 
   it("shows published version as up to date when no update is available", async () => {
@@ -69,7 +69,7 @@ describe("ouro versions: execution", () => {
 
     expect(result).toContain("0.1.0-alpha.80")
     expect(result).toContain("* current")
-    expect(result).toContain("published alpha: 0.1.0-alpha.80 (up to date)")
+    expect(result).toContain("published latest: 0.1.0-alpha.80 (up to date)")
   })
 
   it("shows published status even when no versions are installed", async () => {
@@ -83,7 +83,7 @@ describe("ouro versions: execution", () => {
     const result = await runOuroCli(["versions"], deps)
 
     expect(result).toContain("no versions installed")
-    expect(result).toContain("published alpha: 0.1.0-alpha.81 (update available)")
+    expect(result).toContain("published latest: 0.1.0-alpha.81 (update available)")
   })
 
   it("degrades cleanly when published version lookup errors", async () => {
@@ -97,7 +97,7 @@ describe("ouro versions: execution", () => {
     const result = await runOuroCli(["versions"], deps)
 
     expect(result).toContain("0.1.0-alpha.80")
-    expect(result).toContain("published alpha: unavailable (skipped; registry unavailable)")
+    expect(result).toContain("published latest: unavailable (skipped; registry unavailable)")
   })
 
   it("does not hang forever when the published version lookup stalls", async () => {
@@ -112,7 +112,7 @@ describe("ouro versions: execution", () => {
     const result = await runOuroCli(["versions"], deps)
 
     expect(result).toContain("0.1.0-alpha.80")
-    expect(result).toContain("published alpha: unavailable (skipped; registry did not answer)")
+    expect(result).toContain("published latest: unavailable (skipped; registry did not answer)")
   })
 
   it("renders versions as a shared board in TTY mode", async () => {
@@ -130,6 +130,6 @@ describe("ouro versions: execution", () => {
     expect(result).toContain("___    _   _")
     expect(result).toContain("Versions")
     expect(result).toContain("0.1.0-alpha.81")
-    expect(result).toContain("published alpha")
+    expect(result).toContain("published latest")
   })
 })

@@ -3,97 +3,94 @@ import * as path from "path"
 import { describe, expect, it, vi } from "vitest"
 
 const {
-  planLatestDistTagRepair,
-  repairLatestDistTagIfNeeded,
+  planPublishTag,
   resolvePublishTag,
 } = require(path.resolve(__dirname, "../../../scripts/npm-dist-tag-policy.cjs"))
 
 describe("npm dist-tag policy", () => {
-  it("publishes prereleases on their prerelease channel", () => {
-    expect(resolvePublishTag("0.1.0-alpha.537")).toBe("alpha")
-  })
-
   it("publishes stable releases on latest", () => {
-    expect(resolvePublishTag("1.0.0")).toBe("latest")
-  })
-
-  it("repairs latest when latest is already a stale prerelease", () => {
-    expect(planLatestDistTagRepair({
-      publishTag: "alpha",
-      localVersion: "0.1.0-alpha.537",
-      latestVersion: "0.1.0-alpha.531",
-    })).toEqual({
-      action: "repair",
-      reason: "latest dist-tag points at stale prerelease 0.1.0-alpha.531",
-    })
-  })
-
-  it("repairs latest when the latest tag is missing", () => {
-    expect(planLatestDistTagRepair({
-      publishTag: "alpha",
-      localVersion: "0.1.0-alpha.537",
-      latestVersion: "",
-    })).toEqual({
-      action: "repair",
-      reason: "latest dist-tag is missing",
-    })
-  })
-
-  it("leaves stable latest alone during prerelease publishes", () => {
-    expect(planLatestDistTagRepair({
-      publishTag: "alpha",
-      localVersion: "1.1.0-alpha.1",
-      latestVersion: "1.0.0",
-    })).toEqual({
-      action: "skip",
-      reason: "latest dist-tag points at stable 1.0.0",
-    })
-  })
-
-  it("leaves latest to stable publish flows when publishing latest", () => {
-    expect(planLatestDistTagRepair({
-      publishTag: "latest",
+    expect(planPublishTag({
       localVersion: "1.0.0",
-      latestVersion: "0.1.0-alpha.537",
+      latestVersion: "0.1.0-alpha.538",
     })).toEqual({
-      action: "skip",
+      action: "publish",
+      tag: "latest",
       reason: "stable publish owns latest",
     })
   })
 
-  it("runs npm dist-tag add only when repair is needed", () => {
-    const execFileSyncImpl = vi.fn(() => "")
-
-    const result = repairLatestDistTagIfNeeded("@ouro.bot/cli", "0.1.0-alpha.537", "alpha", {
-      execFileSyncImpl,
+  it("publishes prereleases on latest while latest is already a prerelease", () => {
+    expect(planPublishTag({
+      localVersion: "0.1.0-alpha.539",
       latestVersion: "0.1.0-alpha.531",
+    })).toEqual({
+      action: "publish",
+      tag: "latest",
+      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; keeping prerelease as the supported default channel",
+    })
+  })
+
+  it("publishes prereleases on latest when the latest tag is missing", () => {
+    expect(planPublishTag({
+      localVersion: "0.1.0-alpha.539",
+      latestVersion: "",
+    })).toEqual({
+      action: "publish",
+      tag: "latest",
+      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
+    })
+  })
+
+  it("publishes prereleases on their channel after latest is stable", () => {
+    expect(planPublishTag({
+      localVersion: "1.1.0-alpha.1",
+      latestVersion: "1.0.0",
+    })).toEqual({
+      action: "publish",
+      tag: "alpha",
+      reason: "latest dist-tag points at stable 1.0.0; publishing prerelease on alpha",
+    })
+  })
+
+  it("resolves publish tags by reading the package dist-tag map", () => {
+    const execFileSyncImpl = vi.fn(() => JSON.stringify({
+      alpha: "0.1.0-alpha.538",
+      latest: "0.1.0-alpha.531",
+    }))
+
+    const result = resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
+      execFileSyncImpl,
     })
 
     expect(result).toEqual({
-      action: "repair",
+      action: "publish",
+      tag: "latest",
       latestVersion: "0.1.0-alpha.531",
-      reason: "latest dist-tag points at stale prerelease 0.1.0-alpha.531",
-      repairedTo: "0.1.0-alpha.537",
+      reason: "latest dist-tag points at prerelease 0.1.0-alpha.531; keeping prerelease as the supported default channel",
     })
     expect(execFileSyncImpl).toHaveBeenCalledWith(
       "npm",
-      ["dist-tag", "add", "@ouro.bot/cli@0.1.0-alpha.537", "latest"],
-      { stdio: "inherit" },
+      ["view", "@ouro.bot/cli", "dist-tags", "--json"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     )
   })
 
-  it("does not call npm when stable latest should remain stable", () => {
-    const execFileSyncImpl = vi.fn(() => "")
+  it("does not read npm when latest version is injected by tests", () => {
+    const execFileSyncImpl = vi.fn()
 
-    const result = repairLatestDistTagIfNeeded("@ouro.bot/cli", "1.1.0-alpha.1", "alpha", {
-      execFileSyncImpl,
+    const result = resolvePublishTag("@ouro.bot/cli", "1.1.0-alpha.1", {
       latestVersion: "1.0.0",
+      execFileSyncImpl,
     })
 
     expect(result).toEqual({
-      action: "skip",
+      action: "publish",
+      tag: "alpha",
       latestVersion: "1.0.0",
-      reason: "latest dist-tag points at stable 1.0.0",
+      reason: "latest dist-tag points at stable 1.0.0; publishing prerelease on alpha",
     })
     expect(execFileSyncImpl).not.toHaveBeenCalled()
   })
@@ -103,7 +100,7 @@ describe("npm dist-tag policy", () => {
       throw new Error("registry timeout")
     })
 
-    expect(() => repairLatestDistTagIfNeeded("@ouro.bot/cli", "0.1.0-alpha.537", "alpha", {
+    expect(() => resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
       execFileSyncImpl,
     })).toThrow("@ouro.bot/cli: could not read npm dist-tags: registry timeout")
 
@@ -120,22 +117,22 @@ describe("npm dist-tag policy", () => {
 
   it("distinguishes a genuinely missing latest key from lookup failure", () => {
     const execFileSyncImpl = vi.fn((command: string, args: string[]) => {
-      if (command === "npm" && args[0] === "view") return JSON.stringify({ alpha: "0.1.0-alpha.537" })
+      if (command === "npm" && args[0] === "view") return JSON.stringify({ alpha: "0.1.0-alpha.538" })
       return ""
     })
 
-    const result = repairLatestDistTagIfNeeded("@ouro.bot/cli", "0.1.0-alpha.537", "alpha", {
+    const result = resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
       execFileSyncImpl,
     })
 
     expect(result).toEqual({
-      action: "repair",
+      action: "publish",
+      tag: "latest",
       latestVersion: "",
-      reason: "latest dist-tag is missing",
-      repairedTo: "0.1.0-alpha.537",
+      reason: "latest dist-tag is missing; prerelease is the current supported default channel",
     })
-    expect(execFileSyncImpl).toHaveBeenNthCalledWith(
-      1,
+    expect(execFileSyncImpl).toHaveBeenCalledOnce()
+    expect(execFileSyncImpl).toHaveBeenCalledWith(
       "npm",
       ["view", "@ouro.bot/cli", "dist-tags", "--json"],
       {
@@ -143,11 +140,11 @@ describe("npm dist-tag policy", () => {
         stdio: ["ignore", "pipe", "pipe"],
       },
     )
-    expect(execFileSyncImpl).toHaveBeenNthCalledWith(
-      2,
-      "npm",
-      ["dist-tag", "add", "@ouro.bot/cli@0.1.0-alpha.537", "latest"],
-      { stdio: "inherit" },
-    )
+  })
+
+  it("errors on invalid latest tag values", () => {
+    expect(() => resolvePublishTag("@ouro.bot/cli", "0.1.0-alpha.539", {
+      latestVersion: "definitely-not-semver",
+    })).toThrow("@ouro.bot/cli: latest dist-tag points at invalid version definitely-not-semver")
   })
 })

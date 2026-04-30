@@ -25,7 +25,7 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
 
 // Mock update-checker
 vi.mock("../../../heart/versioning/update-checker", () => ({
-  CLI_UPDATE_DIST_TAG: "alpha",
+  CLI_UPDATE_DIST_TAG: "latest",
   startUpdateChecker: (...a: any[]) => mocks.startUpdateChecker(...a),
   stopUpdateChecker: (...a: any[]) => mocks.stopUpdateChecker(...a),
 }))
@@ -153,7 +153,7 @@ describe("daemon boot: applyPendingUpdates wiring", () => {
     expect(mocks.startUpdateChecker).toHaveBeenCalledWith(
       expect.objectContaining({
         currentVersion: "0.1.0-test",
-        deps: expect.objectContaining({ distTag: "alpha" }),
+        deps: expect.objectContaining({ distTag: "latest" }),
       }),
     )
     expect(mocks.startUpdateChecker.mock.calls[0]?.[0]).not.toHaveProperty("onUpdate")
