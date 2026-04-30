@@ -14,7 +14,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
 import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
-import { CLI_UPDATE_CHECK_TIMEOUT_MS } from "../versioning/update-checker"
+import { CLI_UPDATE_CHECK_TIMEOUT_MS, CLI_UPDATE_DIST_TAG } from "../versioning/update-checker"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
   runHatchFlow as defaultRunHatchFlow,
@@ -604,7 +604,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       const { checkForUpdate } = await import("../versioning/update-checker")
       return checkForUpdate(getPackageVersion(), {
         fetchRegistryJson: () => defaultFetchCliRegistryJson(CLI_UPDATE_CHECK_TIMEOUT_MS),
-        distTag: "latest",
+        distTag: CLI_UPDATE_DIST_TAG,
       })
     },
     installCliVersion: async (version: string) => { installVersion(version, {}) },

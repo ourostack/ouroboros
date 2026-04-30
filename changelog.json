@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.534",
+      "changes": [
+        "`ouro up` now syncs the global `ouro.bot` wrapper to the exact running runtime version and repairs stale wrapper-owned binaries instead of trusting whatever package currently owns the executable.",
+        "Foreground and daemon update checks now read the `alpha` prerelease dist-tag instead of stale `latest`, so machines already on older prereleases can discover the fixed runtime.",
+        "Runtime bootstrap hints, smoke docs, cross-machine setup, and the Teams startup script now use the supported `alpha` prerelease channel so prerelease installs no longer drift behind a stale `latest` tag."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.533",
       "changes": [
         "Locks the `ouro.bot` bootstrap wrapper to install the matching `@ouro.bot/cli` package version from its own package metadata instead of resolving `@ouro.bot/cli@latest`, preventing stale npm dist-tags from downgrading or skipping a just-published alpha.",

@@ -12,7 +12,7 @@ import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-ho
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
-import { startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
+import { CLI_UPDATE_DIST_TAG, startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
 import { execSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
@@ -748,7 +748,7 @@ export class OuroDaemon {
       startUpdateChecker({
         currentVersion,
         deps: {
-          distTag: "latest",
+          distTag: CLI_UPDATE_DIST_TAG,
           fetchRegistryJson: /* v8 ignore next -- integration: real HTTP fetch @preserve */ async () => {
             const res = await fetch("https://registry.npmjs.org/@ouro.bot/cli")
             return res.json()

@@ -51,7 +51,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
+  echo "ouro not installed. Run: npx ouro.bot@alpha" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
@@ -327,6 +327,7 @@ exec node "$ENTRY" "$@"
   it.each([
     '#!/bin/sh\nexec npx --yes @ouro.bot/cli@0.1.0-alpha.323 "$@"\n',
     'echo ouro.bot@latest',
+    'echo ouro.bot@alpha',
     '#!/bin/sh\nexec npx --yes ouro.bot "$@"\n',
     '#!/bin/sh\nENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"\nexec node "$ENTRY" "$@"\n',
   ])("repairs an Ouro-owned shadow launcher based on legacy content signature: %s", (shadowContent) => {
@@ -559,7 +560,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
+  echo "ouro not installed. Run: npx ouro.bot@alpha" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"

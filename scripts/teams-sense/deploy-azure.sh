@@ -4,7 +4,7 @@ set -euo pipefail
 # Deploy Ouroboros to Azure App Service
 #
 # Architecture:
-#   - Harness code comes from npm (@ouro.bot/cli@latest), installed on startup
+#   - Harness code comes from npm (@ouro.bot/cli@alpha), installed on startup
 #   - Agent bundle is uploaded separately to /home/AgentBundles/ouroboros.ouro/
 #   - This script provisions infrastructure and uploads the startup script
 #

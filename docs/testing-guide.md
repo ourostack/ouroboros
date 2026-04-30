@@ -2,7 +2,7 @@
 
 This is the operator smoke guide for the current runtime. It focuses on the real user path:
 
-`npx ouro.bot@latest` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
+`npx ouro.bot@alpha` -> `ouro up` -> `ouro status` -> `ouro chat` / daemon senses -> `ouro stop`
 
 For local development: `npm run dev` (builds and starts daemon from local repo) or `ouro dev` (if the `ouro` binary is current).
 
@@ -12,15 +12,15 @@ Run this from outside the repo so you exercise the published bootstrap path rath
 
 ```bash
 cd ~
-npx ouro.bot@latest -v
-npx ouro.bot@latest up
+npx ouro.bot@alpha -v
+npx ouro.bot@alpha up
 ouro -v
 ouro status
 ```
 
 Expected:
 
-- `npx ouro.bot@latest -v` and `ouro -v` report the same version.
+- `npx ouro.bot@alpha -v` and `ouro -v` report the same version.
 - `ouro up` opens the shared boot checklist instead of a raw transcript wall:
   - the full startup path is visible up front
   - the current step keeps live detail while work is happening
@@ -246,13 +246,13 @@ The workflow writes that secret into a temp file with restrictive permissions, r
 
 ## Troubleshooting
 
-### `ouro` and `npx ouro.bot@latest` disagree on version
+### `ouro` and `npx ouro.bot@alpha` disagree on version
 
 Run:
 
 ```bash
 cd ~
-npx ouro.bot@latest up
+npx ouro.bot@alpha up
 ouro -v
 ```
 

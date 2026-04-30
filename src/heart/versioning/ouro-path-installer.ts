@@ -53,7 +53,7 @@ fi
 # Fall back to installed version
 ENTRY="$HOME/.ouro-cli/CurrentVersion/node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.js"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
+  echo "ouro not installed. Run: npx ouro.bot@alpha" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
@@ -129,6 +129,7 @@ function isOwnedOuroLauncherContent(content: string): boolean {
   return (
     content.includes("@ouro.bot/cli") ||
     content.includes("ouro.bot@latest") ||
+    content.includes("ouro.bot@alpha") ||
     content.includes('exec npx --yes ouro.bot "$@"') ||
     content.includes("CurrentVersion/node_modules/@ouro.bot/cli")
   )

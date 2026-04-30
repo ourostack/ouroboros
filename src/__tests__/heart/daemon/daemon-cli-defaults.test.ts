@@ -130,6 +130,35 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("uses the alpha dist-tag for default CLI update checks", async () => {
+    vi.resetModules()
+
+    const checkForUpdate = vi.fn(async () => ({ available: false, latestVersion: "0.1.0-alpha.534" }))
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+      vi.doMock("../../../heart/versioning/update-checker", async () => {
+        const actual = await vi.importActual<typeof import("../../../heart/versioning/update-checker")>("../../../heart/versioning/update-checker")
+        return { ...actual, checkForUpdate }
+      })
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      await deps.checkForCliUpdate?.()
+
+      expect(checkForUpdate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ distTag: "alpha" }),
+      )
+    } finally {
+      vi.doUnmock("../../../heart/versioning/update-checker")
+      vi.doUnmock("../../../nerves/runtime")
+    }
+  })
+
   it("returns a null pid when detached background launch does not expose one", async () => {
     vi.resetModules()
 

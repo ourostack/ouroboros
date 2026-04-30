@@ -14,7 +14,7 @@ Example:
 
 This is the version reported by:
 
-- `npx ouro.bot@latest -v`
+- `npx ouro.bot@alpha -v`
 - `ouro -v`
 - `ouro status`
 
@@ -42,14 +42,12 @@ The installed `ouro` command is a tiny launcher written to:
 It delegates to the version-managed runtime under `~/.ouro-cli/CurrentVersion`.
 The bootstrap and update channel is:
 
-- `ouro.bot@latest`
-- `@ouro.bot/cli@latest`
+- `ouro.bot@alpha`
+- `@ouro.bot/cli@alpha`
 
-`latest` is the only supported npm dist-tag channel. The package version still uses
-alpha prerelease semver while the project is in alpha, but that does not mean
-`ouro.bot@alpha` or `@ouro.bot/cli@alpha` are maintained install paths. Trusted
-publishing updates `latest`; arbitrary dist-tag mutation would require a separate
-npm automation credential, so the harness does not rely on or advertise `alpha`.
+`alpha` is the supported npm dist-tag channel while the package version still uses
+alpha prerelease semver. `latest` may lag during prerelease publish recovery, so
+runtime-managed bootstrap paths do not use it as the source of truth.
 
 The launcher should always converge on the same runtime channel as the bootstrap path. `ouro up` repairs stale launcher contents if needed.
 
@@ -78,7 +76,7 @@ then `ouro up` replaces the stale daemon instead of leaving launcher and daemon 
 
 That keeps:
 
-- `npx ouro.bot@latest`
+- `npx ouro.bot@alpha`
 - `ouro`
 - daemon behavior
 
@@ -139,7 +137,7 @@ For humans, the desired update path is:
 
 ```bash
 cd ~
-npx ouro.bot@latest up
+npx ouro.bot@alpha up
 ouro status
 ```
 

@@ -19,7 +19,7 @@ If you're setting up on **Windows**, you also need:
 On **macOS or Linux** (or inside WSL on Windows):
 
 ```bash
-npx ouro.bot@latest
+npx ouro.bot@alpha
 ```
 
 On first run, this installs the `@ouro.bot/cli` package, creates the `ouro` command, and adds it to your PATH. Follow the shell hint it prints (`source ~/.zshrc`, `source ~/.bash_profile`, etc.) or open a new terminal.

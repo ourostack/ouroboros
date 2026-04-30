@@ -15,7 +15,7 @@
 #   2. Merge origin/main into the current branch
 #   3. If the merge conflicts on package.json / packages/ouro.bot/package.json
 #      / changelog.json, auto-resolve by:
-#        a. Computing next-version = (latest published @ouro.bot/cli@latest) + 1
+#        a. Computing next-version = (origin/main package version) + 1
 #        b. Writing that version into both package.json files
 #        c. Updating changelog.json: take both sides of the conflict, keep the
 #           main side's existing-version entries, and renumber the local side's

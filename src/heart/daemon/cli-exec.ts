@@ -6664,7 +6664,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           /* v8 ignore next 2 -- unreachable after exec replaces process @preserve */
           return ""
         }
-        const message = "no installed version found. run: npx ouro.bot@latest"
+        const message = "no installed version found. run: npx ouro.bot@alpha"
         deps.writeStdout(message)
         return message
       }
@@ -7252,15 +7252,15 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           deps.updateCheckTimeoutMs ?? CLI_UPDATE_CHECK_TIMEOUT_MS,
         )
         if (updateResult.latestVersion) {
-          sections.push(`published latest: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
+          sections.push(`published alpha: ${updateResult.latestVersion} (${updateResult.available ? "update available" : "up to date"})`)
         } else if (updateResult.error) {
-          sections.push(`published latest: unavailable (${summarizeCliUpdateCheckStatus(updateResult.error, timedOut)})`)
+          sections.push(`published alpha: unavailable (${summarizeCliUpdateCheckStatus(updateResult.error, timedOut)})`)
         }
       } catch (err) {
         const reason = summarizeCliUpdateCheckStatus(
           err instanceof Error ? err.message : String(err),
         )
-        sections.push(`published latest: unavailable (${reason})`)
+        sections.push(`published alpha: unavailable (${reason})`)
       }
     }
 
@@ -7275,8 +7275,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
               lines: localSection.split("\n"),
             },
             {
-              title: "Published latest",
-              lines: sections.slice(1).length > 0 ? sections.slice(1) : ["published latest: unavailable"],
+              title: "Published alpha",
+              lines: sections.slice(1).length > 0 ? sections.slice(1) : ["published alpha: unavailable"],
             },
           ],
         })
