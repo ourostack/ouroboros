@@ -3143,7 +3143,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("quarantines timed-out backlog recovery turns and continues the recovery pass", async () => {
+  it("keeps timed-out backlog recovery turns pending instead of marking them processed", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -3177,7 +3177,7 @@ describe("BlueBubbles sense runtime", () => {
     })
     mocks.repairEvent.mockResolvedValueOnce(makeCatchUpMessage({
       messageGuid: "mutation-timeout-guid",
-      textForAgent: "mutation timeout should be quarantined",
+      textForAgent: "mutation timeout should stay pending",
     }))
     mocks.handleInboundTurn.mockImplementationOnce(() => new Promise(() => undefined))
 
@@ -3188,25 +3188,27 @@ describe("BlueBubbles sense runtime", () => {
       await flushAsyncWork()
     }
 
-    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     const result = await recovery
 
     expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-timeout-guid")).toBe(true)
-    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me"), "utf-8")
-    expect(processedLog).toContain("\"source\":\"mutation-recovery\"")
-    expect(processedLog).toContain("\"outcome\":\"recovery-timeout\"")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
+    expect(processedLog).not.toContain("\"messageGuid\":\"mutation-timeout-guid\"")
+    const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
+    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 1 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_error",
       meta: expect.objectContaining({
         messageGuid: "mutation-timeout-guid",
-        reason: "bluebubbles recovery turn timed out after 60000ms",
+        reason: "bluebubbles recovery turn timed out after 600000ms",
       }),
     }))
   })
 
-  it("quarantines named recovery timeout errors from alternate Error realms", async () => {
+  it("keeps named recovery timeout errors from alternate Error realms pending", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
@@ -3239,9 +3241,9 @@ describe("BlueBubbles sense runtime", () => {
     })
     mocks.repairEvent.mockResolvedValueOnce(makeCatchUpMessage({
       messageGuid: "mutation-named-timeout-guid",
-      textForAgent: "named timeout should be quarantined",
+      textForAgent: "named timeout should stay pending",
     }))
-    const timeoutError = new Error("bluebubbles recovery turn timed out after 60000ms")
+    const timeoutError = new Error("bluebubbles recovery turn timed out after 600000ms")
     timeoutError.name = "BlueBubblesRecoveryTurnTimeoutError"
     mocks.handleInboundTurn.mockRejectedValueOnce(timeoutError)
 
@@ -3250,15 +3252,15 @@ describe("BlueBubbles sense runtime", () => {
 
     expect(result).toEqual(expect.objectContaining({ recovered: 0, skipped: 0, pending: 0, failed: 1 }))
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-named-timeout-guid")).toBe(true)
-    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me"), "utf-8")
-    expect(processedLog).toContain("\"source\":\"mutation-recovery\"")
-    expect(processedLog).toContain("\"outcome\":\"recovery-timeout\"")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "mutation-named-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
+    expect(processedLog).not.toContain("\"messageGuid\":\"mutation-named-timeout-guid\"")
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_error",
       meta: expect.objectContaining({
         messageGuid: "mutation-named-timeout-guid",
-        reason: "bluebubbles recovery turn timed out after 60000ms",
+        reason: "bluebubbles recovery turn timed out after 600000ms",
       }),
     }))
   })
@@ -3736,14 +3738,14 @@ describe("BlueBubbles sense runtime", () => {
     }))
   })
 
-  it("quarantines timed-out upstream catch-up turns after repair succeeds", async () => {
+  it("keeps timed-out upstream catch-up turns pending after repair succeeds", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
     vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
     const candidate = makeCatchUpMessage({
       messageGuid: "catchup-timeout-guid",
-      textForAgent: "catch-up timeout should be quarantined",
+      textForAgent: "catch-up timeout should stay pending",
     })
     mocks.listRecentMessages.mockResolvedValueOnce([candidate])
     mocks.repairEvent.mockResolvedValueOnce(candidate)
@@ -3761,20 +3763,20 @@ describe("BlueBubbles sense runtime", () => {
       await flushAsyncWork()
     }
 
-    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.advanceTimersByTimeAsync(600_000)
     const result = await recovery
 
     expect(result).toEqual(expect.objectContaining({ inspected: 1, recovered: 0, skipped: 0, failed: 1 }))
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "catchup-timeout-guid")).toBe(true)
-    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me"), "utf-8")
-    expect(processedLog).toContain("\"source\":\"upstream-catchup\"")
-    expect(processedLog).toContain("\"outcome\":\"recovery-timeout\"")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "catchup-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
+    expect(processedLog).not.toContain("\"messageGuid\":\"catchup-timeout-guid\"")
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_catchup_error",
       meta: expect.objectContaining({
         messageGuid: "catchup-timeout-guid",
-        reason: "bluebubbles recovery turn timed out after 60000ms",
+        reason: "bluebubbles recovery turn timed out after 600000ms",
       }),
     }))
     lateTurn.reject("late catch-up turn exploded")
@@ -3992,6 +3994,54 @@ describe("BlueBubbles sense runtime", () => {
     )
     const { recordProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     recordProcessedBlueBubblesMessage("testagent", processed, "webhook", "turn-complete")
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        pendingRecoveryCount: 1,
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("counts captured and mutation sidecars for the same GUID as one pending recovery item", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const shared = makeCatchUpMessage({
+      messageGuid: "shared-captured-mutation-pending-guid",
+      textForAgent: "shared pending recovery should count once",
+    })
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    const { recordBlueBubblesMutation } = await import("../../../senses/bluebubbles/mutation-log")
+    recordBlueBubblesInbound("testagent", shared, "webhook")
+    recordBlueBubblesMutation("testagent", {
+      kind: "mutation",
+      eventType: "updated-message",
+      mutationType: "delivery",
+      messageGuid: shared.messageGuid,
+      timestamp: shared.timestamp + 1,
+      fromMe: false,
+      sender: shared.sender,
+      chat: shared.chat,
+      shouldNotifyAgent: false,
+      textForAgent: "message marked as delivered",
+      requiresRepair: false,
+    })
 
     const closableServer = createClosableServer()
     mocks.createServer.mockReturnValue(closableServer.server as any)
@@ -5099,7 +5149,7 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("aborts captured inbound recovery turns that exceed the recovery timeout", async () => {
+  it("aborts captured inbound recovery turns that exceed the recovery timeout without marking them processed", async () => {
     vi.useFakeTimers()
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")
@@ -5144,7 +5194,7 @@ describe("BlueBubbles sense runtime", () => {
     }
     expect(timeoutTurnCalls()).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(59_999)
+    await vi.advanceTimersByTimeAsync(599_999)
     await flushAsyncWork()
     expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_turn_timeout",
@@ -5156,16 +5206,19 @@ describe("BlueBubbles sense runtime", () => {
     expect(result).toEqual({ recovered: 0, skipped: 0, failed: 1 })
     expect(timeoutTurnCalls()[0]?.[0]?.signal.aborted).toBe(true)
     const { getBlueBubblesProcessedLogPath, hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
-    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "captured-timeout-guid")).toBe(true)
-    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me"), "utf-8")
-    expect(processedLog).toContain("\"outcome\":\"recovery-timeout\"")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", "captured-timeout-guid")).toBe(false)
+    const processedLogPath = getBlueBubblesProcessedLogPath("testagent", "chat:any;-;ari@mendelow.me")
+    const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
+    expect(processedLog).not.toContain("\"messageGuid\":\"captured-timeout-guid\"")
+    const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
+    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 1 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "senses.bluebubbles_turn_timeout",
         meta: expect.objectContaining({
           messageGuid: "captured-timeout-guid",
           source: "webhook",
-          timeoutMs: 60_000,
+          timeoutMs: 600_000,
         }),
       }),
     )
@@ -5174,7 +5227,7 @@ describe("BlueBubbles sense runtime", () => {
         event: "senses.bluebubbles_capture_recovery_error",
         meta: expect.objectContaining({
           messageGuid: "captured-timeout-guid",
-          reason: "bluebubbles recovery turn timed out after 60000ms",
+          reason: "bluebubbles recovery turn timed out after 600000ms",
         }),
       }),
     )

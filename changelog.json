@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.542",
+      "changes": [
+        "BlueBubbles recovery timeouts now leave iMessage messages pending instead of marking them processed, and legacy `recovery-timeout` processed records no longer suppress retries.",
+        "Recovery turns now get a longer bounded timeout and keep their in-flight guard until the abandoned turn settles, preventing duplicate retries while preserving truthful pending recovery state.",
+        "iMessage recovery health now counts pending work by message GUID across captured inbound and mutation sidecars, preventing one missed message from being reported as multiple queued items."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.541",
       "changes": [
         "BlueBubbles recovery now treats message GUID completion as authoritative across repaired session keys, so stale `chat_identifier:unknown` mutation/capture sidecars stop keeping iMessage health in a false pending-recovery state after the real chat turn has completed.",

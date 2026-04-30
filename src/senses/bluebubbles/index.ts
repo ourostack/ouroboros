@@ -196,7 +196,7 @@ const defaultDeps: RuntimeDeps = {
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
-const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 60_000
+const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
@@ -212,11 +212,6 @@ class BlueBubblesRecoveryTurnTimeoutError extends Error {
     super(`bluebubbles recovery turn timed out after ${timeoutMs}ms`)
     this.name = "BlueBubblesRecoveryTurnTimeoutError"
   }
-}
-
-function isBlueBubblesRecoveryTurnTimeoutError(error: unknown): boolean {
-  return error instanceof BlueBubblesRecoveryTurnTimeoutError
-    || (error instanceof Error && error.name === "BlueBubblesRecoveryTurnTimeoutError")
 }
 
 function resolveFriendParams(event: BlueBubblesNormalizedEvent): FriendResolverParams {
@@ -932,6 +927,7 @@ async function handleBlueBubblesNormalizedEvent(
   }
 
   let ownsInFlightMessage = false
+  let releaseInFlightAfterTurnSettles = false
   if (event.kind === "message") {
     if (
       hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
@@ -1118,6 +1114,7 @@ async function handleBlueBubblesNormalizedEvent(
         timeoutTimer = setTimeout(() => {
           const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
           recoveryTimedOut = true
+          releaseInFlightAfterTurnSettles = true
           controller.abort(reason)
           timeoutReject?.(reason)
           emitNervesEvent({
@@ -1202,21 +1199,27 @@ async function handleBlueBubblesNormalizedEvent(
       })
       /* v8 ignore start -- detached late-rejection telemetry is asserted in timeout tests, but V8 does not reliably attribute Promise.catch callbacks @preserve */
       if (timeoutPromise) {
-        void turnPromise.catch((error) => {
-          if (!recoveryTimedOut) return
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_recovery_error",
-            message: "bluebubbles recovery turn rejected after timeout",
-            meta: {
-              messageGuid: event.messageGuid,
-              sessionKey: event.chat.sessionKey,
-              source,
-              reason: error instanceof Error ? error.message : String(error),
-            },
+        void turnPromise
+          .catch((error) => {
+            if (!recoveryTimedOut) return
+            emitNervesEvent({
+              level: "warn",
+              component: "senses",
+              event: "senses.bluebubbles_recovery_error",
+              message: "bluebubbles recovery turn rejected after timeout",
+              meta: {
+                messageGuid: event.messageGuid,
+                sessionKey: event.chat.sessionKey,
+                source,
+                reason: error instanceof Error ? error.message : String(error),
+              },
+            })
           })
-        })
+          .finally(() => {
+            if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && event.kind === "message") {
+              endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+            }
+          })
       }
       /* v8 ignore stop */
       const result = timeoutPromise
@@ -1293,7 +1296,7 @@ async function handleBlueBubblesNormalizedEvent(
     }
     })
   } finally {
-    if (ownsInFlightMessage && event.kind === "message") {
+    if (ownsInFlightMessage && event.kind === "message" && !releaseInFlightAfterTurnSettles) {
       endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     }
   }
@@ -1392,14 +1395,9 @@ export interface BlueBubblesCatchUpResult {
   lastRecoveredMessageGuid?: string
 }
 
-function countPendingRecoveryCandidates(agentName: string): number {
-  return listBlueBubblesRecoveryCandidates(agentName)
-    .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
-    .length
-}
-
-function countPendingCapturedInboundMessages(agentName: string): number {
-  return listPendingCapturedInboundMessages(agentName).length
+interface BlueBubblesPendingRecoveryEntry {
+  messageGuid: string
+  recordedAt: string
 }
 
 function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeof listRecordedBlueBubblesInbound> {
@@ -1411,6 +1409,34 @@ function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeo
       return true
     })
     .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
+}
+
+function listPendingRecoveryEntries(agentName: string): BlueBubblesPendingRecoveryEntry[] {
+  const pendingByGuid = new Map<string, string>()
+  const add = (messageGuid: string, recordedAt: string): void => {
+    if (hasProcessedBlueBubblesMessageGuid(agentName, messageGuid)) return
+    const previous = pendingByGuid.get(messageGuid)
+    if (!previous) {
+      pendingByGuid.set(messageGuid, recordedAt)
+      return
+    }
+
+    const previousMs = Date.parse(previous)
+    const nextMs = Date.parse(recordedAt)
+    if (Number.isFinite(nextMs) && (!Number.isFinite(previousMs) || nextMs < previousMs)) {
+      pendingByGuid.set(messageGuid, recordedAt)
+    }
+  }
+
+  for (const entry of listPendingCapturedInboundMessages(agentName)) {
+    add(entry.messageGuid, entry.recordedAt)
+  }
+
+  for (const entry of listBlueBubblesRecoveryCandidates(agentName)) {
+    add(entry.messageGuid, entry.recordedAt)
+  }
+
+  return [...pendingByGuid].map(([messageGuid, recordedAt]) => ({ messageGuid, recordedAt }))
 }
 
 function parseTimestampMs(value: string | undefined): number | null {
@@ -1443,19 +1469,16 @@ function blueBubblesPendingRecoverySnapshot(agentName: string, nowMs = Date.now(
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
 } {
-  const pendingRecordedAt = [
-    ...listPendingCapturedInboundMessages(agentName).map((entry) => entry.recordedAt),
-    ...listBlueBubblesRecoveryCandidates(agentName)
-      .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
-      .map((entry) => entry.recordedAt),
-  ]
+  const pendingEntries = listPendingRecoveryEntries(agentName)
+  const pendingRecordedAt = pendingEntries
+    .map((entry) => entry.recordedAt)
     .map((value) => ({ value, ms: Date.parse(value) }))
     .filter((entry): entry is { value: string; ms: number } => Number.isFinite(entry.ms))
     .sort((left, right) => left.ms - right.ms)
 
   const oldest = pendingRecordedAt[0]
   return {
-    pendingRecoveryCount: countPendingCapturedInboundMessages(agentName) + countPendingRecoveryCandidates(agentName),
+    pendingRecoveryCount: pendingEntries.length,
     oldestPendingRecoveryAt: oldest?.value,
     oldestPendingRecoveryAgeMs: oldest ? Math.max(0, nowMs - oldest.ms) : undefined,
   }
@@ -1673,14 +1696,12 @@ export async function catchUpMissedBlueBubblesMessages(
       continue
     }
 
-    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(event)
       if (repaired.kind !== "message") {
         result.skipped++
         continue
       }
-      repairedMessage = repaired
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "upstream-catchup", {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
@@ -1693,9 +1714,6 @@ export async function catchUpMissedBlueBubblesMessages(
       }
     } catch (error) {
       result.failed++
-      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
-        recordProcessedBlueBubblesMessage(agentName, repairedMessage, "upstream-catchup", "recovery-timeout")
-      }
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -1789,14 +1807,12 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       continue
     }
 
-    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(inboundEntryToRecoveryEvent(entry))
       if (repaired.kind !== "message") {
         result.skipped++
         continue
       }
-      repairedMessage = repaired
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, entry.source, {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
@@ -1808,9 +1824,6 @@ export async function recoverCapturedBlueBubblesInboundMessages(
       }
     } catch (error) {
       result.failed++
-      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
-        recordProcessedBlueBubblesMessage(agentName, repairedMessage, entry.source, "recovery-timeout")
-      }
       emitNervesEvent({
         level: "warn",
         component: "senses",
@@ -1846,14 +1859,12 @@ export async function recoverMissedBlueBubblesMessages(
       continue
     }
 
-    let repairedMessage: BlueBubblesNormalizedMessage | null = null
     try {
       const repaired = await client.repairEvent(mutationEntryToEvent(candidate))
       if (repaired.kind !== "message") {
         result.pending++
         continue
       }
-      repairedMessage = repaired
 
       const handled = await handleBlueBubblesNormalizedEvent(repaired, resolvedDeps, "mutation-recovery", {
         timeoutMs: BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS,
@@ -1865,9 +1876,6 @@ export async function recoverMissedBlueBubblesMessages(
       }
     } catch (error) {
       result.failed++
-      if (repairedMessage && isBlueBubblesRecoveryTurnTimeoutError(error)) {
-        recordProcessedBlueBubblesMessage(agentName, repairedMessage, "mutation-recovery", "recovery-timeout")
-      }
       emitNervesEvent({
         level: "warn",
         component: "senses",

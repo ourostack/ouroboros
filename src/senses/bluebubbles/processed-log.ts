@@ -63,6 +63,10 @@ function readAllEntries(agentName: string): BlueBubblesProcessedLogEntry[] {
   }
 }
 
+function isCompletedProcessedEntry(entry: BlueBubblesProcessedLogEntry): boolean {
+  return entry.outcome !== "recovery-timeout"
+}
+
 export function hasProcessedBlueBubblesMessage(
   agentName: string,
   sessionKey: string,
@@ -70,7 +74,7 @@ export function hasProcessedBlueBubblesMessage(
 ): boolean {
   if (!messageGuid.trim()) return false
   const filePath = getBlueBubblesProcessedLogPath(agentName, sessionKey)
-  return readEntries(filePath).some((entry) => entry.messageGuid === messageGuid)
+  return readEntries(filePath).some((entry) => entry.messageGuid === messageGuid && isCompletedProcessedEntry(entry))
 }
 
 export function hasProcessedBlueBubblesMessageGuid(
@@ -78,7 +82,7 @@ export function hasProcessedBlueBubblesMessageGuid(
   messageGuid: string,
 ): boolean {
   if (!messageGuid.trim()) return false
-  return readAllEntries(agentName).some((entry) => entry.messageGuid === messageGuid)
+  return readAllEntries(agentName).some((entry) => entry.messageGuid === messageGuid && isCompletedProcessedEntry(entry))
 }
 
 export function recordProcessedBlueBubblesMessage(
@@ -90,7 +94,10 @@ export function recordProcessedBlueBubblesMessage(
   const filePath = getBlueBubblesProcessedLogPath(agentName, event.chat.sessionKey)
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    if (event.messageGuid.trim() && readEntries(filePath).some((entry) => entry.messageGuid === event.messageGuid)) {
+    if (event.messageGuid.trim() && readEntries(filePath).some((entry) => (
+      entry.messageGuid === event.messageGuid
+      && isCompletedProcessedEntry(entry)
+    ))) {
       return filePath
     }
     fs.appendFileSync(

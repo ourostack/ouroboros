@@ -97,6 +97,33 @@ describe("BlueBubbles processed log", () => {
     expect(hasProcessedBlueBubblesMessage("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(true)
   })
 
+  it("does not treat legacy recovery-timeout records as processed", async () => {
+    const {
+      getBlueBubblesProcessedLogPath,
+      hasProcessedBlueBubblesMessage,
+      hasProcessedBlueBubblesMessageGuid,
+      recordProcessedBlueBubblesMessage,
+    } = await import("../../../senses/bluebubbles/processed-log")
+
+    const logPath = getBlueBubblesProcessedLogPath("slugger", messageEvent.chat.sessionKey)
+    expect(recordProcessedBlueBubblesMessage("slugger", messageEvent, "mutation-recovery", "recovery-timeout")).toBe(logPath)
+    expect(hasProcessedBlueBubblesMessage("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(false)
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "msg-1")).toBe(false)
+
+    expect(recordProcessedBlueBubblesMessage("slugger", messageEvent, "webhook", "turn-complete")).toBe(logPath)
+    const lines = fs.readFileSync(logPath, "utf-8").trim().split("\n")
+    expect(lines).toHaveLength(2)
+    expect(JSON.parse(lines[1] ?? "{}")).toEqual(
+      expect.objectContaining({
+        messageGuid: "msg-1",
+        source: "webhook",
+        outcome: "turn-complete",
+      }),
+    )
+    expect(hasProcessedBlueBubblesMessage("slugger", messageEvent.chat.sessionKey, "msg-1")).toBe(true)
+    expect(hasProcessedBlueBubblesMessageGuid("slugger", "msg-1")).toBe(true)
+  })
+
   it("treats malformed logs as empty and returns the target path when writes fail", async () => {
     const {
       getBlueBubblesProcessedLogPath,
