@@ -19,20 +19,24 @@ const ENTRY_RELPATH = "node_modules/@ouro.bot/cli/dist/heart/daemon/ouro-entry.j
 const WRAPPER_SCRIPT = `#!/bin/sh
 ENTRY="$HOME/.ouro-cli/CurrentVersion/${ENTRY_RELPATH}"
 if [ ! -e "$ENTRY" ]; then
-  echo "ouro not installed. Run: npx ouro.bot@latest" >&2
+  echo "ouro not installed. Run: npx ouro.bot@alpha" >&2
   exit 1
 fi
 exec node "$ENTRY" "$@"
 `;
 
-function resolveLatestVersion() {
+function resolveBundledVersion() {
   try {
-    const raw = execSync("npm view @ouro.bot/cli@latest version", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-    return raw.trim();
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+    if (typeof packageJson.version === "string" && packageJson.version.trim()) {
+      return packageJson.version.trim();
+    }
   } catch {
-    console.error("failed to resolve latest @ouro.bot/cli version from npm registry.");
-    process.exit(1);
+    // Fall through to the explicit error below.
   }
+
+  console.error("failed to resolve bundled ouro.bot package version.");
+  process.exit(1);
 }
 
 function getCurrentVersion() {
@@ -124,17 +128,17 @@ function cleanupOldWrapper() {
 // ── Main ──
 
 const previousVersion = getCurrentVersion();
-const latestVersion = resolveLatestVersion();
+const bundledVersion = resolveBundledVersion();
 
 ensureLayout();
-installVersion(latestVersion);
+installVersion(bundledVersion);
 
-if (previousVersion !== latestVersion) {
-  activateVersion(latestVersion);
+if (previousVersion !== bundledVersion) {
+  activateVersion(bundledVersion);
   if (previousVersion) {
-    console.error(`ouro updated to ${latestVersion} (was ${previousVersion})`);
+    console.error(`ouro updated to ${bundledVersion} (was ${previousVersion})`);
   } else {
-    console.error(`ouro installed ${latestVersion}`);
+    console.error(`ouro installed ${bundledVersion}`);
   }
 }
 
