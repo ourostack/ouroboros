@@ -50,6 +50,10 @@ interface StatusSenseRow {
   failedRecoveryCount?: number
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 interface StatusWorkerRow {
@@ -140,6 +144,10 @@ function formatSenseDetail(row: StatusSenseRow): string {
   if (row.failedRecoveryCount !== undefined) recoveryParts.push(`failedRecovery=${row.failedRecoveryCount}`)
   if (row.oldestPendingRecoveryAt) recoveryParts.push(`oldestPending=${row.oldestPendingRecoveryAt}`)
   if (row.oldestPendingRecoveryAgeMs !== undefined) recoveryParts.push(`oldestPendingAge=${formatDurationMs(row.oldestPendingRecoveryAgeMs)}`)
+  if (row.activeTurnCount !== undefined) recoveryParts.push(`activeTurns=${row.activeTurnCount}`)
+  if (row.stalledTurnCount !== undefined) recoveryParts.push(`stalledTurns=${row.stalledTurnCount}`)
+  if (row.oldestActiveTurnStartedAt) recoveryParts.push(`oldestActive=${row.oldestActiveTurnStartedAt}`)
+  if (row.oldestActiveTurnAgeMs !== undefined) recoveryParts.push(`oldestActiveAge=${formatDurationMs(row.oldestActiveTurnAgeMs)}`)
   if (recoveryParts.length > 0) details.push(recoveryParts.join(" "))
 
   const failureParts: string[] = []
@@ -215,6 +223,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     const failedRecoveryCount = numberField(row.failedRecoveryCount)
     const oldestPendingRecoveryAt = stringField(row.oldestPendingRecoveryAt)
     const oldestPendingRecoveryAgeMs = numberField(row.oldestPendingRecoveryAgeMs)
+    const activeTurnCount = numberField(row.activeTurnCount)
+    const stalledTurnCount = numberField(row.stalledTurnCount)
+    const oldestActiveTurnStartedAt = stringField(row.oldestActiveTurnStartedAt)
+    const oldestActiveTurnAgeMs = numberField(row.oldestActiveTurnAgeMs)
     if (proofMethod !== null) parsed.proofMethod = proofMethod
     if (lastProofAt !== null) parsed.lastProofAt = lastProofAt
     if (proofAgeMs !== null) parsed.proofAgeMs = proofAgeMs
@@ -225,6 +237,10 @@ export function parseStatusPayload(data: unknown): StatusPayload | null {
     if (failedRecoveryCount !== null) parsed.failedRecoveryCount = failedRecoveryCount
     if (oldestPendingRecoveryAt !== null) parsed.oldestPendingRecoveryAt = oldestPendingRecoveryAt
     if (oldestPendingRecoveryAgeMs !== null) parsed.oldestPendingRecoveryAgeMs = oldestPendingRecoveryAgeMs
+    if (activeTurnCount !== null) parsed.activeTurnCount = activeTurnCount
+    if (stalledTurnCount !== null) parsed.stalledTurnCount = stalledTurnCount
+    if (oldestActiveTurnStartedAt !== null) parsed.oldestActiveTurnStartedAt = oldestActiveTurnStartedAt
+    if (oldestActiveTurnAgeMs !== null) parsed.oldestActiveTurnAgeMs = oldestActiveTurnAgeMs
     return parsed
   })
 

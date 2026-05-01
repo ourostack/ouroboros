@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.544",
+      "changes": [
+        "BlueBubbles live webhook turns now have a bounded timeout, visible timeout notice, and recoverable captured-message retry path, so a long iMessage turn cannot silently monopolize the live chat lane.",
+        "BlueBubbles runtime health now records active and stalled live turns, exposes them in status output, and marks the sense unhealthy when the listener is reachable but a live iMessage turn is stuck.",
+        "The `ouro bluebubbles replay` debug command now refreshes this machine's BlueBubbles runtime credentials before creating the client, matching the daemon-launched listener's vault-backed configuration."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.543",
       "changes": [
         "Daemon health-monitor MCP canaries now ignore the daemon's aggregate overview health while still validating MCP transport, daemon liveness, version alignment, and required sense health, preventing the canary's previous failure from keeping the daemon in a self-reinforcing warning state."

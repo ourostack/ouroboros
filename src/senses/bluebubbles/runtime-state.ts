@@ -12,6 +12,10 @@ export interface BlueBubblesRuntimeState {
   failedRecoveryCount?: number
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
   lastRecoveredAt?: string
   lastRecoveredMessageGuid?: string
 }
@@ -61,6 +65,18 @@ export function readBlueBubblesRuntimeState(agentName: string, agentRoot?: strin
       oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
         ? parsed.oldestPendingRecoveryAgeMs
         : undefined,
+      activeTurnCount: typeof parsed.activeTurnCount === "number" && Number.isFinite(parsed.activeTurnCount)
+        ? parsed.activeTurnCount
+        : undefined,
+      stalledTurnCount: typeof parsed.stalledTurnCount === "number" && Number.isFinite(parsed.stalledTurnCount)
+        ? parsed.stalledTurnCount
+        : undefined,
+      oldestActiveTurnStartedAt: typeof parsed.oldestActiveTurnStartedAt === "string"
+        ? parsed.oldestActiveTurnStartedAt
+        : undefined,
+      oldestActiveTurnAgeMs: typeof parsed.oldestActiveTurnAgeMs === "number" && Number.isFinite(parsed.oldestActiveTurnAgeMs)
+        ? parsed.oldestActiveTurnAgeMs
+        : undefined,
       lastRecoveredAt: typeof parsed.lastRecoveredAt === "string" ? parsed.lastRecoveredAt : undefined,
       lastRecoveredMessageGuid: typeof parsed.lastRecoveredMessageGuid === "string"
         ? parsed.lastRecoveredMessageGuid
@@ -100,6 +116,8 @@ export function writeBlueBubblesRuntimeState(agentName: string, state: BlueBubbl
       upstreamStatus: state.upstreamStatus,
       pendingRecoveryCount: state.pendingRecoveryCount,
       failedRecoveryCount: state.failedRecoveryCount ?? 0,
+      activeTurnCount: state.activeTurnCount ?? 0,
+      stalledTurnCount: state.stalledTurnCount ?? 0,
       path: filePath,
     },
   })

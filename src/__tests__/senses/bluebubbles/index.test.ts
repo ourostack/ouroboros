@@ -1583,6 +1583,37 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("times out stuck live webhook turns, tells the chat, and leaves the captured message recoverable", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.handleInboundTurn.mockImplementationOnce(() => new Promise(() => undefined))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("live iMessage turn timed out"),
+    }))
+    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+
+    const recovery = await bluebubbles.recoverCapturedBlueBubblesInboundMessages()
+    expect(recovery).toEqual(expect.objectContaining({ recovered: 1, failed: 0 }))
+  })
+
   it("starts group chat typing only after the agent commits to replying", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
@@ -3941,6 +3972,70 @@ describe("BlueBubbles sense runtime", () => {
     closableServer.close()
     await vi.advanceTimersByTimeAsync(30_000)
     expect(mocks.checkHealth).toHaveBeenCalledTimes(2)
+  })
+
+  it("surfaces stalled live turns in runtime state detail", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const { beginBlueBubblesActiveTurn } = await import("../../../senses/bluebubbles/active-turns")
+    beginBlueBubblesActiveTurn("testagent", makeCatchUpMessage({ messageGuid: "runtime-stalled-guid" }))
+    const activeTurnDir = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "active-turns")
+    const activeTurnPath = path.join(activeTurnDir, fs.readdirSync(activeTurnDir)[0])
+    const entry = JSON.parse(fs.readFileSync(activeTurnPath, "utf-8"))
+    fs.writeFileSync(
+      activeTurnPath,
+      JSON.stringify({ ...entry, startedAt: new Date(Date.now() - 120_000).toISOString() }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("live turn appears stalled"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "iMessage live turn appears stalled; 1 active turn(s) older than 90000ms",
+        activeTurnCount: 1,
+        stalledTurnCount: 1,
+      }),
+    )
+    closableServer.close()
+  })
+
+  it("surfaces active live turns in runtime state before they reach the stall threshold", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const { beginBlueBubblesActiveTurn } = await import("../../../senses/bluebubbles/active-turns")
+    beginBlueBubblesActiveTurn("testagent", makeCatchUpMessage({ messageGuid: "runtime-active-guid" }))
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("live turn(s) active"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable; 1 live turn(s) active",
+        activeTurnCount: 1,
+        stalledTurnCount: 0,
+      }),
+    )
+    closableServer.close()
   })
 
   it("counts captured inbound sidecars as unique pending recovery during runtime sync", async () => {

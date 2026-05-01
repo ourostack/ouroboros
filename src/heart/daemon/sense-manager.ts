@@ -35,6 +35,10 @@ export interface DaemonSenseRow {
   failedRecoveryCount?: number
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 export interface DaemonSenseManagerLike {
@@ -79,6 +83,10 @@ interface SenseRuntimeFacts {
   failedRecoveryCount?: number
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 interface AgentSenseContext {
@@ -332,6 +340,10 @@ interface BlueBubblesRuntimeStateSlice {
   failedRecoveryCount: number
   oldestPendingRecoveryAt?: string
   oldestPendingRecoveryAgeMs?: number
+  activeTurnCount?: number
+  stalledTurnCount?: number
+  oldestActiveTurnStartedAt?: string
+  oldestActiveTurnAgeMs?: number
 }
 
 function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStateSlice {
@@ -359,6 +371,16 @@ function readBlueBubblesRuntimeJson(runtimePath: string): BlueBubblesRuntimeStat
       oldestPendingRecoveryAt: typeof parsed.oldestPendingRecoveryAt === "string" ? parsed.oldestPendingRecoveryAt : undefined,
       oldestPendingRecoveryAgeMs: typeof parsed.oldestPendingRecoveryAgeMs === "number" && Number.isFinite(parsed.oldestPendingRecoveryAgeMs)
         ? parsed.oldestPendingRecoveryAgeMs
+        : undefined,
+      activeTurnCount: typeof parsed.activeTurnCount === "number" && Number.isFinite(parsed.activeTurnCount)
+        ? parsed.activeTurnCount
+        : undefined,
+      stalledTurnCount: typeof parsed.stalledTurnCount === "number" && Number.isFinite(parsed.stalledTurnCount)
+        ? parsed.stalledTurnCount
+        : undefined,
+      oldestActiveTurnStartedAt: typeof parsed.oldestActiveTurnStartedAt === "string" ? parsed.oldestActiveTurnStartedAt : undefined,
+      oldestActiveTurnAgeMs: typeof parsed.oldestActiveTurnAgeMs === "number" && Number.isFinite(parsed.oldestActiveTurnAgeMs)
+        ? parsed.oldestActiveTurnAgeMs
         : undefined,
     }
     /* v8 ignore stop */
@@ -390,6 +412,10 @@ function readBlueBubblesRuntimeFacts(
     failedRecoveryCount: state.failedRecoveryCount,
     oldestPendingRecoveryAt: state.oldestPendingRecoveryAt,
     oldestPendingRecoveryAgeMs: state.oldestPendingRecoveryAgeMs,
+    activeTurnCount: state.activeTurnCount,
+    stalledTurnCount: state.stalledTurnCount,
+    oldestActiveTurnStartedAt: state.oldestActiveTurnStartedAt,
+    oldestActiveTurnAgeMs: state.oldestActiveTurnAgeMs,
   }
   if (!blueBubblesRuntimeStateIsFresh(state.lastCheckedAt)) {
     return {
@@ -429,6 +455,17 @@ function readBlueBubblesRuntimeFacts(
       lastFailure: state.detail,
       failureLayer: "recovery_queue",
       recoveryAction: "queued recovery will retry; inspect BlueBubbles inbound/recovery sidecar logs if age keeps growing",
+    }
+  }
+
+  if ((state.stalledTurnCount ?? 0) > 0) {
+    return {
+      runtime: "error",
+      detail: state.detail,
+      ...proofFacts,
+      lastFailure: state.detail,
+      failureLayer: "live_turn_stall",
+      recoveryAction: "live iMessage turn timeout/watchdog will release the lane and recovery will retry captured messages",
     }
   }
 
@@ -678,6 +715,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           failedRecoveryCount: blueBubblesRuntimeFacts.failedRecoveryCount,
           oldestPendingRecoveryAt: blueBubblesRuntimeFacts.oldestPendingRecoveryAt,
           oldestPendingRecoveryAgeMs: blueBubblesRuntimeFacts.oldestPendingRecoveryAgeMs,
+          activeTurnCount: blueBubblesRuntimeFacts.activeTurnCount,
+          stalledTurnCount: blueBubblesRuntimeFacts.stalledTurnCount,
+          oldestActiveTurnStartedAt: blueBubblesRuntimeFacts.oldestActiveTurnStartedAt,
+          oldestActiveTurnAgeMs: blueBubblesRuntimeFacts.oldestActiveTurnAgeMs,
         } : {}),
       }))
     })

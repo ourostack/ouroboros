@@ -391,6 +391,7 @@ describe("BlueBubbles replay helper", () => {
     const createBlueBubblesClient = vi.fn()
     const setAgentName = vi.fn()
     const resetIdentity = vi.fn()
+    const refreshMachineRuntimeCredentialConfig = vi.fn().mockResolvedValue({ ok: true })
     const normalizeBlueBubblesEvent = vi.fn((payload: unknown) => {
       const envelope = payload as { type: string; data: { guid: string } }
       return makeProbeEvent(envelope.type, envelope.data.guid)
@@ -429,6 +430,12 @@ describe("BlueBubbles replay helper", () => {
       setAgentName,
       resetIdentity,
     }))
+    vi.doMock("../../../heart/machine-identity", () => ({
+      loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine-test" })),
+    }))
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      refreshMachineRuntimeCredentialConfig,
+    }))
     vi.doMock("../../../senses/bluebubbles/model", () => ({
       normalizeBlueBubblesEvent,
     }))
@@ -441,6 +448,11 @@ describe("BlueBubbles replay helper", () => {
     })
 
     expect(createBlueBubblesClient).toHaveBeenCalledTimes(1)
+    expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith(
+      "slugger",
+      "machine-test",
+      { preserveCachedOnFailure: true },
+    )
     expect(normalizeBlueBubblesEvent).toHaveBeenCalledWith({
       type: "updated-message",
       data: {

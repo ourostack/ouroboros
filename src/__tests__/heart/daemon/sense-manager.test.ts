@@ -690,6 +690,75 @@ describe("daemon sense manager", () => {
     )
   })
 
+  it("marks BlueBubbles unhealthy when a fresh runtime state reports a stalled live turn", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    const freshCheckedAt = new Date().toISOString()
+    const oldestActiveTurnStartedAt = new Date(Date.now() - 180_000).toISOString()
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: {
+        serverUrl: "http://localhost:1234",
+        password: "pw",
+      },
+      bluebubblesChannel: {
+        port: 18888,
+        webhookPath: "/hooks/bb",
+      },
+    })
+    const runtimeDir = path.join(bundlesRoot, "slugger.ouro", "state", "senses", "bluebubbles")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(runtimeDir, "runtime.json"),
+      JSON.stringify({
+        upstreamStatus: "ok",
+        detail: "iMessage live turn appears stalled; 1 active turn(s) older than 90000ms",
+        lastCheckedAt: freshCheckedAt,
+        proofMethod: "bluebubbles.checkHealth",
+        pendingRecoveryCount: 0,
+        failedRecoveryCount: 0,
+        activeTurnCount: 1,
+        stalledTurnCount: 1,
+        oldestActiveTurnStartedAt,
+        oldestActiveTurnAgeMs: 180_000,
+      }, null, 2) + "\n",
+      "utf-8",
+    )
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:bluebubbles", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "bluebubbles")).toEqual(
+      expect.objectContaining({
+        status: "error",
+        failureLayer: "live_turn_stall",
+        activeTurnCount: 1,
+        stalledTurnCount: 1,
+        oldestActiveTurnStartedAt,
+        oldestActiveTurnAgeMs: 180_000,
+      }),
+    )
+  })
+
   it("keeps BlueBubbles running while surfacing quarantined recovery failures", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const freshCheckedAt = new Date().toISOString()

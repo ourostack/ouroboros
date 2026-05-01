@@ -39,6 +39,12 @@ import { listBlueBubblesRecoveryCandidates, recordBlueBubblesMutation, type Blue
 import { hasProcessedBlueBubblesMessage, hasProcessedBlueBubblesMessageGuid, recordProcessedBlueBubblesMessage } from "./processed-log"
 import { readBlueBubblesRuntimeState, writeBlueBubblesRuntimeState, type BlueBubblesRuntimeState } from "./runtime-state"
 import { findObsoleteBlueBubblesThreadSessions } from "./session-cleanup"
+import {
+  beginBlueBubblesActiveTurn,
+  finishBlueBubblesActiveTurn,
+  noteBlueBubblesActiveTurnVisibleActivity,
+  snapshotBlueBubblesActiveTurns,
+} from "./active-turns"
 import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
 import { getDebugMode } from "../commands"
 import { enforceTrustGate } from "../trust-gate"
@@ -196,7 +202,10 @@ const defaultDeps: RuntimeDeps = {
 const BLUEBUBBLES_RUNTIME_SYNC_INTERVAL_MS = 30_000
 const BLUEBUBBLES_RECOVERY_PASS_DELAY_MS = 1_000
 const BLUEBUBBLES_RECOVERY_PASS_INTERVAL_MS = 30_000
+const BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS = 2 * 60_000
 const BLUEBUBBLES_RECOVERY_TURN_TIMEOUT_MS = 10 * 60_000
+const BLUEBUBBLES_LIVE_TURN_STALLED_MS = 90_000
+const BLUEBUBBLES_SILENCE_WATCHDOG_MS = 75_000
 const BLUEBUBBLES_CATCHUP_PAGE_SIZE = 50
 const BLUEBUBBLES_CATCHUP_MAX_PAGES = 20
 const BLUEBUBBLES_HEALTHY_CATCHUP_OVERLAP_MS = 90_000
@@ -526,10 +535,13 @@ export function createBlueBubblesCallbacks(
   chat: BlueBubblesChatRef,
   replyTarget: BlueBubblesReplyTargetController,
   isGroupChat: boolean,
+  onVisibleActivity?: () => void,
 ): BlueBubblesCallbacks {
   let textBuffer = ""
   let typingActive = false
   let queue = Promise.resolve()
+  let lastVisibleActivityMs = Date.now()
+  let silenceWatchdog: ReturnType<typeof setInterval> | null = null
 
   function enqueue(operation: string, task: () => Promise<void>): void {
     queue = queue.then(task).catch((error) => {
@@ -561,6 +573,29 @@ export function createBlueBubblesCallbacks(
     })
   }
 
+  function recordVisibleActivity(): void {
+    lastVisibleActivityMs = Date.now()
+    onVisibleActivity?.()
+  }
+
+  function stopSilenceWatchdog(): void {
+    if (silenceWatchdog === null) return
+    clearInterval(silenceWatchdog)
+    silenceWatchdog = null
+  }
+
+  function startSilenceWatchdog(): void {
+    if (silenceWatchdog !== null) return
+    silenceWatchdog = setInterval(() => {
+      if (Date.now() - lastVisibleActivityMs < BLUEBUBBLES_SILENCE_WATCHDOG_MS) return
+      sendStatus("still working on this...")
+    }, BLUEBUBBLES_SILENCE_WATCHDOG_MS)
+    /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+    if (typeof (silenceWatchdog as { unref?: () => void }).unref === "function") {
+      (silenceWatchdog as { unref: () => void }).unref()
+    }
+  }
+
   function sendStatus(text: string): void {
     enqueue("send_status", async () => {
       await client.sendText({
@@ -568,6 +603,7 @@ export function createBlueBubblesCallbacks(
         text,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
+      recordVisibleActivity()
       // Re-enable typing indicator — sending a message clears the typing bubble
       await client.setTyping(chat, true)
     })
@@ -586,6 +622,7 @@ export function createBlueBubblesCallbacks(
 
   return {
     onModelStart(): void {
+      startSilenceWatchdog()
       if (!isGroupChat) startTypingNow()
       emitNervesEvent({
         component: "senses",
@@ -679,6 +716,7 @@ export function createBlueBubblesCallbacks(
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
+      recordVisibleActivity()
       // Note: do NOT call client.setTyping(chat, false) here — the agent is
       // still mid-turn, so the typing indicator stays ACTIVE.
       emitNervesEvent({
@@ -713,9 +751,11 @@ export function createBlueBubblesCallbacks(
         text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
+      recordVisibleActivity()
     },
 
     async finish(): Promise<void> {
+      stopSilenceWatchdog()
       statusBatcher.flush()
       if (!typingActive) {
         await queue
@@ -928,6 +968,7 @@ async function handleBlueBubblesNormalizedEvent(
 
   let ownsInFlightMessage = false
   let releaseInFlightAfterTurnSettles = false
+  let activeTurnId: string | null = null
   if (event.kind === "message") {
     if (
       hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
@@ -961,6 +1002,7 @@ async function handleBlueBubblesNormalizedEvent(
       return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
     }
     ownsInFlightMessage = true
+    activeTurnId = beginBlueBubblesActiveTurn(agentName, event)
   }
 
   try {
@@ -1067,10 +1109,13 @@ async function handleBlueBubblesNormalizedEvent(
       event.chat,
       replyTarget,
       event.chat.isGroup,
+      activeTurnId
+        ? () => noteBlueBubblesActiveTurnVisibleActivity(agentName, activeTurnId!)
+        : undefined,
     )
     const controller = new AbortController()
-    let timeoutTimer: ReturnType<typeof setTimeout> | null = null
-    let timeoutPromise: Promise<never> | null = null
+    let timeoutTimer!: ReturnType<typeof setTimeout>
+    let timeoutPromise!: Promise<never>
     let timeoutReject: ((error: Error) => void) | undefined
     let recoveryTimedOut = false
 
@@ -1106,34 +1151,38 @@ async function handleBlueBubblesNormalizedEvent(
     /* v8 ignore stop */
 
     try {
-      const timeoutMs = options.timeoutMs
-      if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
-        timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutReject = reject
-        })
-        timeoutTimer = setTimeout(() => {
-          const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
-          recoveryTimedOut = true
+      const liveWebhookTimeout = source === "webhook" && options.timeoutMs === undefined
+      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+      timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutReject = reject
+      })
+      timeoutTimer = setTimeout(() => {
+        const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+        recoveryTimedOut = true
+        if (liveWebhookTimeout && ownsInFlightMessage && event.kind === "message") {
+          endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+          ownsInFlightMessage = false
+        } else {
           releaseInFlightAfterTurnSettles = true
-          controller.abort(reason)
-          timeoutReject?.(reason)
-          emitNervesEvent({
-            level: "warn",
-            component: "senses",
-            event: "senses.bluebubbles_turn_timeout",
-            message: "bluebubbles recovery turn timed out",
-            meta: {
-              messageGuid: event.messageGuid,
-              sessionKey: event.chat.sessionKey,
-              source,
-              timeoutMs,
-            },
-          })
-        }, timeoutMs)
-        /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
-        if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
-          (timeoutTimer as { unref: () => void }).unref()
         }
+        controller.abort(reason)
+        timeoutReject?.(reason)
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_turn_timeout",
+          message: "bluebubbles turn timed out",
+          meta: {
+            messageGuid: event.messageGuid,
+            sessionKey: event.chat.sessionKey,
+            source,
+            timeoutMs,
+          },
+        })
+      }, timeoutMs)
+      /* v8 ignore next -- timer handles expose unref only in some runtimes @preserve */
+      if (typeof (timeoutTimer as { unref?: () => void }).unref === "function") {
+        (timeoutTimer as { unref: () => void }).unref()
       }
 
       const turnPromise = handleInboundTurn({
@@ -1198,33 +1247,41 @@ async function handleBlueBubblesNormalizedEvent(
         })(),
       })
       /* v8 ignore start -- detached late-rejection telemetry is asserted in timeout tests, but V8 does not reliably attribute Promise.catch callbacks @preserve */
-      if (timeoutPromise) {
-        void turnPromise
-          .catch((error) => {
-            if (!recoveryTimedOut) return
-            emitNervesEvent({
-              level: "warn",
-              component: "senses",
-              event: "senses.bluebubbles_recovery_error",
-              message: "bluebubbles recovery turn rejected after timeout",
-              meta: {
-                messageGuid: event.messageGuid,
-                sessionKey: event.chat.sessionKey,
-                source,
-                reason: error instanceof Error ? error.message : String(error),
-              },
-            })
+      void turnPromise
+        .catch((error) => {
+          if (!recoveryTimedOut) return
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "senses.bluebubbles_recovery_error",
+            message: "bluebubbles recovery turn rejected after timeout",
+            meta: {
+              messageGuid: event.messageGuid,
+              sessionKey: event.chat.sessionKey,
+              source,
+              reason: error instanceof Error ? error.message : String(error),
+            },
           })
-          .finally(() => {
-            if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && event.kind === "message") {
-              endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
-            }
-          })
-      }
+        })
+        .finally(() => {
+          if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && event.kind === "message") {
+            endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+          }
+        })
       /* v8 ignore stop */
-      const result = timeoutPromise
-        ? await Promise.race([turnPromise, timeoutPromise])
-        : await turnPromise
+      const result = await (async () => {
+        try {
+          return await Promise.race([turnPromise, timeoutPromise])
+        } catch (error) {
+          if (error instanceof BlueBubblesRecoveryTurnTimeoutError) {
+            callbacks.onError(
+              new Error("live iMessage turn timed out; I captured it for recovery instead of silently hanging"),
+              "terminal",
+            )
+          }
+          throw error
+        }
+      })()
 
       /* v8 ignore start -- failover display + error replay @preserve */
       if (result.failoverMessage) {
@@ -1288,14 +1345,12 @@ async function handleBlueBubblesNormalizedEvent(
         bufferedTerminalError = null
       }
       /* v8 ignore stop */
-      if (timeoutTimer !== null) {
-        clearTimeout(timeoutTimer)
-        timeoutTimer = null
-      }
+      clearTimeout(timeoutTimer)
       await callbacks.finish()
     }
     })
   } finally {
+    if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)
     if (ownsInFlightMessage && event.kind === "message" && !releaseInFlightAfterTurnSettles) {
       endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
     }
@@ -1458,7 +1513,15 @@ function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, 
   return nowMs - BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS
 }
 
-function formatBlueBubblesRuntimeDetail(queued: number, failed: number): string {
+function formatBlueBubblesRuntimeDetail(
+  queued: number,
+  failed: number,
+  active: ReturnType<typeof snapshotBlueBubblesActiveTurns>,
+): string {
+  if (active.stalledTurnCount > 0) {
+    return `iMessage live turn appears stalled; ${active.stalledTurnCount} active turn(s) older than ${BLUEBUBBLES_LIVE_TURN_STALLED_MS}ms`
+  }
+  if (active.activeTurnCount > 0) return `upstream reachable; ${active.activeTurnCount} live turn(s) active`
   if (queued > 0) return `upstream reachable but iMessage is not caught up; ${queued} recovery item(s) queued`
   if (failed > 0) return `${failed} message(s) unrecoverable this cycle; upstream ok`
   return "upstream reachable"
@@ -1494,12 +1557,14 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
   try {
     await client.checkHealth()
     const pendingBeforeCatchup = blueBubblesPendingRecoverySnapshot(agentName)
+    const activeBeforeCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
       detail: "upstream reachable; recovery pass running",
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingBeforeCatchup,
+      ...activeBeforeCatchup,
       lastRecoveredAt: previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
     })
@@ -1508,6 +1573,7 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
     })
     const failed = catchUp.failed
     const pendingAfterCatchup = blueBubblesPendingRecoverySnapshot(agentName)
+    const activeAfterCatchup = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     const queued = pendingAfterCatchup.pendingRecoveryCount
     // upstreamStatus reflects whether BlueBubbles itself and the local bridge
     // can answer webhook traffic. The daemon status layer treats
@@ -1515,10 +1581,11 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
     // while this field stays scoped to upstream transport reachability.
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: formatBlueBubblesRuntimeDetail(queued, failed),
+      detail: formatBlueBubblesRuntimeDetail(queued, failed, activeAfterCatchup),
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingAfterCatchup,
+      ...activeAfterCatchup,
       pendingRecoveryCount: queued,
       failedRecoveryCount: failed,
       lastRecoveredAt: previousState.lastRecoveredAt,
@@ -1531,6 +1598,7 @@ async function syncBlueBubblesRuntime(deps: Partial<RuntimeDeps> = {}): Promise<
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...blueBubblesPendingRecoverySnapshot(agentName),
+      ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
       failedRecoveryCount: 0,
     })
   }
@@ -1565,12 +1633,14 @@ export async function recoverQueuedBlueBubblesMessages(
 
   try {
     await resolvedDeps.createClient().checkHealth()
+    const activeSnapshot = snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS)
     writeBlueBubblesRuntimeState(agentName, {
       upstreamStatus: "ok",
-      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed),
+      detail: formatBlueBubblesRuntimeDetail(pendingRecoveryCount, failed, activeSnapshot),
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingSnapshot,
+      ...activeSnapshot,
       failedRecoveryCount: failed,
       lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,
@@ -1582,6 +1652,7 @@ export async function recoverQueuedBlueBubblesMessages(
       lastCheckedAt: checkedAt,
       proofMethod: "bluebubbles.checkHealth",
       ...pendingSnapshot,
+      ...snapshotBlueBubblesActiveTurns(agentName, BLUEBUBBLES_LIVE_TURN_STALLED_MS),
       failedRecoveryCount: failed,
       lastRecoveredAt: recovered > 0 ? checkedAt : previousState.lastRecoveredAt,
       lastRecoveredMessageGuid: previousState.lastRecoveredMessageGuid,

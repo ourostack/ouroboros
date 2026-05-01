@@ -209,6 +209,28 @@ describe("BlueBubbles createBlueBubblesCallbacks - flushNow (speak tool)", () =>
     expect(sendText).toHaveBeenCalledTimes(1)
   })
 
+  it("sends a visible still-working status only after a silent live turn stays quiet past the watchdog window", async () => {
+    vi.useFakeTimers()
+    try {
+      const { callbacks, sendText } = await setup()
+      callbacks.onModelStart()
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(10_000)
+      callbacks.onTextChunk("first visible reply")
+      await (callbacks as any).flushNow()
+      expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "first visible reply" }))
+
+      await vi.advanceTimersByTimeAsync(65_000)
+      expect(sendText).not.toHaveBeenCalledWith(expect.objectContaining({ text: "still working on this..." }))
+
+      await vi.advanceTimersByTimeAsync(75_000)
+      expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "still working on this..." }))
+      await (callbacks as any).finish()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("after flushNow, client.setTyping(chat, false) is NOT called — typing stays active", async () => {
     const { callbacks, setTyping } = await setup()
     // Trigger typing start by calling onModelStart (1:1 path)

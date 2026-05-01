@@ -37,6 +37,17 @@ function makeWorkerRow(overrides: Record<string, unknown> = {}): Record<string, 
   }
 }
 
+function makeSenseRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    agent: "slugger",
+    sense: "bluebubbles",
+    enabled: true,
+    status: "running",
+    detail: ":18789 /bluebubbles-webhook",
+    ...overrides,
+  }
+}
+
 describe("parseStatusPayload extended worker fields", () => {
   it("emits at least one nerves event", () => {
     // Required by project audit rules
@@ -162,6 +173,36 @@ describe("parseStatusPayload extended worker fields", () => {
     expect(output).toContain("crashed")
     expect(output).toContain("error: secrets.json for 'ouroboros' is missing providers.github-copilot section")
     expect(output).toContain("fix:   Run 'ouro auth ouroboros' to configure github-copilot credentials.")
+  })
+
+  it("parses and renders BlueBubbles active-turn health fields", () => {
+    const senses = [makeSenseRow({
+      pendingRecoveryCount: 0,
+      failedRecoveryCount: 0,
+      activeTurnCount: 2,
+      stalledTurnCount: 1,
+      oldestActiveTurnStartedAt: "2026-04-30T23:00:00.000Z",
+      oldestActiveTurnAgeMs: 120_000,
+    })]
+    const data = {
+      overview: makeOverview({ senseCount: 1 }),
+      workers: [],
+      senses,
+    }
+
+    const payload = parseStatusPayload(data)
+    expect(payload?.senses[0]).toEqual(expect.objectContaining({
+      activeTurnCount: 2,
+      stalledTurnCount: 1,
+      oldestActiveTurnStartedAt: "2026-04-30T23:00:00.000Z",
+      oldestActiveTurnAgeMs: 120_000,
+    }))
+
+    const output = formatDaemonStatusOutput({ ok: true, data }, "fallback")
+    expect(output).toContain("activeTurns=2")
+    expect(output).toContain("stalledTurns=1")
+    expect(output).toContain("oldestActive=2026-04-30T23:00:00.000Z")
+    expect(output).toContain("oldestActiveAge=2m")
   })
 
   it("parses and renders provider lane readiness without leaking credentials", () => {
