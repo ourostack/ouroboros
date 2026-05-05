@@ -16,6 +16,7 @@ export interface OsCronDeps {
   listDir: (dir: string) => string[]
   mkdirp: (dir: string) => void
   homeDir: string
+  envPath?: string
 }
 
 export interface CrontabCronDeps {
@@ -66,7 +67,7 @@ function scheduleToCalendarInterval(schedule: string): Record<string, number> | 
   return Object.keys(result).length > 0 ? result : null
 }
 
-function generatePlistXml(job: ScheduledTaskJob): string {
+function generatePlistXml(job: ScheduledTaskJob, envPath?: string): string {
   const label = plistLabel(job)
   const seconds = cadenceToSeconds(job.schedule)
   const calendar = seconds === null ? scheduleToCalendarInterval(job.schedule) : null
@@ -83,7 +84,7 @@ function generatePlistXml(job: ScheduledTaskJob): string {
     triggerXml = `  <key>StartInterval</key>\n  <integer>1800</integer>`
   }
 
-  return [
+  const lines = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
     `<plist version="1.0">`,
@@ -96,6 +97,19 @@ function generatePlistXml(job: ScheduledTaskJob): string {
     ...job.command.split(" ").slice(1).map((arg) => `    <string>${arg}</string>`),
     `  </array>`,
     triggerXml,
+  ]
+
+  if (envPath) {
+    lines.push(
+      `  <key>EnvironmentVariables</key>`,
+      `  <dict>`,
+      `    <key>PATH</key>`,
+      `    <string>${envPath}</string>`,
+      `  </dict>`,
+    )
+  }
+
+  lines.push(
     `  <key>StandardOutPath</key>`,
     `  <string>/tmp/${label}.stdout.log</string>`,
     `  <key>StandardErrorPath</key>`,
@@ -103,7 +117,9 @@ function generatePlistXml(job: ScheduledTaskJob): string {
     `</dict>`,
     `</plist>`,
     ``,
-  ].join("\n")
+  )
+
+  return lines.join("\n")
 }
 
 export class LaunchdCronManager implements OsCronManager {
@@ -138,7 +154,7 @@ export class LaunchdCronManager implements OsCronManager {
       const label = plistLabel(job)
       const filename = `${label}.plist`
       const fullPath = `${this.launchAgentsDir}/${filename}`
-      const xml = generatePlistXml(job)
+      const xml = generatePlistXml(job, this.deps.envPath)
       try { this.deps.exec(`launchctl unload "${fullPath}"`) } catch { /* best effort */ }
       this.deps.writeFile(fullPath, xml)
       try { this.deps.exec(`launchctl load "${fullPath}"`) } catch { /* best effort */ }
@@ -245,6 +261,7 @@ export function createOsCronManager(options: CreateOsCronManagerOptions = {}): O
       listDir: () => [],
       mkdirp: () => {},
       homeDir: os.homedir(),
+      envPath: process.env.PATH ?? "",
     }
     /* v8 ignore stop */
     return new LaunchdCronManager(deps)

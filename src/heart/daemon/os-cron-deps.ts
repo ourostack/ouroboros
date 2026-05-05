@@ -39,6 +39,7 @@ export function createRealOsCronDeps(): OsCronDeps {
     },
     mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
     homeDir: os.homedir(),
+    envPath: process.env.PATH ?? "",
   }
 }
 
