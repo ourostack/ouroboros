@@ -231,6 +231,46 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("uses the CurrentVersion symlink for version-managed production daemon plists", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-boot-current-version-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const versionedRepoRoot = path.join(tempHome, ".ouro-cli", "versions", "0.1.0-alpha.547", "node_modules", "@ouro.bot", "cli")
+    const currentEntryPath = path.join(tempHome, ".ouro-cli", "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "daemon-entry.js")
+
+    try {
+      fs.mkdirSync(path.dirname(currentEntryPath), { recursive: true })
+      fs.writeFileSync(currentEntryPath, "", "utf-8")
+
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync: vi.fn() }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => versionedRepoRoot,
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
+
+      const plist = fs.readFileSync(path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist"), "utf-8")
+      expect(plist).toContain(currentEntryPath)
+      expect(plist).not.toContain(path.join(tempHome, ".ouro-cli", "versions", "0.1.0-alpha.547"))
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("reloads an existing launch agent plist on darwin via default boot persistence", async () => {
     vi.resetModules()
 

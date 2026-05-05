@@ -78,6 +78,17 @@ function defaultWriteRaw(text: string): void {
 }
 /* v8 ignore stop */
 
+function resolveDaemonBootEntryPath(homeDir: string): string {
+  const repoRoot = getRepoRoot()
+  const versionManagerRootMarker = `${path.sep}.ouro-cli${path.sep}versions${path.sep}`
+
+  if (detectRuntimeMode(repoRoot) === "production" && repoRoot.includes(versionManagerRootMarker)) {
+    return path.join(getOuroCliHome(homeDir), "CurrentVersion", "node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "daemon-entry.js")
+  }
+
+  return path.join(repoRoot, "dist", "heart", "daemon", "daemon-entry.js")
+}
+
 /**
  * Read the runtimeVersion from the first .ouro bundle's bundle-meta.json.
  * Returns undefined if none found or unreadable.
@@ -202,7 +213,7 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     homeDir,
   }
 
-  const entryPath = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
+  const entryPath = resolveDaemonBootEntryPath(homeDir)
 
   /* v8 ignore next -- covered via mock in daemon-cli-defaults.test.ts; v8 on CI attributes the real fs.existsSync branch to the non-mock load @preserve */
   if (!fs.existsSync(entryPath)) {
