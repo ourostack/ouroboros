@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.548",
+      "changes": [
+        "OpenAI Codex auth now reuses an existing fresh local Codex login before starting browser login, letting `ouro auth --provider openai-codex` repair stale vault copies without a human OAuth round-trip when the local Codex CLI is already logged in.",
+        "Codex provider credentials now retain refresh metadata (`refreshToken` and `expiresAt`) alongside the access token, setting up proactive non-browser refresh handling for future hardening."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.547",
       "changes": [
         "Version-managed macOS daemon LaunchAgents now point at the stable `~/.ouro-cli/CurrentVersion` entry path instead of a concrete installed version directory, so future runtime updates do not leave launchd holding stale daemon argv."
