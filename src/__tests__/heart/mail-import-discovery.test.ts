@@ -499,6 +499,7 @@ describe("mail import discovery", () => {
       agentName: "slugger",
       repoRoot,
       homeDir,
+      nowMs: Date.parse("2026-04-24T06:01:00.000Z"),
       existingOperations: [{
         schemaVersion: 1,
         id: "op_mail_import_done_non_string_mtime",
@@ -518,6 +519,7 @@ describe("mail import discovery", () => {
       agentName: "slugger",
       repoRoot,
       homeDir,
+      nowMs: Date.parse("2026-04-24T06:01:00.000Z"),
       existingOperations: [{
         schemaVersion: 1,
         id: "op_mail_import_done_updated_at",
