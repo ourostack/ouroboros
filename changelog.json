@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.546",
+      "changes": [
+        "Launchd habit sync now leaves the daemon launch agent plist alone, preventing the daemon from booting out its own `bot.ouro.daemon` service during startup."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.545",
       "changes": [
         "Launchd-managed habit jobs now inherit the runtime PATH in their plist environment, preventing login-started jobs from failing to find the Node runtime.",
