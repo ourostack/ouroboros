@@ -32,6 +32,7 @@ describe("createRealOsCronDeps", () => {
     expect(typeof deps.existsFile).toBe("function")
     expect(typeof deps.listDir).toBe("function")
     expect(typeof deps.mkdirp).toBe("function")
+    expect(deps.envPath).toBe(process.env.PATH ?? "")
   })
 
   it("writeFile and existsFile work with real fs", async () => {

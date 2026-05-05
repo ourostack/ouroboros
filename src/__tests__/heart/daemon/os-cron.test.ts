@@ -106,6 +106,21 @@ describe("os-cron helpers", () => {
     expect(xml).toContain("<string>slugger</string>")
   })
 
+  it("generatePlistXml includes PATH environment variables when provided", () => {
+    const xml = generatePlistXml(makeJob(), "/opt/homebrew/bin:/usr/bin:/bin")
+
+    expect(xml).toContain("<key>EnvironmentVariables</key>")
+    expect(xml).toContain("<key>PATH</key>")
+    expect(xml).toContain("<string>/opt/homebrew/bin:/usr/bin:/bin</string>")
+  })
+
+  it("generatePlistXml omits environment variables when PATH is not provided", () => {
+    const xml = generatePlistXml(makeJob(), "")
+
+    expect(xml).not.toContain("<key>EnvironmentVariables</key>")
+    expect(xml).not.toContain("<key>PATH</key>")
+  })
+
   it("generatePlistXml uses StartCalendarInterval for scheduledAt", () => {
     const xml = generatePlistXml(makeJob({ schedule: "30 8 15 3 *" }))
     expect(xml).toContain("<key>StartCalendarInterval</key>")
@@ -129,7 +144,7 @@ describe("os-cron helpers", () => {
 
 describe("LaunchdCronManager", () => {
   it("sync writes plists and loads them", () => {
-    const deps = makeLaunchdDeps()
+    const deps = makeLaunchdDeps({ envPath: "/opt/homebrew/bin:/usr/bin:/bin" } as Partial<OsCronDeps>)
     const manager = new LaunchdCronManager(deps)
     const job = makeJob()
 
@@ -138,7 +153,7 @@ describe("LaunchdCronManager", () => {
     expect(deps.mkdirp).toHaveBeenCalledWith("/Users/testuser/Library/LaunchAgents")
     expect(deps.writeFile).toHaveBeenCalledWith(
       "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.heartbeat.plist",
-      expect.stringContaining("<key>Label</key>"),
+      expect.stringContaining("<string>/opt/homebrew/bin:/usr/bin:/bin</string>"),
     )
     expect(deps.exec).toHaveBeenCalledWith(
       expect.stringContaining("launchctl load"),

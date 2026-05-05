@@ -536,7 +536,7 @@ describe("daemon CLI default dependency branches", () => {
     const started = await deps.startDaemonProcess("/tmp/daemon.sock")
 
     expect(spawn).toHaveBeenCalledWith(
-      "node",
+      process.execPath,
       ["/mock/repo/dist/heart/daemon/daemon-entry.js", "--socket", "/tmp/daemon.sock"],
       expect.objectContaining({ detached: true, stdio: ["ignore", 99, 99] }),
     )
