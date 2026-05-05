@@ -251,6 +251,10 @@ function defaultPrepareDaemonRuntimeReplacement(): void {
     exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) },
     userUid: process.getuid?.() ?? 0,
   })
+  // launchctl bootout may return before the old daemon's SIGTERM cleanup has
+  // finished unlinking its Unix socket. Give that cleanup a short chance to
+  // settle before the replacement daemon binds the same socket path.
+  execSync("/bin/sleep 1", { stdio: "ignore" })
 }
 
 async function defaultPromptInput(question: string): Promise<string> {

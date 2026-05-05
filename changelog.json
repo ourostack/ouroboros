@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.550",
+      "changes": [
+        "`ouro up` now lets launchd SIGTERM cleanup settle briefly after unloading the daemon LaunchAgent before binding the replacement socket, preventing the old daemon from unlinking the new daemon's Unix socket during runtime replacement."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.549",
       "changes": [
         "`ouro up` now unloads any already-loaded daemon LaunchAgent before replacing a drifted daemon runtime, preventing launchd KeepAlive from racing the manual replacement and leaving two daemon processes split across the same socket.",

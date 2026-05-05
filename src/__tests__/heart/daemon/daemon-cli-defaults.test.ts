@@ -261,6 +261,7 @@ describe("daemon CLI default dependency branches", () => {
       deps.prepareDaemonRuntimeReplacement?.()
 
       expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon", { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith("/bin/sleep 1", { stdio: "ignore" })
     } finally {
       restorePlatform()
       if (originalGetuid) {
@@ -302,6 +303,7 @@ describe("daemon CLI default dependency branches", () => {
       deps.prepareDaemonRuntimeReplacement?.()
 
       expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/0/bot.ouro.daemon", { stdio: "ignore" })
+      expect(execSync).toHaveBeenCalledWith("/bin/sleep 1", { stdio: "ignore" })
     } finally {
       restorePlatform()
       if (originalGetuid) {
