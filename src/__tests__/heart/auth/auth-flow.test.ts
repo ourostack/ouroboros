@@ -94,6 +94,11 @@ function makeTempDir(prefix: string): string {
   return dir
 }
 
+function makeJwtPayloadToken(payload: unknown): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")
+  return `header.${encodedPayload}.sig`
+}
+
 function writeAgentConfig(
   bundlesRoot: string,
   agentName: string,
@@ -254,6 +259,9 @@ describe("runtime auth flow", () => {
     )
 
     const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT" }
+      }
       if (args.length === 1 && args[0] === "login") {
         fs.writeFileSync(
           path.join(homeDir, ".codex", "auth.json"),
@@ -296,6 +304,54 @@ describe("runtime auth flow", () => {
     expect(write.credentials.oauthAccessToken).toBe("oauth-token-refreshed")
   })
 
+  it("falls back to codex login when local Codex JWT payload is not an object", async () => {
+    emitTestEvent("codex jwt payload must be object")
+    const cases = [
+      ["null", null],
+      ["string", "not-an-object"],
+      ["array", []],
+    ] as const
+
+    for (const [label, payload] of cases) {
+      const homeDir = makeTempDir(`auth-flow-home-codex-${label}-payload`)
+      const codexDir = path.join(homeDir, ".codex")
+      fs.mkdirSync(codexDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(codexDir, "auth.json"),
+        `${JSON.stringify({ tokens: { access_token: makeJwtPayloadToken(payload) } }, null, 2)}\n`,
+        "utf8",
+      )
+      const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+        if (args[0] === "login" && args[1] === "status") {
+          return { status: 0, stdout: "Logged in using ChatGPT" }
+        }
+        if (args.length === 1 && args[0] === "login") {
+          fs.writeFileSync(
+            path.join(codexDir, "auth.json"),
+            `${JSON.stringify({ tokens: { access_token: `oauth-token-after-${label}` } }, null, 2)}\n`,
+            "utf8",
+          )
+        }
+        return { status: 0 }
+      }) as any
+
+      const credentials = await collectRuntimeAuthCredentials(
+        {
+          agentName: `CodexBadPayload${label}`,
+          provider: "openai-codex",
+        },
+        {
+          homeDir,
+          spawnSync,
+        },
+      )
+
+      expect(spawnSync).toHaveBeenNthCalledWith(1, "codex", ["login", "status"], { encoding: "utf8" })
+      expect(spawnSync).toHaveBeenNthCalledWith(2, "codex", ["login"], { stdio: "inherit" })
+      expect(credentials.oauthAccessToken).toBe(`oauth-token-after-${label}`)
+    }
+  })
+
   it("treats non-string Codex auth tokens as missing and re-runs login", async () => {
     emitTestEvent("codex token must be a string")
     const homeDir = makeTempDir("auth-flow-home-codex-invalid-token")
@@ -306,12 +362,17 @@ describe("runtime auth flow", () => {
       `${JSON.stringify({ tokens: { access_token: 123 } }, null, 2)}\n`,
       "utf8",
     )
-    const spawnSync = vi.fn(() => {
-      fs.writeFileSync(
-        path.join(homeDir, ".codex", "auth.json"),
-        `${JSON.stringify({ tokens: { access_token: "oauth-token-after-relogin" } }, null, 2)}\n`,
-        "utf8",
-      )
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login" && args[1] === "status") {
+        return { status: 0, stdout: "Logged in using ChatGPT" }
+      }
+      if (args.length === 1 && args[0] === "login") {
+        fs.writeFileSync(
+          path.join(homeDir, ".codex", "auth.json"),
+          `${JSON.stringify({ tokens: { access_token: "oauth-token-after-relogin" } }, null, 2)}\n`,
+          "utf8",
+        )
+      }
       return { status: 0 }
     }) as any
 
