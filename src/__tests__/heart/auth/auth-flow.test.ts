@@ -249,11 +249,20 @@ describe("runtime auth flow", () => {
     fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
     fs.writeFileSync(
       path.join(homeDir, ".codex", "auth.json"),
-      `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
+      `${JSON.stringify({ tokens: { access_token: "header.not-json.sig" } }, null, 2)}\n`,
       "utf8",
     )
 
-    const spawnSync = vi.fn(() => ({ status: 0 })) as any
+    const spawnSync = vi.fn((_cmd: string, args: string[]) => {
+      if (args[0] === "login") {
+        fs.writeFileSync(
+          path.join(homeDir, ".codex", "auth.json"),
+          `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
+          "utf8",
+        )
+      }
+      return { status: 0 }
+    }) as any
     const result = await runRuntimeAuthFlow(
       {
         agentName,
