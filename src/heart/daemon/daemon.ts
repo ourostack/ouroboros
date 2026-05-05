@@ -140,6 +140,55 @@ export function mergeUniqueOrphanPids(...sources: number[][]): number[] {
   return merged
 }
 
+interface OrphanSettleDeps {
+  isPidAlive?: (pid: number) => boolean
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  timeoutMs?: number
+  pollIntervalMs?: number
+}
+
+const ORPHAN_CLEANUP_SETTLE_TIMEOUT_MS = 5_000
+const ORPHAN_CLEANUP_SETTLE_POLL_INTERVAL_MS = 50
+
+/* v8 ignore start -- process liveness probe; pure wait behavior covered via injected deps @preserve */
+function defaultIsPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+/* v8 ignore stop */
+
+/* v8 ignore start -- real timer wiring; wait behavior covered via injected sleep @preserve */
+async function defaultSettleSleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+/* v8 ignore stop */
+
+export async function waitForOrphanProcessesToSettle(
+  pids: number[],
+  deps: OrphanSettleDeps = {},
+): Promise<number[]> {
+  if (pids.length === 0) return []
+  const isPidAlive = deps.isPidAlive ?? defaultIsPidAlive
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? defaultSettleSleep
+  const timeoutMs = deps.timeoutMs ?? ORPHAN_CLEANUP_SETTLE_TIMEOUT_MS
+  const pollIntervalMs = deps.pollIntervalMs ?? ORPHAN_CLEANUP_SETTLE_POLL_INTERVAL_MS
+  const deadline = now() + timeoutMs
+  let survivors = pids.filter(isPidAlive)
+
+  while (survivors.length > 0 && now() < deadline) {
+    await sleep(pollIntervalMs)
+    survivors = pids.filter(isPidAlive)
+  }
+
+  return survivors
+}
+
 /* v8 ignore start -- shells out to ps; covered by filterPidfilePidsToActualOrphans unit tests via injected runner @preserve */
 function runPsCheck(pids: number[]): string | null {
   try {
@@ -173,7 +222,7 @@ function isProductionDaemonSocketPath(socketPath: string): boolean {
   return socketPath === DEFAULT_DAEMON_SOCKET_PATH
 }
 
-export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): void {
+export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): number[] {
   if (!isProductionDaemonSocketPath(socketPath)) {
     emitNervesEvent({
       level: "warn",
@@ -182,7 +231,7 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): vo
       message: "blocked orphan cleanup for non-production daemon socket",
       meta: { socketPath, pidfilePath: PIDFILE_PATH },
     })
-    return
+    return []
   }
   if (isVitestProcess()) {
     emitNervesEvent({
@@ -192,7 +241,7 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): vo
       message: "blocked killOrphanProcesses from touching real pidfile under vitest",
       meta: { pidfilePath: PIDFILE_PATH },
     })
-    return
+    return []
   }
   try {
     let pidfileOrphans: number[] = []
@@ -233,6 +282,7 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): vo
         meta: { pids: pidsToKill },
       })
     }
+    return pidsToKill
   } catch (error) {
     emitNervesEvent({
       level: "warn",
@@ -241,6 +291,7 @@ export function killOrphanProcesses(socketPath = DEFAULT_DAEMON_SOCKET_PATH): vo
       message: "failed to clean up orphaned ouro processes",
       meta: { error: error instanceof Error ? error.message : String(error) },
     })
+    return []
   }
 }
 
@@ -762,7 +813,8 @@ export class OuroDaemon {
     // (daemon manages multiple agents; agent identity must be set before loading MCP config)
 
     /* v8 ignore start -- orphan cleanup + pidfile: calls process management functions @preserve */
-    killOrphanProcesses(this.socketPath)
+    const killedOrphanPids = killOrphanProcesses(this.socketPath)
+    await waitForOrphanProcessesToSettle(killedOrphanPids)
     /* v8 ignore stop */
     await this.openCommandSocket()
     this.triggerAutoStartAgents()

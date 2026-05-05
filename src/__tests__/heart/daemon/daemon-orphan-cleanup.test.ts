@@ -8,6 +8,7 @@ import {
   mergeUniqueOrphanPids,
   killOrphanProcesses,
   writePidfile,
+  waitForOrphanProcessesToSettle,
 } from "../../../heart/daemon/daemon"
 
 // The orphan-cleanup fallback is load-bearing: when the pidfile is missing
@@ -191,6 +192,55 @@ describe("filterPidfilePidsToActualOrphans", () => {
 describe("mergeUniqueOrphanPids", () => {
   it("keeps pidfile and ps-scan orphans while deduping repeats", () => {
     expect(mergeUniqueOrphanPids([5000, 5001], [5001, 5002], [], [5000, 5003])).toEqual([5000, 5001, 5002, 5003])
+  })
+})
+
+describe("waitForOrphanProcessesToSettle", () => {
+  it("returns immediately when there are no orphan PIDs to settle", async () => {
+    const isPidAlive = vi.fn(() => true)
+    const sleep = vi.fn(async () => {})
+
+    await expect(waitForOrphanProcessesToSettle([], { isPidAlive, sleep })).resolves.toEqual([])
+
+    expect(isPidAlive).not.toHaveBeenCalled()
+    expect(sleep).not.toHaveBeenCalled()
+  })
+
+  it("uses production defaults when orphan PIDs are already gone", async () => {
+    await expect(waitForOrphanProcessesToSettle([999_999_999])).resolves.toEqual([])
+  })
+
+  it("waits until orphan PIDs stop responding", async () => {
+    let nowMs = 0
+    const sleep = vi.fn(async (ms: number) => { nowMs += ms })
+    const isPidAlive = vi.fn((pid: number) => pid === 5001 && nowMs < 100)
+
+    await expect(waitForOrphanProcessesToSettle([5000, 5001], {
+      isPidAlive,
+      sleep,
+      now: () => nowMs,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    })).resolves.toEqual([])
+
+    expect(sleep).toHaveBeenCalledTimes(2)
+    expect(sleep).toHaveBeenCalledWith(50)
+  })
+
+  it("returns remaining live PIDs after the settle timeout", async () => {
+    let nowMs = 0
+    const sleep = vi.fn(async (ms: number) => { nowMs += ms })
+    const isPidAlive = vi.fn(() => true)
+
+    await expect(waitForOrphanProcessesToSettle([5000], {
+      isPidAlive,
+      sleep,
+      now: () => nowMs,
+      timeoutMs: 100,
+      pollIntervalMs: 50,
+    })).resolves.toEqual([5000])
+
+    expect(sleep).toHaveBeenCalledTimes(2)
   })
 })
 
