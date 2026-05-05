@@ -25,6 +25,7 @@ export interface CrontabCronDeps {
 }
 
 const PLIST_PREFIX = "bot.ouro."
+const DAEMON_PLIST_FILENAME = "bot.ouro.daemon.plist"
 
 function plistLabel(job: ScheduledTaskJob): string {
   return `${PLIST_PREFIX}${job.agent}.${job.taskId}`
@@ -178,7 +179,11 @@ export class LaunchdCronManager implements OsCronManager {
 
   private listPlistFiles(): string[] {
     if (!this.deps.existsFile(this.launchAgentsDir)) return []
-    return this.deps.listDir(this.launchAgentsDir).filter((f) => f.startsWith(PLIST_PREFIX) && f.endsWith(".plist"))
+    return this.deps.listDir(this.launchAgentsDir).filter((f) =>
+      f.startsWith(PLIST_PREFIX) &&
+      f.endsWith(".plist") &&
+      f !== DAEMON_PLIST_FILENAME,
+    )
   }
 }
 

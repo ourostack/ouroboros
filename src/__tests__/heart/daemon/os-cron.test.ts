@@ -174,6 +174,22 @@ describe("LaunchdCronManager", () => {
     expect(deps.removeFile).toHaveBeenCalledTimes(1)
   })
 
+  it("sync does not remove the daemon launch agent plist as a stale habit", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
+    })
+    const manager = new LaunchdCronManager(deps)
+
+    manager.sync([makeJob()])
+
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.daemon.plist",
+    )
+    expect(deps.exec).not.toHaveBeenCalledWith(
+      'launchctl unload "/Users/testuser/Library/LaunchAgents/bot.ouro.daemon.plist"',
+    )
+  })
+
   it("removeAll unloads and removes all ouro plists", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "bot.ouro.ouroboros.task.plist"]),
@@ -186,9 +202,35 @@ describe("LaunchdCronManager", () => {
     expect(deps.removeFile).toHaveBeenCalledTimes(2)
   })
 
+  it("removeAll leaves the daemon launch agent plist alone", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
+    })
+    const manager = new LaunchdCronManager(deps)
+
+    manager.removeAll()
+
+    expect(deps.removeFile).toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.slugger.heartbeat.plist",
+    )
+    expect(deps.removeFile).not.toHaveBeenCalledWith(
+      "/Users/testuser/Library/LaunchAgents/bot.ouro.daemon.plist",
+    )
+    expect(deps.removeFile).toHaveBeenCalledTimes(1)
+  })
+
   it("list returns labels of existing plists", () => {
     const deps = makeLaunchdDeps({
       listDir: vi.fn(() => ["bot.ouro.slugger.heartbeat.plist", "com.other.plist"]),
+    })
+    const manager = new LaunchdCronManager(deps)
+
+    expect(manager.list()).toEqual(["bot.ouro.slugger.heartbeat"])
+  })
+
+  it("list excludes the daemon launch agent plist", () => {
+    const deps = makeLaunchdDeps({
+      listDir: vi.fn(() => ["bot.ouro.daemon.plist", "bot.ouro.slugger.heartbeat.plist"]),
     })
     const manager = new LaunchdCronManager(deps)
 
