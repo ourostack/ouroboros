@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.547",
+      "changes": [
+        "Version-managed macOS daemon LaunchAgents now point at the stable `~/.ouro-cli/CurrentVersion` entry path instead of a concrete installed version directory, so future runtime updates do not leave launchd holding stale daemon argv."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.546",
       "changes": [
         "Launchd habit sync now leaves the daemon launch agent plist alone, preventing the daemon from booting out its own `bot.ouro.daemon` service during startup."
