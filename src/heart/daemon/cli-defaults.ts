@@ -34,7 +34,7 @@ import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
-import { bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
+import { DAEMON_PLIST_LABEL, bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -201,7 +201,77 @@ function defaultFallbackPendingMessage(command: Extract<import("./daemon").Daemo
   return pendingPath
 }
 
-function defaultEnsureDaemonBootPersistence(socketPath: string): void {
+function currentUserUid(): number {
+  return process.getuid?.() ?? 0
+}
+
+function launchAgentDomain(userUid = currentUserUid()): string {
+  return `gui/${userUid}`
+}
+
+interface LaunchAgentLoadedDeps {
+  exec: (cmd: string) => void
+  userUid?: number
+}
+
+export function isDaemonLaunchAgentLoaded(deps?: LaunchAgentLoadedDeps): boolean {
+  const userUid = deps?.userUid ?? currentUserUid()
+  const exec = deps?.exec ?? ((cmd: string) => { execSync(cmd, { stdio: "ignore" }) })
+  try {
+    exec(`launchctl print ${launchAgentDomain(userUid)}/${DAEMON_PLIST_LABEL}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+interface BootstrappedSocketWaitDeps {
+  checkSocketAlive?: (socketPath: string) => Promise<boolean>
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  timeoutMs?: number
+  initialSettleMs?: number
+  pollIntervalMs?: number
+  requiredConsecutiveAliveChecks?: number
+}
+
+export async function waitForBootstrappedDaemonSocket(
+  socketPath: string,
+  deps: BootstrappedSocketWaitDeps = {},
+): Promise<void> {
+  const checkSocketAlive = deps.checkSocketAlive ?? checkDaemonSocketAlive
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  const timeoutMs = deps.timeoutMs ?? 30_000
+  const initialSettleMs = deps.initialSettleMs ?? 1_000
+  const pollIntervalMs = deps.pollIntervalMs ?? 250
+  const requiredConsecutiveAliveChecks = deps.requiredConsecutiveAliveChecks ?? 2
+  const deadline = now() + timeoutMs
+  const firstTrustworthyCheckAt = now() + initialSettleMs
+  let consecutiveAliveChecks = 0
+
+  while (now() < deadline) {
+    await sleep(pollIntervalMs)
+    if (now() < firstTrustworthyCheckAt) continue
+
+    if (await checkSocketAlive(socketPath)) {
+      consecutiveAliveChecks += 1
+      if (consecutiveAliveChecks >= requiredConsecutiveAliveChecks) return
+    } else {
+      consecutiveAliveChecks = 0
+    }
+  }
+
+  emitNervesEvent({
+    level: "warn",
+    component: "daemon",
+    event: "daemon.launchd_bootstrap_socket_wait_timeout",
+    message: "launchd bootstrap finished but daemon socket did not settle before timeout",
+    meta: { socketPath },
+  })
+}
+
+async function defaultEnsureDaemonBootPersistence(socketPath: string): Promise<void> {
   if (process.platform !== "darwin") {
     return
   }
@@ -228,18 +298,49 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
 
   const logDir = getAgentDaemonLogsDir()
 
-  // Write plist only — do NOT launchctl bootstrap.
-  // The daemon is already running (started by ouro up). Bootstrapping would
-  // start a SECOND daemon via launchd's RunAtLoad, causing a race where
-  // killOrphanProcesses kills the first daemon and both end up dead.
-  // The plist on disk is sufficient: launchd picks it up on login.
-  writeLaunchAgentPlist(writeDeps, {
+  const plistPath = writeLaunchAgentPlist(writeDeps, {
     nodePath: process.execPath,
     entryPath,
     socketPath,
     logDir,
     envPath: process.env.PATH,
   })
+
+  const userUid = currentUserUid()
+  if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_skipped_loaded",
+      message: "daemon launch agent already loaded",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    return
+  }
+
+  try {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_start",
+      message: "bootstrapping daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    execSync(`launchctl bootstrap ${launchAgentDomain(userUid)} "${plistPath}"`, { stdio: "ignore" })
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_end",
+      message: "daemon launch agent bootstrapped for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    await waitForBootstrappedDaemonSocket(socketPath)
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_error",
+      message: "failed to bootstrap daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL, error: error instanceof Error ? error.message : String(error) },
+    })
+  }
 }
 
 function defaultPrepareDaemonRuntimeReplacement(): void {
