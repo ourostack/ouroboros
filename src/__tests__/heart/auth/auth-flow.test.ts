@@ -241,8 +241,8 @@ describe("runtime auth flow", () => {
     expect(() => readAgentConfigForAgent(agentName, bundlesRoot)).toThrow("unsupported provider 'not-real'")
   })
 
-  it("always runs codex login and writes the OpenAI Codex credential to the provider vault", async () => {
-    emitTestEvent("always refreshes codex token")
+  it("falls back to codex login when local Codex auth cannot be reused", async () => {
+    emitTestEvent("falls back from stale codex local auth")
     const homeDir = makeTempDir("auth-flow-home-codex-existing")
     const agentName = "CodexExisting"
     const progress: string[] = []
@@ -271,6 +271,7 @@ describe("runtime auth flow", () => {
       `checking ${agentName}'s vault access...`,
       `reading vault items for ${agentName}...`,
       "parsing provider credentials...",
+      "checking local Codex login...",
       "starting openai-codex browser login...",
       "openai-codex login complete; reading local Codex token...",
       `opening ${agentName}'s vault session...`,
@@ -278,6 +279,7 @@ describe("runtime auth flow", () => {
       `refreshing local provider snapshot from ${agentName}'s vault...`,
       "credentials stored at providers/openai-codex; local provider snapshot refreshed.",
     ])
+    expect(spawnSync).toHaveBeenCalledWith("codex", ["login", "status"], { encoding: "utf8" })
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))
 
     expect(result.credentialPath).toBe("providers/openai-codex")
@@ -315,7 +317,9 @@ describe("runtime auth flow", () => {
       },
     )
 
-    expect(spawnSync).toHaveBeenCalledOnce()
+    expect(spawnSync).toHaveBeenCalledTimes(2)
+    expect(spawnSync).toHaveBeenNthCalledWith(1, "codex", ["login", "status"], { encoding: "utf8" })
+    expect(spawnSync).toHaveBeenNthCalledWith(2, "codex", ["login"], { stdio: "inherit" })
     expect(
       expectProviderCredentialWrite(agentName, "openai-codex").credentials.oauthAccessToken,
     ).toBe("oauth-token-after-relogin")
