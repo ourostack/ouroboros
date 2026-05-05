@@ -254,7 +254,7 @@ describe("runtime auth flow", () => {
     )
 
     const spawnSync = vi.fn((_cmd: string, args: string[]) => {
-      if (args[0] === "login") {
+      if (args.length === 1 && args[0] === "login") {
         fs.writeFileSync(
           path.join(homeDir, ".codex", "auth.json"),
           `${JSON.stringify({ tokens: { access_token: "  oauth-token-refreshed  " } }, null, 2)}\n`,
