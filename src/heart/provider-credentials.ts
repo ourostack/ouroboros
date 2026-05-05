@@ -95,7 +95,7 @@ const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; conf
     config: [],
   },
   "openai-codex": {
-    credentials: ["oauthAccessToken"],
+    credentials: ["oauthAccessToken", "refreshToken", "expiresAt"],
     config: [],
   },
   azure: {

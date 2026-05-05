@@ -18,6 +18,7 @@ import { isCredentialVaultNotConfiguredError, vaultCreateRecoverFix, vaultUnlock
 
 const ANTHROPIC_SETUP_TOKEN_PREFIX = "sk-ant-oat01-"
 const ANTHROPIC_SETUP_TOKEN_MIN_LENGTH = 80
+const CODEX_LOCAL_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export interface RuntimeAuthInput {
   agentName: string
@@ -30,6 +31,7 @@ export interface RuntimeAuthDeps {
   bundlesRoot?: string
   homeDir?: string
   spawnSync?: typeof defaultSpawnSync
+  now?: () => Date
 }
 
 export interface RuntimeAuthResult {
@@ -197,16 +199,58 @@ export function writeAgentModel(
   return { configPath, provider, previousModel }
 }
 
-function readCodexAccessToken(homeDir: string): string {
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".")
+  if (parts.length < 2 || !parts[1]) return null
+  try {
+    const base64 = parts[1]
+      .replace(/-/g, "+")
+      .replace(/_/g, "/")
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, "=")
+    const parsed = JSON.parse(Buffer.from(base64, "base64").toString("utf8")) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+function readJwtExpiresAt(token: string): number | undefined {
+  const payload = decodeJwtPayload(token)
+  const exp = payload?.exp
+  if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) return undefined
+  return Math.floor(exp * 1000)
+}
+
+function isFreshCodexToken(credentials: HatchCredentialsInput, now: Date): boolean {
+  if (!credentials.oauthAccessToken) return false
+  if (typeof credentials.expiresAt !== "number") return false
+  return credentials.expiresAt > now.getTime() + CODEX_LOCAL_TOKEN_REFRESH_MARGIN_MS
+}
+
+function readCodexLocalAuthCredentials(homeDir: string): HatchCredentialsInput {
   const authPath = path.join(homeDir, ".codex", "auth.json")
   try {
     const raw = fs.readFileSync(authPath, "utf8")
-    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown } }
-    const token = parsed?.tokens?.access_token
-    return typeof token === "string" ? token.trim() : /* v8 ignore next -- defensive: codex login always writes a string token @preserve */ ""
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown; refresh_token?: unknown } }
+    const accessToken = typeof parsed.tokens?.access_token === "string" ? parsed.tokens.access_token.trim() : ""
+    if (!accessToken) return {}
+    const refreshToken = typeof parsed.tokens?.refresh_token === "string" ? parsed.tokens.refresh_token.trim() : ""
+    const expiresAt = readJwtExpiresAt(accessToken)
+    return {
+      oauthAccessToken: accessToken,
+      ...(refreshToken ? { refreshToken } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    }
   } catch {
-    return ""
+    return {}
   }
+}
+
+function isCodexLoginStatusReady(result: ReturnType<typeof defaultSpawnSync>): boolean {
+  if (result.error || result.status !== 0) return false
+  const output = `${typeof result.stdout === "string" ? result.stdout : ""}\n${typeof result.stderr === "string" ? result.stderr : ""}`
+  return output.toLowerCase().includes("logged in")
 }
 
 function ensurePromptInput(promptInput: RuntimeAuthInput["promptInput"], provider: AgentProvider): (question: string) => Promise<string> {
@@ -265,6 +309,7 @@ export async function collectRuntimeAuthCredentials(
 ): Promise<HatchCredentialsInput> {
   const spawnSync = deps.spawnSync ?? defaultSpawnSync
   const homeDir = deps.homeDir ?? os.homedir()
+  const now = deps.now ?? (() => new Date())
 
   if (input.provider === "github-copilot") {
     let token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || ""
@@ -310,9 +355,14 @@ export async function collectRuntimeAuthCredentials(
   }
 
   if (input.provider === "openai-codex") {
-    // Always run codex login when auth is explicitly requested — stale tokens
-    // are indistinguishable from valid ones without an API call, and the user
-    // is asking to re-authenticate.
+    writeAuthProgress(input, "checking local Codex login...")
+    const localStatus = spawnSync("codex", ["login", "status"], { encoding: "utf8" })
+    const localCredentials = readCodexLocalAuthCredentials(homeDir)
+    if (isCodexLoginStatusReady(localStatus) && isFreshCodexToken(localCredentials, now())) {
+      writeAuthProgress(input, "using existing openai-codex local login...")
+      return localCredentials
+    }
+
     emitNervesEvent({
       component: "daemon",
       event: "daemon.auth_codex_login_start",
@@ -328,11 +378,11 @@ export async function collectRuntimeAuthCredentials(
       throw new Error(`'codex login' exited with status ${result.status}.`)
     }
     writeAuthProgress(input, "openai-codex login complete; reading local Codex token...")
-    const token = readCodexAccessToken(homeDir)
-    if (!token) {
+    const credentials = readCodexLocalAuthCredentials(homeDir)
+    if (!credentials.oauthAccessToken) {
       throw new Error("Codex login completed but no token was found in ~/.codex/auth.json. Re-run `codex login` and try again.")
     }
-    return { oauthAccessToken: token }
+    return credentials
   }
 
   if (input.provider === "anthropic") {
