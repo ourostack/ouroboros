@@ -484,6 +484,58 @@ describe("mail import discovery", () => {
     expect(visible).toEqual([])
   })
 
+  it("uses comparable operation timestamps when fileModifiedAt is absent or non-string", () => {
+    const homeDir = tempDir()
+    const repoRoot = path.join(homeDir, "repo")
+    const sandboxDir = path.join(homeDir, "Projects", "_worktrees", "slugger-mail-fullmoon-mail", ".playwright-mcp")
+    const mboxPath = path.join(sandboxDir, "HEY-emails-ari-mendelow-me.mbox")
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(mboxPath, "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n", "utf-8")
+    const downloadedAt = new Date("2026-04-24T05:40:00.000Z")
+    fs.utimesSync(mboxPath, downloadedAt, downloadedAt)
+    mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
+
+    const nonStringFileModifiedAt = listAmbientMailImportOperations({
+      agentName: "slugger",
+      repoRoot,
+      homeDir,
+      existingOperations: [{
+        schemaVersion: 1,
+        id: "op_mail_import_done_non_string_mtime",
+        agentName: "slugger",
+        kind: "mail.import-mbox",
+        title: "mail import",
+        status: "succeeded",
+        summary: "imported delegated mail archive",
+        createdAt: "2026-04-24T05:39:00.000Z",
+        updatedAt: "2026-04-24T05:45:00.000Z",
+        finishedAt: "2026-04-24T05:51:02.000Z",
+        spec: { filePath: mboxPath, fileModifiedAt: 123 },
+      } as any],
+    })
+
+    const updatedAtOnly = listAmbientMailImportOperations({
+      agentName: "slugger",
+      repoRoot,
+      homeDir,
+      existingOperations: [{
+        schemaVersion: 1,
+        id: "op_mail_import_done_updated_at",
+        agentName: "slugger",
+        kind: "mail.import-mbox",
+        title: "mail import",
+        status: "succeeded",
+        summary: "imported delegated mail archive",
+        createdAt: "2026-04-24T05:39:00.000Z",
+        updatedAt: "2026-04-24T05:51:02.000Z",
+        spec: { filePath: mboxPath },
+      }],
+    })
+
+    expect(nonStringFileModifiedAt).toEqual([])
+    expect(updatedAtOnly).toEqual([])
+  })
+
   it("returns no discovered candidates when directory reads fail", () => {
     const root = tempDir()
     const dir = path.join(root, "not-a-directory")
