@@ -50,6 +50,47 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
   })
 
+  it("disables daemon auto-restart after stopping a stale daemon and before starting its replacement", async () => {
+    const calls: string[] = []
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => { calls.push("stop") }),
+      prepareDaemonRuntimeReplacement: vi.fn(async () => { calls.push("prepare") }),
+      cleanupStaleSocket: vi.fn(() => { calls.push("cleanup") }),
+      startDaemonProcess: vi.fn(async () => {
+        calls.push("start")
+        return { pid: 777 }
+      }),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.ok).toBe(true)
+    expect(calls).toEqual(["stop", "prepare", "cleanup", "start"])
+  })
+
+  it("continues replacement when auto-restart preparation fails", async () => {
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => {}),
+      prepareDaemonRuntimeReplacement: vi.fn(async () => {
+        throw new Error("launchd unavailable")
+      }),
+      cleanupStaleSocket: vi.fn(),
+      startDaemonProcess: vi.fn(async () => ({ pid: 777 })),
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.ok).toBe(true)
+    expect(deps.cleanupStaleSocket).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+    expect(deps.startDaemonProcess).toHaveBeenCalledWith("/tmp/ouro-test.sock")
+  })
+
   it("restarts the daemon when the running code path drifts even if the version matches", async () => {
     const deps = {
       socketPath: "/tmp/ouro-test.sock",

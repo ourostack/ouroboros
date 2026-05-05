@@ -4,6 +4,7 @@ import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
+  bootoutLaunchAgentByLabel,
   generateDaemonPlist,
   installLaunchAgent,
   uninstallLaunchAgent,
@@ -232,6 +233,7 @@ describe("launchd daemon management", () => {
       const deps = makeDeps()
 
       expect(() => uninstallLaunchAgent(deps)).not.toThrow()
+      expect(deps.exec).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon")
     })
 
     it("handles launchctl bootout failure gracefully", () => {
@@ -244,6 +246,36 @@ describe("launchd daemon management", () => {
 
       expect(() => uninstallLaunchAgent(deps)).not.toThrow()
       expect(fs.existsSync(plistPath)).toBe(false)
+    })
+  })
+
+  describe("bootoutLaunchAgentByLabel", () => {
+    it("boots out a loaded launch agent even when no plist path is available", () => {
+      const deps = makeDeps()
+
+      bootoutLaunchAgentByLabel(deps)
+
+      expect(deps.exec).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon")
+    })
+
+    it("treats a missing loaded launch agent as best-effort", () => {
+      const deps = makeDeps({
+        exec: vi.fn(() => {
+          throw new Error("service not found")
+        }),
+      })
+
+      expect(() => bootoutLaunchAgentByLabel(deps)).not.toThrow()
+    })
+
+    it("stringifies non-Error launchctl bootout failures", () => {
+      const deps = makeDeps({
+        exec: vi.fn(() => {
+          throw "service not found"
+        }),
+      })
+
+      expect(() => bootoutLaunchAgentByLabel(deps)).not.toThrow()
     })
   })
 

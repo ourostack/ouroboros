@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.549",
+      "changes": [
+        "`ouro up` now unloads any already-loaded daemon LaunchAgent before replacing a drifted daemon runtime, preventing launchd KeepAlive from racing the manual replacement and leaving two daemon processes split across the same socket.",
+        "`ouro up` now rewrites the daemon boot plist as soon as the daemon is answering, so a degraded sense no longer prevents restart auto-start metadata from being refreshed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.548",
       "changes": [
         "OpenAI Codex auth now reuses an existing fresh local Codex login before starting browser login, letting `ouro auth --provider openai-codex` repair stale vault copies without a human OAuth round-trip when the local Codex CLI is already logged in.",

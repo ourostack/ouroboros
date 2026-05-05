@@ -1250,6 +1250,7 @@ export async function ensureDaemonRunning(
       stopDaemon: async () => {
         await deps.sendCommand(deps.socketPath, { kind: "daemon.stop" })
       },
+      prepareDaemonRuntimeReplacement: deps.prepareDaemonRuntimeReplacement,
       cleanupStaleSocket: deps.cleanupStaleSocket,
       startDaemonProcess: deps.startDaemonProcess,
       checkSocketAlive: deps.checkSocketAlive,
@@ -6883,6 +6884,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return returnCliFailure(deps, daemonResult.message)
     }
     progress.completePhase("starting daemon", daemonProgressSummary(daemonResult))
+    if (deps.ensureDaemonBootPersistence) {
+      try {
+        await Promise.resolve(deps.ensureDaemonBootPersistence(deps.socketPath))
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.system_setup_launchd_error",
+          message: "failed to persist daemon boot startup",
+          meta: { error: error instanceof Error ? error.message : String(error), socketPath: deps.socketPath },
+        })
+      }
+    }
     progress.startPhase("provider checks")
     const providerDegraded = await checkAlreadyRunningAgentProviders(deps, (msg) => progress.updateDetail(msg))
     daemonResult.stability = mergeStartupStability(daemonResult.stability, providerDegraded)
@@ -7051,23 +7065,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // having to run `ouro inner status` per agent.
       const driftAdvisories = await collectAgentDriftAdvisories(deps)
       writeDriftAdvisorySummary(deps, driftAdvisories)
-    }
-
-    // Persist boot startup AFTER daemon is running — bootstrap is safe now
-    // because the daemon socket exists, so launchd's KeepAlive registers
-    // for crash recovery without starting a competing process.
-    if (deps.ensureDaemonBootPersistence) {
-      try {
-        await Promise.resolve(deps.ensureDaemonBootPersistence(deps.socketPath))
-      } catch (error) {
-        emitNervesEvent({
-          level: "warn",
-          component: "daemon",
-          event: "daemon.system_setup_launchd_error",
-          message: "failed to persist daemon boot startup",
-          meta: { error: error instanceof Error ? error.message : String(error), socketPath: deps.socketPath },
-        })
-      }
     }
 
     return daemonResult.message

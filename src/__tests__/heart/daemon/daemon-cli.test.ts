@@ -4733,6 +4733,7 @@ describe("ensureDaemonRunning", () => {
     const { ensureDaemonRunning } = await import("../../../heart/daemon/daemon-cli")
     vi.doUnmock("../../../heart/daemon/daemon-runtime-sync")
     vi.doUnmock("../../../heart/daemon/runtime-metadata")
+    const prepareDaemonRuntimeReplacement = vi.fn()
 
     try {
       const deps: OuroCliDeps = {
@@ -4762,6 +4763,7 @@ describe("ensureDaemonRunning", () => {
         checkSocketAlive: vi.fn(async () => true),
         cleanupStaleSocket: vi.fn(),
         fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+        prepareDaemonRuntimeReplacement,
 
       }
 
@@ -4789,6 +4791,7 @@ describe("ensureDaemonRunning", () => {
         localRepoRoot: "/Users/arimendelow/Projects/ouroboros-agent-harness-bb-health-status",
         localConfigFingerprint: "cfg-local",
         localManagedAgents: "slugger",
+        prepareDaemonRuntimeReplacement,
       }))
       await expect(syncDeps.fetchRunningRuntimeMetadata?.()).resolves.toEqual({
         version: "0.1.0-alpha.20",

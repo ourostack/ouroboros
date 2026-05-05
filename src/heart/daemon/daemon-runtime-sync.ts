@@ -16,6 +16,7 @@ export interface DaemonRuntimeSyncDeps {
     managedAgents?: string
   }>
   stopDaemon: () => Promise<void>
+  prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   cleanupStaleSocket: (socketPath: string) => void
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
   checkSocketAlive?: (socketPath: string) => Promise<boolean>
@@ -180,6 +181,23 @@ export async function ensureCurrentDaemonRuntime(
       try {
         deps.onProgress?.("stopping the older background service")
         await deps.stopDaemon()
+        if (deps.prepareDaemonRuntimeReplacement) {
+          deps.onProgress?.("disabling daemon auto-restart during replacement")
+          try {
+            await Promise.resolve(deps.prepareDaemonRuntimeReplacement())
+          } catch (error) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.runtime_sync_replacement_prepare_error",
+              message: "daemon runtime replacement preparation failed",
+              meta: {
+                socketPath: deps.socketPath,
+                reason: formatErrorReason(error),
+              },
+            })
+          }
+        }
       } catch (error) {
         const reason = formatErrorReason(error)
         result = {

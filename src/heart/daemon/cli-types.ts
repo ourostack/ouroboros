@@ -128,6 +128,7 @@ export interface OuroCliDeps {
   ensureCurrentVersionInstalled?: () => void
   syncGlobalOuroBotWrapper?: () => Promise<unknown> | unknown
   ensureSkillManagement?: () => Promise<void>
+  prepareDaemonRuntimeReplacement?: () => Promise<void> | void
   ensureDaemonBootPersistence?: (socketPath: string) => Promise<void> | void
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void

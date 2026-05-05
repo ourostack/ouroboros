@@ -5,7 +5,7 @@
  * process bindings. Tests inject mocks for all of these.
  */
 
-import { spawn } from "child_process"
+import { spawn, execSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
@@ -34,7 +34,7 @@ import { syncGlobalOuroBotWrapper as defaultSyncGlobalOuroBotWrapper } from "../
 import { pruneDaemonLogs as defaultPruneDaemonLogs } from "./logs-prune"
 import { readHealth, getDefaultHealthPath } from "./daemon-health"
 import { discoverLogFiles, formatLogLine, readLastLines, tailLogs as defaultTailLogs } from "./log-tailer"
-import { writeLaunchAgentPlist } from "./launchd"
+import { bootoutLaunchAgentByLabel, writeLaunchAgentPlist } from "./launchd"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand, checkDaemonSocketAlive } from "./socket-client"
 import { listSessionActivity } from "../session-activity"
 import {
@@ -239,6 +239,17 @@ function defaultEnsureDaemonBootPersistence(socketPath: string): void {
     socketPath,
     logDir,
     envPath: process.env.PATH,
+  })
+}
+
+function defaultPrepareDaemonRuntimeReplacement(): void {
+  if (process.platform !== "darwin") {
+    return
+  }
+
+  bootoutLaunchAgentByLabel({
+    exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) },
+    userUid: process.getuid?.() ?? 0,
   })
 }
 
@@ -639,6 +650,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     syncGlobalOuroBotWrapper: defaultSyncGlobalOuroBotWrapper,
     pruneDaemonLogs: defaultPruneDaemonLogs,
     ensureSkillManagement: defaultEnsureSkillManagement,
+    prepareDaemonRuntimeReplacement: defaultPrepareDaemonRuntimeReplacement,
     ensureDaemonBootPersistence: defaultEnsureDaemonBootPersistence,
     /* v8 ignore start -- dev-mode defaults: tests inject mocks for mode detection and binary resolution @preserve */
     detectMode: () => detectRuntimeMode(getRepoRoot()),

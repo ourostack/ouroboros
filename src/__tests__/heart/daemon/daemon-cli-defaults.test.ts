@@ -231,6 +231,122 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("boots out a loaded launch agent label before replacing a daemon runtime", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const execSync = vi.fn()
+
+    try {
+      Object.defineProperty(process, "getuid", { value: () => 501, configurable: true })
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/501/bot.ouro.daemon", { stdio: "ignore" })
+    } finally {
+      restorePlatform()
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("falls back to uid 0 when preparing runtime replacement without getuid", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-root-"))
+    const restorePlatform = withProcessPlatform("darwin")
+    const originalGetuid = Object.getOwnPropertyDescriptor(process, "getuid")
+    const execSync = vi.fn()
+
+    try {
+      Object.defineProperty(process, "getuid", { value: undefined, configurable: true })
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).toHaveBeenCalledWith("launchctl bootout gui/0/bot.ouro.daemon", { stdio: "ignore" })
+    } finally {
+      restorePlatform()
+      if (originalGetuid) {
+        Object.defineProperty(process, "getuid", originalGetuid)
+      } else {
+        Reflect.deleteProperty(process, "getuid")
+      }
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
+  it("skips daemon runtime replacement launchd bootout outside darwin", async () => {
+    vi.resetModules()
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-runtime-replace-nondarwin-"))
+    const restorePlatform = withProcessPlatform("linux")
+    const execSync = vi.fn()
+
+    try {
+      vi.doMock("net", () => ({ createConnection: vi.fn() }))
+      vi.doMock("child_process", () => ({ spawn: vi.fn(), execSync }))
+      vi.doMock("os", async () => {
+        const actual = await vi.importActual<typeof import("os")>("os")
+        return { ...actual, homedir: () => tempHome }
+      })
+      vi.doMock("../../../heart/identity", () => ({
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+        getAgentDaemonLogsDir: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs"),
+        getAgentDaemonLoggingConfigPath: () => path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"),
+      }))
+      vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+
+      const { createDefaultOuroCliDeps } = await import("../../../heart/daemon/daemon-cli")
+      const deps = createDefaultOuroCliDeps("/tmp/daemon.sock")
+
+      deps.prepareDaemonRuntimeReplacement?.()
+
+      expect(execSync).not.toHaveBeenCalled()
+    } finally {
+      restorePlatform()
+      fs.rmSync(tempHome, { recursive: true, force: true })
+    }
+  })
+
   it("uses the CurrentVersion symlink for version-managed production daemon plists", async () => {
     vi.resetModules()
 
