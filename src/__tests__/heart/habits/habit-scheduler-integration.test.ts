@@ -35,6 +35,27 @@ describe("createRealOsCronDeps", () => {
     expect(deps.envPath).toBe(process.env.PATH ?? "")
   })
 
+  it("falls back to an empty launchd PATH when PATH is unset", async () => {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.integration_test_start",
+      message: "testing real os cron deps PATH fallback",
+      meta: {},
+    })
+
+    const previousPath = process.env.PATH
+    delete process.env.PATH
+
+    try {
+      const { createRealOsCronDeps } = await import("../../../heart/daemon/os-cron-deps")
+      const deps = createRealOsCronDeps()
+
+      expect(deps.envPath).toBe("")
+    } finally {
+      process.env.PATH = previousPath
+    }
+  })
+
   it("writeFile and existsFile work with real fs", async () => {
     emitNervesEvent({
       component: "daemon",
