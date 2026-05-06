@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.553",
+      "changes": [
+        "Daemon startup on macOS now starts through launchd before opening the daemon socket when the LaunchAgent is available, preventing `ouro up` from leaving both a manual daemon and a launchd daemon alive after current-session bootstrap."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.552",
       "changes": [
         "`ouro up` now bootstraps the daemon LaunchAgent into the current login session when it is not already loaded, waits for the launchd-owned daemon socket to settle, and keeps the launchd adoption non-fatal if macOS refuses the bootstrap."

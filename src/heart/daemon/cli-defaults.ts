@@ -53,7 +53,10 @@ import {
 
 // ── Default implementations ──
 
-export function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
+export async function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
+  const launchdStarted = await startDaemonProcessViaLaunchd(socketPath)
+  if (launchdStarted) return launchdStarted
+
   const entry = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
   // Redirect stdio to /dev/null via file descriptors — using 'ignore' causes EPIPE
   // when the daemon's logging system writes to stderr after the parent exits.
@@ -65,7 +68,7 @@ export function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: nu
   })
   child.unref()
   // Don't close fds — the child process needs them. They'll be cleaned up when the parent exits.
-  return Promise.resolve({ pid: child.pid ?? null })
+  return { pid: child.pid ?? null }
 }
 
 function defaultWriteStdout(text: string): void {
@@ -209,6 +212,36 @@ function launchAgentDomain(userUid = currentUserUid()): string {
   return `gui/${userUid}`
 }
 
+function writeDaemonBootPlist(socketPath: string): string {
+  const homeDir = os.homedir()
+  const writeDeps = {
+    writeFile: (filePath: string, content: string) => fs.writeFileSync(filePath, content, "utf-8"),
+    mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
+    homeDir,
+  }
+
+  const entryPath = resolveDaemonBootEntryPath(homeDir)
+
+  /* v8 ignore next -- covered via mock in daemon-cli-defaults.test.ts; v8 on CI attributes the real fs.existsSync branch to the non-mock load @preserve */
+  if (!fs.existsSync(entryPath)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.entry_path_missing",
+      message: "entryPath does not exist on disk — plist may point to a stale location. Run 'ouro daemon install' from the correct location.",
+      meta: { entryPath },
+    })
+  }
+
+  return writeLaunchAgentPlist(writeDeps, {
+    nodePath: process.execPath,
+    entryPath,
+    socketPath,
+    logDir: getAgentDaemonLogsDir(),
+    envPath: process.env.PATH,
+  })
+}
+
 interface LaunchAgentLoadedDeps {
   exec: (cmd: string) => void
   userUid?: number
@@ -222,6 +255,16 @@ export function isDaemonLaunchAgentLoaded(deps?: LaunchAgentLoadedDeps): boolean
     return true
   } catch {
     return false
+  }
+}
+
+function readDaemonLaunchAgentPid(): number | null {
+  try {
+    const output = execSync(`launchctl print ${launchAgentDomain()}/${DAEMON_PLIST_LABEL}`, { encoding: "utf-8" })
+    const match = output.match(/^\s*pid = (\d+)/m)
+    return match ? Number(match[1]) : null
+  } catch {
+    return null
   }
 }
 
@@ -271,40 +314,53 @@ export async function waitForBootstrappedDaemonSocket(
   })
 }
 
+async function startDaemonProcessViaLaunchd(socketPath: string): Promise<{ pid: number | null } | null> {
+  if (process.platform !== "darwin") {
+    return null
+  }
+
+  const plistPath = writeDaemonBootPlist(socketPath)
+  const userUid = currentUserUid()
+  const domain = launchAgentDomain(userUid)
+
+  try {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_start",
+      message: "starting daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
+      execSync(`launchctl kickstart -k ${domain}/${DAEMON_PLIST_LABEL}`, { stdio: "ignore" })
+    } else {
+      execSync(`launchctl bootstrap ${domain} "${plistPath}"`, { stdio: "ignore" })
+    }
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_end",
+      message: "daemon launch agent started for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL },
+    })
+    await waitForBootstrappedDaemonSocket(socketPath)
+    return { pid: readDaemonLaunchAgentPid() }
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.launchd_bootstrap_error",
+      message: "failed to start daemon launch agent for current login session",
+      meta: { plistPath, label: DAEMON_PLIST_LABEL, error: error instanceof Error ? error.message : String(error) },
+    })
+    return null
+  }
+}
+
 async function defaultEnsureDaemonBootPersistence(socketPath: string): Promise<void> {
   if (process.platform !== "darwin") {
     return
   }
 
-  const homeDir = os.homedir()
-  const writeDeps = {
-    writeFile: (filePath: string, content: string) => fs.writeFileSync(filePath, content, "utf-8"),
-    mkdirp: (dir: string) => fs.mkdirSync(dir, { recursive: true }),
-    homeDir,
-  }
-
-  const entryPath = resolveDaemonBootEntryPath(homeDir)
-
-  /* v8 ignore next -- covered via mock in daemon-cli-defaults.test.ts; v8 on CI attributes the real fs.existsSync branch to the non-mock load @preserve */
-  if (!fs.existsSync(entryPath)) {
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.entry_path_missing",
-      message: "entryPath does not exist on disk — plist may point to a stale location. Run 'ouro daemon install' from the correct location.",
-      meta: { entryPath },
-    })
-  }
-
-  const logDir = getAgentDaemonLogsDir()
-
-  const plistPath = writeLaunchAgentPlist(writeDeps, {
-    nodePath: process.execPath,
-    entryPath,
-    socketPath,
-    logDir,
-    envPath: process.env.PATH,
-  })
+  const plistPath = writeDaemonBootPlist(socketPath)
 
   const userUid = currentUserUid()
   if (isDaemonLaunchAgentLoaded({ exec: (cmd: string) => { execSync(cmd, { stdio: "ignore" }) }, userUid })) {
@@ -315,31 +371,6 @@ async function defaultEnsureDaemonBootPersistence(socketPath: string): Promise<v
       meta: { plistPath, label: DAEMON_PLIST_LABEL },
     })
     return
-  }
-
-  try {
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.launchd_bootstrap_start",
-      message: "bootstrapping daemon launch agent for current login session",
-      meta: { plistPath, label: DAEMON_PLIST_LABEL },
-    })
-    execSync(`launchctl bootstrap ${launchAgentDomain(userUid)} "${plistPath}"`, { stdio: "ignore" })
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.launchd_bootstrap_end",
-      message: "daemon launch agent bootstrapped for current login session",
-      meta: { plistPath, label: DAEMON_PLIST_LABEL },
-    })
-    await waitForBootstrappedDaemonSocket(socketPath)
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.launchd_bootstrap_error",
-      message: "failed to bootstrap daemon launch agent for current login session",
-      meta: { plistPath, label: DAEMON_PLIST_LABEL, error: error instanceof Error ? error.message : String(error) },
-    })
   }
 }
 
