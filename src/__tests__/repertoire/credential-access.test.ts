@@ -131,6 +131,15 @@ describe("credential access", () => {
     expect(mockBitwardenGet).toHaveBeenCalledWith("__ouro_vault_probe__")
   })
 
+  it("fails fast when probing an agent with no vault section", async () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ version: 2 }))
+
+    await expect(probeCredentialVaultAccess("slugger", "candidate-unlock")).rejects.toThrow(
+      "credential vault is not configured in /bundles/slugger.ouro/agent.json. Run 'ouro vault create --agent slugger' to create this agent's vault before loading or storing credentials.",
+    )
+    expect(mockBitwardenCtor).not.toHaveBeenCalled()
+  })
+
   it("uses the current agent name when no agent is supplied", () => {
     mockGetAgentName.mockReturnValue("current-agent")
     mockReadFileSync.mockReturnValue(JSON.stringify({

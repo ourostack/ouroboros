@@ -129,7 +129,12 @@ function isBwAlreadyLoggedInError(err: Error): boolean {
 
 function isBwLoggedOutOrUnauthenticatedError(err: Error): boolean {
   const message = err.message.toLowerCase()
-  return message.includes("not logged in") || message.includes("not authenticated") || message.includes("unauthenticated")
+  return (
+    message.includes("not logged in") ||
+    message.includes("not authenticated") ||
+    message.includes("unauthenticated") ||
+    message.includes("local bitwarden session because it is locked, missing, or expired")
+  )
 }
 
 function shouldUseStructuredItemLookup(domain: string): boolean {
@@ -596,8 +601,8 @@ export class BitwardenCredentialStore implements CredentialStore {
     }
   }
 
-  private normalizedServerUrl(value: string | undefined): string {
-    return (value ?? "").trim().replace(/\/+$/, "").toLowerCase()
+  private normalizedServerUrl(value: string): string {
+    return value.trim().replace(/\/+$/, "").toLowerCase()
   }
 
   private shouldRebuildLocalProfile(status: BwStatus): boolean {
@@ -650,9 +655,11 @@ export class BitwardenCredentialStore implements CredentialStore {
         email: this.email,
         serverUrl: this.serverUrl,
         reason,
+        /* v8 ignore next -- defensive: every profile rebuild path starts from a locked/unlocked bw status @preserve */
         previousStatus: status.status ?? "unknown",
         previousServerUrl: status.serverUrl ?? null,
         previousUserEmail: status.userEmail ?? null,
+        /* v8 ignore next -- defensive: internal rebuild callers pass Error or undefined causes @preserve */
         error: cause instanceof Error ? cause.message : cause ? String(cause) : undefined,
       },
     })
@@ -688,6 +695,7 @@ export class BitwardenCredentialStore implements CredentialStore {
       const err = error as Error
       if (!isBwInvalidUnlockSecretMessage(err.message)) throw err
       await this.rebuildLocalProfile(reason, status, err)
+      /* v8 ignore next -- defensive: rebuildLocalProfile always stores a string session token on success @preserve */
       return this.sessionToken ?? ""
     }
   }

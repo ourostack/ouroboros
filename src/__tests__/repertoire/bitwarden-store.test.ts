@@ -300,6 +300,214 @@ describe("BitwardenCredentialStore", () => {
       }
     })
 
+    it("rebuilds a stale local bw profile when the saved profile points at a different server", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({
+            status: "locked",
+            serverUrl: "https://other.vault/",
+            userEmail: "ouroboros@ouro.bot",
+          }), "")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls.map((call) => call[0])).toEqual(["status", "logout", "config", "login", "sync"])
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_local_profile_rebuild",
+        meta: expect.objectContaining({
+          previousServerUrl: "https://other.vault/",
+          previousUserEmail: "ouroboros@ouro.bot",
+        }),
+      }))
+    })
+
+    it("treats an already-logged-out response as successful local profile cleanup", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({
+            status: "locked",
+            serverUrl: "https://vault.ouroboros.bot",
+            userEmail: "someone-else@ouro.bot",
+          }), "")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(new Error("not logged in"), "", "You are not logged in.")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls.map((call) => call[0])).toEqual(["status", "logout", "config", "login", "sync"])
+      expect(nervesEvents.some((event) => event.event === "repertoire.bw_local_profile_logout_failed")).toBe(false)
+    })
+
+    it("keeps rebuilding and logs context when local profile logout fails", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({
+            status: "locked",
+            serverUrl: "https://vault.ouroboros.bot",
+            userEmail: "someone-else@ouro.bot",
+          }), "")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(new Error("profile cleanup failed"), "", "profile cleanup failed")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls.map((call) => call[0])).toEqual(["status", "logout", "config", "login", "sync"])
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_local_profile_logout_failed",
+        meta: expect.objectContaining({
+          email: "ouroboros@ouro.bot",
+          serverUrl: "https://vault.ouroboros.bot",
+          error: "bw CLI error: profile cleanup failed",
+        }),
+      }))
+    })
+
+    it("rebuilds a matching local bw profile when unlock rejects but fresh login succeeds", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({
+            status: "locked",
+            serverUrl: "https://vault.ouroboros.bot",
+            userEmail: "ouroboros@ouro.bot",
+          }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls.map((call) => call[0])).toEqual(["status", "unlock", "logout", "config", "login", "sync"])
+      expect(nervesEvents.some((event) => event.event === "repertoire.bw_local_profile_rebuild")).toBe(true)
+    })
+
+    it("records omitted bw status coordinates as null during unlock-triggered rebuilds", async () => {
+      const calls: string[][] = []
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(calls.map((call) => call[0])).toEqual(["status", "config", "unlock", "logout", "config", "login", "sync"])
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_local_profile_rebuild",
+        meta: expect.objectContaining({
+          previousServerUrl: null,
+          previousUserEmail: null,
+        }),
+      }))
+    })
+
     it("does not swallow config-server failures that are not logout-required", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
