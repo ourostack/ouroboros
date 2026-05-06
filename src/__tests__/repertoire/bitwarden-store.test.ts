@@ -240,12 +240,64 @@ describe("BitwardenCredentialStore", () => {
           cb(new Error("invalid master password"), "", "invalid master password")
           return
         }
+        if (args[0] === "login") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
         cb(null, "", "")
       })
 
       await expect(store.login()).rejects.toThrow(
         "bw CLI error: bw CLI rejected the saved vault unlock secret for this machine",
       )
+    })
+
+    it("rebuilds a stale local bw profile before using the saved unlock secret", async () => {
+      const calls: string[][] = []
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-stale-profile-"))
+      const isolatedStore = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { appDataDir },
+      )
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        calls.push(args)
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({
+            status: "locked",
+            serverUrl: "https://vault.ouroboros.bot",
+            userEmail: "someone-else@ouro.bot",
+          }), "")
+          return
+        }
+        if (args[0] === "logout") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, '{"access_token":"rebuilt-session"}', "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      try {
+        await isolatedStore.login()
+        expect(calls.map((call) => call[0])).toEqual(["status", "logout", "config", "login", "sync"])
+        expect(calls.find((call) => call[0] === "login")).toEqual(["login", "ouroboros@ouro.bot", "--raw", "--passwordenv", "OURO_BW_MASTER_PASSWORD"])
+        expect(nervesEvents.some((event) => event.event === "repertoire.bw_local_profile_rebuild")).toBe(true)
+      } finally {
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
     })
 
     it("does not swallow config-server failures that are not logout-required", async () => {
@@ -2349,7 +2401,7 @@ describe("BitwardenCredentialStore", () => {
         cb(null, "", "")
       })
 
-      await expect(store.login()).rejects.toThrow(/incorrect/)
+      await expect(store.login()).rejects.toThrow("bw CLI rejected the saved vault unlock secret")
       // Should only try login once — no retry on auth errors
       expect(statusCalls).toBe(1)
     })

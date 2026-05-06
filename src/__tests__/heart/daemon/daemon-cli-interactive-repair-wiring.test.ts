@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 const vaultMocks = vi.hoisted(() => ({
   storeVaultUnlockSecret: vi.fn(() => ({ kind: "plaintext-file", secure: false, location: "/tmp/ouro-unlock" })),
   resetCredentialStore: vi.fn(),
+  probeCredentialVaultAccess: vi.fn(async () => undefined),
   credentialProbeGet: vi.fn(async () => null),
 }))
 
@@ -88,6 +89,7 @@ vi.mock("../../../repertoire/vault-unlock", () => ({
 
 vi.mock("../../../repertoire/credential-access", () => ({
   resetCredentialStore: () => vaultMocks.resetCredentialStore(),
+  probeCredentialVaultAccess: (...args: unknown[]) => vaultMocks.probeCredentialVaultAccess(...args),
   getCredentialStore: () => ({
     get: (...args: unknown[]) => vaultMocks.credentialProbeGet(...args),
   }),
@@ -168,6 +170,8 @@ describe("ouro up: interactive repair wiring", () => {
     })
     vaultMocks.storeVaultUnlockSecret.mockClear()
     vaultMocks.resetCredentialStore.mockClear()
+    vaultMocks.probeCredentialVaultAccess.mockClear()
+    vaultMocks.probeCredentialVaultAccess.mockResolvedValue(undefined)
     vaultMocks.credentialProbeGet.mockClear()
     providerCredentialMocks.refreshProviderCredentialPool.mockReset()
     providerCredentialMocks.refreshProviderCredentialPool.mockResolvedValue({ ok: true, pool: { providers: {} } })
@@ -825,6 +829,8 @@ describe("ouro up: interactive repair wiring", () => {
     })
     vaultMocks.storeVaultUnlockSecret.mockClear()
     vaultMocks.resetCredentialStore.mockClear()
+    vaultMocks.probeCredentialVaultAccess.mockClear()
+    vaultMocks.probeCredentialVaultAccess.mockResolvedValue(undefined)
     vaultMocks.credentialProbeGet.mockClear()
 
     let capturedRunVaultUnlock: ((agent: string) => Promise<void>) | undefined
@@ -848,13 +854,17 @@ describe("ouro up: interactive repair wiring", () => {
     await capturedRunVaultUnlock!("test-agent")
 
     expect(promptSecret).toHaveBeenCalledWith("Ouro vault unlock secret for test-agent@ouro.bot: ")
+    expect(vaultMocks.probeCredentialVaultAccess).toHaveBeenCalledWith(
+      "test-agent",
+      "unlock-material",
+      { homeDir: "/tmp/ouro-home" },
+    )
     expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
       { homeDir: "/tmp/ouro-home", store: undefined },
     )
     expect(vaultMocks.resetCredentialStore).toHaveBeenCalled()
-    expect(vaultMocks.credentialProbeGet).toHaveBeenCalledWith("__ouro_vault_probe__")
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("vault unlocked for test-agent"))
   })
 

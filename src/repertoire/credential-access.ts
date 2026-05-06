@@ -50,13 +50,13 @@ function loadVaultSectionForAgent(agentName: string): {
   }
 }
 
-function bitwardenAppDataDir(agentName: string, vaultConfig: { serverUrl: string; email: string }): string {
+function bitwardenAppDataDir(agentName: string, vaultConfig: { serverUrl: string; email: string }, homeDir = os.homedir()): string {
   const digest = crypto
     .createHash("sha256")
     .update(`${agentName}:${vaultConfig.serverUrl}:${vaultConfig.email}`)
     .digest("hex")
     .slice(0, 24)
-  return path.join(os.homedir(), ".ouro-cli", "bitwarden", digest)
+  return path.join(homeDir, ".ouro-cli", "bitwarden", digest)
 }
 
 export function getCredentialStore(agentNameInput?: string): CredentialStore {
@@ -99,6 +99,26 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
   })
 
   return store
+}
+
+export async function probeCredentialVaultAccess(
+  agentNameInput: string,
+  unlockSecret: string,
+  options: { homeDir?: string } = {},
+): Promise<void> {
+  const agentName = agentNameInput
+  const { configPath, vault } = loadVaultSectionForAgent(agentName)
+  if (!vault || typeof vault.email !== "string" || vault.email.trim().length === 0) {
+    throw new Error(credentialVaultNotConfiguredError(agentName, configPath))
+  }
+  const vaultConfig = identity.resolveVaultConfig(agentName, vault)
+  const store = new BitwardenCredentialStore(
+    vaultConfig.serverUrl,
+    vaultConfig.email,
+    unlockSecret,
+    { appDataDir: bitwardenAppDataDir(agentName, vaultConfig, options.homeDir) },
+  )
+  await store.get("__ouro_vault_probe__")
 }
 
 export function resetCredentialStore(): void {

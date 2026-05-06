@@ -23,12 +23,13 @@ vi.mock("node:os", () => ({
 }))
 
 const mockBitwardenCtor = vi.fn()
+const mockBitwardenGet = vi.fn(async () => null)
 vi.mock("../../repertoire/bitwarden-store", () => ({
   BitwardenCredentialStore: class MockBitwardenCredentialStore {
     constructor(...args: unknown[]) {
       mockBitwardenCtor(...args)
     }
-    get = vi.fn()
+    get = (...args: unknown[]) => mockBitwardenGet(...args)
     getRawSecret = vi.fn()
     store = vi.fn()
     list = vi.fn()
@@ -48,7 +49,7 @@ vi.mock("../../heart/identity", async () => {
   }
 })
 
-import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
+import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
 
 describe("credential access", () => {
   beforeEach(() => {
@@ -113,6 +114,21 @@ describe("credential access", () => {
     const third = getCredentialStore("slugger")
     expect(third).not.toBe(first)
     expect(mockBitwardenCtor).toHaveBeenCalledTimes(2)
+  })
+
+  it("probes a candidate unlock secret without reading or replacing the local unlock store", async () => {
+    await probeCredentialVaultAccess("slugger", "candidate-unlock", { homeDir: "/tmp/ouro-home" })
+
+    expect(mockReadVaultUnlockSecret).not.toHaveBeenCalled()
+    expect(mockBitwardenCtor).toHaveBeenCalledWith(
+      "https://custom.vault",
+      "custom@ouro.bot",
+      "candidate-unlock",
+      expect.objectContaining({
+        appDataDir: expect.stringContaining("/tmp/ouro-home/.ouro-cli/bitwarden/"),
+      }),
+    )
+    expect(mockBitwardenGet).toHaveBeenCalledWith("__ouro_vault_probe__")
   })
 
   it("uses the current agent name when no agent is supplied", () => {

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.557",
+      "changes": [
+        "`ouro vault unlock` now validates the typed unlock secret against the agent vault before replacing this machine's saved local unlock material, so a failed unlock attempt cannot poison a previously working Keychain/DPAPI/Secret Service/plaintext entry.",
+        "The Bitwarden adapter now rebuilds stale per-agent local `bw` profiles when they point at the wrong vault account/server or reject a saved unlock during unlock, reducing restart-time false locked-vault failures while keeping wrong saved secrets explicit.",
+        "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault unlock hardening release."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.556",
       "changes": [
         "`ouro up` runtime replacement now captures the daemon boot timestamp before starting the replacement process, so a fast healthy daemon is not rejected for publishing health before the monitor begins polling."

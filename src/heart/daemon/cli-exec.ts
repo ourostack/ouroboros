@@ -26,7 +26,7 @@ import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { createTaskModule } from "../../repertoire/tasks"
-import { getCredentialStore, resetCredentialStore } from "../../repertoire/credential-access"
+import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
@@ -1890,6 +1890,12 @@ async function executeVaultUnlock(
   const progress = createHumanCommandProgress(deps, "vault unlock")
   let store: ReturnType<typeof storeVaultUnlockSecret> | undefined
   try {
+    await runCommandProgressPhase(
+      progress,
+      "checking vault access",
+      () => probeCredentialVaultAccess(command.agent, unlockSecret, { homeDir: deps.homeDir }),
+      () => "ok",
+    )
     store = await runCommandProgressPhase(
       progress,
       "saving local unlock",
@@ -1900,15 +1906,7 @@ async function executeVaultUnlock(
       }, unlockSecret, { homeDir: deps.homeDir, store: command.store }),
       (saved) => saved.kind,
     )
-    await runCommandProgressPhase(
-      progress,
-      "checking vault access",
-      async () => {
-        resetCredentialStore()
-        await getCredentialStore(command.agent).get("__ouro_vault_probe__")
-      },
-      () => "ok",
-    )
+    resetCredentialStore()
   } finally {
     progress.end()
   }

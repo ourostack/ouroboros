@@ -45,6 +45,7 @@ const mockVaultDeps = vi.hoisted(() => ({
     fix: "run ouro vault unlock",
   })),
   resetCredentialStore: vi.fn(),
+  probeCredentialVaultAccess: vi.fn(async () => undefined),
   credentialProbeGet: vi.fn(async () => null),
   credentialProbeList: vi.fn(async () => []),
   rawSecrets: new Map<string, string>(),
@@ -89,6 +90,7 @@ vi.mock("../../../repertoire/vault-unlock", async () => {
 
 vi.mock("../../../repertoire/credential-access", () => ({
   resetCredentialStore: () => mockVaultDeps.resetCredentialStore(),
+  probeCredentialVaultAccess: (...args: unknown[]) => mockVaultDeps.probeCredentialVaultAccess(...args),
   getCredentialStore: (agentName = "Slugger") => ({
     get: (...args: unknown[]) => mockVaultDeps.credentialProbeGet(...args),
     getRawSecret: async (domain: string) => {
@@ -639,6 +641,8 @@ afterEach(() => {
     fix: "run ouro vault unlock",
   })
   mockVaultDeps.resetCredentialStore.mockClear()
+  mockVaultDeps.probeCredentialVaultAccess.mockReset()
+  mockVaultDeps.probeCredentialVaultAccess.mockResolvedValue(undefined)
   mockVaultDeps.credentialProbeGet.mockReset()
   mockVaultDeps.credentialProbeGet.mockResolvedValue(null)
   mockVaultDeps.credentialProbeList.mockReset()
@@ -4964,17 +4968,22 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("vault unlocked for Slugger")
     expect(result).toContain("explicit plaintext fallback")
-    expect(output).toContain("... saving local unlock")
-    expect(output).toContain("✓ saving local unlock")
     expect(output).toContain("... checking vault access")
     expect(output).toContain("✓ checking vault access")
+    expect(output).toContain("... saving local unlock")
+    expect(output).toContain("✓ saving local unlock")
+    expect(output.indexOf("... checking vault access")).toBeLessThan(output.indexOf("... saving local unlock"))
+    expect(mockVaultDeps.probeCredentialVaultAccess).toHaveBeenCalledWith(
+      "Slugger",
+      "unlock-material",
+      { homeDir },
+    )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
       { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
       "unlock-material",
       { homeDir, store: "plaintext-file" },
     )
     expect(mockVaultDeps.resetCredentialStore).toHaveBeenCalled()
-    expect(mockVaultDeps.credentialProbeGet).toHaveBeenCalledWith("__ouro_vault_probe__")
 
     mockVaultDeps.storeVaultUnlockSecret.mockReturnValueOnce({ kind: "macos-keychain", secure: true, location: "macOS Keychain" })
     const secureResult = await runOuroCli([
@@ -4987,6 +4996,32 @@ describe("provider CLI command execution", () => {
     }))
     expect(secureResult).toContain("local unlock store: macos-keychain")
     expect(secureResult).not.toContain("explicit plaintext fallback")
+  })
+
+  it("vault unlock does not overwrite local unlock material when the candidate secret fails validation", async () => {
+    emitTestEvent("provider cli vault unlock validates before storing")
+    const bundlesRoot = makeTempDir("provider-cli-vault-unlock-validate-bundles")
+    const homeDir = makeTempDir("provider-cli-vault-unlock-validate-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    mockVaultDeps.probeCredentialVaultAccess.mockRejectedValueOnce(new Error("bw CLI rejected the saved vault unlock secret"))
+
+    await expect(runOuroCli([
+      "vault",
+      "unlock",
+      "--agent",
+      "Slugger",
+      "--store",
+      "plaintext-file",
+    ], makeCliDeps(homeDir, bundlesRoot, {
+      promptSecret: async () => "wrong-unlock-material",
+    }))).rejects.toThrow("bw CLI rejected the saved vault unlock secret")
+
+    expect(mockVaultDeps.probeCredentialVaultAccess).toHaveBeenCalledWith(
+      "Slugger",
+      "wrong-unlock-material",
+      { homeDir },
+    )
+    expect(mockVaultDeps.storeVaultUnlockSecret).not.toHaveBeenCalled()
   })
 
   it("vault unlock rejects SerpentGuide and non-interactive runs", async () => {
