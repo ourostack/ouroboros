@@ -16,6 +16,46 @@ const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
   "dist/outlook-ui/",
 ]
 
+const IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES = [
+  ".git/",
+  "coverage/",
+  "node_modules/",
+]
+
+function escapedRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+const removedProviderSelectionFile = ["providers", "json"].join(".")
+const removedProviderModule = ["provider", "state"].join("-")
+const removedProviderCamel = ["provider", "State"].join("")
+const removedProviderPascal = ["Provider", "State"].join("")
+const removedDriftModule = ["drift", "detection"].join("-")
+
+const DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS = [
+  { label: "removed provider selection file", pattern: new RegExp(escapedRegExp(removedProviderSelectionFile)) },
+  {
+    label: "removed provider state module",
+    pattern: new RegExp([
+      escapedRegExp(removedProviderModule),
+      escapedRegExp(removedProviderCamel),
+      escapedRegExp(removedProviderPascal),
+    ].join("|")),
+  },
+  { label: "removed drift module", pattern: new RegExp(escapedRegExp(removedDriftModule)) },
+]
+
+const TEXT_PACKAGE_ASSET_EXTENSIONS = new Set([
+  ".cjs",
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".mjs",
+  ".txt",
+])
+
 function toPackagePath(filePath) {
   return filePath.split(path.sep).join("/")
 }
@@ -32,6 +72,9 @@ function listPackageFiles(packageRoot, deps = defaultDeps()) {
       const absolutePath = deps.join(currentDir, entry.name)
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
       if (entry.isDirectory()) {
+        if (IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES.some((ignored) => `${relativePath}/`.startsWith(ignored))) {
+          continue
+        }
         walk(absolutePath, relativePath)
       } else if (entry.isFile()) {
         files.push(toPackagePath(relativePath))
@@ -44,13 +87,18 @@ function listPackageFiles(packageRoot, deps = defaultDeps()) {
 }
 
 function validatePackageAssets(packageRoot, deps = defaultDeps()) {
-  const packageFiles = new Set(listPackageFiles(packageRoot, deps))
+  const packageFiles = listPackageFiles(packageRoot, deps)
+  const packageFileSet = new Set(packageFiles)
   const missing = REQUIRED_PACKAGE_ASSET_PATHS
-    .filter((assetPath) => !packageFiles.has(assetPath))
+    .filter((assetPath) => !packageFileSet.has(assetPath))
     .sort()
-  const disallowed = Array.from(packageFiles)
+  const disallowedByPath = packageFiles
     .filter((assetPath) => DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES.some((prefix) => assetPath.startsWith(prefix)))
     .sort()
+  const disallowedByText = packageFiles
+    .flatMap((assetPath) => disallowedTextMatches(packageRoot, assetPath, deps))
+    .sort()
+  const disallowed = [...disallowedByPath, ...disallowedByText].sort()
 
   if (missing.length === 0 && disallowed.length === 0) {
     return {
@@ -77,6 +125,20 @@ function validatePackageAssets(packageRoot, deps = defaultDeps()) {
     disallowed,
     message: parts.join("; "),
   }
+}
+
+function disallowedTextMatches(packageRoot, assetPath, deps) {
+  if (!TEXT_PACKAGE_ASSET_EXTENSIONS.has(path.extname(assetPath))) return []
+  const absolutePath = deps.join(packageRoot, assetPath)
+  let content = ""
+  try {
+    content = deps.readFileSync(absolutePath, "utf8")
+  } catch {
+    return []
+  }
+  return DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS
+    .filter(({ pattern }) => pattern.test(content))
+    .map(({ label }) => `${assetPath} contains ${label}`)
 }
 
 function packageRootFromBinPath(binPath, packageName = "@ouro.bot/cli", deps = defaultDeps()) {
@@ -151,6 +213,8 @@ function defaultDeps() {
 
 module.exports = {
   DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES,
+  DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS,
+  IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES,
   REQUIRED_PACKAGE_ASSET_PATHS,
   listPackageFiles,
   packageRootFromBinPath,

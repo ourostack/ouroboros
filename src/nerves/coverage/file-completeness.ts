@@ -90,16 +90,6 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // buildDaemonHealthState → DaemonHealthWriter) owns observability via
   // daemon.health_written when the rolled-up state is persisted.
   "daemon/daemon-rollup",
-  // Drift comparator + thin I/O loader: `detectProviderBindingDrift`
-  // is a pure intent-vs-observed comparator with no side effects;
-  // `loadDriftInputsForAgent` is a small fs-read wrapper that returns
-  // `null` on missing/invalid state rather than emitting. The caller
-  // (daemon-entry.ts buildDaemonHealthState's per-agent drift probe)
-  // owns observability — drift findings ride along through
-  // `daemon.health_written` as part of the rolled-up state, and
-  // `agent-config-check.ts` carries `driftFindings` through its
-  // existing instrumentation. Same pattern as `daemon-rollup`.
-  "daemon/drift-detection",
   // Attachment helper modules: generic file-path/extension utilities and the
   // source registry are pure support seams. The orchestrator/adapters that
   // call them own the observability.

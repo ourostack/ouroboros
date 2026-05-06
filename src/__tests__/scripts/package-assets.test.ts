@@ -6,6 +6,8 @@ import * as path from "path"
 const {
   REQUIRED_PACKAGE_ASSET_PATHS,
   DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES,
+  DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS,
+  IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES,
   listPackageFiles,
   packageRootFromBinPath,
   validatePackageAssets,
@@ -50,6 +52,22 @@ describe("package asset validation", () => {
     expect(DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES).toContain("dist/outlook-ui/")
   })
 
+  it("declares removed provider package text as disallowed", () => {
+    expect(DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS.map((entry: { label: string }) => entry.label)).toEqual([
+      "removed provider selection file",
+      "removed provider state module",
+      "removed drift module",
+    ])
+  })
+
+  it("declares local-only package asset roots as ignored", () => {
+    expect(IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES).toEqual([
+      ".git/",
+      "coverage/",
+      "node_modules/",
+    ])
+  })
+
   it("passes when required assets are present and no stale paths exist", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
@@ -77,6 +95,16 @@ describe("package asset validation", () => {
       "a/file.txt",
       "b/file.txt",
     ])
+  })
+
+  it("does not scan local build and dependency artifacts", () => {
+    const root = makeRoot()
+    writeFile(root, "dist/current.js")
+    writeFile(root, "coverage/lcov-report/stale.html")
+    writeFile(root, "node_modules/package/stale.js")
+    writeFile(root, ".git/objects/stale")
+
+    expect(listPackageFiles(root)).toEqual(["dist/current.js"])
   })
 
   it("treats a missing package root as missing all required package assets", () => {
@@ -128,6 +156,26 @@ describe("package asset validation", () => {
     expect(result.ok).toBe(false)
     expect(result.disallowed).toEqual(["dist/outlook-ui/index.html"])
     expect(result.message).toContain("dist/outlook-ui/index.html")
+  })
+
+  it("fails when removed provider package text remains in package assets", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const removedProviderSelectionFile = ["providers", "json"].join(".")
+    const removedProviderModule = ["provider", "state"].join("-")
+    const removedDriftModule = ["drift", "detection"].join("-")
+    writeFile(root, "dist/nerves/coverage/file-completeness.js", `"daemon/${removedDriftModule}"`)
+    writeFile(root, "dist/heart/daemon/doctor.js", `"state/${removedProviderSelectionFile}"`)
+    writeFile(root, "dist/heart/provider-binding-resolver.js", `require("./${removedProviderModule}")`)
+
+    const result = validatePackageAssets(root)
+
+    expect(result.ok).toBe(false)
+    expect(result.disallowed).toEqual([
+      "dist/heart/daemon/doctor.js contains removed provider selection file",
+      "dist/heart/provider-binding-resolver.js contains removed provider state module",
+      "dist/nerves/coverage/file-completeness.js contains removed drift module",
+    ])
   })
 
   it("derives the package root from a symlinked npm .bin path", () => {
