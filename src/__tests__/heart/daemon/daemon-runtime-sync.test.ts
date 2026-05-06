@@ -272,6 +272,29 @@ describe("ensureCurrentDaemonRuntime", () => {
     expect(result.message).toContain("pid unknown")
   })
 
+  it("passes a pre-start boot timestamp to the replacement startup monitor", async () => {
+    let nowMs = 10_000
+    const waitForDaemonStartup = vi.fn(async () => ({ ok: true as const }))
+    const deps = {
+      socketPath: "/tmp/ouro-test.sock",
+      localVersion: "0.1.0-alpha.20",
+      fetchRunningVersion: vi.fn(async () => "0.1.0-alpha.6"),
+      stopDaemon: vi.fn(async () => {}),
+      cleanupStaleSocket: vi.fn(),
+      now: () => nowMs,
+      startDaemonProcess: vi.fn(async () => {
+        nowMs = 20_000
+        return { pid: 777 }
+      }),
+      waitForDaemonStartup,
+    }
+
+    const result = await ensureCurrentDaemonRuntime(deps)
+
+    expect(result.ok).toBe(true)
+    expect(waitForDaemonStartup).toHaveBeenCalledWith({ pid: 777, bootStartedAtMs: 10_000 })
+  })
+
   it("uses the replacement startup check result when the restarted daemon never answers", async () => {
     const waitForDaemonStartup = vi.fn(async () => ({ ok: false as const }))
     const deps = {
@@ -286,7 +309,7 @@ describe("ensureCurrentDaemonRuntime", () => {
 
     const result = await ensureCurrentDaemonRuntime(deps)
 
-    expect(waitForDaemonStartup).toHaveBeenCalledWith({ pid: null })
+    expect(waitForDaemonStartup).toHaveBeenCalledWith({ pid: null, bootStartedAtMs: expect.any(Number) })
     expect(result).toEqual({
       ok: false,
       alreadyRunning: false,

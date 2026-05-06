@@ -1190,9 +1190,10 @@ export async function ensureDaemonRunning(
       startDaemonProcess: deps.startDaemonProcess,
       checkSocketAlive: deps.checkSocketAlive,
       onProgress: deps.reportDaemonStartupPhase,
-      waitForDaemonStartup: async ({ pid }) => {
+      now: deps.now,
+      waitForDaemonStartup: async ({ pid, bootStartedAtMs }) => {
         const startupFailure = await waitForDaemonStartup(deps, {
-          bootStartedAtMs: (deps.now ?? Date.now)(),
+          bootStartedAtMs,
           pid,
           serviceLabel: "replacement background service",
           readLatestDaemonEvent: readLatestDaemonStartupEvent,
