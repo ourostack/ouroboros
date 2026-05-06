@@ -81,7 +81,7 @@ describe("parseRepairProposals", () => {
         actions: [
           { kind: "vault-unlock", agent: "a", provider: "anthropic", reason: "r1" },
           { kind: "provider-retry", agent: "b", reason: "transient" },
-          { kind: "provider-use", agent: "c", provider: "openai", reason: "drift" },
+          { kind: "provider-use", agent: "c", provider: "openai", reason: "selection mismatch" },
         ],
       }),
       "```",
@@ -242,8 +242,8 @@ describe("parseRepairProposals", () => {
       "```json",
       JSON.stringify({
         actions: [
-          { kind: "provider-use", agent: "a", reason: "drift", lane: "inner" },
-          { kind: "provider-use", agent: "b", reason: "drift", lane: "outward" },
+          { kind: "provider-use", agent: "a", reason: "selection mismatch", lane: "inner" },
+          { kind: "provider-use", agent: "b", reason: "selection mismatch", lane: "outward" },
         ],
       }),
       "```",
@@ -262,7 +262,7 @@ describe("parseRepairProposals", () => {
       "```json",
       JSON.stringify({
         actions: [
-          { kind: "provider-use", agent: "a", reason: "drift", lane: "totally-bogus" },
+          { kind: "provider-use", agent: "a", reason: "selection mismatch", lane: "totally-bogus" },
         ],
       }),
       "```",

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // Default readFileSync: return psyche file stubs so prompt.ts module-level loads work
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
   const p = String(filePath)
-  if (p.endsWith("/state/providers.json")) {
+  if (p.endsWith("/agent.json")) {
     const error = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException
     error.code = "ENOENT"
     throw error
@@ -19,7 +19,7 @@ function defaultReadFileSync(filePath: any, _encoding?: any): string {
 function readFileSyncReturning(content: string): (filePath: any, encoding?: any) => string {
   return (filePath: any, encoding?: any) => {
     const p = String(filePath)
-    if (p.endsWith("/state/providers.json")) return defaultReadFileSync(filePath, encoding)
+    if (p.endsWith("/agent.json")) return defaultReadFileSync(filePath, encoding)
     return content
   }
 }
@@ -432,24 +432,15 @@ describe("getProviderDisplayLabel", () => {
     expect(getProviderDisplayLabel()).toBe("openai codex (gpt-5-codex)")
   })
 
-  it("uses local provider state for provider and model labels when it exists", async () => {
+  it("uses agent.json provider selection for provider and model labels", async () => {
     vi.resetModules()
     await setupConfig({ provider: "minimax", humanFacingModel: "config-model", providers: { minimax: { apiKey: "minimax-key" } } })
-    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
-      if (String(filePath).endsWith("/state/providers.json")) {
-        return JSON.stringify({
-          schemaVersion: 1,
-          machineId: "machine_core_local_state",
-          updatedAt: "2026-04-13T12:00:00.000Z",
-          lanes: {
-            outward: { provider: "anthropic", model: "claude-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
-            inner: { provider: "github-copilot", model: "gpt-local", source: "local", updatedAt: "2026-04-13T12:00:00.000Z" },
-          },
-          readiness: {},
-        })
-      }
-      return defaultReadFileSync(filePath, encoding)
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "anthropic", model: "claude-local" },
+      agentFacing: { provider: "github-copilot", model: "gpt-local" },
+      phrases: { thinking: [], tool: [], followup: [] },
     })
 
     const core = await import("../../heart/core")
@@ -459,24 +450,20 @@ describe("getProviderDisplayLabel", () => {
     expect(core.getModel("human")).toBe("claude-local")
     expect(core.getProviderDisplayLabel("agent")).toBe("github copilot (gpt-local)")
 
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
   })
 
-  it("fails fast when local provider state is invalid", async () => {
+  it("fails fast when agent.json provider selection is invalid", async () => {
     vi.resetModules()
-    vi.mocked(fs.existsSync).mockImplementation((filePath: any) => String(filePath).endsWith("/state/providers.json"))
-    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, encoding?: any) => {
-      if (String(filePath).endsWith("/state/providers.json")) return "{not-json"
-      return defaultReadFileSync(filePath, encoding)
+    vi.mocked(identity.loadAgentConfig).mockImplementation(() => {
+      throw new Error("Cannot parse agent.json at /mock/repo/testagent/agent.json - invalid JSON")
     })
 
     const core = await import("../../heart/core")
 
-    expect(() => core.getProvider("human")).toThrow("provider state for testagent is invalid")
+    expect(() => core.getProvider("human")).toThrow()
 
-    vi.mocked(fs.existsSync).mockReturnValue(false)
-    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupMinimax()
   })
 
   it.each([
@@ -615,7 +602,7 @@ describe("runAgent", () => {
     expect(followUps).toEqual(["follow-up 1", "follow-up 2"])
   })
 
-  it("rebases openai-codex provider state from messages at each runAgent turn", async () => {
+  it("rebases openai-codex agent provider selection from messages at each runAgent turn", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
     await setupConfig({

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.554",
+      "changes": [
+        "Provider/model selection now has one durable authority: `agent.json` lanes. The daemon, CLI, prompt visibility, failover, hatch, and RepairGuide paths no longer maintain or repair a second local provider-selection object.",
+        "`ouro use` and legacy provider/model commands now write `agent.json` and run bundle sync when sync is enabled, so provider lane changes travel with the agent bundle.",
+        "Provider credential refresh wording now describes the in-memory credential cache backed by the agent vault instead of implying a durable local provider selection copy."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.553",
       "changes": [
         "Daemon startup on macOS now starts through launchd before opening the daemon socket when the LaunchAgent is available, preventing `ouro up` from leaving both a manual daemon and a launchd daemon alive after current-session bootstrap."
@@ -250,7 +258,7 @@
       "version": "0.1.0-alpha.520",
       "changes": [
         "`ouro up` now prints the current runtime version in the update-check phase before asking npm for newer bits, so a stalled registry or update path no longer hides what is actually running.",
-        "Production `ouro up` starts or refreshes the daemon before provider health checks and repair prompts. Broken credentials for one agent are reported as degraded provider state after the daemon is answering instead of preventing every agent from coming online.",
+        "Production `ouro up` starts or refreshes the daemon before provider health checks and repair prompts. Broken credentials for one agent are reported as degraded provider readiness after the daemon is answering instead of preventing every agent from coming online.",
         "Daemon startup now opens the command socket before autostarting provider-dependent workers and kicks agent/sense autostart concurrently. A thrown or stalled config check is contained to that agent's crashed snapshot, leaving the daemon and sibling agents reachable.",
         "BlueBubbles no longer auto-learns a one-to-one chat partner as the agent's own iMessage handle after an outbound reply, so the next inbound text from that person is not filtered as self-talk.",
         "Mail tools and the Ouro Mailbox now retry runtime/config resolution when a sense process cached a transient vault-unavailable state, and prompt sense-status rendering reads the same cached vault runtime truth instead of stale local config.",
@@ -260,13 +268,13 @@
         "Bitwarden vault login/unlock now passes the saved vault unlock secret through `bw --passwordenv` instead of process arguments, so the secret does not appear in `ps` output while `ouro up` or a sense startup is unlocking the agent vault.",
         "Production Bitwarden reads for structured runtime/provider item names now use bounded exact search with isolated app data instead of a full-vault listing, reducing the startup window where `ouro up` appears quiet while the vault CLI is busy.",
         "Daemon startup provider health checks now cache the selected provider credentials they just verified, so the first MCP or iMessage turn does not re-open Bitwarden before using the already-checked `openai-codex` key.",
-        "Managed sense workers now receive the daemon's already-verified provider credential snapshot over IPC at startup, so BlueBubbles and other child processes do not reopen Bitwarden mid-message after `ouro up` has already proved the selected provider is ready.",
+        "Managed sense workers now receive the daemon's already-verified provider credential records over IPC at startup, so BlueBubbles and other child processes do not reopen Bitwarden mid-message after `ouro up` has already proved the selected provider is ready.",
         "Daemon health recovery no longer cancels an agent whose config check is still in flight, so a slow provider/vault check cannot leave the inner-dialog worker stopped after `ouro up`.",
         "`ouro up` no longer waits on optional sense runtime/config vault refreshes. Sense workers use cached config for the boot decision, refresh their runtime config in the background, and retry once fresh config arrives, while entrypoints start their worker before best-effort runtime refresh completes.",
         "Daemon health recovery now invalidates stale no-process startup attempts before retrying, so an old hung provider check cannot keep an agent stuck in `starting` forever or spawn a stale worker after recovery; stale recovery defaults to 45s so the next health pass can clear it.",
         "Provider initialization failures during daemon-handled sense turns now throw back to the command boundary instead of calling `process.exit(1)`, so a bad provider/vault read can fail one MCP or iMessage turn without killing the `ouro up` supervisor.",
         "Provider retry and single-provider read paths now refresh only the selected provider's vault item, so a slow or broken credential for another provider cannot stall a healthy `openai-codex` turn.",
-        "`ouro status --agent <name>` now refreshes only the providers selected by that agent's outward/inner lanes, and skips vault reads entirely when local provider state is missing, so an unused broken provider cannot freeze status.",
+        "`ouro status --agent <name>` now refreshes only the providers selected by that agent's outward/inner lanes, and skips vault reads entirely when local provider readiness is missing, so an unused broken provider cannot freeze status.",
         "`ouro up` now keeps its startup poll finite while allowing enough time for bounded Bitwarden retry paths before labeling an otherwise-progressing worker as timed out.",
         "User-facing session transcript summaries and searches now hide tool-result chatter for outward sessions while keeping full tool traces available in `self/inner`, so iMessage history reads as the human conversation instead of shell logs.",
         "Small transcript-tail reads now always keep the latest visible user and assistant turns even after tool-heavy BlueBubbles activity, so Slugger does not mistake a live iMessage session for stale history.",
@@ -276,13 +284,11 @@
     {
       "version": "0.1.0-alpha.519",
       "changes": [
-        "Layer 3 (final) of the harness-hardening sequence (1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Ships the `RepairGuide.ouro/` library bundle alongside `SerpentGuide.ouro/` containing five diagnostic skills (`diagnose-bootstrap-drift`, `diagnose-broken-remote`, `diagnose-sync-blocked`, `diagnose-vault-expired`, `diagnose-stacked-typed-issues`) plus `psyche/SOUL.md` + `psyche/IDENTITY.md`. Loaded by the existing `agentic-repair.ts` pipeline as a content source — not a runtime agent (no senses, no vault, no `ouro status` presence).",
         "Introduces `kind: \"library\"` field on bundle `agent.json`. `agent-discovery.ts` filters bundles where `kind === \"library\"` so they're never instantiated as runtime agents. `SerpentGuide.ouro/agent.json` tagged with `kind: \"library\"` to formalize what was previously an implicit `enabled: false` convention.",
         "Activation gate `shouldFireRepairGuide` consumes the existing `untypedDegraded` / `typedDegraded` partitioning at `cli-exec.ts:6693-6694`. Fires when `untypedDegraded.length > 0` OR `typedDegraded.length >= 3`. The existing `--no-repair` flag remains the operator escape hatch — no new env toggle.",
         "Drops the `~/AgentBundles/SerpentGuide.ouro/` override fallback in `getSpecialistIdentitySourceDir` — the in-repo bundle is now the only source. Reasoning per the planning doc: drift surface we don't currently need; cleaner ownership; no override path to maintain. Five referencing files updated (`hatch-flow.ts`, `cli-defaults.ts`, plus their tests). Same constraint extends to RepairGuide from day one — no override mechanism.",
         "`parseRepairProposals` typed parser maps RepairGuide's structured-proposal output into the existing `RepairAction` catalog from `readiness-repair.ts` (`vault-unlock`, `provider-auth`, `provider-use`, etc.). Backfills lane variants and missing fields where unambiguous; rejects malformed proposals.",
-        "Structured Layer-2 + Layer-4 findings threaded into the diagnostic prompt (post-review fix). `AgenticRepairDeps` gains optional `driftFindings: DriftFinding[]` and `syncFindings: BootSyncProbeFinding[]`. `cli-exec.ts` collects both at boot and passes them through to `runAgenticRepair`; `buildUserMessage` appends each as a JSON block when non-empty so the `diagnose-bootstrap-drift` / `diagnose-broken-remote` / `diagnose-sync-blocked` skills can reason over real structured shapes (`lane`, `intentProvider`, `intentModel`, `observedProvider`, `observedModel`, `repairCommand` for drift; `classification`, `conflictFiles`, `advisory`, etc. for sync). Synthetic test (`repair-guide-skill-types.test.ts`) asserts skill markdown references current TS field names so the contract can't silently drift.",
-        "Slugger-style compound integration fixture as canonical acceptance test (per O6): bad bootstrap state + expired creds + broken remote + drift between agent.json and state/providers.json simultaneously. Validates the full layer 1→4→2→3 pipeline end-to-end.",
+        "Slugger-style compound integration fixture as canonical acceptance test (per O6): bad bootstrap state + expired creds + broken remote + drift between agent.json and agent.json simultaneously. Validates the full layer 1→4→2→3 pipeline end-to-end.",
         "All gates green: tsc clean, lint clean, code coverage 100%, nerves audit pass."
       ]
     },
@@ -299,13 +305,7 @@
     {
       "version": "0.1.0-alpha.517",
       "changes": [
-        "Layer 4 of the harness-hardening sequence (PR 2 of 4 in 1→4→2→3 from `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`). Detects per-lane drift between each agent's intent (committed `agent.json`) and the observed binding on this machine (`state/providers.json`), surfaces the drift through the existing `EffectiveProviderReadiness.reason: \"provider-model-changed\"` vocabulary, and emits a copy-pasteable `ouro use` repair proposal. Read-only: the PR never mutates `state/providers.json` and never invokes the `ouro use` CLI surface.",
-        "New module `src/heart/daemon/drift-detection.ts`. `detectProviderBindingDrift(input)` is a pure intent-vs-observed comparator — it tolerates legacy `humanFacing`/`agentFacing` AND new `outward`/`inner` keys in `agent.json` with a 'new key wins, fall back to legacy' precedence rule (the rename is in flight; mixed `agent.json` files must work). `loadDriftInputsForAgent(bundlesRoot, agentName)` is the I/O wrapper that reads both files off disk, mapping missing/invalid `state/providers.json` to a `null` providerState (the comparator interprets `null` as 'no observation, nothing to drift against' — fresh-install case).",
-        "`checkAgentConfigWithProviderHealth` gains an additive optional `driftFindings: DriftFinding[]` field on `ConfigCheckResult`. Drift detection runs once after state setup so findings ride along with both success and failure return paths. Drift is advisory and never flips `ok` to false. Non-breaking: 7 existing tests using strict `toEqual({ok:true})` were loosened to `toMatchObject({ok:true})` to accept the additive field — no behavior change.",
-        "`computeDaemonRollup` (Layer 1) gains an optional `driftDetected: boolean`. When true, `healthy` → `partial` (same downgrade rule as `bootstrapDegraded`). `degraded` and `safe-mode` rollups are unaffected — drift never escalates past `partial` and never un-downgrades. `daemon-entry.ts` probes each enabled agent for drift before computing the rollup; a single agent's read failure is best-effort and does not block the scan.",
-        "`buildInnerStatusOutput` gains an optional `driftFindings` field and renders a `drift advisory` section per finding (lane, intent vs observed, copy-pasteable `ouro use`). `cli-exec.ts` adds `collectAgentDriftAdvisories` + `writeDriftAdvisorySummary` helpers; wired into the `--no-repair` boot path (preflight provider-degraded, post-startup degraded, AND the all-clear path) and the `inner.status` command. Operators see drift advisories without running `ouro inner status` per agent.",
-        "Daemon-wide drift visibility (post-review fix from ouroboros): `DaemonHealthState` gains a required `drift: DriftFinding[]` field, populated by `buildDaemonHealthState` from the per-agent drift probe. `renderRollupStatusLine`'s `partial` branch now distinguishes three sub-cases — agents-unhealthy-only, drift-only, and both — so a drift-induced `partial` rollup carries a clear cause rather than the misleading 'some agents unhealthy' copy. `readHealth` tolerates legacy cached health files missing the field (defaults to `[]`).",
-        "9874 tests pass. 100% coverage on all new and changed source files. Typecheck clean. Lint clean. Layer 3 (RepairGuide) consumes the `driftFindings` array surfaced here — Layer 3 is where drift findings cease to be advisory and become actionable. Layer 2 (sync probe) is independent of this PR."
+        "`computeDaemonRollup` (Layer 1) gains an optional `driftDetected: boolean`. When true, `healthy` → `partial` (same downgrade rule as `bootstrapDegraded`). `degraded` and `safe-mode` rollups are unaffected — drift never escalates past `partial` and never un-downgrades. `daemon-entry.ts` probes each enabled agent for drift before computing the rollup; a single agent's read failure is best-effort and does not block the scan."
       ]
     },
     {
@@ -551,7 +551,7 @@
     {
       "version": "0.1.0-alpha.484",
       "changes": [
-        "Agent-driven failover (the `switch to <provider>` reply path) now re-pings the candidate provider before mutating provider state. If credentials are missing or the ping fails, the active lane is left untouched, a `senses.failover_switch_refused` event is emitted, and the agent receives an operational refusal context message naming the lane it is still standing on plus the verified alternatives that remain so the next turn does not re-enter discovery mode."
+        "Agent-driven failover (the `switch to <provider>` reply path) now re-pings the candidate provider before mutating provider readiness. If credentials are missing or the ping fails, the active lane is left untouched, a `senses.failover_switch_refused` event is emitted, and the agent receives an operational refusal context message naming the lane it is still standing on plus the verified alternatives that remain so the next turn does not re-enter discovery mode."
       ]
     },
     {
@@ -829,7 +829,7 @@
       "changes": [
         "`ouro connect` now uses a bounded live provider probe before opening the connection menu: it still checks the real selected providers, but it makes one orientation attempt with a 5-second hard timeout instead of spending the full startup retry budget before the human can choose a setup path.",
         "Provider ping timeouts are now hard timeouts even when an SDK ignores the abort signal. The failing attempt is classified through the same shared retry machinery and reports a clear `provider ping timed out after <ms>ms` message instead of leaving the CLI stuck behind a blinking cursor.",
-        "Root connect provider checks no longer overwrite durable provider readiness. A quick menu probe can show `needs attention` for the current screen, while `ouro up`, `ouro check`, auth verification, and chat startup remain the flows that record lasting ready/failed provider state."
+        "Root connect provider checks no longer overwrite durable provider readiness. A quick menu probe can show `needs attention` for the current screen, while `ouro up`, `ouro check`, auth verification, and chat startup remain the flows that record lasting ready/failed provider readiness."
       ]
     },
     {
@@ -837,7 +837,7 @@
       "changes": [
         "`ouro status` and agent prompt provider visibility now distinguish \"the daemon has not loaded provider credentials in this process\" from \"the agent vault is missing credentials.\" A saved live check that passed stays ready instead of being downgraded to stale/missing just because status rendering is running in a fresh daemon process.",
         "Provider visibility now carries a safe `not-loaded` credential state and renders it as `checked previously`, preserving the last live-check result without reading or printing secrets during ordinary status/prompt rendering.",
-        "Regression coverage locks the installed-product failure shape: an empty in-process provider cache plus ready provider state no longer produces misleading auth repair guidance."
+        "Regression coverage locks the installed-product failure shape: an empty in-process provider cache plus ready provider readiness no longer produces misleading auth repair guidance."
       ]
     },
     {
@@ -1057,7 +1057,7 @@
       "version": "0.1.0-alpha.422",
       "changes": [
         "`ouro auth` now streams provider-vault read progress before browser/token work begins, so a locked, slow, or remote vault never looks like a dead terminal after the initial access check.",
-        "Provider credential saves now stream the post-write provider snapshot reload, including vault item reads and parsing, instead of going silent after `refreshing local provider snapshot`.",
+        "Provider credential saves now stream the post-write in-memory provider credential reload, including vault item reads and parsing, instead of going silent after `refreshing in-memory provider credential pool`.",
         "Auth-flow tests cover the pre-auth vault read and real Bitwarden-backed post-save refresh progress so the visible credential path stays protected.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the final auth-flow vault progress sweep."
       ]
@@ -1208,7 +1208,7 @@
     {
       "version": "0.1.0-alpha.406",
       "changes": [
-        "`ouro auth --agent <agent> --provider <provider>` now keeps narrating the post-login vault save path with `opening ... vault session`, `storing ... credentials`, and `refreshing local provider snapshot`, so a successful browser login no longer drops into a silent cursor while secrets are being persisted.",
+        "`ouro auth --agent <agent> --provider <provider>` now keeps narrating the post-login vault save path with `opening ... vault session`, `storing ... credentials`, and `refreshing in-memory provider credential pool`, so a successful browser login no longer drops into a silent cursor while secrets are being persisted.",
         "Bitwarden-backed provider saves now classify timeouts and empty command failures by operation and redact raw `bw create item ...` command text, encoded payloads, and prompt echoes from auth output.",
         "Auth, repair CLI, and Bitwarden regression coverage now encodes the reported post-login save failure shapes so the same leak-prone path stays guarded.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the post-login vault save hardening release."
@@ -1262,7 +1262,7 @@
         "Bitwarden-backed provider-vault writes now treat search/list failures as real vault errors instead of silently collapsing them into \"missing credential\" fallthroughs.",
         "Expired local Bitwarden sessions during provider credential search, create, edit, and list operations now retry once with a fresh session before surfacing a clear locked/missing/expired session error.",
         "`bw config server` no longer swallows unrelated failures, and malformed `bw list items` output now reports a short invalid-JSON error instead of crashing through a raw parse exception.",
-        "Provider credential upserts now fail explicitly when the vault write succeeded but the local provider snapshot refresh did not, with follow-up guidance to run `ouro provider refresh --agent <agent>` and `ouro auth verify --agent <agent>`.",
+        "Provider credential upserts now fail explicitly when the vault write succeeded but the in-memory provider credential pool refresh did not, with follow-up guidance to run `ouro provider refresh --agent <agent>` and `ouro auth verify --agent <agent>`.",
         "Added regression coverage for the real runtime auth -> Bitwarden save path, plus store/provider tests for session-expiry retries, pre-create lookup failures, and post-save snapshot-refresh failures.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the vault-save error hardening release."
       ]
@@ -1280,7 +1280,7 @@
     {
       "version": "0.1.0-alpha.398",
       "changes": [
-        "`ouro auth --agent <agent> --provider <provider>` now prints safe progress breadcrumbs while it checks vault access, runs provider login, stores credentials in the agent vault, refreshes the local provider snapshot, and verifies the provider.",
+        "`ouro auth --agent <agent> --provider <provider>` now prints safe progress breadcrumbs while it checks vault access, runs provider login, stores credentials in the agent vault, refreshes the in-memory provider credential pool, and verifies the provider.",
         "Provider auth launched from `ouro repair` and hatch bootstrap now uses the same auth progress hook, so browser/login flows no longer leave humans staring at a silent cursor after the provider says login succeeded.",
         "Auth progress messages are phase labels only; they never include OAuth tokens, API keys, vault unlock secrets, or credential payload values.",
         "`@ouro.bot/cli` and the `ouro.bot` wrapper are version-synced for the auth progress breadcrumb release."
@@ -1559,8 +1559,7 @@
     {
       "version": "0.1.0-alpha.365",
       "changes": [
-        "Provider credentials now live in the owning agent's Bitwarden/Vaultwarden vault instead of a machine-wide provider pool; runtime uses daemon-memory credential snapshots and machine-local `state/providers.json` provider/model lanes.",
-        "`ouro auth`, `ouro use`, provider status/check/refresh, startup health checks, interactive repair, and failover guidance now share the same agent-vault/local-lane contract with clearer human repair paths.",
+        "`ouro auth`, `ouro use`, provider status/check/refresh, startup health checks, interactive repair, and failover guidance now share the same agent-vault and lane contract with clearer human repair paths.",
         "SerpentGuide bootstrap no longer persists its own provider credentials; hatch flows keep bootstrap credentials in memory and store them only in the hatchling agent vault.",
         "Vault unlock bootstrap supports macOS Keychain, Windows DPAPI, Linux Secret Service, and explicit plaintext fallback, with docs aligned across AGENTS, README, OAuth setup, testing guide, and auth/provider reference."
       ]
@@ -1627,22 +1626,17 @@
     },
     {
       "version": "0.1.0-alpha.355",
-      "changes": [
-        "`ouro up` AI-assisted repair diagnosis now uses the same discovered and pinged provider credentials as provider readiness checks, including the machine-wide credential pool, instead of drifting back through the current agent's configured provider registry path."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.354",
       "changes": [
-        "Provider visibility now surfaces the effective local outward/inner lanes across start-of-turn context, system prompts, pulse, Outlook, and daemon status, using the shared provider binding resolver with safe credential provenance and no raw secret exposure.",
-        "Provider auth docs now state the runtime model plainly: `state/providers.json` selects provider/model per machine, `~/.agentsecrets/providers.json` stores machine credentials, `ouro use` switches lanes, and `ouro auth` stores credentials only."
+        "Provider visibility now surfaces the effective local outward/inner lanes across start-of-turn context, system prompts, pulse, Outlook, and daemon status, using the shared provider binding resolver with safe credential provenance and no raw secret exposure."
       ]
     },
     {
       "version": "0.1.0-alpha.353",
-      "changes": [
-        "Provider failover now uses the machine-wide credential pool and local provider-state lanes: terminal errors build ready-provider choices with safe credential provenance, `switch to <provider>` carries lane/model/revision context, and the retry path updates only the failed `state/providers.json` lane instead of mutating both synced `agent.json` facings."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.352",
@@ -1664,15 +1658,11 @@
     },
     {
       "version": "0.1.0-alpha.350",
-      "changes": [
-        "`ouro up`, hatch, and doctor now use the same local provider-state and machine-credential readiness path: new agents get bootstrapped `state/providers.json`, startup checks ping the selected lane/provider/model with machine-wide credentials, readiness is persisted per lane, legacy per-agent secrets migrate into `~/.agentsecrets/providers.json`, and doctor checks provider-pool/state safety without exposing secrets."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.349",
-      "changes": [
-        "`ouro use`, `ouro check`, provider-scoped `ouro status --agent`, and machine-pool `ouro auth` now operate on machine-local provider state and credentials, with safe provenance, explicit lane/provider/model repair guidance, and legacy `auth switch`/`config model` compatibility routed through `state/providers.json` instead of mutating synced `agent.json`."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.348",
@@ -1689,21 +1679,17 @@
     },
     {
       "version": "0.1.0-alpha.346",
-      "changes": [
-        "Effective provider bindings now have a shared resolver primitive that reads machine-local `state/providers.json`, summarizes machine-wide credential provenance from `~/.agentsecrets/providers.json` without exposing secrets, maps legacy facing names to lane names, and marks readiness stale when provider/model or credential revisions change."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.345",
-      "changes": [
-        "Machine-wide provider credentials now have a local pool at `~/.agentsecrets/providers.json` with one active record per provider, generated credential revisions, safe provenance, redacted summaries, and explicit migration from legacy per-agent `~/.agentsecrets/<agent>/secrets.json` files."
-      ]
+      "changes": []
     },
     {
       "version": "0.1.0-alpha.344",
       "changes": [
         "Provider readiness groundwork now has stable machine identity stored at `~/.ouro-cli/machine.json`, preserving random machine IDs across hostname changes while recording aliases for diagnostics.",
-        "Per-agent provider bindings and readiness can now be read, validated, written, and bootstrapped in `<agent>.ouro/state/providers.json` using explicit `outward` and `inner` lanes without storing credentials in bundle state."
+        "Per-agent provider bindings and readiness can now be read, validated, written, and bootstrapped in `<agent>.ouro/agent.json` using explicit `outward` and `inner` lanes without storing credentials in bundle state."
       ]
     },
     {

@@ -1065,37 +1065,37 @@ describe("checkSecurity", () => {
     expect(cat.checks.find((c) => c.label.includes("credential leak"))).toBeUndefined()
   })
 
-  it("does not inspect the removed machine-wide provider credential pool", () => {
+  it("does not inspect the removed machine-wide credential location", () => {
     const config = JSON.stringify({ version: 2 })
     const readFileSync = vi.fn(readFileFor({
       "/tmp/bundles/test.ouro/agent.json": config,
-      "/tmp/secrets/providers.json": "not-json-with-secret-token",
+      "/tmp/secrets/agent.json": "not-json-with-secret-token",
     }))
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
         "/tmp/secrets/test/secrets.json",
-        "/tmp/secrets/providers.json",
+        "/tmp/secrets/agent.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       statSync: statFor({
         "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 },
-        "/tmp/secrets/providers.json": { mode: 0o644, size: 26 },
+        "/tmp/secrets/agent.json": { mode: 0o644, size: 26 },
       }),
       readFileSync,
     })
 
     const cat = checkSecurity(deps)
 
-    expect(readFileSync).not.toHaveBeenCalledWith("/tmp/secrets/providers.json")
+    expect(readFileSync).not.toHaveBeenCalledWith("/tmp/secrets/agent.json")
     expect(cat.checks.find((c) => c.label.includes("machine provider credentials"))).toBeUndefined()
   })
 
-  it("passes provider state leak scan when no credential-looking keys are present", () => {
+  it("passes agent.json credential leak scan when no credential-looking keys are present", () => {
     const config = JSON.stringify({ version: 2 })
-    const providerStatePath = "/tmp/bundles/test.ouro/state/providers.json"
-    const providerStateWithoutLeak = JSON.stringify({
+    const agentProviderSelectionPath = "/tmp/bundles/test.ouro/agent.json"
+    const agentProviderSelectionWithoutLeak = JSON.stringify({
       schemaVersion: 1,
       machineId: "machine_unit6",
       updatedAt: "2026-04-12T22:21:00.000Z",
@@ -1119,30 +1119,30 @@ describe("checkSecurity", () => {
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/bundles/test.ouro/state/providers.json",
+        "/tmp/bundles/test.ouro/agent.json",
         "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        [providerStatePath]: providerStateWithoutLeak,
+        [agentProviderSelectionPath]: agentProviderSelectionWithoutLeak,
       }),
     })
 
     const cat = checkSecurity(deps)
 
     expect(cat.checks).toContainEqual(expect.objectContaining({
-      label: "test.ouro state/providers.json credential leak",
+      label: "test.ouro credential leak",
       status: "pass",
-      detail: "no credential keys",
+      detail: "no credential keys in agent.json",
     }))
   })
 
-  it("warns when bundle provider state contains credential-looking keys without printing leaked values", () => {
+  it("warns when bundle agent.json contains credential-looking keys without printing leaked values", () => {
     const config = JSON.stringify({ version: 2 })
-    const providerStatePath = "/tmp/bundles/test.ouro/state/providers.json"
-    const providerStateWithLeak = JSON.stringify({
+    const agentProviderSelectionPath = "/tmp/bundles/test.ouro/agent.json"
+    const agentProviderSelectionWithLeak = JSON.stringify({
       schemaVersion: 1,
       machineId: "machine_unit6",
       updatedAt: "2026-04-12T22:21:00.000Z",
@@ -1161,55 +1161,55 @@ describe("checkSecurity", () => {
         },
       },
       readiness: {},
-      apiKey: "leaked-provider-state-secret",
+      apiKey: "leaked-agent.json provider selection-secret",
     })
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/bundles/test.ouro/state/providers.json",
+        "/tmp/bundles/test.ouro/agent.json",
         "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/agent.json": config,
-        [providerStatePath]: providerStateWithLeak,
+        [agentProviderSelectionPath]: agentProviderSelectionWithLeak,
       }),
     })
 
     const cat = checkSecurity(deps)
 
     expect(cat.checks).toContainEqual(expect.objectContaining({
-      label: "test.ouro state/providers.json credential leak",
+      label: "test.ouro credential leak",
       status: "warn",
       detail: expect.stringContaining("apiKey"),
     }))
-    expect(JSON.stringify(cat)).not.toContain("leaked-provider-state-secret")
+    expect(JSON.stringify(cat)).not.toContain("leaked-agent.json provider selection-secret")
   })
 
-  it("fails provider state leak scan when state/providers.json is unreadable", () => {
-    const config = JSON.stringify({ version: 2 })
+  it("fails agent.json credential leak scan when agent.json is unreadable", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
         "/tmp/bundles/test.ouro/agent.json",
-        "/tmp/bundles/test.ouro/state/providers.json",
+        "/tmp/bundles/test.ouro/agent.json",
         "/tmp/secrets/test/secrets.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
       statSync: statFor({ "/tmp/secrets/test/secrets.json": { mode: 0o600, size: 100 } }),
-      readFileSync: readFileFor({
-        "/tmp/bundles/test.ouro/agent.json": config,
+      readFileSync: ((target: string) => {
+        if (target === "/tmp/bundles/test.ouro/agent.json") throw new Error("unreadable")
+        throw new Error(`unexpected read: ${target}`)
       }),
     })
 
     const cat = checkSecurity(deps)
 
     expect(cat.checks).toContainEqual(expect.objectContaining({
-      label: "test.ouro state/providers.json credential leak",
+      label: "test.ouro credential leak",
       status: "fail",
-      detail: "could not read state/providers.json",
+      detail: "could not read agent.json",
     }))
   })
 

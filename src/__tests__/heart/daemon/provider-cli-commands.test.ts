@@ -121,10 +121,10 @@ import type {
 } from "../../../heart/provider-credentials"
 import * as mailroomReader from "../../../mailroom/reader"
 import {
-  readProviderState,
-  writeProviderState,
-  type ProviderState,
-} from "../../../heart/provider-state"
+  readAgentProviderSelectionFixture,
+  writeAgentProviderSelectionFixture,
+  type AgentProviderSelectionFixture,
+} from "../../helpers/agent-provider-selection"
 import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
@@ -499,8 +499,8 @@ function agentRoot(bundlesRoot: string, agentName: string): string {
   return path.join(bundlesRoot, `${agentName}.ouro`)
 }
 
-function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
-  const base: ProviderState = {
+function agentProviderSelection(overrides: Partial<AgentProviderSelectionFixture> = {}): AgentProviderSelectionFixture {
+  const base: AgentProviderSelectionFixture = {
     schemaVersion: 1,
     machineId: "machine_test",
     updatedAt: NOW,
@@ -4528,12 +4528,12 @@ describe("provider CLI command execution", () => {
   })
 
 
-  it("ouro use writes local provider state after a successful live check", async () => {
-    emitTestEvent("provider cli use writes provider state")
+  it("ouro use writes the selected agent.json provider lane after a successful live check", async () => {
+    emitTestEvent("provider cli use writes agent provider selection")
     const bundlesRoot = makeTempDir("provider-cli-bundles")
     const homeDir = makeTempDir("provider-cli-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockImplementation(async (_provider, _config, options) => {
       await options?.onAttemptStart?.(1, 3)
@@ -4566,25 +4566,49 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
     expect(mockPingProvider).toHaveBeenCalledWith("minimax", { apiKey: "minimax-secret" }, expect.anything())
 
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: "MiniMax-M2.5",
-      source: "local",
-    })
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "ready",
-      provider: "minimax",
-      model: "MiniMax-M2.5",
-      credentialRevision: "cred_minimax_1",
-      attempts: 1,
+      source: "agent.json",
     })
   })
 
-  it("ouro use bootstraps missing local provider state and records optional ping attempts only when present", async () => {
-    emitTestEvent("provider cli use bootstraps provider state")
+  it("ouro use reports bundle sync when provider selection mutates a sync-enabled bundle", async () => {
+    emitTestEvent("provider cli use bundle sync")
+    const bundlesRoot = makeTempDir("provider-cli-use-sync-bundles")
+    const homeDir = makeTempDir("provider-cli-use-sync-home")
+    const root = agentRoot(bundlesRoot, "Slugger")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(root, agentProviderSelection())
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true, remote: "origin" }
+    })
+    initBundleGit(root)
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+
+    const result = await runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "MiniMax-M2.5",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Slugger inner minimax / MiniMax-M2.5: ready")
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: root, stdio: "pipe" }).toString().trim()).toBe("")
+  })
+
+  it("ouro use writes agent.json provider lanes when no prior lane override exists", async () => {
+    emitTestEvent("provider cli use bootstraps agent provider selection")
     const bundlesRoot = makeTempDir("provider-cli-bootstrap-state-bundles")
     const homeDir = makeTempDir("provider-cli-bootstrap-state-home")
     writeAgentConfig(bundlesRoot, "Slugger")
@@ -4604,16 +4628,14 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("ready")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.machineId).toMatch(/^machine_/)
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "ready",
+    expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: "MiniMax-M2.5",
+      source: "agent.json",
     })
-    expect(stateResult.state.readiness.inner.attempts).toBeUndefined()
   })
 
   it("ouro use refuses missing credentials unless forced", async () => {
@@ -4621,7 +4643,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-missing-bundles")
     const homeDir = makeTempDir("provider-cli-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
 
     const result = await runOuroCli([
@@ -4639,7 +4661,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("no credentials")
     expect(result).toContain("ouro auth --agent Slugger --provider minimax")
     expect(mockPingProvider).not.toHaveBeenCalled()
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
@@ -4650,7 +4672,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-invalid-pool-bundles")
     const homeDir = makeTempDir("provider-cli-invalid-pool-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
     const result = await runOuroCli([
@@ -4669,12 +4691,12 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("ouro auth --agent Slugger --provider minimax")
   })
 
-  it("ouro use treats invalid agent vault credential snapshots as unavailable credentials", async () => {
-    emitTestEvent("provider cli use invalid credential snapshot")
-    const bundlesRoot = makeTempDir("provider-cli-invalid-snapshot-bundles")
-    const homeDir = makeTempDir("provider-cli-invalid-snapshot-home")
+  it("ouro use treats invalid agent vault credential records as unavailable credentials", async () => {
+    emitTestEvent("provider cli use invalid credential record")
+    const bundlesRoot = makeTempDir("provider-cli-invalid-record-bundles")
+    const homeDir = makeTempDir("provider-cli-invalid-record-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeInvalidProviderCredentialPool("Slugger", "bad vault payload")
 
     const result = await runOuroCli([
@@ -4693,12 +4715,12 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("ouro auth --agent Slugger --provider minimax")
   })
 
-  it("ouro use treats a missing vault credential snapshot as missing credentials", async () => {
-    emitTestEvent("provider cli use missing credential snapshot")
-    const bundlesRoot = makeTempDir("provider-cli-missing-snapshot-bundles")
-    const homeDir = makeTempDir("provider-cli-missing-snapshot-home")
+  it("ouro use treats a missing vault credential record as missing credentials", async () => {
+    emitTestEvent("provider cli use missing credential record")
+    const bundlesRoot = makeTempDir("provider-cli-missing-record-bundles")
+    const homeDir = makeTempDir("provider-cli-missing-record-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeMissingProviderCredentialPool("Slugger")
 
     const result = await runOuroCli([
@@ -4722,7 +4744,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-use-read-throws-bundles")
     const homeDir = makeTempDir("provider-cli-use-read-throws-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     mockProviderCredentials.refreshProviderCredentialPool.mockRejectedValueOnce(new Error("vault exploded"))
     const deps = makeCliDeps(homeDir, bundlesRoot)
 
@@ -4747,7 +4769,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-force-missing-bundles")
     const homeDir = makeTempDir("provider-cli-force-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
 
     const result = await runOuroCli([
@@ -4765,17 +4787,13 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("forced")
     expect(result).toContain("no credentials")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: "MiniMax-M2.5",
-      source: "local",
-    })
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "failed",
-      error: "no credentials stored for minimax",
+      source: "agent.json",
     })
   })
 
@@ -4784,7 +4802,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-failed-check-bundles")
     const homeDir = makeTempDir("provider-cli-failed-check-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: false, message: "bad key", attempts: 3 })
 
@@ -4802,18 +4820,18 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("failed (bad key)")
     expect(result).toContain("--force")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
   })
 
-  it("ouro use --force records a failed readiness result without hiding the broken binding", async () => {
+  it("ouro use --force records the broken binding without durable readiness state", async () => {
     emitTestEvent("provider cli use force failed readiness")
     const bundlesRoot = makeTempDir("provider-cli-force-bundles")
     const homeDir = makeTempDir("provider-cli-force-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: false, message: "bad key", attempts: 3 })
 
@@ -4832,18 +4850,13 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("forced")
     expect(result).toContain("bad key")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: "MiniMax-M2.5",
-      source: "local",
-    })
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "failed",
-      error: "bad key",
-      attempts: 3,
+      source: "agent.json",
     })
   })
 
@@ -4852,7 +4865,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-auth-bundles")
     const homeDir = makeTempDir("provider-cli-auth-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
 
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       runAuthFlow: async (input) => {
@@ -4884,7 +4897,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("... verifying minimax")
     expect(output).toContain("✓ verifying minimax")
     expect(output).not.toContain("new-minimax-secret")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
@@ -4896,7 +4909,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-auth-tty-bundles")
     const homeDir = makeTempDir("provider-cli-auth-tty-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
 
     const deps = makeCliDeps(homeDir, bundlesRoot, {
@@ -5136,7 +5149,7 @@ describe("provider CLI command execution", () => {
       email: "slugger@ouro.bot",
       serverUrl: "https://vault.ouroboros.bot",
     })
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
     const prompts: string[] = []
@@ -5172,7 +5185,7 @@ describe("provider CLI command execution", () => {
       email: "slugger@ouro.bot",
       serverUrl: "https://vault.ouroboros.bot",
     })
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
     const prompts: string[] = []
@@ -5209,7 +5222,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-repair-ready-bundles")
     const homeDir = makeTempDir("provider-cli-repair-ready-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
     const promptInput = vi.fn(async () => "1")
@@ -5227,7 +5240,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-repair-create-bundles")
     const homeDir = makeTempDir("provider-cli-repair-create-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool(
       "Slugger",
       "credential vault is not configured in /tmp/Slugger.ouro/agent.json. Run 'ouro vault create --agent Slugger' to create this agent's vault before loading or storing credentials.",
@@ -5284,7 +5297,7 @@ describe("provider CLI command execution", () => {
       email: "slugger@ouro.bot",
       serverUrl: "https://vault.ouroboros.bot",
     })
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
 
 	    const result = await runOuroCli(["repair", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
@@ -5301,7 +5314,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-repair-auth-bundles")
     const homeDir = makeTempDir("provider-cli-repair-auth-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     mockProviderCredentials.refreshProviderCredentialPool
       .mockResolvedValueOnce({
         ok: false,
@@ -5336,7 +5349,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("... verifying anthropic")
     expect(result).toContain("✓ verifying anthropic")
     expect(result).toContain("authenticated Slugger with anthropic")
-    expect(result).toContain("refreshed provider credential snapshot for Slugger")
+    expect(result).toContain("refreshed in-memory provider credentials for Slugger")
     expect(result).toContain("repair step finished for Slugger.")
   })
 
@@ -5345,18 +5358,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-repair-default-auth-bundles")
     const homeDir = makeTempDir("provider-cli-repair-default-auth-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -5377,8 +5390,8 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("checking Slugger's vault access...")
     expect(result).toContain("opening Slugger's vault session...")
     expect(result).toContain("storing minimax credentials in Slugger's vault...")
-    expect(result).toContain("refreshing local provider snapshot from Slugger's vault...")
-    expect(result).toContain("credentials stored at providers/minimax; local provider snapshot refreshed.")
+    expect(result).toContain("refreshing in-memory provider credential pool from Slugger's vault...")
+    expect(result).toContain("credentials stored at providers/minimax; in-memory provider credential pool refreshed.")
     expect(result).toContain("authenticated Slugger with minimax")
     expect(result).toContain("repair step finished for Slugger.")
   })
@@ -7696,18 +7709,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -7773,18 +7786,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-live-verification-failed-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-live-verification-failed-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -7839,18 +7852,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-quick-failure-readiness-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-quick-failure-readiness-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -7913,14 +7926,12 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("provider ping timed out after 5000ms")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.readiness.outward).toMatchObject({
-      status: "ready",
+    expect(stateResult.state.lanes.outward).toMatchObject({
       provider: "openai-codex",
       model: "gpt-5.4",
-      credentialRevision: "cred_openai_connect_saved",
     })
   })
 
@@ -7937,18 +7948,18 @@ describe("provider CLI command execution", () => {
         mail: { enabled: true },
       }
     })
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8039,18 +8050,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-locked-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-locked-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8077,18 +8088,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-unlock-repair-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8133,7 +8144,7 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
 
     expect(result).toBe("connect cancelled.")
-    expect(output).toContain("Slugger: checking the providers this agent uses right now")
+    expect(output).toContain("Slugger: checking the providers in agent.json")
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("run: ouro auth verify --agent Slugger")
   })
@@ -8256,29 +8267,6 @@ describe("provider CLI command execution", () => {
     expect(promptLines.some((line) => line.includes("This machine"))).toBe(true)
   })
 
-  it("shows setup guidance when a provider lane is not configured on this machine", async () => {
-    emitTestEvent("provider cli connect menu unconfigured lane")
-    const bundlesRoot = makeTempDir("provider-cli-connect-menu-unconfigured-lane-bundles")
-    const homeDir = makeTempDir("provider-cli-connect-menu-unconfigured-lane-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderCredentialPool(homeDir, credentialPool())
-    fs.mkdirSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state"), { recursive: true })
-    fs.writeFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "providers.json"), "{not-json", "utf-8")
-
-    const prompts: string[] = []
-    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
-      promptInput: async (question) => {
-        prompts.push(question)
-        return "cancel"
-      },
-    }))
-
-    expect(result).toBe("connect cancelled.")
-    const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("choose provider and model")
-    expectConnectStatus(prompt, 1, "Providers", "needs setup")
-  })
-
   it("treats missing agent.json provider selection as setup work in the root connect bay", async () => {
     emitTestEvent("provider cli connect menu missing agent json provider")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-missing-agent-json-provider-bundles")
@@ -8303,23 +8291,23 @@ describe("provider CLI command execution", () => {
     expect(prompt).toContain("run: ouro use --agent Slugger --lane outward --provider <provider> --model <model>")
   })
 
-  it("surfaces stale provider readiness when another lane blocks the live check", async () => {
+  it("shows unknown provider readiness when another lane blocks the live check", async () => {
     emitTestEvent("provider cli connect menu stale readiness")
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "github-copilot",
           model: "gpt-4o",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8361,7 +8349,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
-    expect(prompt).toContain("live check is stale")
+    expect(prompt).toContain("live check did not complete yet")
     expectConnectStatus(prompt, 1, "Providers", "needs credentials")
   })
 
@@ -8371,12 +8359,12 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-statuses-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -8401,12 +8389,12 @@ describe("provider CLI command execution", () => {
     expectConnectStatus(prompt, 1, "Providers", "needs credentials")
     expect(prompt).toContain("credentials missing")
 
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "gpt-4o",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -8459,12 +8447,12 @@ describe("provider CLI command execution", () => {
     expectConnectStatus(prompt, 1, "Providers", "needs attention")
     expect(prompt).toContain("failed live check: bad token")
 
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "gpt-4o",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -8502,18 +8490,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-failed-readiness-fallback-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8567,12 +8555,12 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-stale-readiness-fallback-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "gpt-4o",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -8629,7 +8617,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-ready-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-ready-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -8640,7 +8628,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -8680,18 +8668,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-provider-retry-progress-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-provider-retry-progress-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "openai-codex",
           model: "gpt-5.4",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -9275,7 +9263,7 @@ describe("provider CLI command execution", () => {
     const restarted = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], restartDeps)
     const restartOutput = ((restartDeps as OuroCliDeps & { _output: string[] })._output).join("")
 
-    expect(restarted).toContain("refreshed provider credential snapshot for Slugger")
+    expect(restarted).toContain("refreshed in-memory provider credentials for Slugger")
     expect(restarted).toContain("providers: minimax, anthropic")
     expect(restarted).toContain("running agent: restarted Slugger and the daemon reports it running")
     expect(restartOutput).toContain("... refreshing provider credentials")
@@ -9916,7 +9904,7 @@ describe("provider CLI command execution", () => {
       checkSocketAlive: async () => false,
     }))
 
-    expect(result).toContain("refreshed provider credential snapshot for Slugger")
+    expect(result).toContain("refreshed in-memory provider credentials for Slugger")
   })
 
   it("provider refresh throws multi-agent guidance when --agent is omitted without prompt support", async () => {
@@ -9987,7 +9975,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-auth-switch-bundles")
     const homeDir = makeTempDir("provider-cli-auth-switch-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState())
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
 
@@ -10004,23 +9992,19 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("deprecated")
     expect(result).toContain("minimax")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.outward.provider).toBe("anthropic")
     expect(stateResult.state.lanes.inner.provider).toBe("minimax")
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "ready",
-      provider: "minimax",
-    })
   })
 
-  it("ouro status --agent renders cached provider state without raw secrets", async () => {
+  it("ouro status --agent renders agent.json provider selection without raw secrets", async () => {
     emitTestEvent("provider cli status cached state")
     const bundlesRoot = makeTempDir("provider-cli-status-bundles")
     const homeDir = makeTempDir("provider-cli-status-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10031,7 +10015,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10061,26 +10045,25 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("inner")
     expect(result).toContain("minimax")
     expect(result).toContain("MiniMax-M2.5")
-    expect(result).toContain("ready")
+    expect(result).toContain("readiness: unknown")
     expect(result).toContain("auth-flow")
     expect(result).toContain("Slugger")
     expect(result).not.toContain("minimax-secret")
     expect(result).not.toContain("anthropic-secret")
   })
 
-  it("ouro status --agent renders missing provider-state repair guidance", async () => {
-    emitTestEvent("provider cli status missing state")
-    const bundlesRoot = makeTempDir("provider-cli-status-missing-bundles")
+  it("ouro status --agent reads provider lanes directly from agent.json", async () => {
+    emitTestEvent("provider cli status agent json lanes")
+    const bundlesRoot = makeTempDir("provider-cli-status-agent-json-bundles")
     const homeDir = makeTempDir("provider-cli-status-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
     const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("provider status: Slugger")
-    expect(result).toContain("outward: unavailable")
-    expect(result).toContain("provider-state-missing")
-    expect(result).toContain("ouro use --agent Slugger --lane outward")
-    expect(mockProviderCredentials.refreshProviderCredentialPool).not.toHaveBeenCalled()
+    expect(result).toContain("outward: anthropic / claude-opus-4-6 (agent.json)")
+    expect(result).toContain("inner: anthropic / claude-opus-4-6 (agent.json)")
+    expect(result).toContain("readiness: unknown")
   })
 
   it("config models and config model show progress while reading GitHub Copilot credentials and checking models", async () => {
@@ -10146,18 +10129,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-status-warning-bundles")
     const homeDir = makeTempDir("provider-cli-status-warning-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10173,23 +10156,23 @@ describe("provider CLI command execution", () => {
     expect(result).not.toContain("minimax-secret")
   })
 
-  it("ouro status --agent distinguishes an unloaded local provider cache from missing vault credentials", async () => {
+  it("ouro status --agent distinguishes unloaded vault credentials from missing vault credentials", async () => {
     emitTestEvent("provider cli status unloaded credential cache")
     const bundlesRoot = makeTempDir("provider-cli-status-unloaded-cache-bundles")
     const homeDir = makeTempDir("provider-cli-status-unloaded-cache-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10208,7 +10191,7 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
 
-    expect(result).toContain("readiness: ready")
+    expect(result).toContain("readiness: unknown")
     expect(result).toContain("credentials: not loaded in this process; run `ouro provider refresh --agent Slugger` to read the vault now")
     expect(result).not.toContain("credentials: missing")
     expect(result).not.toContain("warning: minimax has no credential record")
@@ -10219,18 +10202,18 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-status-invalid-pool-bundles")
     const homeDir = makeTempDir("provider-cli-status-invalid-pool-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10245,17 +10228,17 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("warning: minimax cannot read credentials")
   })
 
-  it("ouro status --agent renders failed readiness and sparse credential provenance", async () => {
+  it("ouro status --agent renders unknown readiness and sparse credential provenance", async () => {
     emitTestEvent("provider cli status failed readiness sparse credentials")
     const bundlesRoot = makeTempDir("provider-cli-status-failed-readiness-bundles")
     const homeDir = makeTempDir("provider-cli-status-failed-readiness-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "gpt-4o",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -10294,16 +10277,16 @@ describe("provider CLI command execution", () => {
 
     const result = await runOuroCli(["status", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
 
-    expect(result).toContain("readiness: failed (bad token)")
+    expect(result).toContain("readiness: unknown")
     expect(result).toContain("credentials: present in vault (manual; cred_ghc_config_only; credentials: none; config: baseUrl)")
   })
 
-  it("ouro check performs a live selected binding check and updates readiness", async () => {
+  it("ouro check performs a live selected binding check without writing durable readiness", async () => {
     emitTestEvent("provider cli check live state")
     const bundlesRoot = makeTempDir("provider-cli-check-bundles")
     const homeDir = makeTempDir("provider-cli-check-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10314,7 +10297,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10375,24 +10358,18 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("minimax / MiniMax-M2.5: provider is busy right now; retrying now (attempt 2 of 3)")
     expect(output).toContain("checking minimax / MiniMax-M2.5 (attempt 2 of 3)")
     expect(output).toContain("✓ checking minimax / MiniMax-M2.5")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "ready",
-      provider: "minimax",
-      model: "MiniMax-M2.5",
-      credentialRevision: "cred_minimax_1",
-      attempts: 2,
-    })
+    expect(stateResult.state.readiness?.inner).toBeUndefined()
   })
 
-  it("ouro check records failed live readiness", async () => {
+  it("ouro check reports failed live readiness without persisting it", async () => {
     emitTestEvent("provider cli check failed live state")
     const bundlesRoot = makeTempDir("provider-cli-check-failed-bundles")
     const homeDir = makeTempDir("provider-cli-check-failed-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10403,7 +10380,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10415,22 +10392,18 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["check", "--agent", "Slugger", "--lane", "inner"], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("failed (bad key)")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "failed",
-      error: "bad key",
-      attempts: 2,
-    })
+    expect(stateResult.state.readiness?.inner).toBeUndefined()
   })
 
-  it("ouro check records readiness when ping results omit attempt counts", async () => {
+  it("ouro check reports readiness when ping results omit attempt counts", async () => {
     emitTestEvent("provider cli check no attempts")
     const bundlesRoot = makeTempDir("provider-cli-check-no-attempts-bundles")
     const homeDir = makeTempDir("provider-cli-check-no-attempts-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10441,7 +10414,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10453,14 +10426,10 @@ describe("provider CLI command execution", () => {
     const result = await runOuroCli(["check", "--agent", "Slugger", "--lane", "inner"], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("ready")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.readiness.inner).toMatchObject({
-      status: "ready",
-      credentialRevision: "cred_minimax_1",
-    })
-    expect(stateResult.state.readiness.inner).not.toHaveProperty("attempts")
+    expect(stateResult.state.readiness?.inner).toBeUndefined()
   })
 
   it("ouro check reports missing selected credentials without pinging", async () => {
@@ -10468,7 +10437,7 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-check-missing-bundles")
     const homeDir = makeTempDir("provider-cli-check-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10479,7 +10448,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "MiniMax-M2.5",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10494,29 +10463,17 @@ describe("provider CLI command execution", () => {
     expect(mockPingProvider).not.toHaveBeenCalled()
   })
 
-  it("ouro check fails fast when local provider state is invalid", async () => {
-    emitTestEvent("provider cli check invalid state")
-    const bundlesRoot = makeTempDir("provider-cli-check-invalid-state-bundles")
-    const homeDir = makeTempDir("provider-cli-check-invalid-state-home")
-    writeAgentConfig(bundlesRoot, "Slugger")
-    fs.mkdirSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state"), { recursive: true })
-    fs.writeFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "state", "providers.json"), "{bad-json", "utf-8")
-
-    await expect(runOuroCli(["check", "--agent", "Slugger", "--lane", "inner"], makeCliDeps(homeDir, bundlesRoot)))
-      .rejects.toThrow("provider state for Slugger is invalid")
-  })
-
-  it("legacy config model validates github-copilot models with machine-pool credentials", async () => {
+  it("legacy config model validates github-copilot models with agent-vault credentials", async () => {
     emitTestEvent("provider cli config model github copilot validation")
     const bundlesRoot = makeTempDir("provider-cli-config-ghc-bundles")
     const homeDir = makeTempDir("provider-cli-config-ghc-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "old-model",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -10562,13 +10519,13 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("deprecated")
     expect(result).toContain("old-model -> gpt-4o")
     expect(fetchImpl).toHaveBeenCalled()
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.outward).toMatchObject({
       provider: "github-copilot",
       model: "gpt-4o",
-      source: "local",
+      source: "agent.json",
     })
   })
 
@@ -10577,12 +10534,12 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-config-ghc-global-bundles")
     const homeDir = makeTempDir("provider-cli-config-ghc-global-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "old-model",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -10638,12 +10595,12 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-config-ghc-incomplete-bundles")
     const homeDir = makeTempDir("provider-cli-config-ghc-incomplete-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "old-model",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -10693,12 +10650,12 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-config-ghc-missing-bundles")
     const homeDir = makeTempDir("provider-cli-config-ghc-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "github-copilot",
           model: "old-model",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
         inner: {
@@ -10729,12 +10686,12 @@ describe("provider CLI command execution", () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it("legacy config model updates provider state instead of live agent.json provider fields", async () => {
+  it("legacy config model updates the selected agent.json provider lane", async () => {
     emitTestEvent("provider cli config model compatibility")
     const bundlesRoot = makeTempDir("provider-cli-config-model-bundles")
     const homeDir = makeTempDir("provider-cli-config-model-home")
     writeAgentConfig(bundlesRoot, "Slugger")
-    writeProviderState(agentRoot(bundlesRoot, "Slugger"), providerState({
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
       lanes: {
         outward: {
           provider: "anthropic",
@@ -10745,7 +10702,7 @@ describe("provider CLI command execution", () => {
         inner: {
           provider: "minimax",
           model: "old-minimax-model",
-          source: "local",
+          source: "agent.json",
           updatedAt: NOW,
         },
       },
@@ -10765,16 +10722,16 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("deprecated")
     expect(result).toContain("ouro use")
-    const stateResult = readProviderState(agentRoot(bundlesRoot, "Slugger"))
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: "MiniMax-M2.5",
-      source: "local",
+      source: "agent.json",
     })
 
     const agentConfig = readAgentConfig(bundlesRoot, "Slugger")
-    expect(agentConfig.agentFacing).toEqual({ provider: "anthropic", model: "claude-opus-4-6" })
+    expect(agentConfig.agentFacing).toEqual({ provider: "minimax", model: "MiniMax-M2.5" })
   })
 })

@@ -5,21 +5,21 @@ This skill is the catch-all for compound situations: when an agent has three or 
 ## Inputs from the finding inventory
 
 - The full `typedDegraded: DegradedAgent[]` set.
-- Any drift, sync-probe, or vault-related entries described in the sibling skills.
+- Any sync-probe or vault-related entries described in the sibling skills.
 
 ## Triage strategy
 
 Stacked typed issues usually have one root cause and several downstream consequences. Examples:
 
-1. **Vault expired → provider auth fails → drift** — `credential-revision-changed` is the root; `provider-auth` and `provider-mismatch` are downstream. Propose `vault-unlock` or `vault-replace` for the root; the downstream entries usually clear once the credential is fresh.
-2. **Provider rotated key → old vault → bootstrap drift** — root is `vault-replace`; drift will reconcile after the next boot.
+1. **Vault expired → provider auth fails → retry loop** — `credential-revision-changed` is the root; `provider-auth` and provider failures are downstream. Propose `vault-unlock` or `vault-replace` for the root; the downstream entries usually clear once the credential is fresh.
+2. **Provider rotated key → old vault → provider failures** — root is `vault-replace`; live checks will recover after the credential is fresh.
 3. **Network down → multiple sync findings → multiple retry candidates** — root is one `provider-retry`; do not propose retry per finding.
 
 ## Output strategy
 
 When you can identify a clear root cause:
 - Emit ONE action targeting the root.
-- Add a `notes` entry naming the downstream entries you believe will clear: "I expect provider-auth and drift to resolve after vault-unlock; verify by re-running `ouro up`."
+- Add a `notes` entry naming the downstream entries you believe will clear: "I expect provider-auth and live checks to resolve after vault-unlock; verify by re-running `ouro up`."
 
 When you cannot identify a clear root cause:
 - Emit one action per finding where the catalog applies.

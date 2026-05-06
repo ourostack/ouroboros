@@ -1,5 +1,4 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { DriftFinding } from "./drift-detection"
 
 export interface InnerRuntimeState {
   status: string
@@ -25,16 +24,6 @@ export interface BuildInnerStatusInput {
   heartbeat: HeartbeatInfo | null
   attentionCount: number
   now: number
-  /**
-   * Layer 4: drift findings for this agent. When non-empty, a
-   * "drift advisory" section is appended after the existing status
-   * fields with one line per finding (lane, intent vs observed, and
-   * a copy-pasteable `ouro use` repair command).
-   *
-   * Optional for backward compatibility: pre-Layer-4 callers omit
-   * this field and the section is suppressed.
-   */
-  driftFindings?: DriftFinding[]
 }
 
 function formatRelativeTime(elapsedMs: number): string {
@@ -110,19 +99,6 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
   const thoughtWord = attentionCount === 1 ? "thought" : "thoughts"
   lines.push(`  attention: ${attentionCount} held ${thoughtWord}`)
 
-  // Layer 4 drift advisory. Renders one line per finding with the
-  // lane, intent vs observed binding, and the copy-pasteable repair
-  // command. Suppressed entirely when no findings exist (or the field
-  // is absent — pre-Layer-4 callers).
-  const driftFindings = input.driftFindings ?? []
-  if (driftFindings.length > 0) {
-    lines.push("  drift advisory:")
-    for (const finding of driftFindings) {
-      lines.push(`    - ${finding.lane}: intent ${finding.intentProvider}/${finding.intentModel} vs observed ${finding.observedProvider}/${finding.observedModel}`)
-      lines.push(`      repair: ${finding.repairCommand}`)
-    }
-  }
-
   emitNervesEvent({
     component: "daemon",
     event: "daemon.inner_status_read",
@@ -132,7 +108,6 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
       status: runtimeState?.status ?? "unknown",
       journalCount: journalFiles.length,
       attentionCount,
-      driftCount: driftFindings.length,
     },
   })
 

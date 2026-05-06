@@ -1,5 +1,8 @@
+import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { AgentProvider } from "./identity"
+import { PROVIDER_CREDENTIALS, type AgentProvider } from "./identity"
+import { readAgentConfigForAgent } from "./auth/auth-flow"
+import type { ProviderLane, ProviderLaneSelector, ProviderReadinessStatus } from "./provider-lanes"
 import {
   readProviderCredentialPool,
   isProviderCredentialPoolNotLoaded,
@@ -7,15 +10,9 @@ import {
   type ProviderCredentialRecord,
   type ProviderCredentialProvenanceSource,
 } from "./provider-credentials"
-import {
-  readProviderState,
-  type ProviderBindingSource,
-  type ProviderLane,
-  type ProviderLaneReadiness,
-  type ProviderReadinessStatus,
-} from "./provider-state"
+import { readProviderLaneReadiness } from "./provider-readiness-cache"
 
-export type ProviderLaneSelector = ProviderLane | "human" | "agent" | "humanFacing" | "agentFacing"
+export type { ProviderLaneSelector } from "./provider-lanes"
 
 export interface EffectiveProviderBindingWarning {
   code: string
@@ -63,10 +60,8 @@ export type EffectiveProviderCredentialStatus =
 
 export interface EffectiveProviderReadiness {
   status: ProviderReadinessStatus
-  previousStatus?: ProviderReadinessStatus
-  reason?: "credential-missing" | "credential-pool-invalid" | "credential-revision-changed" | "provider-model-changed"
+  reason?: "credential-missing" | "credential-pool-invalid"
   checkedAt?: string
-  credentialRevision?: string
   error?: string
   attempts?: number
 }
@@ -75,9 +70,8 @@ export interface EffectiveProviderBinding {
   lane: ProviderLane
   provider: AgentProvider
   model: string
-  source: ProviderBindingSource
-  machineId: string
-  statePath: string
+  source: "agent.json"
+  configPath: string
   credential: EffectiveProviderCredentialStatus
   readiness: EffectiveProviderReadiness
   warnings: EffectiveProviderBindingWarning[]
@@ -88,8 +82,9 @@ export type ResolveEffectiveProviderBindingResult =
   | {
     ok: false
     lane: ProviderLane
-    reason: "provider-state-missing" | "provider-state-invalid"
-    statePath: string
+    reason: "agent-config-invalid"
+    configPath: string
+    error: string
     warnings: EffectiveProviderBindingWarning[]
     repair: EffectiveProviderRepair
   }
@@ -108,6 +103,10 @@ function legacyLaneWarning(selector: string, lane: ProviderLane): EffectiveProvi
   }
 }
 
+function facingKeyForProviderLane(lane: ProviderLane): "humanFacing" | "agentFacing" {
+  return lane === "outward" ? "humanFacing" : "agentFacing"
+}
+
 export function normalizeProviderLane(selector: ProviderLaneSelector): ProviderLaneResolution {
   switch (selector) {
     case "outward":
@@ -123,12 +122,10 @@ export function normalizeProviderLane(selector: ProviderLaneSelector): ProviderL
   }
 }
 
-function buildUseRepair(agentName: string, lane: ProviderLane, force = false): EffectiveProviderRepair {
+function buildUseRepair(agentName: string, lane: ProviderLane): EffectiveProviderRepair {
   return {
-    command: `ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>${force ? " --force" : ""}`,
-    message: force
-      ? `Rewrite this machine's ${lane} provider binding for ${agentName}.`
-      : `Choose the provider/model this machine should use for ${agentName}'s ${lane} lane.`,
+    command: `ouro use --agent ${agentName} --lane ${lane} --provider <provider> --model <model>`,
+    message: `Choose the provider/model ${agentName}'s ${lane} lane should use in agent.json.`,
   }
 }
 
@@ -139,17 +136,10 @@ function buildAuthRepair(agentName: string, provider: AgentProvider): EffectiveP
   }
 }
 
-function missingProviderStateWarning(agentName: string): EffectiveProviderBindingWarning {
+function invalidAgentConfigWarning(agentName: string, error: string): EffectiveProviderBindingWarning {
   return {
-    code: "provider-state-missing",
-    message: `No local provider binding exists for ${agentName} on this machine.`,
-  }
-}
-
-function invalidProviderStateWarning(agentName: string): EffectiveProviderBindingWarning {
-  return {
-    code: "provider-state-invalid",
-    message: `Local provider binding state for ${agentName} is invalid.`,
+    code: "agent-config-invalid",
+    message: `agent.json provider selection for ${agentName} is invalid: ${error}`,
   }
 }
 
@@ -233,144 +223,129 @@ function resolveCredential(
   }
 }
 
-function readinessFromState(readiness: ProviderLaneReadiness): EffectiveProviderReadiness {
-  return {
-    status: readiness.status,
-    checkedAt: readiness.checkedAt,
-    credentialRevision: readiness.credentialRevision,
-    error: readiness.error,
-    attempts: readiness.attempts,
-  }
-}
-
-function staleReadiness(
-  readiness: ProviderLaneReadiness,
-  reason: EffectiveProviderReadiness["reason"],
+function resolveReadiness(
+  agentName: string,
+  lane: ProviderLane,
+  provider: AgentProvider,
+  model: string,
+  credential: EffectiveProviderCredentialStatus,
 ): EffectiveProviderReadiness {
-  return {
-    ...readinessFromState(readiness),
-    status: "stale",
-    previousStatus: readiness.status,
-    reason,
+  if (credential.status === "missing") {
+    return { status: "unknown", reason: "credential-missing" }
   }
+  if (credential.status === "invalid-pool") {
+    return { status: "unknown", reason: "credential-pool-invalid" }
+  }
+  if (credential.status === "present") {
+    const cached = readProviderLaneReadiness({
+      agentName,
+      lane,
+      provider,
+      model,
+      credentialRevision: credential.revision,
+    })
+    if (cached) {
+      return {
+        status: cached.status,
+        checkedAt: cached.checkedAt,
+        ...(cached.error ? { error: cached.error } : {}),
+        ...(cached.attempts !== undefined ? { attempts: cached.attempts } : {}),
+      }
+    }
+  }
+  return { status: "unknown" }
 }
 
-function resolveReadiness(input: {
+function isAgentProvider(value: unknown): value is AgentProvider {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(PROVIDER_CREDENTIALS, value)
+}
+
+function resolveAgentConfigLane(input: ResolveEffectiveProviderBindingInput, lane: ProviderLane): {
+  ok: true
+  configPath: string
   provider: AgentProvider
   model: string
-  readiness?: ProviderLaneReadiness
-  credential: EffectiveProviderCredentialStatus
-}): { readiness: EffectiveProviderReadiness; warnings: EffectiveProviderBindingWarning[] } {
-  if (!input.readiness) {
-    if (input.credential.status === "not-loaded") {
-      return { readiness: { status: "unknown" }, warnings: [] }
+} | {
+  ok: false
+  configPath: string
+  error: string
+} {
+  const configPath = path.join(input.agentRoot, "agent.json")
+  try {
+    const { config, configPath: resolvedConfigPath } = readAgentConfigForAgent(input.agentName, path.dirname(input.agentRoot))
+    const facingKey = facingKeyForProviderLane(lane)
+    const binding = config[facingKey]
+    /* v8 ignore next -- readAgentConfigForAgent rejects unsupported providers before this defensive guard @preserve */
+    if (!isAgentProvider(binding.provider)) {
+      return { ok: false, configPath: resolvedConfigPath, error: `${facingKey}.provider must be a supported provider` }
     }
-    if (input.credential.status === "missing") {
-      return { readiness: { status: "unknown", reason: "credential-missing" }, warnings: [] }
+    const model = typeof binding.model === "string" ? binding.model.trim() : ""
+    if (model.length === 0) {
+      return { ok: false, configPath: resolvedConfigPath, error: `${facingKey}.model must be a non-empty string` }
     }
-    if (input.credential.status === "invalid-pool") {
-      return { readiness: { status: "unknown", reason: "credential-pool-invalid" }, warnings: [] }
-    }
-    return { readiness: { status: "unknown" }, warnings: [] }
-  }
-
-  if (input.readiness.provider !== input.provider || input.readiness.model !== input.model) {
     return {
-      readiness: staleReadiness(input.readiness, "provider-model-changed"),
-      warnings: [{
-        code: "readiness-stale",
-        message: `${input.provider}/${input.model} readiness is stale because the last check was for ${input.readiness.provider}/${input.readiness.model}.`,
-      }],
+      ok: true,
+      configPath: resolvedConfigPath,
+      provider: binding.provider,
+      model,
     }
-  }
-
-  if (
-    input.credential.status === "present"
-    && input.readiness.credentialRevision !== undefined
-    && input.readiness.credentialRevision !== input.credential.revision
-  ) {
+  } catch (error) {
     return {
-      readiness: staleReadiness(input.readiness, "credential-revision-changed"),
-      warnings: [{
-        code: "readiness-stale",
-        message: `${input.provider}/${input.model} readiness is stale because credential revision changed from ${input.readiness.credentialRevision} to ${input.credential.revision}.`,
-      }],
+      ok: false,
+      configPath,
+      /* v8 ignore next -- readAgentConfigForAgent/file IO failures are Error instances in supported runtimes @preserve */
+      error: error instanceof Error ? error.message : String(error),
     }
   }
-
-  if (input.credential.status === "missing") {
-    return {
-      readiness: staleReadiness(input.readiness, "credential-missing"),
-      warnings: [],
-    }
-  }
-
-  if (input.credential.status === "invalid-pool") {
-    return {
-      readiness: staleReadiness(input.readiness, "credential-pool-invalid"),
-      warnings: [],
-    }
-  }
-
-  if (input.credential.status === "not-loaded") {
-    return { readiness: readinessFromState(input.readiness), warnings: [] }
-  }
-
-  return { readiness: readinessFromState(input.readiness), warnings: [] }
 }
 
 export function resolveEffectiveProviderBinding(
   input: ResolveEffectiveProviderBindingInput,
 ): ResolveEffectiveProviderBindingResult {
   const laneResolution = normalizeProviderLane(input.lane)
-  const stateResult = readProviderState(input.agentRoot)
+  const agentConfigResult = resolveAgentConfigLane(input, laneResolution.lane)
 
-  if (!stateResult.ok) {
-    const reason = stateResult.reason === "missing" ? "provider-state-missing" : "provider-state-invalid"
-    const stateWarning = stateResult.reason === "missing"
-      ? missingProviderStateWarning(input.agentName)
-      : invalidProviderStateWarning(input.agentName)
+  if (!agentConfigResult.ok) {
     const result: ResolveEffectiveProviderBindingResult = {
       ok: false,
       lane: laneResolution.lane,
-      reason,
-      statePath: stateResult.statePath,
-      warnings: [...laneResolution.warnings, stateWarning],
-      repair: buildUseRepair(input.agentName, laneResolution.lane, stateResult.reason === "invalid"),
+      reason: "agent-config-invalid",
+      configPath: agentConfigResult.configPath,
+      error: agentConfigResult.error,
+      warnings: [...laneResolution.warnings, invalidAgentConfigWarning(input.agentName, agentConfigResult.error)],
+      repair: buildUseRepair(input.agentName, laneResolution.lane),
     }
     emitNervesEvent({
       component: "config/identity",
       event: "config.provider_binding_resolution_failed",
       message: "provider binding resolution failed",
-      meta: { agentName: input.agentName, lane: laneResolution.lane, reason },
+      meta: { agentName: input.agentName, lane: laneResolution.lane, reason: result.reason },
     })
     return result
   }
 
-  const laneBinding = stateResult.state.lanes[laneResolution.lane]
   const poolResult = readProviderCredentialPool(input.agentName)
-  const credentialResult = resolveCredential(poolResult, laneBinding.provider, input.agentName)
-  const readinessResult = resolveReadiness({
-    provider: laneBinding.provider,
-    model: laneBinding.model,
-    readiness: stateResult.state.readiness[laneResolution.lane],
-    credential: credentialResult.credential,
-  })
+  const credentialResult = resolveCredential(poolResult, agentConfigResult.provider, input.agentName)
+  const readiness = resolveReadiness(
+    input.agentName,
+    laneResolution.lane,
+    agentConfigResult.provider,
+    agentConfigResult.model,
+    credentialResult.credential,
+  )
   const warnings = [
     ...laneResolution.warnings,
     ...credentialResult.warnings,
-    ...readinessResult.warnings,
   ]
 
   const binding: EffectiveProviderBinding = {
     lane: laneResolution.lane,
-    provider: laneBinding.provider,
-    model: laneBinding.model,
-    source: laneBinding.source,
-    machineId: stateResult.state.machineId,
-    statePath: stateResult.statePath,
+    provider: agentConfigResult.provider,
+    model: agentConfigResult.model,
+    source: "agent.json",
+    configPath: agentConfigResult.configPath,
     credential: credentialResult.credential,
-    readiness: readinessResult.readiness,
+    readiness,
     warnings,
   }
   emitNervesEvent({

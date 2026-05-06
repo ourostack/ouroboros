@@ -89,8 +89,9 @@ This is for machine-level artifacts, not bundle-owned identity.
 - context settings
 - sense enablement
 - vault coordinates
+- provider/model lane selection
 
-`state/providers.json` is the machine-local source of truth for provider/model selection. It owns the `outward` and `inner` lanes for this machine after bootstrap; `agent.json` may seed missing local state, but it is not the ongoing lane authority.
+Provider/model selection is part of `agent.json`: `outward` powers CLI and human-facing senses, while `inner` powers inner dialogue and agent-facing model calls. There is no second local provider-selection file.
 
 `bundle-meta.json` tracks the runtime version that last touched the bundle and supports version-aware behavior on startup.
 

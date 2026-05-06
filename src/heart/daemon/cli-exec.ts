@@ -56,7 +56,7 @@ import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus
 import {
   buildAgentProviderVisibility,
 } from "../provider-visibility"
-import { bootstrapProviderStateFromAgentConfig, readProviderState, writeProviderState, type ProviderLane, type ProviderState } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
@@ -130,11 +130,6 @@ import {
 } from "./cli-render"
 import { readFirstBundleMetaVersion, createDefaultOuroCliDeps, defaultListDiscoveredAgents } from "./cli-defaults"
 import { checkAgentConfigWithProviderHealth, type LiveConfigCheckDeps } from "./agent-config-check"
-import {
-  detectProviderBindingDrift,
-  loadDriftInputsForAgent,
-  type DriftFinding,
-} from "./drift-detection"
 import { runDoctorChecks } from "./doctor"
 import { formatDoctorOutput } from "./cli-render-doctor"
 import { hasRunnableInteractiveRepair, runInteractiveRepair } from "./interactive-repair"
@@ -167,7 +162,7 @@ import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
-import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
+import { pingGithubCopilotModel, pingProvider, type ProviderPingOptions } from "../provider-ping"
 import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -670,66 +665,6 @@ function daemonUnavailableStatusJsonOutput(socketPath: string, healthFilePath?: 
     socketPath,
     ...(healthFilePath ? { healthFilePath } : {}),
   }, null, 2)
-}
-
-/**
- * Layer 4: render a per-agent drift advisory block to stdout. Called from
- * the `--no-repair` summary path when one or more enabled agents have a
- * mismatch between `agent.json` (intent) and `state/providers.json`
- * (observation). The block surfaces the lane, intent vs observed
- * binding, and the copy-pasteable `ouro use` repair command per finding.
- *
- * Drift is advisory: this helper only PRINTS the advisory; running the
- * repair command is the operator's call (and is Layer 3 RepairGuide's
- * domain when the daemon does it automatically).
- *
- * Exported for direct unit-testing; the production callers are
- * inside this module.
- */
-export function writeDriftAdvisorySummary(
-  deps: Pick<OuroCliDeps, "writeStdout">,
-  advisories: DriftFinding[],
-): void {
-  if (advisories.length === 0) return
-  const lines: string[] = ["Drift advisory: agent intent does not match this machine's observed binding"]
-  for (const advisory of advisories) {
-    lines.push("")
-    lines.push(`  ${advisory.agent} (${advisory.lane}):`)
-    lines.push(`    intent:   ${advisory.intentProvider}/${advisory.intentModel}`)
-    lines.push(`    observed: ${advisory.observedProvider}/${advisory.observedModel}`)
-    lines.push(`    repair:   ${advisory.repairCommand}`)
-  }
-  deps.writeStdout(lines.join("\n"))
-}
-
-/**
- * Collect drift findings across every enabled agent in the bundles
- * directory. Used by the `--no-repair` summary path so that drift
- * advisories ride along with (or stand alone in place of) the existing
- * provider-repair summary. Errors during a single agent's load (e.g.
- * malformed `agent.json`) are swallowed: drift detection is advisory
- * and must not block the rest of the boot path.
- */
-export async function collectAgentDriftAdvisories(
-  deps: OuroCliDeps,
-): Promise<DriftFinding[]> {
-  const agents = await listCliAgents(deps)
-  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-  const findings: DriftFinding[] = []
-  for (const agent of [...new Set(agents)]) {
-    try {
-      const inputs = loadDriftInputsForAgent(bundlesRoot, agent)
-      const agentFindings = detectProviderBindingDrift({
-        agentName: agent,
-        agentJson: inputs.agentJson,
-        providerState: inputs.providerState,
-      })
-      findings.push(...agentFindings)
-    } catch {
-      // Best-effort: a per-agent read failure is not blocking.
-    }
-  }
-  return findings
 }
 
 function providerRepairCountSummary(count: number): string {
@@ -1685,7 +1620,7 @@ async function resolveHatchInput(command: Extract<OuroCliCommand, { kind: "hatch
   }
 }
 
-// ── Provider state CLI helpers ──
+// ── Provider selection CLI helpers ──
 
 function providerCliHomeDir(deps: OuroCliDeps): string {
   return providerCredentialMachineHomeDir(deps.homeDir)
@@ -5170,55 +5105,11 @@ async function executeConnect(
   return message
 }
 
-function readOrBootstrapProviderState(agentName: string, deps: OuroCliDeps): { agentRoot: string; state: ProviderState } {
-  const agentRoot = providerCliAgentRoot({ agent: agentName }, deps)
-  const readResult = readProviderState(agentRoot)
-  if (readResult.ok) return { agentRoot, state: readResult.state }
-  if (readResult.reason === "invalid") {
-    throw new Error(`provider state for ${agentName} is invalid at ${readResult.statePath}: ${readResult.error}`)
-  }
-
-  const { config } = readAgentConfigForAgent(agentName, deps.bundlesRoot)
-  const homeDir = providerCliHomeDir(deps)
-  const machine = loadOrCreateMachineIdentity({
-    homeDir,
-    now: () => providerCliNow(deps),
-  })
-  const state = bootstrapProviderStateFromAgentConfig({
-    machineId: machine.machineId,
-    now: providerCliNow(deps),
-    agentConfig: {
-      humanFacing: {
-        provider: config.humanFacing.provider,
-        model: config.humanFacing.model || getDefaultModelForProvider(config.humanFacing.provider),
-      },
-      agentFacing: {
-        provider: config.agentFacing.provider,
-        model: config.agentFacing.model || getDefaultModelForProvider(config.agentFacing.provider),
-      },
-    },
-  })
-  writeProviderState(agentRoot, state)
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.provider_state_bootstrapped",
-    message: "bootstrapped local provider state from agent config",
-    meta: { agent: agentName, agentRoot },
-  })
-  return { agentRoot, state }
-}
-
 function credentialPingConfig(record: ProviderCredentialRecord): Parameters<typeof pingProvider>[1] {
   return {
     ...record.credentials,
     ...record.config,
   } as unknown as Parameters<typeof pingProvider>[1]
-}
-
-function pingAttemptCount(result: PingResult | { attempts?: unknown }): number | undefined {
-  if (typeof result.attempts === "number") return result.attempts
-  if (Array.isArray(result.attempts)) return result.attempts.length
-  return undefined
 }
 
 async function readProviderCredentialRecord(
@@ -5243,62 +5134,47 @@ async function readProviderCredentialRecord(
   }
 }
 
-function writeProviderBinding(input: {
-  agentRoot: string
-  state: ProviderState
-  lane: ProviderLane
-  provider: AgentProvider
-  model: string
-  deps: OuroCliDeps
-  status: "ready" | "failed" | "unknown"
-  credentialRevision?: string
-  error?: string
-  attempts?: number
-}): void {
-  const updatedAt = providerCliNow(input.deps).toISOString()
-  input.state.updatedAt = updatedAt
-  input.state.lanes[input.lane] = {
-    provider: input.provider,
-    model: input.model,
-    source: "local",
-    updatedAt,
-  }
-  input.state.readiness[input.lane] = {
-    status: input.status,
-    provider: input.provider,
-    model: input.model,
-    checkedAt: updatedAt,
-    ...(input.credentialRevision ? { credentialRevision: input.credentialRevision } : {}),
-    ...(input.error ? { error: input.error } : {}),
-    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
-  }
-  writeProviderState(input.agentRoot, input.state)
+function providerFacingKeyForLane(lane: ProviderLane): "humanFacing" | "agentFacing" {
+  return lane === "inner" ? "agentFacing" : "humanFacing"
 }
 
-function writeProviderReadiness(input: {
-  agentRoot: string
-  state: ProviderState
+function providerConfigBinding(config: AgentConfig, lane: ProviderLane): { provider: AgentProvider; model: string } {
+  const binding = config[providerFacingKeyForLane(lane)]
+  return {
+    provider: binding.provider,
+    model: binding.model || getDefaultModelForProvider(binding.provider),
+  }
+}
+
+function writeAgentProviderBinding(input: {
+  agent: string
   lane: ProviderLane
   provider: AgentProvider
   model: string
   deps: OuroCliDeps
-  status: "ready" | "failed"
-  credentialRevision: string
-  error?: string
-  attempts?: number
 }): void {
-  const checkedAt = providerCliNow(input.deps).toISOString()
-  input.state.updatedAt = checkedAt
-  input.state.readiness[input.lane] = {
-    status: input.status,
-    provider: input.provider,
-    model: input.model,
-    checkedAt,
-    credentialRevision: input.credentialRevision,
-    ...(input.error ? { error: input.error } : {}),
-    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+  const { configPath, config } = readAgentConfigForAgent(input.agent, input.deps.bundlesRoot)
+  const facingKey = providerFacingKeyForLane(input.lane)
+  const nextConfig: AgentConfig = {
+    ...config,
+    [facingKey]: {
+      ...config[facingKey],
+      provider: input.provider,
+      model: input.model,
+    },
   }
-  writeProviderState(input.agentRoot, input.state)
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.provider_selection_updated",
+    message: "updated provider selection in agent config",
+    meta: { agent: input.agent, lane: input.lane, provider: input.provider, model: input.model, configPath },
+  })
+}
+
+function appendBundleSyncSummary(message: string, agent: string, deps: OuroCliDeps): string {
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return syncSummary ? [message, syncSummary].join("\n") : message
 }
 
 async function executeProviderUse(
@@ -5313,7 +5189,6 @@ async function executeProviderUse(
     return message
   }
   try {
-    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
     progress?.startPhase(`reading ${command.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, command.provider, deps, {
       onProgress: (message) => progress?.updateDetail(message),
@@ -5327,17 +5202,18 @@ async function executeProviderUse(
         ].join("\n")
         return writeMessage(message)
       }
-      writeProviderBinding({
-        agentRoot,
-        state,
+      writeAgentProviderBinding({
+        agent: command.agent,
         lane: command.lane,
         provider: command.provider,
         model: command.model,
         deps,
-        status: "failed",
-        error: credential.error,
       })
-      const message = `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`
+      const message = appendBundleSyncSummary(
+        `forced ${command.agent} ${command.lane} to ${command.provider} / ${command.model}: failed (${credential.error})`,
+        command.agent,
+        deps,
+      )
       return writeMessage(message)
     }
 
@@ -5352,30 +5228,28 @@ async function executeProviderUse(
         (message) => progress?.updateDetail(message),
       ),
     })
-    const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress?.completePhase(`checking ${command.provider} / ${command.model}`, status)
     if (!pingResult.ok && !command.force) {
       const message = [
         `${command.agent} ${command.lane} ${command.provider} / ${command.model}: failed (${pingResult.message})`,
-        `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force the local binding with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
+        `Fix credentials with \`ouro auth --agent ${command.agent} --provider ${command.provider}\` or force agent.json with \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${command.model} --force\`.`,
       ].join("\n")
       return writeMessage(message)
     }
 
-    writeProviderBinding({
-      agentRoot,
-      state,
+    writeAgentProviderBinding({
+      agent: command.agent,
       lane: command.lane,
       provider: command.provider,
       model: command.model,
       deps,
-      status: pingResult.ok ? "ready" : "failed",
-      credentialRevision: credential.record.revision,
-      ...(!pingResult.ok ? { error: pingResult.message } : {}),
-      ...(attempts !== undefined ? { attempts } : {}),
     })
-    const message = `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`
+    const message = appendBundleSyncSummary(
+      `${command.force ? "forced " : ""}${command.agent} ${command.lane} ${command.provider} / ${command.model}: ${status}`,
+      command.agent,
+      deps,
+    )
     emitNervesEvent({
       component: "daemon",
       event: "daemon.provider_use_completed",
@@ -5400,8 +5274,8 @@ async function executeProviderCheck(
     return message
   }
   try {
-    const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-    const binding = state.lanes[command.lane]
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const binding = providerConfigBinding(config, command.lane)
     progress.startPhase(`reading ${binding.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps, {
       onProgress: (message) => progress.updateDetail(message),
@@ -5426,21 +5300,8 @@ async function executeProviderCheck(
         (message) => progress.updateDetail(message),
       ),
     })
-    const attempts = pingAttemptCount(pingResult)
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
-    writeProviderReadiness({
-      agentRoot,
-      state,
-      lane: command.lane,
-      provider: binding.provider,
-      model: binding.model,
-      deps,
-      status: pingResult.ok ? "ready" : "failed",
-      credentialRevision: credential.record.revision,
-      ...(!pingResult.ok ? { error: pingResult.message } : {}),
-      ...(attempts !== undefined ? { attempts } : {}),
-    })
     const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
     emitNervesEvent({
       component: "daemon",
@@ -5449,10 +5310,12 @@ async function executeProviderCheck(
       meta: { agent: command.agent, lane: command.lane, provider: binding.provider, model: binding.model, status: pingResult.ok ? "ready" : "failed" },
     })
     return writeMessage(message)
+  /* v8 ignore start -- defensive rethrow: provider-check dependency failures are covered at the caller boundary @preserve */
   } catch (error) {
     progress.end()
     throw error
   }
+  /* v8 ignore stop */
 }
 
 function renderProviderCredentialLine(agentName: string, credential: EffectiveProviderCredentialStatus): string {
@@ -5476,12 +5339,12 @@ async function executeProviderStatus(
 ): Promise<string> {
   const agentRoot = providerCliAgentRoot(command, deps)
   const progress = createHumanCommandProgress(deps, "provider status")
-  const stateResult = readProviderState(agentRoot)
   try {
-    if (stateResult.ok) {
+    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    {
       const selectedProviders = [...new Set([
-        stateResult.state.lanes.outward.provider,
-        stateResult.state.lanes.inner.provider,
+        config.humanFacing.provider,
+        config.agentFacing.provider,
       ])]
       await runCommandProgressPhase(
         progress,
@@ -5509,14 +5372,17 @@ async function executeProviderStatus(
       homeDir,
       lane,
     })
+    /* v8 ignore start -- defensive: provider status pre-validates agent.json before resolving lane details @preserve */
     if (!resolved.ok) {
       lines.push(`  ${lane}: unavailable`)
-      lines.push(`    ${resolved.reason}: ${resolved.repair.command}`)
+      lines.push(`    ${resolved.reason}: ${resolved.error}`)
+      lines.push(`    repair: ${resolved.repair.command}`)
       continue
     }
+    /* v8 ignore stop */
     const binding = resolved.binding
     lines.push(`  ${lane}: ${binding.provider} / ${binding.model} (${binding.source})`)
-    lines.push(`    readiness: ${binding.readiness.status}${binding.readiness.error ? ` (${binding.readiness.error})` : ""}`)
+    lines.push(`    readiness: ${binding.readiness.status}`)
     lines.push(`    ${renderProviderCredentialLine(command.agent, binding.credential)}`)
     for (const warning of binding.warnings) {
       lines.push(`    warning: ${warning.message}`)
@@ -5551,7 +5417,7 @@ async function executeProviderRefresh(
   const lines: string[] = []
   if (pool.ok) {
     const summary = summarizeProviderCredentialPool(pool.pool)
-    lines.push(`refreshed provider credential snapshot for ${command.agent}`)
+    lines.push(`refreshed in-memory provider credentials for ${command.agent}`)
     lines.push(`providers: ${summary.providers.map((provider) => provider.provider).join(", ") || "none"}`)
     progress.completePhase("refreshing provider credentials", summary.providers.map((provider) => provider.provider).join(", ") || "none")
   } else {
@@ -5832,13 +5698,13 @@ async function executeLegacyAuthSwitch(
   command: Extract<ResolvedOuroCliCommand, { kind: "auth.switch" }>,
   deps: OuroCliDeps,
 ): Promise<string> {
-  const { state } = readOrBootstrapProviderState(command.agent, deps)
+  const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const lanes: ProviderLane[] = command.facing
     ? [command.facing === "human" ? "outward" : "inner"]
     : ["outward", "inner"]
   const messages: string[] = []
   for (const lane of lanes) {
-    const model = state.lanes[lane].model
+    const model = providerConfigBinding(config, lane).model
     messages.push(await executeProviderUse({
       kind: "provider.use",
       agent: command.agent,
@@ -5850,7 +5716,7 @@ async function executeLegacyAuthSwitch(
     }, deps, { writeStdout: false }))
   }
   const message = [
-    `deprecated: switched this machine's local provider binding. \`ouro auth switch\` no longer edits agent.json.`,
+    `deprecated: switched provider selection in agent.json.`,
     ...messages,
     `Use \`ouro use --agent ${command.agent} --lane <outward|inner> --provider ${command.provider} --model <model>\` for explicit provider/model selection.`,
   ].join("\n")
@@ -5863,8 +5729,8 @@ async function executeLegacyConfigModel(
   deps: OuroCliDeps,
 ): Promise<string> {
   const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
-  const { agentRoot, state } = readOrBootstrapProviderState(command.agent, deps)
-  const binding = state.lanes[lane]
+  const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+  const binding = providerConfigBinding(config, lane)
   const progress = binding.provider === "github-copilot" ? createHumanCommandProgress(deps, "config model") : null
   const writeMessage = (message: string): string => {
     progress?.end()
@@ -5920,17 +5786,20 @@ async function executeLegacyConfigModel(
     }
   }
 
-  const updatedAt = providerCliNow(deps).toISOString()
-  state.updatedAt = updatedAt
-  state.lanes[lane] = {
-    ...binding,
-    model: command.modelName,
-    source: "local",
-    updatedAt,
+  const facingKey = providerFacingKeyForLane(lane)
+  const nextConfig: AgentConfig = {
+    ...config,
+    [facingKey]: {
+      ...config[facingKey],
+      model: command.modelName,
+    },
   }
-  delete state.readiness[lane]
-  writeProviderState(agentRoot, state)
-  const message = `deprecated: updated ${command.agent} model on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`
+  fs.writeFileSync(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8")
+  const message = appendBundleSyncSummary(
+    `deprecated: updated ${command.agent} model in agent.json on ${lane}/${binding.provider}: ${binding.model} -> ${command.modelName}\nUse \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${command.modelName}\` next time.`,
+    command.agent,
+    deps,
+  )
   return writeMessage(message)
 }
 
@@ -6928,10 +6797,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       if (command.noRepair) {
         // --no-repair: write degraded summary and skip interactive repair
         writeProviderRepairSummary(deps, "Provider checks need attention", daemonResult.stability.degraded)
-        // Layer 4: drift advisories ride along with the post-startup
-        // degraded summary too — same rationale as the preflight path.
-        const driftAdvisories = await collectAgentDriftAdvisories(deps)
-        writeDriftAdvisorySummary(deps, driftAdvisories)
         deps.setExitCode?.(1)
         emitNervesEvent({
           level: "warn",
@@ -6940,7 +6805,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           message: "degraded agents detected with --no-repair, skipping interactive repair",
           meta: {
             degradedCount: daemonResult.stability.degraded.length,
-            driftCount: driftAdvisories.length,
           },
         })
       } else {
@@ -6975,16 +6839,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         if (repairGuideShouldFire) {
           const repairInput = [...untypedDegraded, ...typedDegraded]
           const forceDiagnosis = untypedDegraded.length === 0 && typedDegraded.length >= 3
-          // Layer 3: collect drift findings here so the RepairGuide
-          // prompt receives them as a structured JSON block. Drift is
-          // already collected for the no-repair path above; we collect
-          // again here because the repair path is a separate branch.
-          // Filter to agents in repairInput so the diagnostic prompt
-          // doesn't carry drift from healthy peers — narrows the
-          // signal to the set being diagnosed.
-          const repairAgentNames = new Set(repairInput.map((entry) => entry.agent))
-          const repairDriftFindings = (await collectAgentDriftAdvisories(deps))
-            .filter((finding) => repairAgentNames.has(finding.agent))
           const repairResult = await runAgenticRepair(repairInput, {
             /* v8 ignore start -- production provider discovery wiring @preserve */
             discoverWorkingProvider: async (agentName: string) => {
@@ -7028,7 +6882,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
             isTTY: deps.isTTY ?? process.stdout.isTTY === true,
             stdoutColumns: deps.stdoutColumns ?? process.stdout.columns,
             forceDiagnosis,
-            driftFindings: repairDriftFindings,
             syncFindings: bootSyncFindings,
           })
           if (repairResult.repairsAttempted) {
@@ -7059,12 +6912,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           writeProviderRepairSummary(deps, "Provider checks need attention", remainingDegraded)
         }
       }
-    } else if (command.noRepair) {
-      // Layer 4: no degraded agents to summarize, but --no-repair still
-      // surfaces drift advisories so the operator sees them without
-      // having to run `ouro inner status` per agent.
-      const driftAdvisories = await collectAgentDriftAdvisories(deps)
-      writeDriftAdvisorySummary(deps, driftAdvisories)
     }
 
     return daemonResult.message
@@ -7695,7 +7542,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return message
   }
 
-  // ── provider state commands (local, no daemon socket needed) ──
+  // ── provider commands (local, no daemon socket needed) ──
   if (command.kind === "provider.use") {
     return executeProviderUse(command, deps)
   }
@@ -8233,22 +8080,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       // Attention count
       const activeObligations = listActiveReturnObligations(command.agent)
 
-      // Layer 4 drift findings for this agent. Best-effort: if agent.json
-      // is unreadable mid-call we just suppress the advisory rather than
-      // failing the inner-status render.
-      let driftFindings: DriftFinding[] = []
-      try {
-        const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
-        const inputs = loadDriftInputsForAgent(bundlesRoot, command.agent)
-        driftFindings = detectProviderBindingDrift({
-          agentName: command.agent,
-          agentJson: inputs.agentJson,
-          providerState: inputs.providerState,
-        })
-      } catch {
-        driftFindings = []
-      }
-
       const message = buildInnerStatusOutput({
         agentName: command.agent,
         runtimeState,
@@ -8256,7 +8087,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         heartbeat,
         attentionCount: activeObligations.length,
         now: Date.now(),
-        driftFindings,
       })
       deps.writeStdout(message)
       return message

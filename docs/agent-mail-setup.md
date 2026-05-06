@@ -273,7 +273,7 @@ Suggested policy shape:
 
 Local proof still uses the local-sink transport. Production sending uses a provider adapter, currently Azure Communication Services for `ouro.bot`.
 
-Provider-state rules:
+Outbound provider delivery rules:
 
 - provider submission records `submitted`, provider name, provider message/operation id, and operation location when available;
 - `submitted` means the provider accepted the API request for processing, not that the recipient received the mail;

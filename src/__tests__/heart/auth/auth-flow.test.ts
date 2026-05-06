@@ -35,7 +35,7 @@ const mockUpsertProviderCredential = vi.hoisted(() => vi.fn(async (input: {
 }) => {
   input.onProgress?.(`opening ${input.agentName}'s vault session...`)
   input.onProgress?.(`storing ${input.provider} credentials in ${input.agentName}'s vault...`)
-  input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
+  input.onProgress?.(`refreshing in-memory provider credential pool from ${input.agentName}'s vault...`)
   providerCredentialWrites.push({
     agentName: input.agentName,
     provider: input.provider,
@@ -293,8 +293,8 @@ describe("runtime auth flow", () => {
       "openai-codex login complete; reading local Codex token...",
       `opening ${agentName}'s vault session...`,
       `storing openai-codex credentials in ${agentName}'s vault...`,
-      `refreshing local provider snapshot from ${agentName}'s vault...`,
-      "credentials stored at providers/openai-codex; local provider snapshot refreshed.",
+      `refreshing in-memory provider credential pool from ${agentName}'s vault...`,
+      "credentials stored at providers/openai-codex; in-memory provider credential pool refreshed.",
     ])
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login", "status"], { encoding: "utf8" })
     expect(spawnSync).toHaveBeenCalledWith("codex", ["login"], expect.any(Object))

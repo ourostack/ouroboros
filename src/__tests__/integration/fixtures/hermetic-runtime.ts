@@ -3,7 +3,6 @@ import * as fs from "node:fs"
 import * as http from "node:http"
 import * as os from "node:os"
 import * as path from "node:path"
-import { bootstrapProviderStateFromAgentConfig, writeProviderState } from "../../../heart/provider-state"
 
 export type HermeticProviderMode = "ok" | "fail-live-check"
 
@@ -465,16 +464,6 @@ export async function createHermeticRuntimeHarness(
   }
   fs.writeFileSync(bwStatePath, JSON.stringify(bwState, null, 2) + "\n", "utf8")
   writeFakeBw(fakeBinDir, bwStatePath)
-
-  const state = bootstrapProviderStateFromAgentConfig({
-    machineId: "test-machine",
-    now: new Date(updatedAt),
-    agentConfig: {
-      humanFacing: { provider: "github-copilot", model: PROVIDER_MODEL },
-      agentFacing: { provider: "github-copilot", model: PROVIDER_MODEL },
-    },
-  })
-  writeProviderState(agentRoot, state)
 
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,

@@ -4,20 +4,13 @@ import { PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { PingResult, ProviderPingOptions } from "../provider-ping"
 import { getDefaultModelForProvider } from "../provider-models"
-import { loadOrCreateMachineIdentity } from "../machine-identity"
+import type { ProviderLane } from "../provider-lanes"
 import {
-  bootstrapProviderStateFromAgentConfig,
-  readProviderState,
-  writeProviderState,
-  type ProviderLane,
-  type ProviderState,
-} from "../provider-state"
-import {
-  providerCredentialMachineHomeDir,
   refreshProviderCredentialPool,
   type ProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
+import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { isCredentialVaultNotConfiguredError, vaultCreateRecoverFix, vaultUnlockReplaceRecoverFix } from "../../repertoire/vault-unlock"
 import {
   providerLiveCheckFix,
@@ -28,26 +21,12 @@ import {
   type AgentReadinessIssue,
 } from "./readiness-repair"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
-import {
-  detectProviderBindingDrift,
-  loadDriftInputsForAgent,
-  type DriftFinding,
-} from "./drift-detection"
 
 export interface ConfigCheckResult {
   ok: boolean
   error?: string
   fix?: string
   issue?: AgentReadinessIssue
-  /**
-   * Layer 4 drift findings: per-lane intent (`agent.json`) vs observed
-   * (`state/providers.json`) mismatches. Populated only when the function
-   * advanced far enough to read both inputs (a state-setup failure or
-   * agent.json parse error returns the result without ever computing
-   * drift, so this field stays `undefined` in those branches). Drift is
-   * advisory — its presence does NOT flip `ok` to false.
-   */
-  driftFindings?: DriftFinding[]
 }
 
 export type ProviderPing = (
@@ -65,7 +44,13 @@ export interface LiveConfigCheckDeps {
 }
 
 type FacingName = "humanFacing" | "agentFacing"
-type SelectedProvider = { facing: FacingName; provider: AgentProvider }
+type SelectedProvider = { facing: FacingName; lane: ProviderLane; provider: AgentProvider; model: string }
+type ProviderBindings = Record<ProviderLane, SelectedProvider>
+
+const LANES: Array<{ lane: ProviderLane; facing: FacingName }> = [
+  { lane: "outward", facing: "humanFacing" },
+  { lane: "inner", facing: "agentFacing" },
+]
 
 function isAgentProvider(value: string): value is AgentProvider {
   return Object.prototype.hasOwnProperty.call(PROVIDER_CREDENTIALS, value)
@@ -77,6 +62,10 @@ function agentRootFor(agentName: string, bundlesRoot: string): string {
 
 function configPathFor(agentName: string, bundlesRoot: string): string {
   return path.join(agentRootFor(agentName, bundlesRoot), "agent.json")
+}
+
+function laneForFacing(facing: FacingName): ProviderLane {
+  return facing === "humanFacing" ? "outward" : "inner"
 }
 
 function resolveFacingProvider(
@@ -120,7 +109,12 @@ function resolveFacingProvider(
     }
   }
 
-  return { ok: true, selected: { facing, provider } }
+  const rawModel = (raw as Record<string, unknown>).model
+  const model = typeof rawModel === "string" && rawModel.trim().length > 0
+    ? rawModel.trim()
+    : getDefaultModelForProvider(provider)
+
+  return { ok: true, selected: { facing, lane: laneForFacing(facing), provider, model } }
 }
 
 type AgentConfigReadResult =
@@ -128,11 +122,7 @@ type AgentConfigReadResult =
   | { ok: true; disabled: true; agentJsonPath: string; parsed: Record<string, unknown> }
   | { ok: false; result: ConfigCheckResult }
 
-type BootstrapProviderStateResult =
-  | { ok: true; agentRoot: string; state: ProviderState }
-  | { ok: false; error?: string; fix?: string }
-
-function readAgentConfigForProviderState(
+function readAgentConfigForProviderCheck(
   agentName: string,
   bundlesRoot: string,
 ): AgentConfigReadResult {
@@ -172,103 +162,32 @@ function readAgentConfigForProviderState(
   return { ok: true, disabled: false, agentJsonPath, parsed }
 }
 
-function readFacingForBootstrap(
-  parsed: Record<string, unknown>,
-  facing: FacingName,
-  agentName: string,
-  agentJsonPath: string,
-): { ok: true; provider: AgentProvider; model: string } | { ok: false; result: ConfigCheckResult } {
-  const providerResult = resolveFacingProvider(parsed, facing, agentName, agentJsonPath)
-  if (!providerResult.ok) {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: providerResult.result.error,
-        fix: `Run 'ouro use --agent ${agentName} --lane ${facing === "humanFacing" ? "outward" : "inner"} --provider <provider> --model <model>' to configure this machine's provider binding.`,
-      },
-    }
-  }
-  const raw = parsed[facing] as Record<string, unknown>
-  const model = typeof raw.model === "string" && raw.model.trim().length > 0
-    ? raw.model.trim()
-    : getDefaultModelForProvider(providerResult.selected.provider)
-  return { ok: true, provider: providerResult.selected.provider, model }
-}
-
-function bootstrapMissingProviderState(input: {
-  agentName: string
-  bundlesRoot: string
-  parsed: Record<string, unknown>
-  agentJsonPath: string
-  homeDir?: string
-}): BootstrapProviderStateResult {
-  const outward = readFacingForBootstrap(input.parsed, "humanFacing", input.agentName, input.agentJsonPath)
-  if (!outward.ok) return { ok: false, error: outward.result.error, fix: outward.result.fix }
-  const inner = readFacingForBootstrap(input.parsed, "agentFacing", input.agentName, input.agentJsonPath)
-  if (!inner.ok) return { ok: false, error: inner.result.error, fix: inner.result.fix }
-
-  const now = new Date()
-  const homeDir = providerCredentialMachineHomeDir(input.homeDir)
-  const machine = loadOrCreateMachineIdentity({ homeDir, now: () => now })
-  const state = bootstrapProviderStateFromAgentConfig({
-    machineId: machine.machineId,
-    now,
-    agentConfig: {
-      humanFacing: { provider: outward.provider, model: outward.model },
-      agentFacing: { provider: inner.provider, model: inner.model },
-    },
-  })
-  const agentRoot = agentRootFor(input.agentName, input.bundlesRoot)
-  writeProviderState(agentRoot, state)
-  emitNervesEvent({
-    component: "daemon",
-    event: "daemon.provider_state_bootstrapped",
-    message: "bootstrapped local provider state from agent config",
-    meta: { agent: input.agentName, agentRoot },
-  })
-  return { ok: true, agentRoot, state }
-}
-
-type ProviderStateSetupResult =
-  | { ok: true; disabled: false; agentRoot: string; state: ProviderState }
+type ProviderSelectionResult =
+  | { ok: true; disabled: false; agentRoot: string; bindings: ProviderBindings }
   | { ok: true; disabled: true }
   | { ok: false; result: ConfigCheckResult }
 
-function readOrBootstrapProviderStateForCheck(
+function readProviderSelectionForCheck(
   agentName: string,
   bundlesRoot: string,
-  deps: LiveConfigCheckDeps = {},
-): ProviderStateSetupResult {
-  const configResult = readAgentConfigForProviderState(agentName, bundlesRoot)
+): ProviderSelectionResult {
+  const configResult = readAgentConfigForProviderCheck(agentName, bundlesRoot)
   if (!configResult.ok) return { ok: false, result: configResult.result }
   if (configResult.disabled) return { ok: true, disabled: true }
 
-  const agentRoot = agentRootFor(agentName, bundlesRoot)
-  const stateResult = readProviderState(agentRoot)
-  if (stateResult.ok) {
-    return { ok: true, disabled: false, agentRoot, state: stateResult.state }
-  }
-  if (stateResult.reason === "invalid") {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        error: `provider state for ${agentName} is invalid at ${stateResult.statePath}: ${stateResult.error}`,
-        fix: `Run 'ouro use --agent ${agentName} --lane outward --provider <provider> --model <model> --force' to rewrite this machine's provider binding.`,
-      },
-    }
+  const bindings = {} as ProviderBindings
+  for (const { lane, facing } of LANES) {
+    const selected = resolveFacingProvider(configResult.parsed, facing, agentName, configResult.agentJsonPath)
+    if (!selected.ok) return { ok: false, result: selected.result }
+    bindings[lane] = selected.selected
   }
 
-  const bootstrap = bootstrapMissingProviderState({
-    agentName,
-    bundlesRoot,
-    parsed: configResult.parsed,
-    agentJsonPath: configResult.agentJsonPath,
-    homeDir: deps.homeDir,
-  })
-  if (!bootstrap.ok) return { ok: false, result: bootstrap }
-  return { ok: true, disabled: false, agentRoot: bootstrap.agentRoot, state: bootstrap.state }
+  return {
+    ok: true,
+    disabled: false,
+    agentRoot: agentRootFor(agentName, bundlesRoot),
+    bindings,
+  }
 }
 
 function providerCredentialConfig(record: ProviderCredentialRecord): Record<string, unknown> {
@@ -281,30 +200,6 @@ function providerCredentialConfig(record: ProviderCredentialRecord): Record<stri
 function pingAttemptCount(result: PingResult): number | undefined {
   if (Array.isArray(result.attempts)) return result.attempts.length
   return undefined
-}
-
-function writeLaneReadiness(input: {
-  agentRoot: string
-  state: ProviderState
-  lane: ProviderLane
-  status: "ready" | "failed"
-  credentialRevision: string
-  error?: string
-  attempts?: number
-}): void {
-  const binding = input.state.lanes[input.lane]
-  const checkedAt = new Date().toISOString()
-  input.state.updatedAt = checkedAt
-  input.state.readiness[input.lane] = {
-    status: input.status,
-    provider: binding.provider,
-    model: binding.model,
-    checkedAt,
-    credentialRevision: input.credentialRevision,
-    ...(input.error ? { error: input.error } : {}),
-    ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
-  }
-  writeProviderState(input.agentRoot, input.state)
 }
 
 function missingCredentialResult(
@@ -436,15 +331,15 @@ function bindingLabel(binding: { provider: AgentProvider; model: string }): stri
   return `${binding.provider} / ${binding.model}`
 }
 
-function selectedProviderPlan(agentName: string, state: ProviderState): string {
+function selectedProviderPlan(agentName: string, bindings: ProviderBindings): string {
   return [
-    `${agentName}: checking the providers this agent uses right now`,
-    ...(["outward", "inner"] as ProviderLane[]).map((lane) => `- ${laneAudienceLabel(lane)}: ${bindingLabel(state.lanes[lane])}`),
+    `${agentName}: checking the providers in agent.json`,
+    ...LANES.map(({ lane }) => `- ${laneAudienceLabel(lane)}: ${bindingLabel(bindings[lane])}`),
   ].join("\n")
 }
 
-function selectedProvidersForState(state: ProviderState): AgentProvider[] {
-  return [...new Set((["outward", "inner"] as ProviderLane[]).map((lane) => state.lanes[lane].provider))]
+function selectedProvidersForBindings(bindings: ProviderBindings): AgentProvider[] {
+  return [...new Set(LANES.map(({ lane }) => bindings[lane].provider))]
 }
 
 function mapVaultRefreshProgress(
@@ -480,20 +375,16 @@ export function checkAgentConfig(
   agentName: string,
   bundlesRoot: string,
 ): ConfigCheckResult {
-  const configResult = readAgentConfigForProviderState(agentName, bundlesRoot)
-  if (!configResult.ok) return configResult.result
-  if (configResult.disabled) return { ok: true }
-  const outward = readFacingForBootstrap(configResult.parsed, "humanFacing", agentName, configResult.agentJsonPath)
-  if (!outward.ok) return outward.result
-  const inner = readFacingForBootstrap(configResult.parsed, "agentFacing", agentName, configResult.agentJsonPath)
-  if (!inner.ok) return inner.result
+  const selectionResult = readProviderSelectionForCheck(agentName, bundlesRoot)
+  if (!selectionResult.ok) return selectionResult.result
+  if (selectionResult.disabled) return { ok: true }
   emitNervesEvent({
     component: "daemon",
     event: "daemon.agent_config_valid",
     message: "agent config validation passed",
     meta: {
       agent: agentName,
-      providers: [...new Set([outward.provider, inner.provider])],
+      providers: selectedProvidersForBindings(selectionResult.bindings),
       liveProviderCheck: false,
     },
   })
@@ -505,35 +396,14 @@ export async function checkAgentConfigWithProviderHealth(
   bundlesRoot: string,
   deps: LiveConfigCheckDeps = {},
 ): Promise<ConfigCheckResult> {
-  const stateResult = readOrBootstrapProviderStateForCheck(agentName, bundlesRoot, deps)
-  if (!stateResult.ok) return stateResult.result
-  if (stateResult.disabled) return { ok: true }
+  const selectionResult = readProviderSelectionForCheck(agentName, bundlesRoot)
+  if (!selectionResult.ok) return selectionResult.result
+  if (selectionResult.disabled) return { ok: true }
 
-  // Layer 4 drift detection. Runs once per call after state setup so that
-  // drift findings ride along regardless of ping outcome — consumers
-  // (Layer 4 rollup, Layer 3 RepairGuide) want to see drift even when a
-  // live-check is failing for unrelated reasons. Drift detection is pure
-  // and never throws on a malformed agent.json: any read error here would
-  // indicate the bundle disappeared between state setup and now (a
-  // race), which we surface as `[]` rather than a hard failure.
-  let driftFindings: DriftFinding[] = []
-  try {
-    const inputs = loadDriftInputsForAgent(bundlesRoot, agentName)
-    driftFindings = detectProviderBindingDrift({
-      agentName,
-      agentJson: inputs.agentJson,
-      providerState: inputs.providerState,
-    })
-  } catch {
-    /* v8 ignore next 1 -- defensive race-window guard: agent.json went away after state setup. Tested via Unit 5 integration when at all. @preserve */
-    driftFindings = []
-  }
-
-  deps.onProgress?.(selectedProviderPlan(agentName, stateResult.state))
+  deps.onProgress?.(selectedProviderPlan(agentName, selectionResult.bindings))
 
   const ping = deps.pingProvider ?? ((await import("../provider-ping")).pingProvider as unknown as ProviderPing)
-  const shouldRecordReadiness = deps.recordReadiness ?? true
-  const providers = selectedProvidersForState(stateResult.state)
+  const providers = selectedProvidersForBindings(selectionResult.bindings)
   const poolResult = await refreshProviderCredentialPool(
     agentName,
     {
@@ -549,21 +419,20 @@ export async function checkAgentConfigWithProviderHealth(
     record: ProviderCredentialRecord
     lanes: ProviderLane[]
   }>()
-  const lanes: ProviderLane[] = ["outward", "inner"]
-  for (const lane of lanes) {
-    const binding = stateResult.state.lanes[lane]
+  for (const { lane } of LANES) {
+    const binding = selectionResult.bindings[lane]
     if (!poolResult.ok) {
       if (poolResult.reason === "missing") {
-        return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
+        return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
       }
-      return { ...invalidPoolResult(agentName, lane, binding.provider, binding.model, {
+      return invalidPoolResult(agentName, lane, binding.provider, binding.model, {
         ...poolResult,
         reason: poolResult.reason,
-      }), driftFindings }
+      })
     }
     const record = credentialRecordForLane(poolResult.pool, binding.provider)
     if (!record) {
-      return { ...missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath), driftFindings }
+      return missingCredentialResult(agentName, lane, binding.provider, binding.model, poolResult.poolPath)
     }
     const key = `${binding.provider}\0${binding.model}\0${record.revision}`
     const group = pingGroups.get(key)
@@ -601,37 +470,37 @@ export async function checkAgentConfigWithProviderHealth(
   let firstFailure: ConfigCheckResult | null = null
   for (const { group, result } of pingResults) {
     if (!result.ok) {
-      if (shouldRecordReadiness) {
-        for (const lane of group.lanes) {
-          writeLaneReadiness({
-            agentRoot: stateResult.agentRoot,
-            state: stateResult.state,
-            lane,
-            status: "failed",
-            credentialRevision: group.record.revision,
-            error: result.message,
-            attempts: pingAttemptCount(result),
-          })
-        }
+      for (const lane of group.lanes) {
+        recordProviderLaneReadiness({
+          agentName,
+          lane,
+          provider: group.provider,
+          model: group.model,
+          credentialRevision: group.record.revision,
+          status: "failed",
+          checkedAt: new Date().toISOString(),
+          error: result.message,
+          attempts: pingAttemptCount(result),
+        })
       }
       firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
       continue
     }
-    if (shouldRecordReadiness) {
-      for (const lane of group.lanes) {
-        writeLaneReadiness({
-          agentRoot: stateResult.agentRoot,
-          state: stateResult.state,
-          lane,
-          status: "ready",
-          credentialRevision: group.record.revision,
-          attempts: pingAttemptCount(result),
-        })
-      }
+    for (const lane of group.lanes) {
+      recordProviderLaneReadiness({
+        agentName,
+        lane,
+        provider: group.provider,
+        model: group.model,
+        credentialRevision: group.record.revision,
+        status: "ready",
+        checkedAt: new Date().toISOString(),
+        attempts: pingAttemptCount(result),
+      })
     }
   }
 
-  if (firstFailure) return { ...firstFailure, driftFindings }
+  if (firstFailure) return firstFailure
 
   emitNervesEvent({
     component: "daemon",
@@ -641,8 +510,7 @@ export async function checkAgentConfigWithProviderHealth(
       agent: agentName,
       providers: [...new Set([...pingGroups.values()].map((group) => group.provider))],
       liveProviderCheck: true,
-      driftCount: driftFindings.length,
     },
   })
-  return { ok: true, driftFindings }
+  return { ok: true }
 }

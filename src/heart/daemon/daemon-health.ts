@@ -3,7 +3,6 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { LogEvent } from "../../nerves"
-import type { DriftFinding } from "./drift-detection"
 
 export interface DegradedComponent {
   component: string
@@ -76,15 +75,6 @@ export interface DaemonHealthState {
   uptimeSeconds: number
   safeMode: SafeModeState | null
   degraded: DegradedComponent[]
-  /**
-   * Per-lane drift findings between intent (`agent.json`) and observation
-   * (`state/providers.json`) for each enabled agent. Populated by Layer 4
-   * during `buildDaemonHealthState`. Surfaced to the operator at the
-   * daemon-down render path (`renderRollupStatusLine`'s `partial` branch)
-   * so a drift-induced `partial` rollup carries an explanation rather than
-   * an opaque "some agents unhealthy" copy. Empty array when no drift.
-   */
-  drift: DriftFinding[]
   agents: Record<string, AgentHealth>
   habits: Record<string, HabitHealth>
 }
@@ -187,13 +177,6 @@ export function readHealth(healthPath: string): DaemonHealthState | null {
       return null
     }
 
-    // `drift` is required in DaemonHealthState but absent from cached
-    // health files written by pre-Layer-4 daemons. Tolerate that legacy
-    // shape by defaulting to []; the rest of the file is still valid.
-    const drift: DriftFinding[] = Array.isArray(parsed.drift)
-      ? (parsed.drift as DriftFinding[])
-      : []
-
     return {
       status: parsed.status,
       mode: parsed.mode,
@@ -202,7 +185,6 @@ export function readHealth(healthPath: string): DaemonHealthState | null {
       uptimeSeconds: parsed.uptimeSeconds,
       safeMode: parsed.safeMode as SafeModeState | null,
       degraded: parsed.degraded as DegradedComponent[],
-      drift,
       agents: parsed.agents as Record<string, AgentHealth>,
       habits: parsed.habits as Record<string, HabitHealth>,
     }

@@ -39,7 +39,7 @@ import {
   refreshProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "./provider-credentials";
-import { readProviderState, type ProviderLane } from "./provider-state";
+import type { ProviderLane } from "./provider-lanes";
 import {
   ProviderAttemptAbortError,
   runProviderAttempt,
@@ -110,19 +110,7 @@ function providerLaneForFacing(facing: Facing): ProviderLane {
 }
 
 function resolveRuntimeProviderBinding(facing: Facing): RuntimeProviderBinding {
-  const agentName = getAgentName();
   const lane = providerLaneForFacing(facing);
-  const stateResult = readProviderState(getAgentRoot(agentName));
-  if (stateResult.ok) {
-    const binding = stateResult.state.lanes[lane];
-    return { lane, provider: binding.provider, model: binding.model };
-  }
-  if (stateResult.reason === "invalid") {
-    throw new Error(`provider state for ${agentName} is invalid at ${stateResult.statePath}: ${stateResult.error}`);
-  }
-
-  // First-run and SerpentGuide bootstrap path. Daemon startup normally
-  // bootstraps state/providers.json from agent.json before model calls.
   const config = loadAgentConfig();
   const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
   return { lane, provider: facingConfig.provider, model: facingConfig.model };

@@ -437,14 +437,14 @@ export async function upsertProviderCredential(input: ProviderCredentialUpsertIn
     password: JSON.stringify(payload),
     notes: "Ouro provider credentials. The vault item password is a versioned JSON payload.",
   })
-  input.onProgress?.(`refreshing local provider snapshot from ${input.agentName}'s vault...`)
+  input.onProgress?.(`refreshing in-memory provider credential pool from ${input.agentName}'s vault...`)
   const refreshResult = await refreshProviderCredentialPool(input.agentName, {
     providers: [input.provider],
     onProgress: input.onProgress,
   })
   if (!refreshResult.ok) {
     throw new Error(
-      `credential stored in vault, but the local provider snapshot could not be refreshed: ${refreshResult.error}. ` +
+      `credential stored in vault, but the in-memory provider credential pool could not be refreshed: ${refreshResult.error}. ` +
       `Run 'ouro provider refresh --agent ${input.agentName}' after fixing vault access, then run 'ouro auth verify --agent ${input.agentName}'.`,
     )
   }

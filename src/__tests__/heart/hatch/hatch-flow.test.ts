@@ -16,7 +16,7 @@ vi.mock("../../../heart/auth/auth-flow", () => ({
 
 import { runHatchFlow } from "../../../heart/hatch/hatch-flow"
 import { getDefaultModelForProvider } from "../../../heart/provider-models"
-import { readProviderState } from "../../../heart/provider-state"
+import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`))
@@ -114,18 +114,18 @@ describe("hatch flow", () => {
     expect(fs.existsSync(path.join(result.bundleRoot, "tasks", "habits"))).toBe(false)
   })
 
-  it("creates bootstrapped local provider state for the hatchling machine", async () => {
-    const homeDir = makeTempDir("hatch-provider-state-home")
+  it("writes hatchling provider selection into agent.json", async () => {
+    const homeDir = makeTempDir("hatch-agent.json provider selection-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const specialistSource = makeTempDir("hatch-provider-state-specialist")
-    const specialistTarget = makeTempDir("hatch-provider-state-specialist-target")
+    const specialistSource = makeTempDir("hatch-agent.json provider selection-specialist")
+    const specialistTarget = makeTempDir("hatch-agent.json provider selection-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
 
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
     const result = await runHatchFlow(
       {
-        agentName: "ProviderStateBot",
+        agentName: "AgentProviderSelectionFixtureBot",
         humanName: "Ari",
         provider: "minimax",
         credentials: {
@@ -141,33 +141,29 @@ describe("hatch flow", () => {
       },
     )
 
-    const stateResult = readProviderState(result.bundleRoot)
+    const stateResult = readAgentProviderSelectionFixture(result.bundleRoot)
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
-    expect(stateResult.state.machineId).toMatch(/^machine_/)
-    expect(stateResult.state.updatedAt).toBe("2026-04-12T22:15:00.000Z")
     const expectedModel = getDefaultModelForProvider("minimax")
     expect(stateResult.state.lanes.outward).toMatchObject({
       provider: "minimax",
       model: expectedModel,
-      source: "bootstrap",
-      updatedAt: "2026-04-12T22:15:00.000Z",
+      source: "agent.json",
     })
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
       model: expectedModel,
-      source: "bootstrap",
-      updatedAt: "2026-04-12T22:15:00.000Z",
+      source: "agent.json",
     })
     expect(stateResult.state.readiness).toEqual({})
     expect(JSON.stringify(stateResult.state)).not.toContain("minimax-secret-key")
   })
 
-  it("creates a machine identity while bootstrapping provider state from the default provider credential home", async () => {
-    const homeDir = makeTempDir("hatch-provider-state-default-home")
+  it("writes agent.json provider selection from the default provider credential home", async () => {
+    const homeDir = makeTempDir("hatch-agent.json provider selection-default-home")
     const bundlesRoot = path.join(homeDir, "AgentBundles")
-    const specialistSource = makeTempDir("hatch-provider-state-default-specialist")
-    const specialistTarget = makeTempDir("hatch-provider-state-default-specialist-target")
+    const specialistSource = makeTempDir("hatch-agent.json provider selection-default-specialist")
+    const specialistTarget = makeTempDir("hatch-agent.json provider selection-default-specialist-target")
     cleanup.push(homeDir, specialistSource, specialistTarget)
     fs.writeFileSync(path.join(specialistSource, "medusa.md"), "# Medusa\n", "utf-8")
 
@@ -198,11 +194,11 @@ describe("hatch flow", () => {
         },
       )
 
-      const stateResult = readProviderState(result.bundleRoot)
+      const stateResult = readAgentProviderSelectionFixture(result.bundleRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
-      expect(stateResult.state.updatedAt).toBe("2026-04-12T22:16:00.000Z")
-      expect(fs.existsSync(path.join(homeDir, ".ouro-cli", "machine.json"))).toBe(true)
+      expect(stateResult.state.lanes.outward.provider).toBe("minimax")
+      expect(stateResult.state.lanes.inner.provider).toBe("minimax")
     } finally {
       vi.doUnmock("../../../heart/provider-credentials")
       vi.resetModules()

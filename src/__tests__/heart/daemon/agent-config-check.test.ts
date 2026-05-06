@@ -31,30 +31,6 @@ function agentJson(overrides: Record<string, unknown> = {}): string {
   })
 }
 
-function providerStateJson(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    schemaVersion: 1,
-    machineId: "machine_test",
-    updatedAt: "2026-04-12T22:30:00.000Z",
-    lanes: {
-      outward: {
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-        source: "bootstrap",
-        updatedAt: "2026-04-12T22:30:00.000Z",
-      },
-      inner: {
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-        source: "bootstrap",
-        updatedAt: "2026-04-12T22:30:00.000Z",
-      },
-    },
-    readiness: {},
-    ...overrides,
-  })
-}
-
 function providerRecord(provider: string, fields: {
   credentials?: Record<string, unknown>
   config?: Record<string, unknown>
@@ -84,18 +60,14 @@ function credentialPool(providers: Record<string, Record<string, unknown>>) {
   } as const
 }
 
-function mockAgentAndProviderState(input: {
+function mockAgentConfigFixture(input: {
   agentConfig?: string
-  providerState?: string
 } = {}): void {
-  mockExistsSync.mockImplementation((filePath: fs.PathLike) => String(filePath).endsWith("/state/providers.json"))
+  mockExistsSync.mockImplementation((filePath: fs.PathLike) => String(filePath).endsWith("/agent.json"))
   mockReadFileSync.mockImplementation((filePath: fs.PathOrFileDescriptor) => {
     const p = String(filePath)
     if (p === path.join(BUNDLES, "myagent.ouro", "agent.json")) {
       return input.agentConfig ?? agentJson()
-    }
-    if (p === path.join(BUNDLES, "myagent.ouro", "state", "providers.json")) {
-      return input.providerState ?? providerStateJson()
     }
     throw Object.assign(new Error(`ENOENT: ${p}`), { code: "ENOENT" })
   })
@@ -156,6 +128,20 @@ describe("checkAgentConfig", () => {
     expect(result.error).toContain("Unknown provider 'fake-provider'")
   })
 
+  it("returns error when a facing provider is blank", () => {
+    mockReadFileSync.mockReturnValueOnce(agentJson({ humanFacing: { provider: "", model: "claude-opus-4-6" } }))
+
+    const result = checkAgentConfig("myagent", BUNDLES)
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("missing humanFacing.provider")
+  })
+
+  it("defaults a missing facing model to the provider default", () => {
+    mockReadFileSync.mockReturnValueOnce(agentJson({ humanFacing: { provider: "anthropic" } }))
+
+    expect(checkAgentConfig("myagent", BUNDLES)).toEqual({ ok: true })
+  })
+
   it("returns error when agentFacing provider is missing", () => {
     mockReadFileSync.mockReturnValueOnce(JSON.stringify({
       humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
@@ -183,34 +169,18 @@ describe("checkAgentConfigWithProviderHealth", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     providerPingMock.mockResolvedValue({ ok: true })
-    mockAgentAndProviderState()
+    mockAgentConfigFixture()
     refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({
       anthropic: providerRecord("anthropic", { credentials: { setupToken: "tok" } }),
     }))
   })
 
-  it("live-checks selected providers from local provider state using vault credentials", async () => {
+  it("live-checks selected providers from agent.json using vault credentials", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
-    mockAgentAndProviderState({
+    mockAgentConfigFixture({
       agentConfig: agentJson({
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
-      }),
-      providerState: providerStateJson({
-        lanes: {
-          outward: {
-            provider: "anthropic",
-            model: "claude-opus-4-6",
-            source: "bootstrap",
-            updatedAt: "2026-04-12T22:30:00.000Z",
-          },
-          inner: {
-            provider: "github-copilot",
-            model: "claude-sonnet-4.6",
-            source: "local",
-            updatedAt: "2026-04-12T22:30:00.000Z",
-          },
-        },
       }),
     })
     refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({
@@ -233,6 +203,16 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(pingProvider).toHaveBeenCalledWith("anthropic", { setupToken: "tok" }, expect.objectContaining({ model: "claude-opus-4-6" }))
     expect(pingProvider).toHaveBeenCalledWith("github-copilot", { githubToken: "gh", baseUrl: "https://copilot.example" }, expect.objectContaining({ model: "claude-sonnet-4.6" }))
     expect(pingProvider).not.toHaveBeenCalledWith("minimax", expect.anything())
+  })
+
+  it("skips live provider checks when the agent is disabled", async () => {
+    mockAgentConfigFixture({ agentConfig: agentJson({ enabled: false }) })
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider: providerPingMock as any })
+
+    expect(result).toEqual({ ok: true })
+    expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
+    expect(providerPingMock).not.toHaveBeenCalled()
   })
 
   it("dedupes live provider checks when both lanes share provider, model, and credential revision", async () => {
@@ -274,26 +254,10 @@ describe("checkAgentConfigWithProviderHealth", () => {
       releaseFirst = resolve
     })
     const started: string[] = []
-    mockAgentAndProviderState({
+    mockAgentConfigFixture({
       agentConfig: agentJson({
         humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
         agentFacing: { provider: "github-copilot", model: "claude-sonnet-4.6" },
-      }),
-      providerState: providerStateJson({
-        lanes: {
-          outward: {
-            provider: "anthropic",
-            model: "claude-opus-4-6",
-            source: "bootstrap",
-            updatedAt: "2026-04-12T22:30:00.000Z",
-          },
-          inner: {
-            provider: "github-copilot",
-            model: "claude-sonnet-4.6",
-            source: "local",
-            updatedAt: "2026-04-12T22:30:00.000Z",
-          },
-        },
       }),
     })
     refreshProviderCredentialPoolMock.mockResolvedValue(credentialPool({

@@ -50,7 +50,6 @@ describe("loadRepairGuideContent", () => {
       }
       if (target.endsWith("skills")) {
         return [
-          { name: "diagnose-bootstrap-drift.md", isFile: () => true, isDirectory: () => false },
           { name: "diagnose-broken-remote.md", isFile: () => true, isDirectory: () => false },
         ]
       }
@@ -59,7 +58,6 @@ describe("loadRepairGuideContent", () => {
     readFileSyncMock.mockImplementation((target: string) => {
       if (target.endsWith("SOUL.md")) return "# SOUL\nsoul content"
       if (target.endsWith("IDENTITY.md")) return "# IDENTITY\nidentity content"
-      if (target.endsWith("diagnose-bootstrap-drift.md")) return "# bootstrap drift\nbody"
       if (target.endsWith("diagnose-broken-remote.md")) return "# broken remote\nbody"
       throw new Error(`unexpected read: ${target}`)
     })
@@ -70,7 +68,6 @@ describe("loadRepairGuideContent", () => {
     expect(result).not.toBeNull()
     expect(result!.psyche.soul).toBe("# SOUL\nsoul content")
     expect(result!.psyche.identity).toBe("# IDENTITY\nidentity content")
-    expect(result!.skills["diagnose-bootstrap-drift.md"]).toBe("# bootstrap drift\nbody")
     expect(result!.skills["diagnose-broken-remote.md"]).toBe("# broken remote\nbody")
   })
 

@@ -33,7 +33,7 @@ function configuredLane(
     status: "configured",
     provider,
     model,
-    source: "local",
+    source: "agent.json",
     readiness: { status: "ready" },
     credential: { status: "present", source: "vault", revision: `${provider}-rev-1` },
     warnings: [],
@@ -217,6 +217,23 @@ describe("connect bay", () => {
       action: "ouro auth --agent Slugger --provider openai-codex",
     })
     expect(summary.nextAction).toBe("ouro auth --agent Slugger --provider openai-codex")
+  })
+
+  it("surfaces stale provider readiness when no fresh health check is available", () => {
+    emitTestEvent("connect bay stale readiness fallback")
+    const summary = summarizeProvidersForConnect("Slugger", providerVisibility([
+      configuredLane("outward", "openai-codex", "gpt-5.4", {
+        readiness: { status: "stale", reason: "credential changed" },
+      }),
+      configuredLane("inner", "minimax", "MiniMax-M2.5"),
+    ]))
+
+    expect(summary.status).toBe("needs attention")
+    expect(summary.laneSummaries[0]).toMatchObject({
+      lane: "outward",
+      status: "needs attention",
+      detail: "live check is stale: credential changed",
+    })
   })
 
   it("shows a fresh live-check failure instead of stale missing-credential guidance", () => {

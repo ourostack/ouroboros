@@ -82,7 +82,7 @@ import { OuroDaemon } from "../../../heart/daemon/daemon"
 import * as daemonThoughts from "../../../heart/daemon/thoughts"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
-import { readProviderState } from "../../../heart/provider-state"
+import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
 import { createTaskModule } from "../../../repertoire/tasks"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
@@ -1596,7 +1596,7 @@ describe("ouro CLI execution", () => {
     }
   })
 
-  it("ouro auth switch updates local provider state instead of agent.json", async () => {
+  it("ouro auth switch updates agent.json provider lanes", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-new",
       agentJson: {
@@ -1621,9 +1621,9 @@ describe("ouro CLI execution", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("anthropic")
-      expect(updated.agentFacing.provider).toBe("anthropic")
-      const stateResult = readProviderState(tmp.agentRoot)
+      expect(updated.humanFacing.provider).toBe("github-copilot")
+      expect(updated.agentFacing.provider).toBe("github-copilot")
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
@@ -1633,7 +1633,7 @@ describe("ouro CLI execution", () => {
     }
   })
 
-  it("ouro auth --switch flag form updates local provider state instead of agent.json", async () => {
+  it("ouro auth --switch flag form updates agent.json provider lanes", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-flag-switch",
       agentJson: {
@@ -1658,9 +1658,9 @@ describe("ouro CLI execution", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("openai-codex")
-      expect(updated.agentFacing.provider).toBe("openai-codex")
-      const stateResult = readProviderState(tmp.agentRoot)
+      expect(updated.humanFacing.provider).toBe("github-copilot")
+      expect(updated.agentFacing.provider).toBe("github-copilot")
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
@@ -8596,7 +8596,7 @@ describe("ouro config model", () => {
     expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--facing", "both", "gpt-5"])).toThrow("--facing must be 'human' or 'agent'")
   })
 
-  it("config.model updates the local provider-state lane instead of agent.json", async () => {
+  it("config.model updates the selected agent.json provider lane", async () => {
     const tmp = createTmpBundle({
       agentName: "config-model-facing",
       agentJson: {
@@ -8621,9 +8621,9 @@ describe("ouro config model", () => {
       expect(result).toContain("claude-sonnet-4.6")
       expect(result).toContain("deprecated")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.model).toBe("claude-opus-4-6")
+      expect(updated.humanFacing.model).toBe("claude-sonnet-4.6")
       expect(updated.agentFacing.model).toBe("claude-opus-4-6")
-      const stateResult = readProviderState(tmp.agentRoot)
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.model).toBe("claude-sonnet-4.6")
@@ -8659,7 +8659,7 @@ describe("ouro config model", () => {
     try {
       const result = await runOuroCli(["config", "model", "gpt-5.4"], deps)
       expect(result).toContain("gpt-5.4")
-      const stateResult = readProviderState(tmp.agentRoot)
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.model).toBe("gpt-5.4")
@@ -8670,7 +8670,7 @@ describe("ouro config model", () => {
 })
 
 describe("auth.switch with facing", () => {
-  it("auth switch updates specified local provider-state lane only", async () => {
+  it("auth switch updates the specified agent.json provider lane only", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-facing",
       agentJson: {
@@ -8695,9 +8695,9 @@ describe("auth.switch with facing", () => {
       expect(result).toContain("switched")
       expect(result).toContain("github-copilot")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("anthropic")
+      expect(updated.humanFacing.provider).toBe("github-copilot")
       expect(updated.agentFacing.provider).toBe("anthropic")
-      const stateResult = readProviderState(tmp.agentRoot)
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.provider).toBe("github-copilot")
@@ -8707,7 +8707,7 @@ describe("auth.switch with facing", () => {
     }
   })
 
-  it("auth switch updates both local provider-state lanes when --facing is not specified", async () => {
+  it("auth switch updates both agent.json provider lanes when --facing is not specified", async () => {
     const tmp = createTmpBundle({
       agentName: "auth-switch-both",
       agentJson: {
@@ -8731,9 +8731,9 @@ describe("auth.switch with facing", () => {
       const result = await runOuroCli(["auth", "switch", "--agent", tmp.agentName, "--provider", "minimax"], deps)
       expect(result).toContain("switched")
       const updated = JSON.parse(fs.readFileSync(tmp.agentConfigPath, "utf-8")) as any
-      expect(updated.humanFacing.provider).toBe("anthropic")
-      expect(updated.agentFacing.provider).toBe("anthropic")
-      const stateResult = readProviderState(tmp.agentRoot)
+      expect(updated.humanFacing.provider).toBe("minimax")
+      expect(updated.agentFacing.provider).toBe("minimax")
+      const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
       expect(stateResult.state.lanes.outward.provider).toBe("minimax")
@@ -9195,7 +9195,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "outward",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "ready",
           credential: "checked previously",
         },
@@ -9204,7 +9204,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "inner",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "ready",
           credential: "checked previously",
         },
@@ -9250,7 +9250,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "outward",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "failed",
           credential: "checked previously",
           detail: "bad token",
@@ -9260,7 +9260,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "inner",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "failed",
           credential: "checked previously",
         },
@@ -9307,7 +9307,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "outward",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "failed",
           credential: "checked previously",
         },
@@ -9316,7 +9316,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "inner",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "ready",
           credential: "checked previously",
         },
@@ -9374,7 +9374,7 @@ describe("ouro up per-agent progress threading", () => {
           lane: "inner",
           provider: "openai-codex",
           model: "gpt-5.5",
-          source: "local",
+          source: "agent.json",
           readiness: "ready",
           credential: "checked previously",
         },

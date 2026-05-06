@@ -21,7 +21,6 @@ import { getRepoRoot, type AgentProvider } from "../identity"
 import { createProviderRuntimeForConfig, type ProviderRuntimeConfig } from "../provider-ping"
 import type OpenAI from "openai"
 import { isKnownReadinessIssue, type RepairAction, type RepairActionKind } from "./readiness-repair"
-import type { DriftFinding } from "./drift-detection"
 import type { BootSyncProbeFinding } from "./boot-sync-probe"
 
 /** Minimal subset of ProviderRuntime needed for a single diagnostic call. */
@@ -75,15 +74,6 @@ export interface AgenticRepairDeps {
    */
   repoRootOverride?: string
   /**
-   * Layer 3: structured drift findings collected during boot
-   * (Layer 4's `detectProviderBindingDrift`). Threaded into the
-   * RepairGuide diagnostic prompt as a JSON block so the
-   * `diagnose-bootstrap-drift` skill has the actual lane/intent/observed
-   * data to reason over. Empty array (or omitted) means no drift to
-   * report.
-   */
-  driftFindings?: DriftFinding[]
-  /**
    * Layer 3: structured sync-probe findings collected during boot
    * (Layer 2's `runBootSyncProbe`). Threaded into the RepairGuide
    * diagnostic prompt as a JSON block so the `diagnose-broken-remote`
@@ -120,7 +110,6 @@ function buildSystemPrompt(degraded: DegradedAgent[]): string {
 function buildUserMessage(
   degraded: DegradedAgent[],
   logsTail: string,
-  driftFindings: DriftFinding[] = [],
   syncFindings: BootSyncProbeFinding[] = [],
 ): string {
   const agentDetails = degraded
@@ -135,20 +124,6 @@ function buildUserMessage(
     "Recent daemon logs:",
     logsTail,
   ]
-
-  // Layer 3: thread Layer 4's structured drift findings into the prompt as
-  // a JSON block. The `diagnose-bootstrap-drift` skill (loaded into the
-  // system prompt by `buildSystemPromptWithRepairGuide`) instructs the LLM
-  // how to read this shape and what `ouro use` repair to propose.
-  if (driftFindings.length > 0) {
-    sections.push(
-      "",
-      "driftFindings (DriftFinding[]):",
-      "```json",
-      JSON.stringify(driftFindings, null, 2),
-      "```",
-    )
-  }
 
   // Layer 3: thread Layer 2's structured sync-probe findings into the
   // prompt as a JSON block. `diagnose-broken-remote` (auth/404/network/
@@ -249,7 +224,6 @@ async function tryAgenticDiagnosis(
   const userMessage = buildUserMessage(
     degraded,
     logsTail,
-    deps.driftFindings,
     deps.syncFindings,
   )
 

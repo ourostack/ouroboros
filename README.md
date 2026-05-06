@@ -95,8 +95,8 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, and vault coordinates. Legacy `humanFacing`/`agentFacing` values are bootstrap inputs, not live machine fallback.
-- `state/providers.json` is the local source of truth for provider+model selection on this machine. It has two lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
+- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
+- Legacy `humanFacing`/`agentFacing` provider fields are read only as compatibility aliases for `outward`/`inner`; they are not a second config surface.
 - Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
 - New vault unlock secrets are confirmed before use and rejected if they do not meet the minimum strength requirements.

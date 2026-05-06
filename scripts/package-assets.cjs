@@ -5,7 +5,6 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
   "RepairGuide.ouro/psyche/SOUL.md",
-  "RepairGuide.ouro/skills/diagnose-bootstrap-drift.md",
   "RepairGuide.ouro/skills/diagnose-broken-remote.md",
   "RepairGuide.ouro/skills/diagnose-stacked-typed-issues.md",
   "RepairGuide.ouro/skills/diagnose-sync-blocked.md",

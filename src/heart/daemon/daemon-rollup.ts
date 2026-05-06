@@ -44,18 +44,6 @@ export interface ComputeDaemonRollupInput {
    * via the daemon-entry boot path.
    */
   safeMode: boolean
-  /**
-   * Layer 4: whether drift was detected on at least one enabled agent
-   * (intent in `agent.json` does not match observed binding in
-   * `state/providers.json`). Drift downgrades `healthy` → `partial`
-   * (same downgrade rule as `bootstrapDegraded`) but never escalates
-   * past `partial`: a `degraded` rollup stays `degraded` and a
-   * `safe-mode` rollup stays `safe-mode`. Drift is advisory.
-   *
-   * Optional for backward compatibility: pre-Layer-4 callers omit it,
-   * which the rollup treats as "no drift detected."
-   */
-  driftDetected?: boolean
 }
 
 /**
@@ -109,9 +97,8 @@ export function computeDaemonRollup(input: ComputeDaemonRollupInput): RollupStat
   // healthy vs partial.
   const hasUnhealthyAgent = notServing > 0
   const hasBootstrapDegraded = input.bootstrapDegraded.length > 0
-  const hasDrift = input.driftDetected === true
 
-  if (hasUnhealthyAgent || hasBootstrapDegraded || hasDrift) {
+  if (hasUnhealthyAgent || hasBootstrapDegraded) {
     return "partial"
   }
 

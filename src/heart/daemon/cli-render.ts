@@ -659,28 +659,16 @@ export function renderRollupStatusLine(health: DaemonHealthState): string {
     case "healthy":
       return `Last known status: healthy ${tail}`
     case "partial": {
-      // `partial` arises from two independent sources:
-      //   (a) some enabled agents not in `running` state, or
-      //   (b) Layer-4 drift between agent.json (intent) and state/providers.json (observed).
-      // Either or both can be true. Render mentions both when applicable so
-      // the operator isn't misled into thinking agents are unhealthy when the
-      // only anomaly is configuration drift.
       const unhealthyCount = Object.values(health.agents).filter(
         (agent) => agent.status !== "running",
       ).length
-      const driftCount = (health.drift ?? []).length
       const parts: string[] = []
       if (unhealthyCount > 0) {
         parts.push(`${unhealthyCount} agent${unhealthyCount === 1 ? "" : "s"} unhealthy`)
       }
-      if (driftCount > 0) {
-        parts.push(`drift on ${driftCount} agent${driftCount === 1 ? "" : "s"}`)
-      }
       // Fallback for legacy cached files: status="partial" with no
-      // visible cause (no unhealthy agents AND no drift array). This
-      // happens when the file pre-dates Layer 4 and the daemon flagged
-      // partial via some signal that's no longer expressible. Prompt
-      // refresh via `ouro up` rather than asserting a specific cause.
+      // visible cause. Prompt refresh via `ouro up` rather than asserting
+      // a specific cause.
       const detail = parts.length > 0
         ? ` — ${parts.join("; ")}`
         : " — stale cache, run `ouro up` to refresh"

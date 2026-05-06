@@ -1,7 +1,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ProviderErrorClassification } from "../core"
 import type { AgentProvider } from "../identity"
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import {
   buildHumanReadinessSnapshot,
   readinessItemFromIssue,

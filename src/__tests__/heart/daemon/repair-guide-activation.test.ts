@@ -29,7 +29,7 @@ describe("shouldFireRepairGuide", () => {
     expect(
       shouldFireRepairGuide({
         untypedDegraded: [deg("a", "x"), deg("b", "y")],
-        typedDegraded: [deg("c", "vault-locked"), deg("d", "provider-auth-needed"), deg("e", "drift")],
+        typedDegraded: [deg("c", "vault-locked"), deg("d", "provider-auth-needed"), deg("e", "selection-mismatch")],
         noRepair: true,
       }),
     ).toBe(false)
@@ -84,7 +84,7 @@ describe("shouldFireRepairGuide", () => {
         typedDegraded: [
           deg("a", "vault-locked"),
           deg("a", "provider-auth-needed"),
-          deg("a", "drift"),
+          deg("a", "selection-mismatch"),
         ],
         noRepair: false,
       }),

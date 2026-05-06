@@ -66,7 +66,7 @@ ouro clone <bundle-git-remote>
 
 ## Step 3: Unlock the agent vault
 
-Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is per-machine (stored in `state/providers.json` inside the bundle). See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
+Each agent owns its own Bitwarden/Vaultwarden vault for provider credentials. Provider/model selection is stored in `agent.json` inside the bundle. See [docs/auth-and-providers.md](auth-and-providers.md) for the full story.
 
 If this is an existing bundle, unlock its vault on this machine before starting the daemon:
 
@@ -184,7 +184,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Syncs across machines | Per-machine (not synced) |
 |---|---|
 | Psyche (SOUL.md, IDENTITY.md, etc.) | Machine identity (`~/.ouro-cli/machine.json`) |
-| Diary, journal | Provider/model lane selection (`state/providers.json`) |
+| Diary, journal | Provider/model lane selection (`agent.json`) |
 | Habits | Daemon state (pids, health, logs) |
 | Friends | Dev tool registrations (MCP, hooks) |
 | Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |

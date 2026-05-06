@@ -117,15 +117,6 @@ function credentialKeyLeaks(raw: string): string[] {
   return SENSITIVE_CONFIG_KEYS.filter((key) => raw.includes(`"${key}"`))
 }
 
-function checkCredentialLeak(checks: DoctorCheck[], label: string, raw: string): void {
-  const found = credentialKeyLeaks(raw)
-  if (found.length > 0) {
-    checks.push({ label, status: "warn", detail: `contains credential-looking keys: ${found.join(", ")}` })
-  } else {
-    checks.push({ label, status: "pass", detail: "no credential keys" })
-  }
-}
-
 export function checkAgents(deps: DoctorDeps): DoctorCategory {
   const checks: DoctorCheck[] = []
 
@@ -389,15 +380,6 @@ export function checkSecurity(deps: DoctorDeps): DoctorCategory {
         }
       } catch {
         checks.push({ label: `${agentDir} credential leak`, status: "fail", detail: "could not read agent.json" })
-      }
-    }
-
-    const providerStatePath = `${deps.bundlesRoot}/${agentDir}/state/providers.json`
-    if (deps.existsSync(providerStatePath)) {
-      try {
-        checkCredentialLeak(checks, `${agentDir} state/providers.json credential leak`, deps.readFileSync(providerStatePath))
-      } catch {
-        checks.push({ label: `${agentDir} state/providers.json credential leak`, status: "fail", detail: "could not read state/providers.json" })
       }
     }
   }

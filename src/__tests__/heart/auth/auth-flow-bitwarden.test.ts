@@ -288,11 +288,11 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       "parsing provider credentials...",
       "opening VaultSaveBot's vault session...",
       "storing minimax credentials in VaultSaveBot's vault...",
-      "refreshing local provider snapshot from VaultSaveBot's vault...",
+      "refreshing in-memory provider credential pool from VaultSaveBot's vault...",
       "reading vault items for VaultSaveBot...",
       ...minimaxReadProgress,
       "parsing provider credentials...",
-      "credentials stored at providers/minimax; local provider snapshot refreshed.",
+      "credentials stored at providers/minimax; in-memory provider credential pool refreshed.",
     ])
 
     const record = await readProviderCredentialRecord("VaultSaveBot", "minimax")
@@ -353,11 +353,11 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       "using existing openai-codex local login...",
       "opening CodexLocalBot's vault session...",
       "storing openai-codex credentials in CodexLocalBot's vault...",
-      "refreshing local provider snapshot from CodexLocalBot's vault...",
+      "refreshing in-memory provider credential pool from CodexLocalBot's vault...",
       "reading vault items for CodexLocalBot...",
       "reading openai-codex credentials...",
       "parsing provider credentials...",
-      "credentials stored at providers/openai-codex; local provider snapshot refreshed.",
+      "credentials stored at providers/openai-codex; in-memory provider credential pool refreshed.",
     ])
 
     const record = await readProviderCredentialRecord("CodexLocalBot", "openai-codex")
@@ -443,7 +443,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       promptInput: async () => "minimax-secret",
       onProgress: (message) => progress.push(message),
     })).rejects.toThrow(
-      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the local provider snapshot refresh failed: bw CLI error: access denied by vault policy. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
+      "provider authentication succeeded and minimax credentials were stored in VaultRefreshBot's vault, but the in-memory provider credential pool refresh failed: bw CLI error: access denied by vault policy. Run 'ouro provider refresh --agent VaultRefreshBot' after fixing vault access, then run 'ouro auth verify --agent VaultRefreshBot'.",
     )
 
     expect(progress).toEqual([
@@ -453,7 +453,7 @@ describe("runtime auth flow with the Bitwarden-backed provider vault", () => {
       "parsing provider credentials...",
       "opening VaultRefreshBot's vault session...",
       "storing minimax credentials in VaultRefreshBot's vault...",
-      "refreshing local provider snapshot from VaultRefreshBot's vault...",
+      "refreshing in-memory provider credential pool from VaultRefreshBot's vault...",
       "reading vault items for VaultRefreshBot...",
       "reading minimax credentials...",
     ])

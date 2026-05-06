@@ -6,7 +6,7 @@
  */
 
 import type { AgentProvider } from "../identity"
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import type { Facing } from "../../mind/friends/channel"
 import type { TrustLevel } from "../../mind/friends/types"
 import type { DaemonCommand, DaemonResponse } from "./daemon"

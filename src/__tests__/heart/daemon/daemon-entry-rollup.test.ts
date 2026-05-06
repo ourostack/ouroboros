@@ -291,49 +291,6 @@ describe("daemon-entry rollup vocabulary", () => {
     expect(capturedHealthStates[0]?.status).toBe("degraded")
   })
 
-  it("returns 'partial' when agents are healthy but Layer 4 drift is detected on at least one bundle (downgrade rule)", async () => {
-    // Layer 4: drift between agent.json (intent) and state/providers.json
-    // (observed) downgrades healthy → partial via the same rule as
-    // bootstrap-degraded. We seed a bundle with mismatching intent vs
-    // observed and assert the rollup downgrades.
-    vi.resetModules()
-    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
-    const bundlesRoot = path.join(testHomeRoot, "AgentBundles")
-    const agentRoot = path.join(bundlesRoot, "alpha.ouro")
-    fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
-    fs.writeFileSync(path.join(agentRoot, "agent.json"), JSON.stringify({
-      version: 2,
-      enabled: true,
-      // Intent: openai/claude-opus-4-7
-      humanFacing: { provider: "openai", model: "claude-opus-4-7" },
-      agentFacing: { provider: "openai", model: "claude-opus-4-7" },
-      phrases: { thinking: ["t"], tool: ["t"], followup: ["t"] },
-    }), "utf-8")
-    fs.writeFileSync(path.join(agentRoot, "state", "providers.json"), JSON.stringify({
-      schemaVersion: 1,
-      machineId: "machine_test",
-      updatedAt: "2026-04-28T19:30:00.000Z",
-      // Observed: anthropic/claude-opus-4-6 — drift!
-      lanes: {
-        outward: { provider: "anthropic", model: "claude-opus-4-6", source: "bootstrap", updatedAt: "2026-04-28T19:30:00.000Z" },
-        inner:   { provider: "anthropic", model: "claude-opus-4-6", source: "bootstrap", updatedAt: "2026-04-28T19:30:00.000Z" },
-      },
-      readiness: {},
-    }), "utf-8")
-    setupDaemonMocks([
-      { name: "alpha", channel: "inner-dialog", status: "running", pid: 100, restartCount: 0, lastCrashAt: null, errorReason: null, fixHint: null },
-    ])
-    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
-
-    await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    registeredHealthSinks[0]!({ event: "daemon.agent_started" })
-    expect(capturedHealthStates).toHaveLength(1)
-    expect(capturedHealthStates[0]?.status).toBe("partial")
-  })
-
   it("returns 'partial' when agents are healthy but a bootstrap-degraded component was recorded (downgrade rule)", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["alpha"])

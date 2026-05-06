@@ -306,7 +306,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro auth verify --provider openai-codex",
   },
   "auth switch": {
-    description: "Switch local provider/model lanes after credentials are available",
+    description: "Switch agent.json provider/model lanes after credentials are available",
     usage: "ouro auth switch [--agent <name>] --provider <provider> [--facing human|agent]",
     example: "ouro auth switch --provider minimax",
   },

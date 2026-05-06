@@ -6,7 +6,7 @@
  */
 
 import type { AgentProvider } from "../identity"
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import type { VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { isIdentityProvider } from "../../mind/friends/types"
 import type { Facing } from "../../mind/friends/channel"

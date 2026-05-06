@@ -7,7 +7,7 @@
 **Artifacts**: ./2026-04-28-1932-doing-layer-2-sync-probe/
 
 **PR shape**: Standalone PR. Third in the four-PR sequence (1 → 4 → 2 → 3).
-**Depends on**: Layer 1 PR (`2026-04-28-1930-doing-layer-1-rollup-vocabulary.md`) being merged first. Layer 4 PR (`2026-04-28-1931-doing-layer-4-drift-detection.md`) is independent — does NOT need to be merged before layer 2, but most natural sequencing is 1 → 4 → 2.
+**Depends on**: Layer 1 PR (`2026-04-28-1930-doing-layer-1-rollup-vocabulary.md`) being merged first.
 **Downstream consumers**: Layer 3 reads sync-probe outputs to decide whether RepairGuide should fire (especially the `diagnose-broken-remote.md` and `diagnose-sync-blocked.md` skills).
 
 ## Execution Mode
@@ -182,7 +182,7 @@ Hard timeouts (locked O1):
 
 ### ✅ Unit 7: No-write-to-state guard
 **What**:
-- Run `grep -rn "state/providers.json\|state/" src/heart/sync-classification.ts src/heart/timeouts.ts src/heart/daemon/boot-sync-probe.ts` and confirm no writes from any new code.
+- Run `grep -rn "state/" src/heart/sync-classification.ts src/heart/timeouts.ts src/heart/daemon/boot-sync-probe.ts` and confirm no writes from any new code.
 - Add a meta-test (or documentation comment) asserting the boundary.
 **Acceptance**: Grep is clean. Meta-test passes.
 

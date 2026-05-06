@@ -1057,7 +1057,7 @@ describe("Mailbox deep-tab live refresh", () => {
               status: "configured",
               provider: "openai-codex",
               model: "gpt-5.4",
-              source: "local",
+              source: "agent.json",
               readiness: {
                 status: "failed",
                 checkedAt: "2026-04-14T18:00:00.000Z",
@@ -1065,7 +1065,7 @@ describe("Mailbox deep-tab live refresh", () => {
                 attempts: 2,
               },
               credential: { status: "present", source: "vault", revision: "cred_openai" },
-              warnings: ["state/providers.json is stale"],
+              warnings: ["agent.json provider lanes are stale"],
             },
             {
               lane: "inner",
@@ -1075,14 +1075,14 @@ describe("Mailbox deep-tab live refresh", () => {
               source: "missing",
               readiness: {
                 status: "unknown",
-                reason: "state/providers.json is missing",
+                reason: "agent.json provider lanes are missing",
               },
               credential: {
                 status: "missing",
                 repairCommand: "ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5",
               },
               repairCommand: "ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5",
-              reason: "state/providers.json is missing",
+              reason: "agent.json provider lanes are missing",
               warnings: [],
             },
           ],
@@ -1101,7 +1101,7 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(text).toContain("attempts: 2")
     expect(text).toContain("credentials: vault")
     expect(text).toContain("revision: cred_openai")
-    expect(text).toContain("state/providers.json is stale")
+    expect(text).toContain("agent.json provider lanes are stale")
     expect(text).toContain("inner")
     expect(text).toContain("unconfigured")
     expect(text).toContain("repair: ouro use --agent slugger --lane inner --provider minimax --model MiniMax-M2.5")

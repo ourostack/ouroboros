@@ -2,7 +2,7 @@
 
 This is the locked runtime contract for credentials, provider selection, repair, and hatch bootstrap.
 
-The short version: each agent owns one vault. Provider/model choice is local to each machine. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
+The short version: each agent owns one vault. Provider/model choice lives in the agent bundle. The daemon loads credentials into memory and reuses them. Humans own browser login, MFA, provider dashboards, vault unlock secrets, and raw secret entry. Agents can diagnose, refresh, verify, and explain without ever seeing raw secrets.
 
 The mental model is simple: an agent needs a password manager in the same way a human does. The agent vault is that password manager. Most items are just the agent's stored credentials for tools and services; a few well-known items are harness-readable because Ouro must use them on the agent's behalf, such as model providers, Perplexity search, Teams, and local sense attachments.
 
@@ -11,8 +11,8 @@ The mental model is simple: an agent needs a password manager in the same way a 
 | Concept | Source Of Truth | Notes |
 | --- | --- | --- |
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
-| Provider/model selection on this machine | `~/AgentBundles/<agent>.ouro/state/providers.json` | Two lanes: `outward` and `inner`. There is no silent fallback between lanes. |
-| Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No machine-wide provider credential pool. |
+| Provider/model selection | `~/AgentBundles/<agent>.ouro/agent.json` | Two lanes: `outward` and `inner`. Legacy `humanFacing`/`agentFacing` fields are compatibility aliases only. There is no silent fallback between lanes. |
+| Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No shared machine credential pool. |
 | Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, and similar credentials that should travel with the agent. |
 | Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
 | Travel/tool credentials | Ordinary items in the agent's Bitwarden/Vaultwarden vault | Examples: `duffel.com`, `stripe.com`, or other service domains. |
@@ -25,7 +25,7 @@ Do not introduce a second credential source of truth. Raw credentials belong in 
 
 ## Provider Selection
 
-Every agent has two local provider lanes:
+Every agent has two provider lanes in `agent.json`:
 
 - `outward`: CLI, Teams, BlueBubbles, and other human-facing senses.
 - `inner`: inner dialogue and agent-facing model calls.
@@ -37,9 +37,7 @@ ouro use --agent <agent> --lane outward --provider <provider> --model <model>
 ouro use --agent <agent> --lane inner --provider <provider> --model <model>
 ```
 
-`ouro use` changes the machine-local provider/model choice. It does not create or update credentials.
-
-`agent.json` may bootstrap missing local state during setup, but once local provider state exists, `state/providers.json` is authoritative for that machine.
+`ouro use` changes the provider/model choice in `agent.json`. It does not create or update credentials.
 
 ## Credentials
 
@@ -64,7 +62,7 @@ Provider credential refresh is explicit and also participates in retry:
 ouro provider refresh --agent <agent>
 ```
 
-Refresh means: read the latest provider credential snapshot from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
+Refresh means: read the latest provider credential records from the agent vault, update the daemon's in-memory credential cache, and rebuild provider runtime objects only when the credential revision or provider/model binding changed.
 
 Guided integration and local-sense setup starts with:
 
@@ -77,7 +75,7 @@ ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
 ```
 
-`ouro connect` opens the connect bay as a shared wizard: one recommended next step, separate sections for providers, portable capabilities, and machine-local attachments, and a prompt that lets the human choose by number or name instead of remembering subcommands first. Every time the root connect bay opens, Ouro uses the shared provider credential read and live ping machinery, but with an orientation policy: one live attempt, a short hard timeout, and no durable readiness write. That keeps the menu truthful without spending the full startup retry budget before the human can choose a setup task. `ouro up`, `ouro check`, `ouro auth verify`, and chat startup still own full provider retry behavior and lasting provider readiness updates. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings. If a provider is slow, that step says which provider/model is being checked and then routes the quick failure into the menu as `needs attention` instead of leaving the terminal looking dead.
+`ouro connect` opens the connect bay as a shared wizard: one recommended next step, separate sections for providers, portable capabilities, and machine-local attachments, and a prompt that lets the human choose by number or name instead of remembering subcommands first. Every time the root connect bay opens, Ouro uses the shared provider credential read and live ping machinery, but with an orientation policy: one live attempt, a short hard timeout, and no provider-lane mutation. That keeps the menu truthful without spending the full startup retry budget before the human can choose a setup task. `ouro up`, `ouro check`, `ouro auth verify`, and chat startup still own full provider retry behavior. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings. If a provider is slow, that step says which provider/model is being checked and then routes the quick failure into the menu as `needs attention` instead of leaving the terminal looking dead.
 
 Guided connectors open with a short capability guide that answers three questions up front: what this unlocks, what the human needs, and where the credential will live. They close with the same shared outcome guide language used by auth, vault, and hatch: a calm title, `What changed`, and `Next moves`.
 
@@ -210,7 +208,7 @@ The retry ladder is:
 1. A provider request fails.
 2. Classify the failure, but still treat it as eligible for bounded retry because failures can be misleading.
 3. Clear the provider runtime cache for the affected lane.
-4. Refresh the provider credential snapshot from the agent vault.
+4. Refresh provider credentials from the agent vault into the daemon's in-memory credential cache.
 5. If the credential revision or provider/model binding changed, rebuild the provider runtime.
 6. Retry the request within the bounded retry policy.
 7. If it still fails, mark the lane degraded and surface exact repair guidance.
@@ -260,12 +258,12 @@ Agents need compact live operational truth, not a long tutorial in every prompt.
 The system prompt should render a small provider section from current runtime state:
 
 ```text
-runtime uses local provider bindings for this machine:
+runtime uses provider bindings from agent.json:
 - outward: minimax / MiniMax-M2.5 [ready; credentials: vault]
 - inner: openai-codex / gpt-5.4 [failed: auth; repair: ouro auth --agent slugger --provider openai-codex]
 ```
 
-When provider state is degraded, prompt guidance should include:
+When provider readiness is degraded, prompt guidance should include:
 
 ```text
 If my provider is degraded, I can run agent-runnable repair commands when I have tool access.
@@ -327,7 +325,7 @@ ouro auth verify --agent <agent>
 ouro vault config status --agent <agent>
 ```
 
-Start the daemon when the vault and provider state are ready:
+Start the daemon when the vault and provider lanes are ready:
 
 ```bash
 ouro up

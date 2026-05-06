@@ -123,7 +123,7 @@ describe("RepairGuide content prepending", () => {
     expect(result.usedAgentic).toBe(true)
     expect(captured.systemContent).toContain("RepairGuide SOUL")
     expect(captured.systemContent).toContain("RepairGuide IDENTITY")
-    expect(captured.systemContent).toContain("diagnose-bootstrap-drift.md")
+    expect(captured.systemContent).toContain("diagnose-vault-expired.md")
 
     // RepairGuide proposals were extracted and surfaced to stdout
     const stdoutCalls = (deps.writeStdout as ReturnType<typeof vi.fn>).mock.calls.flat()
@@ -409,7 +409,7 @@ describe("RepairGuide gate wiring (function-level)", () => {
     const typed: DegradedAgent[] = [
       { agent: "slugger", errorReason: "vault locked", fixHint: "", issue: { kind: "vault-locked", severity: "blocked", actor: "human-required", summary: "", actions: [] } },
       { agent: "slugger", errorReason: "auth missing", fixHint: "", issue: { kind: "provider-credentials-missing", severity: "blocked", actor: "human-required", summary: "", actions: [] } },
-      { agent: "slugger", errorReason: "drift", fixHint: "", issue: { kind: "generic", severity: "degraded", actor: "human-required", summary: "", actions: [] } },
+      { agent: "slugger", errorReason: "selection mismatch", fixHint: "", issue: { kind: "generic", severity: "degraded", actor: "human-required", summary: "", actions: [] } },
     ]
     expect(
       shouldFireRepairGuide({ untypedDegraded: [], typedDegraded: typed, noRepair: false }),
@@ -450,14 +450,11 @@ describe("RepairGuide gate wiring (function-level)", () => {
   })
 })
 
-describe("RepairGuide diagnostic prompt threads structured Layer-2/Layer-4 findings", () => {
-  // Layer 3 wiring: cli-exec.ts collects DriftFinding[] (Layer 4) and
-  // BootSyncProbeFinding[] (Layer 2) at boot time and threads them into
-  // the diagnostic call via `deps.driftFindings` / `deps.syncFindings`.
-  // The `diagnose-bootstrap-drift` / `diagnose-broken-remote` /
-  // `diagnose-sync-blocked` skills reason over those JSON blocks. Without
-  // these tests the buildUserMessage drift/sync branches are unreachable
-  // from the test suite.
+describe("RepairGuide diagnostic prompt threads structured sync findings", () => {
+  // cli-exec.ts collects BootSyncProbeFinding[] at boot time and threads it
+  // into the diagnostic call via `deps.syncFindings`. The
+  // `diagnose-broken-remote` / `diagnose-sync-blocked` skills reason over
+  // that JSON block.
 
   function captureUserMessage(): {
     deps: ReturnType<typeof makeDeps>
@@ -477,28 +474,6 @@ describe("RepairGuide diagnostic prompt threads structured Layer-2/Layer-4 findi
     })
     return { deps, captured, mockStreamTurn }
   }
-
-  it("includes a driftFindings JSON block when deps.driftFindings is non-empty", async () => {
-    const { deps, captured } = captureUserMessage()
-    const drift = [
-      {
-        agent: "slugger",
-        lane: "outward" as const,
-        intentProvider: "openai-codex",
-        intentModel: "gpt-5.4",
-        observedProvider: "openai-codex",
-        observedModel: "claude-sonnet-4.6",
-        reason: "provider-model-changed" as const,
-        repairCommand: "ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.4",
-      },
-    ]
-    const degraded: DegradedAgent[] = [{ agent: "slugger", errorReason: "weird", fixHint: "" }]
-    await runAgenticRepair(degraded, { ...deps, driftFindings: drift })
-    expect(captured.userContent).toContain("driftFindings")
-    expect(captured.userContent).toContain("intentProvider")
-    expect(captured.userContent).toContain("repairCommand")
-    expect(captured.userContent).toContain("provider-model-changed")
-  })
 
   it("includes a bootSyncFindings JSON block when deps.syncFindings is non-empty", async () => {
     const { deps, captured } = captureUserMessage()
@@ -520,22 +495,20 @@ describe("RepairGuide diagnostic prompt threads structured Layer-2/Layer-4 findi
     expect(captured.userContent).toContain("advisory")
   })
 
-  it("omits both blocks when deps.driftFindings and deps.syncFindings are absent (back-compat)", async () => {
+  it("omits the sync block when deps.syncFindings is absent (back-compat)", async () => {
     const { deps, captured } = captureUserMessage()
     const degraded: DegradedAgent[] = [{ agent: "slugger", errorReason: "weird", fixHint: "" }]
     await runAgenticRepair(degraded, deps)
-    expect(captured.userContent).not.toContain("driftFindings")
     expect(captured.userContent).not.toContain("bootSyncFindings")
     // Original prompt structure preserved
     expect(captured.userContent).toContain("Recent daemon logs:")
     expect(captured.userContent).toContain("What is the most likely cause")
   })
 
-  it("omits both blocks when deps.driftFindings and deps.syncFindings are explicitly empty arrays", async () => {
+  it("omits the sync block when deps.syncFindings is an empty array", async () => {
     const { deps, captured } = captureUserMessage()
     const degraded: DegradedAgent[] = [{ agent: "slugger", errorReason: "weird", fixHint: "" }]
-    await runAgenticRepair(degraded, { ...deps, driftFindings: [], syncFindings: [] })
-    expect(captured.userContent).not.toContain("driftFindings")
+    await runAgenticRepair(degraded, { ...deps, syncFindings: [] })
     expect(captured.userContent).not.toContain("bootSyncFindings")
   })
 })

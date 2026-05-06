@@ -7,9 +7,6 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { storeProviderCredentials } from "../auth/auth-flow"
 import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
-import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { providerCredentialMachineHomeDir } from "../provider-credentials"
-import { bootstrapProviderStateFromAgentConfig, writeProviderState } from "../provider-state"
 import {
   getRepoSpecialistIdentitiesDir,
   getSpecialistIdentitySourceDir,
@@ -152,23 +149,6 @@ function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): v
   fs.writeFileSync(path.join(bundleRoot, "agent.json"), `${JSON.stringify(template, null, 2)}\n`, "utf-8")
 }
 
-function writeHatchlingProviderState(bundleRoot: string, input: HatchFlowInput, now: Date): void {
-  const model = getDefaultModelForProvider(input.provider)
-  const machine = loadOrCreateMachineIdentity({
-    homeDir: providerCredentialMachineHomeDir(),
-    now: () => now,
-  })
-  const state = bootstrapProviderStateFromAgentConfig({
-    machineId: machine.machineId,
-    now,
-    agentConfig: {
-      humanFacing: { provider: input.provider, model },
-      agentFacing: { provider: input.provider, model },
-    },
-  })
-  writeProviderState(bundleRoot, state)
-}
-
 export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = {}): Promise<HatchFlowResult> {
   emitNervesEvent({
     component: "daemon",
@@ -211,7 +191,6 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeHatchlingAgentConfig(bundleRoot, input)
   const credentialPath = await storeHatchlingProviderCredentials(input.agentName, input.provider, input.credentials)
-  writeHatchlingProviderState(bundleRoot, input, now)
   writeDiaryScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatHabit(bundleRoot, now)

@@ -10,7 +10,7 @@ This guide covers the manual Azure/Entra setup required for Ouroboros to call Mi
 - Admin access to the Azure AD (Entra ID) tenant
 - A dev tunnel for local testing
 
-Credential location truth: Teams and OAuth secrets belong in the owning agent's vault. Do not put raw Teams/OAuth secrets in bundle files, repo files, chat, or a machine-wide provider pool. See `docs/auth-and-providers.md` for the locked credential contract.
+Credential location truth: Teams and OAuth secrets belong in the owning agent's vault. Do not put raw Teams/OAuth secrets in bundle files, repo files, chat, or a shared machine credential pool. See `docs/auth-and-providers.md` for the locked credential contract.
 
 ## 1. Configure the App Registration
 

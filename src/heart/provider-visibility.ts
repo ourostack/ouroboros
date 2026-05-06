@@ -5,10 +5,9 @@ import {
   type EffectiveProviderBinding,
 } from "./provider-binding-resolver"
 import type {
-  ProviderBindingSource,
   ProviderLane,
   ProviderReadinessStatus,
-} from "./provider-state"
+} from "./provider-lanes"
 
 export type ProviderVisibilityStatus = "configured" | "unconfigured"
 
@@ -32,7 +31,7 @@ interface ProviderVisibilityConfiguredLane {
   status: "configured"
   provider: AgentProvider
   model: string
-  source: ProviderBindingSource
+  source: "agent.json"
   readiness: ProviderVisibilityReadiness
   credential: ProviderVisibilityCredential
   warnings: string[]
@@ -201,13 +200,13 @@ export function formatProviderVisibilityLine(lane: ProviderVisibilityLane): stri
 export function formatAgentProviderVisibilityForPrompt(visibility: AgentProviderVisibility): string {
   if (visibility.lanes.every((lane) => lane.status === "unconfigured")) {
     return [
-      "provider bindings are not configured on this machine.",
+      "provider bindings are not configured in agent.json.",
       ...visibility.lanes.map((lane) => `- ${formatProviderVisibilityLine(lane)}`),
     ].join("\n")
   }
 
   return [
-    "runtime uses local provider bindings for this machine:",
+    "runtime uses provider bindings from agent.json:",
     ...visibility.lanes.map((lane) => `- ${formatProviderVisibilityLine(lane)}`),
   ].join("\n")
 }

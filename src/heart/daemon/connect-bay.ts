@@ -1,4 +1,4 @@
-import type { ProviderLane } from "../provider-state"
+import type { ProviderLane } from "../provider-lanes"
 import type { AgentProviderVisibility, ProviderVisibilityLane } from "../provider-visibility"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderTerminalWizard, type TerminalWizardItem, type TerminalWizardSection } from "./terminal-ui"

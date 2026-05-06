@@ -43,7 +43,7 @@ Per the four-PR breakdown, this PR is intentionally rollup-only:
 
 - The per-agent live-check loop in `cli-exec.ts` is **not** redesigned. The loop is already try/catch-isolated; the bug is in how its output rolls up. This PR fixes the rollup; the loop stays.
 - `recordRecoverableBootstrapFailure` is **not** modified. It still records bootstrap failures into `degradedComponents[]`; only the rollup interpretation of that array changes.
-- `inner-status.ts` and `startup-tui.ts` were named in the planning doc as consumers of the daemon-wide rollup, but during the Unit 0 mapping survey (`status-callsites.md` in artifacts) they turned out to render per-agent inner-runtime / worker statuses respectively — different concept from the daemon-wide rollup. The real consumers are `cli-render.ts:daemonUnavailableStatusOutput` and `runtime-readers.ts:readDaemonHealthDeep`. Layer 4 of the harness-hardening sequence builds on the new vocabulary; layers 2 and 3 follow from there.
+- `inner-status.ts` and `startup-tui.ts` were named in the planning doc as consumers of the daemon-wide rollup, but during the Unit 0 mapping survey (`status-callsites.md` in artifacts) they turned out to render per-agent inner-runtime / worker statuses respectively — different concept from the daemon-wide rollup. The real consumers are `cli-render.ts:daemonUnavailableStatusOutput` and `runtime-readers.ts:readDaemonHealthDeep`.
 
 ## How to review
 
@@ -67,4 +67,4 @@ _Pipeline-enforced coverage (unit tests, build, lint, coverage gate, nerves audi
 
 ## Next
 
-Layer 4 builds on this PR's vocabulary. The doing doc breaks the four-PR sequence at `docs/planning/2026-04-28-1900-planning-harness-hardening-and-repairguide.md`.
+The doing doc breaks the rollout into a small vocabulary PR first so daemon status consumers agree on the same state names.

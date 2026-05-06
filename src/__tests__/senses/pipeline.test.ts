@@ -18,7 +18,7 @@ import * as temporalViewModule from "../../heart/temporal-view"
 import * as presenceModule from "../../arc/presence"
 import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
-import { readProviderState, writeProviderState, type ProviderState } from "../../heart/provider-state"
+import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
 
 const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
@@ -206,7 +206,7 @@ const usageData: UsageData = {
   total_tokens: 160,
 }
 
-function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
+function agentProviderSelection(overrides: Partial<AgentProviderSelectionFixture> = {}): AgentProviderSelectionFixture {
   return {
     schemaVersion: 1,
     machineId: "machine_unit7",
@@ -215,13 +215,13 @@ function providerState(overrides: Partial<ProviderState> = {}): ProviderState {
       outward: {
         provider: "openai-codex",
         model: "gpt-5.4",
-        source: "local",
+        source: "agent.json",
         updatedAt: "2026-04-13T05:30:00.000Z",
       },
       inner: {
         provider: "openai-codex",
         model: "gpt-5.4",
-        source: "local",
+        source: "agent.json",
         updatedAt: "2026-04-13T05:30:00.000Z",
       },
     },
@@ -1562,7 +1562,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
@@ -1613,10 +1613,24 @@ describe("handleInboundTurn", () => {
     it.each([
       { channel: "cli" as const, lane: "outward" as const, provider: "openai-codex" as const, model: "gpt-5.4", senseType: "local" as const },
       { channel: "inner" as const, lane: "inner" as const, provider: "anthropic" as const, model: "claude-opus-4-6", senseType: "internal" as const },
-    ])("falls back to agent.json %s binding when provider state is missing", async ({ channel, lane, provider, model, senseType }) => {
+    ])("reads agent.json %s binding for failover", async ({ channel, lane, provider, model, senseType }) => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-missing-state-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection({
+        lanes: {
+          outward: {
+            provider: "openai-codex",
+            model: "gpt-5.4",
+            source: "agent.json",
+          },
+          inner: {
+            provider: "anthropic",
+            model: "claude-opus-4-6",
+            source: "agent.json",
+          },
+        },
+      }))
       const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
@@ -1666,7 +1680,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const failoverState = {
@@ -1699,7 +1713,7 @@ describe("handleInboundTurn", () => {
 
         expect(result.switchedProvider).toBe("anthropic")
         expect(mockWriteAgentProviderSelection).not.toHaveBeenCalled()
-        const stateResult = readProviderState(agentRoot)
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
         expect(stateResult.ok).toBe(true)
         if (!stateResult.ok) throw new Error(stateResult.error)
         expect(stateResult.state.lanes.outward).toMatchObject({
@@ -1731,7 +1745,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-refused-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
 
       // Inventory said anthropic was ready, but between the prompt and the
@@ -1771,7 +1785,7 @@ describe("handleInboundTurn", () => {
         // No switchedProvider — refusal is not a switch.
         expect(result.switchedProvider).toBeUndefined()
         // Lane MUST be untouched on refusal.
-        const stateResult = readProviderState(agentRoot)
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
         expect(stateResult.ok).toBe(true)
         if (!stateResult.ok) throw new Error(stateResult.error)
         expect(stateResult.state.lanes.outward.provider).toBe("openai-codex")
@@ -1807,7 +1821,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-no-alt-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
 
       mockPingProvider.mockResolvedValueOnce({
@@ -1860,7 +1874,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-no-creds-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
 
       // Pool refresh succeeds but anthropic is missing entirely.
@@ -1903,7 +1917,7 @@ describe("handleInboundTurn", () => {
         const result = await handleInboundTurn(input)
 
         expect(result.switchedProvider).toBeUndefined()
-        const stateResult = readProviderState(agentRoot)
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
         expect(stateResult.ok).toBe(true)
         if (!stateResult.ok) throw new Error(stateResult.error)
         expect(stateResult.state.lanes.outward.provider).toBe("openai-codex")
@@ -1919,7 +1933,7 @@ describe("handleInboundTurn", () => {
       }
     })
 
-    it("continues normally when a failover switch cannot write provider state", async () => {
+    it("continues normally when a failover switch cannot write agent provider selection", async () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-missing-switch-state-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
@@ -1966,7 +1980,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-no-provenance-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const failoverState = {
@@ -1995,12 +2009,10 @@ describe("handleInboundTurn", () => {
         const result = await handleInboundTurn(input)
 
         expect(result.switchedProvider).toBe("azure")
-        const stateResult = readProviderState(agentRoot)
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
         expect(stateResult.ok).toBe(true)
         if (!stateResult.ok) throw new Error(stateResult.error)
-        expect(stateResult.state.readiness.outward).toEqual(expect.not.objectContaining({
-          credentialRevision: expect.any(String),
-        }))
+        expect(stateResult.state.readiness?.outward).toBeUndefined()
         const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
         const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
         expect(lastUserMsg?.content).toContain("azure (gpt-4o-mini)")
@@ -2011,11 +2023,11 @@ describe("handleInboundTurn", () => {
       }
     })
 
-    it("switches only the failed provider-state lane and preserves the other lane", async () => {
+    it("switches only the failed agent.json provider lane and preserves the other lane", async () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
       const failoverState = {
@@ -2047,20 +2059,15 @@ describe("handleInboundTurn", () => {
 
         expect(result.switchedProvider).toBe("minimax")
         expect(mockWriteAgentProviderSelection).not.toHaveBeenCalled()
-        const stateResult = readProviderState(agentRoot)
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
         expect(stateResult.ok).toBe(true)
         if (!stateResult.ok) throw new Error(stateResult.error)
         expect(stateResult.state.lanes.outward).toMatchObject({
           provider: "minimax",
           model: "MiniMax-M2.7",
-          source: "local",
+          source: "agent.json",
         })
-        expect(stateResult.state.readiness.outward).toMatchObject({
-          status: "ready",
-          provider: "minimax",
-          model: "MiniMax-M2.7",
-          credentialRevision: "cred_minimax",
-        })
+        expect(stateResult.state.readiness?.outward).toBeUndefined()
         expect(stateResult.state.lanes.inner).toMatchObject({
           provider: "openai-codex",
           model: "gpt-5.4",
@@ -2069,6 +2076,60 @@ describe("handleInboundTurn", () => {
         const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
         expect(lastUserMsg?.content).toContain("outward")
         expect(lastUserMsg?.content).toContain("credentials in vault via auth-flow")
+      } finally {
+        agentRootSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
+    })
+
+    it("switches the inner agent.json provider lane when inner is the failed lane", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-inner-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const failoverState = {
+        pending: {
+          errorSummary: "inner provider openai-codex model gpt-5.4 failed live check",
+          classification: "auth-failure" as const,
+          currentProvider: "openai-codex" as const,
+          currentLane: "inner" as const,
+          agentName: "slugger",
+          workingProviders: ["minimax" as const],
+          readyProviders: [{
+            provider: "minimax" as const,
+            model: "MiniMax-M2.7",
+            credentialRevision: "cred_minimax",
+            source: "auth-flow" as const,
+          }],
+          unconfiguredProviders: [],
+          userMessage: "switch available",
+        },
+      } as any
+      const input = makeInput({
+        channel: "inner",
+        failoverState,
+        messages: [{ role: "user", content: "switch to minimax" }],
+        runAgent: mockRunAgent,
+      })
+
+      try {
+        const result = await handleInboundTurn(input)
+
+        expect(result.switchedProvider).toBe("minimax")
+        const stateResult = readAgentProviderSelectionFixture(agentRoot)
+        expect(stateResult.ok).toBe(true)
+        if (!stateResult.ok) throw new Error(stateResult.error)
+        expect(stateResult.state.lanes.inner).toMatchObject({
+          provider: "minimax",
+          model: "MiniMax-M2.7",
+          source: "agent.json",
+        })
+        expect(stateResult.state.lanes.outward).toMatchObject({
+          provider: "openai-codex",
+          model: "gpt-5.4",
+        })
       } finally {
         agentRootSpy.mockRestore()
         fs.rmSync(tmp, { recursive: true, force: true })
@@ -2105,7 +2166,7 @@ describe("handleInboundTurn", () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
       fs.mkdirSync(agentRoot, { recursive: true })
-      writeProviderState(agentRoot, providerState())
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
       const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({

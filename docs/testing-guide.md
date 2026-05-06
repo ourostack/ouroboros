@@ -90,7 +90,7 @@ Verify:
 
 ## 4. Provider Auth Recovery Smoke
 
-Provider credentials and provider selection are separate. `ouro auth` stores credentials in the owning agent's vault. Provider/model selection for each local machine lives in the bundle's `state/providers.json`.
+Provider credentials and provider selection are separate. `ouro auth` stores credentials in the owning agent's vault. Provider/model selection lives in the bundle's `agent.json`.
 
 When a provider needs first-time setup or reauth, use the installed runtime path instead of repo-local scripts:
 
@@ -108,13 +108,13 @@ Expected:
 - `ouro logs` now tails the daemon/agent logs from the installed runtime path instead of falling back to a socket help message
 - bare `ouro` in a human TTY opens the shared home deck instead of silently meaning `ouro up`
 - root `ouro connect --agent <agent>` prints a short `checking current connections` preflight, verifies the currently selected providers through the shared live check path with a bounded one-attempt orientation policy, and opens the shared connect wizard without spending the full startup retry budget
-- a failed or timed-out root `ouro connect` orientation probe can mark the current menu as `needs attention`, but it must not overwrite durable provider readiness; `ouro up`, `ouro check`, `ouro auth verify`, and chat startup own lasting readiness writes
+- a failed or timed-out root `ouro connect` orientation probe can mark the current menu as `needs attention`, but it must not mutate provider lane selection; `ouro up`, `ouro check`, `ouro auth verify`, and chat startup own full provider retry behavior
 - auth, vault, hatch, and guided connector completions land on the shared guide language with `What changed` and `Next moves` instead of raw transcript walls
 - `ouro up` replacement paths say they are replacing the running background service and do not mark `starting daemon` complete before replacement readiness is known
 - if the background service dies after startup work but before handoff is complete, `ouro up` fails with a daemon diagnosis instead of printing a false-ready board
-- provider state remains in `~/AgentBundles/Hatchling.ouro/state/providers.json`
+- provider lanes remain in `~/AgentBundles/Hatchling.ouro/agent.json`
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
-- use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory credential snapshot from the vault
+- use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory provider credential cache from the vault
 - use `ouro vault config status --agent <agent> --scope all` to inspect portable and machine-local runtime credential fields without printing values
 - use `ouro connect --agent <agent>` for the guided connect bay, or jump directly to `ouro connect providers|perplexity|embeddings|teams|bluebubbles --agent <agent>`
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
@@ -301,12 +301,12 @@ If a repair message says the agent can run a refresh or verify command, that is 
 Check:
 
 - `~/AgentBundles/<agent>.ouro/agent.json` (check sense enablement)
-- `~/AgentBundles/<agent>.ouro/state/providers.json` (check outward/inner provider+model)
+- `~/AgentBundles/<agent>.ouro/agent.json` (check outward/inner provider+model)
 - the agent's vault provider credentials
 - portable runtime config in `runtime/config`
 - machine-local attachments in `runtime/machines/<machine-id>/config`
 
-Sense enablement lives in `agent.json`; provider+model selection per machine lives in `state/providers.json`; all raw credentials live in the owning agent's vault.
+Sense enablement and provider+model selection live in `agent.json`; all raw credentials live in the owning agent's vault.
 
 ### BlueBubbles or Teams behavior feels wrong
 
@@ -317,4 +317,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `state/providers.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item.

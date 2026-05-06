@@ -12,7 +12,7 @@ import {
   type ProviderCredentialProvenanceSource,
   type ProviderCredentialRecord,
 } from "./provider-credentials"
-import type { ProviderLane } from "./provider-state"
+import type { ProviderLane } from "./provider-lanes"
 import { emitNervesEvent } from "../nerves/runtime"
 
 type FailedPingResult = Extract<PingResult, { ok: false }>
@@ -388,7 +388,7 @@ export interface ValidateFailoverSwitchCandidateOptions {
 
 /**
  * Re-verify a failover candidate is actually reachable right before we mutate
- * provider state. The inventory ping that produced the candidate may be stale
+ * agent.json. The inventory ping that produced the candidate may be stale
  * (creds revoked between inventory and reply); without this preflight, an
  * agent-driven "switch to <provider>" can move the lane onto an unreachable
  * provider and brick the next turn.

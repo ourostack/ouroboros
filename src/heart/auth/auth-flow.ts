@@ -271,10 +271,10 @@ function isVaultStoreUnlockError(message: string): boolean {
 
 function formatVaultStoreError(agentName: string, provider: AgentProvider, error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error)
-  if (message.startsWith("credential stored in vault, but the local provider snapshot could not be refreshed:")) {
+  if (message.startsWith("credential stored in vault, but the in-memory provider credential pool could not be refreshed:")) {
     return new Error(
       `provider authentication succeeded and ${provider} credentials were stored in ${agentName}'s vault, ` +
-      `but the local provider snapshot refresh failed: ${message.replace("credential stored in vault, but the local provider snapshot could not be refreshed: ", "")}`,
+      `but the in-memory provider credential pool refresh failed: ${message.replace("credential stored in vault, but the in-memory provider credential pool could not be refreshed: ", "")}`,
     )
   }
   const retry = `Then retry 'ouro auth --agent ${agentName} --provider ${provider}'.`
@@ -520,7 +520,7 @@ export async function runRuntimeAuthFlow(
   } catch (error) {
     throw formatVaultStoreError(input.agentName, input.provider, error)
   }
-  writeAuthProgress(input, `credentials stored at ${credentialPath}; local provider snapshot refreshed.`)
+  writeAuthProgress(input, `credentials stored at ${credentialPath}; in-memory provider credential pool refreshed.`)
 
   emitNervesEvent({
     component: "daemon",

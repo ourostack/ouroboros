@@ -4,7 +4,6 @@ import * as path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentProvider } from "../../heart/identity"
 import type { ProviderCredentialPoolReadResult, ProviderCredentialRecord } from "../../heart/provider-credentials"
-import type { ProviderLaneReadiness, ProviderState } from "../../heart/provider-state"
 
 const mockProviderCredentials = vi.hoisted(() => ({
   readProviderCredentialPool: vi.fn(),
@@ -27,25 +26,39 @@ import {
   normalizeProviderLane,
   resolveEffectiveProviderBinding,
 } from "../../heart/provider-binding-resolver"
-import { getProviderStatePath, writeProviderState } from "../../heart/provider-state"
+import {
+  clearProviderReadinessCache,
+  readProviderLaneReadiness,
+  recordProviderLaneReadiness,
+} from "../../heart/provider-readiness-cache"
 
 const timestamp = "2026-04-13T12:00:00.000Z"
 const agentName = "slugger"
 const createdDirs: string[] = []
 
-function emitTestEvent(testName: string): void {
-  mockEmitNervesEvent({
-    component: "test",
-    event: "test.case",
-    message: testName,
-    meta: {},
-  })
-}
-
-function tempAgentRoot(): string {
+function tempBundlesRoot(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-binding-"))
   createdDirs.push(dir)
   return dir
+}
+
+function agentRootFor(bundlesRoot: string): string {
+  return path.join(bundlesRoot, `${agentName}.ouro`)
+}
+
+function writeAgentConfig(bundlesRoot: string, config: Record<string, unknown> = {}): string {
+  const agentRoot = agentRootFor(bundlesRoot)
+  fs.mkdirSync(agentRoot, { recursive: true })
+  const agentJson = {
+    version: 2,
+    enabled: true,
+    humanFacing: { provider: "minimax", model: "MiniMax-M2.5" },
+    agentFacing: { provider: "openai-codex", model: "gpt-5.5" },
+    phrases: { thinking: ["thinking"], tool: ["tool"], followup: ["followup"] },
+    ...config,
+  }
+  fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify(agentJson, null, 2)}\n`, "utf8")
+  return agentRoot
 }
 
 function record(provider: AgentProvider, revision = `vault_${provider}`): ProviderCredentialRecord {
@@ -53,8 +66,8 @@ function record(provider: AgentProvider, revision = `vault_${provider}`): Provid
     provider,
     revision,
     updatedAt: timestamp,
-    credentials: provider === "azure" ? { apiKey: "azure-key" } : { apiKey: `${provider}-key` },
-    config: provider === "azure" ? { endpoint: "https://example.openai.azure.com" } : {},
+    credentials: provider === "openai-codex" ? { oauthAccessToken: "codex-token" } : { apiKey: `${provider}-key` },
+    config: {},
     provenance: { source: "manual", updatedAt: timestamp },
   }
 }
@@ -71,7 +84,7 @@ function okPool(providers: Partial<Record<AgentProvider, ProviderCredentialRecor
   }
 }
 
-function invalidPool(reason: "invalid" | "unavailable" | "missing" = "invalid"): ProviderCredentialPoolReadResult {
+function failedPool(reason: "invalid" | "unavailable" | "missing" = "invalid"): ProviderCredentialPoolReadResult {
   return {
     ok: false,
     reason,
@@ -80,32 +93,10 @@ function invalidPool(reason: "invalid" | "unavailable" | "missing" = "invalid"):
   }
 }
 
-function baseState(readiness: Partial<Record<"outward" | "inner", ProviderLaneReadiness>> = {}): ProviderState {
-  return {
-    schemaVersion: 1,
-    machineId: "machine-local",
-    updatedAt: timestamp,
-    lanes: {
-      outward: {
-        provider: "minimax",
-        model: "MiniMax-M2.5",
-        source: "bootstrap",
-        updatedAt: timestamp,
-      },
-      inner: {
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-        source: "local",
-        updatedAt: timestamp,
-      },
-    },
-    readiness,
-  }
-}
-
 describe("effective provider binding resolver", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    clearProviderReadinessCache()
   })
 
   afterEach(() => {
@@ -115,8 +106,6 @@ describe("effective provider binding resolver", () => {
   })
 
   it("normalizes current and legacy lane selectors", () => {
-    emitTestEvent("provider binding lane normalization")
-
     expect(normalizeProviderLane("outward")).toEqual({ lane: "outward", warnings: [] })
     expect(normalizeProviderLane("inner")).toEqual({ lane: "inner", warnings: [] })
     expect(normalizeProviderLane("human")).toMatchObject({ lane: "outward", warnings: [{ code: "legacy-lane-selector" }] })
@@ -125,64 +114,16 @@ describe("effective provider binding resolver", () => {
     expect(normalizeProviderLane("agentFacing")).toMatchObject({ lane: "inner", warnings: [{ code: "legacy-lane-selector" }] })
   })
 
-  it("returns repair guidance for missing and invalid local provider state", () => {
-    emitTestEvent("provider binding state guards")
-    const missingRoot = tempAgentRoot()
-
-    expect(resolveEffectiveProviderBinding({
-      agentName,
-      agentRoot: missingRoot,
-      lane: "humanFacing",
-    })).toMatchObject({
-      ok: false,
-      lane: "outward",
-      reason: "provider-state-missing",
-      warnings: [
-        { code: "legacy-lane-selector" },
-        { code: "provider-state-missing" },
-      ],
-      repair: {
-        command: "ouro use --agent slugger --lane outward --provider <provider> --model <model>",
-      },
-    })
-
-    const invalidRoot = tempAgentRoot()
-    fs.mkdirSync(path.dirname(getProviderStatePath(invalidRoot)), { recursive: true })
-    fs.writeFileSync(getProviderStatePath(invalidRoot), "{\"schemaVersion\":2}\n", "utf8")
-    expect(resolveEffectiveProviderBinding({
-      agentName,
-      agentRoot: invalidRoot,
-      lane: "inner",
-    })).toMatchObject({
-      ok: false,
-      lane: "inner",
-      reason: "provider-state-invalid",
-      repair: {
-        command: "ouro use --agent slugger --lane inner --provider <provider> --model <model> --force",
-      },
-    })
-  })
-
-  it("resolves a present credential with readiness and legacy lane warnings", () => {
-    emitTestEvent("provider binding present credential")
-    const root = tempAgentRoot()
-    writeProviderState(root, baseState({
-      outward: {
-        status: "ready",
-        provider: "minimax",
-        model: "MiniMax-M2.5",
-        credentialRevision: "vault_minimax",
-        checkedAt: timestamp,
-        attempts: 2,
-      },
-    }))
+  it("resolves provider/model from agent.json and redacts credentials", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
     mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
       minimax: record("minimax", "vault_minimax"),
     }))
 
     const result = resolveEffectiveProviderBinding({
       agentName,
-      agentRoot: root,
+      agentRoot,
       lane: "human",
     })
 
@@ -192,30 +133,84 @@ describe("effective provider binding resolver", () => {
         lane: "outward",
         provider: "minimax",
         model: "MiniMax-M2.5",
-        machineId: "machine-local",
+        source: "agent.json",
         credential: {
           status: "present",
           revision: "vault_minimax",
           credentialFields: ["apiKey"],
           configFields: [],
         },
-        readiness: {
-          status: "ready",
-          credentialRevision: "vault_minimax",
-          attempts: 2,
-        },
+        readiness: { status: "unknown" },
         warnings: [{ code: "legacy-lane-selector" }],
       },
     })
+    expect(JSON.stringify(result)).not.toContain("minimax-key")
   })
 
-  it("marks readiness unknown when no prior readiness exists", () => {
-    emitTestEvent("provider binding unknown readiness")
-    const root = tempAgentRoot()
-    writeProviderState(root, baseState())
+  it("surfaces missing and unreadable agent.json as invalid config", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const missingRoot = agentRootFor(bundlesRoot)
+
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: missingRoot,
+      lane: "outward",
+    })).toMatchObject({
+      ok: false,
+      lane: "outward",
+      reason: "agent-config-invalid",
+      warnings: [{ code: "agent-config-invalid" }],
+      repair: {
+        command: "ouro use --agent slugger --lane outward --provider <provider> --model <model>",
+      },
+    })
+
+    const invalidRoot = writeAgentConfig(bundlesRoot, {
+      humanFacing: { provider: "minimax", model: "" },
+    })
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: invalidRoot,
+      lane: "outward",
+    })).toMatchObject({
+      ok: false,
+      reason: "agent-config-invalid",
+      error: "humanFacing.model must be a non-empty string",
+    })
+
+    writeAgentConfig(bundlesRoot, {
+      humanFacing: { provider: "minimax", model: 42 },
+    })
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: invalidRoot,
+      lane: "outward",
+    })).toMatchObject({
+      ok: false,
+      reason: "agent-config-invalid",
+      error: "humanFacing.model must be a non-empty string",
+    })
+
+    writeAgentConfig(bundlesRoot, {
+      humanFacing: { provider: "fake-provider", model: "MiniMax-M2.5" },
+    })
+    expect(resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot: invalidRoot,
+      lane: "outward",
+    })).toMatchObject({
+      ok: false,
+      reason: "agent-config-invalid",
+      error: expect.stringContaining("unsupported provider 'fake-provider'"),
+    })
+  })
+
+  it("marks readiness unknown when credentials are missing or unavailable", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
 
     mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(okPool({}))
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
         credential: { status: "missing" },
@@ -224,8 +219,8 @@ describe("effective provider binding resolver", () => {
       },
     })
 
-    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool("unavailable"))
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(failedPool("unavailable"))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
         credential: { status: "invalid-pool", error: "unavailable pool" },
@@ -234,8 +229,8 @@ describe("effective provider binding resolver", () => {
       },
     })
 
-    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool("missing"))
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(failedPool("missing"))
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
         credential: { status: "missing" },
@@ -244,77 +239,87 @@ describe("effective provider binding resolver", () => {
     })
   })
 
-  it("marks prior readiness stale when bindings or vault revisions change", () => {
-    emitTestEvent("provider binding stale readiness")
-    const root = tempAgentRoot()
-    writeProviderState(root, baseState({
-      outward: {
-        status: "ready",
-        provider: "anthropic",
-        model: "claude-opus-4-6",
-        credentialRevision: "vault_old",
-        checkedAt: timestamp,
-      },
-    }))
+  it("uses matching in-memory live-check readiness without persisting readiness", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
     mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
       minimax: record("minimax", "vault_minimax"),
     }))
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "ready",
+      checkedAt: timestamp,
+      attempts: 1,
+    })
 
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
       ok: true,
       binding: {
-        readiness: {
-          status: "stale",
-          previousStatus: "ready",
-          reason: "provider-model-changed",
-        },
-        warnings: [{ code: "readiness-stale" }],
+        readiness: { status: "ready", checkedAt: timestamp, attempts: 1 },
       },
     })
 
-    writeProviderState(root, baseState({
-      outward: {
-        status: "ready",
-        provider: "minimax",
-        model: "MiniMax-M2.5",
-        credentialRevision: "vault_old",
-        checkedAt: timestamp,
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "other-model",
+      credentialRevision: "vault_minimax",
+      status: "failed",
+      checkedAt: timestamp,
+      error: "wrong model",
+    })
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        readiness: { status: "unknown" },
       },
+    })
+
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "failed",
+      checkedAt: timestamp,
+      error: "expired",
+    })
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        readiness: { status: "failed", checkedAt: timestamp, error: "expired" },
+      },
+    })
+  })
+
+  it("keeps provider readiness exact-match and in-memory only", () => {
+    const entry = {
+      agentName,
+      lane: "inner" as const,
+      provider: "openai-codex" as const,
+      model: "gpt-5.5",
+      credentialRevision: "vault_codex",
+      status: "failed" as const,
+      checkedAt: timestamp,
+      error: "expired",
+    }
+
+    expect(readProviderLaneReadiness(entry)).toBeNull()
+    recordProviderLaneReadiness(entry)
+
+    expect(readProviderLaneReadiness(entry)).toEqual(entry)
+    expect(readProviderLaneReadiness({ ...entry, provider: "minimax" })).toBeNull()
+    expect(readProviderLaneReadiness({ ...entry, model: "gpt-5.4" })).toBeNull()
+    expect(readProviderLaneReadiness({ ...entry, credentialRevision: "vault_new" })).toBeNull()
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      component: "config/identity",
+      event: "config.provider_readiness_recorded",
     }))
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
-      ok: true,
-      binding: {
-        readiness: {
-          status: "stale",
-          previousStatus: "ready",
-          reason: "credential-revision-changed",
-        },
-        warnings: [{ code: "readiness-stale" }],
-      },
-    })
-
-    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(okPool({}))
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
-      ok: true,
-      binding: {
-        credential: { status: "missing" },
-        readiness: {
-          status: "stale",
-          reason: "credential-missing",
-        },
-      },
-    })
-
-    mockProviderCredentials.readProviderCredentialPool.mockReturnValueOnce(invalidPool())
-    expect(resolveEffectiveProviderBinding({ agentName, agentRoot: root, lane: "outward" })).toMatchObject({
-      ok: true,
-      binding: {
-        credential: { status: "invalid-pool" },
-        readiness: {
-          status: "stale",
-          reason: "credential-pool-invalid",
-        },
-      },
-    })
   })
 })
