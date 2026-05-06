@@ -231,6 +231,13 @@ describe("BitwardenCredentialStore", () => {
     })
 
     it("surfaces a wrong saved vault unlock secret clearly", async () => {
+      const onInvalidUnlockSecret = vi.fn()
+      store = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { onInvalidUnlockSecret },
+      )
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
@@ -250,6 +257,108 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.login()).rejects.toThrow(
         "bw CLI error: bw CLI rejected the saved vault unlock secret for this machine",
       )
+      expect(onInvalidUnlockSecret).toHaveBeenCalledWith(expect.objectContaining({
+        message: "bw CLI error: bw CLI rejected the saved vault unlock secret for this machine",
+      }))
+    })
+
+    it("runs a post-login hook after a successful login", async () => {
+      const onLoginSuccess = vi.fn()
+      store = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        { onLoginSuccess },
+      )
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unauthenticated" }), "")
+          return
+        }
+        if (args[0] === "config") {
+          cb(null, "", "")
+          return
+        }
+        if (args[0] === "login") {
+          cb(null, "session-token", "")
+          return
+        }
+        if (args[0] === "sync") {
+          cb(null, "", "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await store.login()
+
+      expect(onLoginSuccess).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps the original login error when invalid-unlock cleanup fails", async () => {
+      store = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        {
+          onInvalidUnlockSecret: () => {
+            throw new Error("keychain cleanup failed")
+          },
+        },
+      )
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        if (args[0] === "login") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow(
+        "bw CLI error: bw CLI rejected the saved vault unlock secret for this machine",
+      )
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_invalid_unlock_cleanup_failed",
+        meta: expect.objectContaining({ error: "keychain cleanup failed" }),
+      }))
+    })
+
+    it("reports non-Error invalid-unlock cleanup failures", async () => {
+      store = new BitwardenCredentialStore(
+        "https://vault.ouroboros.bot",
+        "ouroboros@ouro.bot",
+        "masterpass123",
+        {
+          onInvalidUnlockSecret: () => {
+            throw "keychain cleanup failed"
+          },
+        },
+      )
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          return
+        }
+        if (args[0] === "unlock" || args[0] === "login") {
+          cb(new Error("invalid master password"), "", "invalid master password")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.login()).rejects.toThrow("bw CLI rejected the saved vault unlock secret")
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_invalid_unlock_cleanup_failed",
+        meta: expect.objectContaining({ error: "keychain cleanup failed" }),
+      }))
     })
 
     it("rebuilds a stale local bw profile before using the saved unlock secret", async () => {

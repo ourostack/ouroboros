@@ -353,6 +353,8 @@ For an existing agent with a vault locator and a saved unlock secret, run `ouro 
 
 `ouro vault unlock` verifies the typed unlock secret against the agent vault before replacing this machine's saved local unlock material. A failed validation must not overwrite a previously working Keychain/DPAPI/Secret Service/plaintext entry.
 
+When previously saved local unlock material is later rejected by the vault, Ouro clears that local entry and reports a human-required unlock/replace path instead of repeatedly retrying a known-bad machine cache. Legacy local unlock entries may be read for compatibility, but they are copied to canonical vault coordinates only after a successful vault login.
+
 For an existing agent whose `agent.json` already has vault coordinates but whose unlock secret was not saved or is lost, Ouro cannot recover it from the remote vault or expose it from Keychain, DPAPI, Secret Service, or plaintext fallback. The repair is to create a replacement agent vault and re-auth/re-enter credentials into it.
 
 Use `ouro vault replace --agent <agent>` only when the bundle already has vault coordinates and there is no local credential export to import. By default it uses the stable agent vault email, `<agent>@ouro.bot`; it does not invent timestamped `+replaced` addresses. It creates an empty vault, writes vault coordinates to `agent.json`, stores local unlock material on this machine, and imports nothing.

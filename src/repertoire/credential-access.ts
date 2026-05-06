@@ -16,7 +16,13 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as identity from "../heart/identity"
 import { BitwardenCredentialStore } from "./bitwarden-store"
-import { credentialVaultNotConfiguredError, readVaultUnlockSecret } from "./vault-unlock"
+import {
+  clearVaultUnlockSecret,
+  credentialVaultNotConfiguredError,
+  noteVaultUnlockSelfHeal,
+  readVaultUnlockSecret,
+  storeVaultUnlockSecret,
+} from "./vault-unlock"
 
 export interface CredentialMeta {
   domain: string
@@ -78,11 +84,63 @@ export function getCredentialStore(agentNameInput?: string): CredentialStore {
     email: vaultConfig.email,
     serverUrl: vaultConfig.serverUrl,
   })
+  const unlockConfig = { agentName, email: vaultConfig.email, serverUrl: vaultConfig.serverUrl }
+  const unlockSource = unlock.source ?? unlockConfig
+  let invalidUnlockCleared = false
+  let canonicalUnlockStored = false
   const store = new BitwardenCredentialStore(
     vaultConfig.serverUrl,
     vaultConfig.email,
     unlock.secret,
-    { appDataDir: bitwardenAppDataDir(agentName, vaultConfig) },
+    {
+      appDataDir: bitwardenAppDataDir(agentName, vaultConfig),
+      onInvalidUnlockSecret: (error) => {
+        if (invalidUnlockCleared) return
+        invalidUnlockCleared = true
+        clearVaultUnlockSecret({
+          agentName,
+          email: unlockSource.email,
+          serverUrl: unlockSource.serverUrl,
+        })
+        stores.delete(cacheKey)
+        emitNervesEvent({
+          level: "warn",
+          event: "repertoire.credential_store_invalid_unlock_cleared",
+          component: "repertoire",
+          message: "cleared rejected local vault unlock material",
+          meta: {
+            agentName,
+            serverUrl: vaultConfig.serverUrl,
+            email: vaultConfig.email,
+            sourceServerUrl: unlockSource.serverUrl,
+            error: error.message,
+          },
+        })
+      },
+      onLoginSuccess: () => {
+        if (canonicalUnlockStored) return
+        if (unlockSource.serverUrl === vaultConfig.serverUrl && unlockSource.email === vaultConfig.email) return
+        canonicalUnlockStored = true
+        try {
+          storeVaultUnlockSecret(unlockConfig, unlock.secret)
+          noteVaultUnlockSelfHeal(unlockConfig, unlock.store.kind, unlockSource.serverUrl)
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn",
+            event: "repertoire.vault_unlock_self_heal_failed",
+            component: "repertoire",
+            message: "failed to rewrite local unlock material using canonical vault coordinates",
+            meta: {
+              store: unlock.store.kind,
+              email: vaultConfig.email,
+              sourceServerUrl: unlockSource.serverUrl,
+              targetServerUrl: vaultConfig.serverUrl,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          })
+        }
+      },
+    },
   )
   stores.set(cacheKey, store)
 

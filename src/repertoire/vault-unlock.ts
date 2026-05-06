@@ -35,6 +35,7 @@ export interface VaultUnlockStoreSelection {
 export interface VaultUnlockReadResult {
   secret: string
   store: VaultUnlockStoreSelection
+  source?: VaultUnlockConfig
 }
 
 export interface ConfirmVaultUnlockSecretPrompt {
@@ -91,6 +92,13 @@ function vaultConfigCandidates(config: VaultUnlockConfig): VaultUnlockConfig[] {
     ...canonical,
     serverUrl,
   }))
+}
+
+function exactVaultConfig(config: VaultUnlockConfig): VaultUnlockConfig {
+  return {
+    ...config,
+    serverUrl: config.serverUrl.trim().replace(/\/+$/, ""),
+  }
 }
 
 function plaintextUnlockPath(config: VaultUnlockConfig, deps: VaultUnlockDeps): string {
@@ -287,7 +295,7 @@ function readFromMacosKeychainExact(accountKey: string, deps: VaultUnlockDeps): 
   throw new Error(`failed to read vault unlock secret from macOS Keychain: ${detail}`)
 }
 
-function noteVaultUnlockSelfHeal(config: VaultUnlockConfig, storeKind: VaultUnlockStoreSelection["kind"], sourceServerUrl: string): void {
+export function noteVaultUnlockSelfHeal(config: VaultUnlockConfig, storeKind: VaultUnlockStoreSelection["kind"], sourceServerUrl: string): void {
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.vault_unlock_self_healed",
@@ -301,41 +309,18 @@ function noteVaultUnlockSelfHeal(config: VaultUnlockConfig, storeKind: VaultUnlo
   })
 }
 
-function warnVaultUnlockSelfHealFailure(
-  config: VaultUnlockConfig,
-  storeKind: VaultUnlockStoreSelection["kind"],
-  sourceServerUrl: string,
-  error: unknown,
-): void {
-  emitNervesEvent({
-    level: "warn",
-    component: "repertoire",
-    event: "repertoire.vault_unlock_self_heal_failed",
-    message: "failed to rewrite local unlock material using canonical vault coordinates",
-    meta: {
-      store: storeKind,
-      email: config.email,
-      sourceServerUrl,
-      targetServerUrl: config.serverUrl,
-      error: error instanceof Error ? error.message : String(error),
-    },
-  })
+interface StoredVaultUnlockSecret {
+  secret: string
+  source: VaultUnlockConfig
 }
 
-function readFromMacosKeychain(config: VaultUnlockConfig, deps: VaultUnlockDeps): string | null {
+function readFromMacosKeychain(config: VaultUnlockConfig, deps: VaultUnlockDeps): StoredVaultUnlockSecret | null {
   const candidates = vaultConfigCandidates(config)
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     const secret = readFromMacosKeychainExact(vaultKey(candidate), deps)
-    if (!secret) continue
-    if (index > 0) {
-      try {
-        writeToMacosKeychain(config, secret, deps)
-        noteVaultUnlockSelfHeal(config, "macos-keychain", candidate.serverUrl)
-      } catch (error) {
-        warnVaultUnlockSelfHealFailure(config, "macos-keychain", candidate.serverUrl, error)
-      }
+    if (secret) {
+      return { secret, source: exactVaultConfig(candidate) }
     }
-    return secret
   }
   return null
 }
@@ -380,20 +365,13 @@ function readFromLinuxSecretServiceExact(accountKey: string, deps: VaultUnlockDe
   throw new Error(`failed to read vault unlock secret from Linux Secret Service: ${detail}`)
 }
 
-function readFromLinuxSecretService(config: VaultUnlockConfig, deps: VaultUnlockDeps): string | null {
+function readFromLinuxSecretService(config: VaultUnlockConfig, deps: VaultUnlockDeps): StoredVaultUnlockSecret | null {
   const candidates = vaultConfigCandidates(config)
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     const secret = readFromLinuxSecretServiceExact(vaultKey(candidate), deps)
-    if (!secret) continue
-    if (index > 0) {
-      try {
-        writeToLinuxSecretService(config, secret, deps)
-        noteVaultUnlockSelfHeal(config, "linux-secret-service", candidate.serverUrl)
-      } catch (error) {
-        warnVaultUnlockSelfHealFailure(config, "linux-secret-service", candidate.serverUrl, error)
-      }
+    if (secret) {
+      return { secret, source: exactVaultConfig(candidate) }
     }
-    return secret
   }
   return null
 }
@@ -465,20 +443,13 @@ function readFromWindowsDpapiExact(config: VaultUnlockConfig, deps: VaultUnlockD
   return secret || null
 }
 
-function readFromWindowsDpapi(config: VaultUnlockConfig, deps: VaultUnlockDeps): string | null {
+function readFromWindowsDpapi(config: VaultUnlockConfig, deps: VaultUnlockDeps): StoredVaultUnlockSecret | null {
   const candidates = vaultConfigCandidates(config)
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     const secret = readFromWindowsDpapiExact(candidate, deps)
-    if (!secret) continue
-    if (index > 0) {
-      try {
-        writeToWindowsDpapi(config, secret, deps)
-        noteVaultUnlockSelfHeal(config, "windows-dpapi", candidate.serverUrl)
-      } catch (error) {
-        warnVaultUnlockSelfHealFailure(config, "windows-dpapi", candidate.serverUrl, error)
-      }
+    if (secret) {
+      return { secret, source: exactVaultConfig(candidate) }
     }
-    return secret
   }
   return null
 }
@@ -505,20 +476,13 @@ function readFromPlaintextFileExact(config: VaultUnlockConfig, deps: VaultUnlock
   return secret || null
 }
 
-function readFromPlaintextFile(config: VaultUnlockConfig, deps: VaultUnlockDeps): string | null {
+function readFromPlaintextFile(config: VaultUnlockConfig, deps: VaultUnlockDeps): StoredVaultUnlockSecret | null {
   const candidates = vaultConfigCandidates(config)
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of candidates) {
     const secret = readFromPlaintextFileExact(candidate, deps)
-    if (!secret) continue
-    if (index > 0) {
-      try {
-        writeToPlaintextFile(config, secret, deps)
-        noteVaultUnlockSelfHeal(config, "plaintext-file", candidate.serverUrl)
-      } catch (error) {
-        warnVaultUnlockSelfHealFailure(config, "plaintext-file", candidate.serverUrl, error)
-      }
+    if (secret) {
+      return { secret, source: exactVaultConfig(candidate) }
     }
-    return secret
   }
   return null
 }
@@ -537,7 +501,7 @@ function readFromStore(
   config: VaultUnlockConfig,
   store: VaultUnlockStoreSelection,
   deps: VaultUnlockDeps,
-): string | null {
+): StoredVaultUnlockSecret | null {
   if (store.kind === "macos-keychain") return readFromMacosKeychain(config, deps)
   if (store.kind === "windows-dpapi") return readFromWindowsDpapi(config, deps)
   if (store.kind === "linux-secret-service") return readFromLinuxSecretService(config, deps)
@@ -565,14 +529,98 @@ function writeToStore(
   writeToPlaintextFile(config, secret, deps)
 }
 
+function deleteFromMacosKeychainExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): boolean {
+  const result = spawnSync(deps)("security", [
+    "delete-generic-password",
+    "-s",
+    VAULT_UNLOCK_SERVICE,
+    "-a",
+    vaultKey(config),
+  ], { encoding: "utf8" })
+
+  if (result.status === 0) return true
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : ""
+  const error = result.error instanceof Error ? result.error.message : ""
+  const detail = stderr || error
+  if (!detail || /could not be found in the keychain/i.test(detail)) return false
+  throw new Error(`failed to clear vault unlock secret from macOS Keychain: ${detail}`)
+}
+
+function deleteFromLinuxSecretServiceExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): boolean {
+  const result = spawnSync(deps)("secret-tool", [
+    "clear",
+    "service",
+    VAULT_UNLOCK_SERVICE,
+    "account",
+    vaultKey(config),
+  ], { encoding: "utf8" })
+
+  if (result.status === 0) return true
+  const stderr = typeof result.stderr === "string" ? result.stderr.trim() : ""
+  const error = result.error instanceof Error ? result.error.message : ""
+  const detail = stderr || error
+  if (!detail || /not found/i.test(detail)) return false
+  throw new Error(`failed to clear vault unlock secret from Linux Secret Service: ${detail}`)
+}
+
+function deleteFromWindowsDpapiExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): boolean {
+  const filePath = windowsDpapiUnlockPath(config, deps)
+  const existed = fs.existsSync(filePath)
+  fs.rmSync(filePath, { force: true })
+  return existed
+}
+
+function deleteFromPlaintextFileExact(config: VaultUnlockConfig, deps: VaultUnlockDeps): boolean {
+  const filePath = plaintextUnlockPath(config, deps)
+  const existed = fs.existsSync(filePath)
+  fs.rmSync(filePath, { force: true })
+  return existed
+}
+
+function deleteFromStoreExact(
+  config: VaultUnlockConfig,
+  store: VaultUnlockStoreSelection,
+  deps: VaultUnlockDeps,
+): boolean {
+  if (store.kind === "macos-keychain") return deleteFromMacosKeychainExact(config, deps)
+  if (store.kind === "linux-secret-service") return deleteFromLinuxSecretServiceExact(config, deps)
+  if (store.kind === "windows-dpapi") return deleteFromWindowsDpapiExact(config, deps)
+  return deleteFromPlaintextFileExact(config, deps)
+}
+
+export function clearVaultUnlockSecret(
+  config: VaultUnlockConfig,
+  deps: VaultUnlockDeps = {},
+): VaultUnlockStoreSelection {
+  const canonicalConfig = canonicalizeVaultUnlockConfig(config)
+  const store = resolveVaultUnlockStore(canonicalConfig, deps)
+  const deletedAccounts = new Set<string>()
+  let deleted = false
+  for (const candidate of vaultConfigCandidates(config)) {
+    const exactCandidate = exactVaultConfig(candidate)
+    const key = vaultKey(exactCandidate)
+    if (deletedAccounts.has(key)) continue
+    deletedAccounts.add(key)
+    deleted = deleteFromStoreExact(exactCandidate, store, deps) || deleted
+  }
+
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.vault_unlock_cleared",
+    message: "cleared local vault unlock material",
+    meta: { store: store.kind, secure: store.secure, hasAgentName: !!config.agentName, deleted },
+  })
+  return store
+}
+
 export function readVaultUnlockSecret(
   config: VaultUnlockConfig,
   deps: VaultUnlockDeps = {},
 ): VaultUnlockReadResult {
   const canonicalConfig = canonicalizeVaultUnlockConfig(config)
   const store = resolveVaultUnlockStore(canonicalConfig, deps)
-  const secret = readFromStore(canonicalConfig, store, deps)
-  if (!secret) {
+  const loaded = readFromStore(canonicalConfig, store, deps)
+  if (!loaded) {
     throw new Error(lockedMessage(canonicalConfig, store))
   }
 
@@ -580,9 +628,9 @@ export function readVaultUnlockSecret(
     component: "repertoire",
     event: "repertoire.vault_unlock_loaded",
     message: "loaded vault unlock material from local store",
-    meta: { store: store.kind, secure: store.secure, hasAgentName: !!config.agentName },
+    meta: { store: store.kind, secure: store.secure, hasAgentName: !!config.agentName, sourceServerUrl: loaded.source.serverUrl },
   })
-  return { secret, store }
+  return { secret: loaded.secret, store, source: loaded.source }
 }
 
 export function storeVaultUnlockSecret(

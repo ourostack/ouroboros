@@ -435,6 +435,8 @@ export class BitwardenCredentialStore implements CredentialStore {
   private readonly email: string
   private readonly masterPassword: string
   private readonly appDataDir?: string
+  private readonly onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
+  private readonly onLoginSuccess?: () => void | Promise<void>
   private sessionToken: string | null = null
   private terminalLoginError: Error | null = null
   private bwBinaryPath = "bw"
@@ -444,12 +446,18 @@ export class BitwardenCredentialStore implements CredentialStore {
     serverUrl: string,
     email: string,
     masterPassword: string,
-    options: { appDataDir?: string } = {},
+    options: {
+      appDataDir?: string
+      onInvalidUnlockSecret?: (error: Error) => void | Promise<void>
+      onLoginSuccess?: () => void | Promise<void>
+    } = {},
   ) {
     this.serverUrl = serverUrl
     this.email = email
     this.masterPassword = masterPassword
     this.appDataDir = options.appDataDir
+    this.onInvalidUnlockSecret = options.onInvalidUnlockSecret
+    this.onLoginSuccess = options.onLoginSuccess
   }
 
   isReady(): boolean {
@@ -469,6 +477,26 @@ export class BitwardenCredentialStore implements CredentialStore {
       this.bwBinaryPath,
       { [BW_PASSWORD_ENV]: this.masterPassword },
     )
+  }
+
+  private async notifyInvalidUnlockSecret(error: Error): Promise<void> {
+    if (!this.onInvalidUnlockSecret) return
+    try {
+      await this.onInvalidUnlockSecret(error)
+    } catch (callbackError) {
+      emitNervesEvent({
+        level: "warn",
+        event: "repertoire.bw_invalid_unlock_cleanup_failed",
+        component: "repertoire",
+        message: "failed to clean up rejected local vault unlock material",
+        meta: {
+          email: this.email,
+          serverUrl: this.serverUrl,
+          error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+          originalError: error.message,
+        },
+      })
+    }
   }
 
   /**
@@ -492,6 +520,7 @@ export class BitwardenCredentialStore implements CredentialStore {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         await this.loginAttempt()
+        await this.onLoginSuccess?.()
         return
       } catch (err) {
         /* v8 ignore next -- defensive: loginAttempt always throws Error instances @preserve */
@@ -500,6 +529,9 @@ export class BitwardenCredentialStore implements CredentialStore {
         // Don't retry non-transient errors (auth failures, bw not installed)
         if (!isTransientError(lastError)) {
           this.terminalLoginError = lastError
+          if (isBwInvalidUnlockSecretMessage(lastError.message)) {
+            await this.notifyInvalidUnlockSecret(lastError)
+          }
           throw lastError
         }
 
@@ -518,6 +550,10 @@ export class BitwardenCredentialStore implements CredentialStore {
       }
     }
     this.terminalLoginError = lastError!
+    /* v8 ignore next -- invalid unlock errors are non-transient and exit through the non-retry path above @preserve */
+    if (isBwInvalidUnlockSecretMessage(lastError!.message)) {
+      await this.notifyInvalidUnlockSecret(lastError!)
+    }
     throw lastError!
   }
 
