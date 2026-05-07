@@ -4,6 +4,7 @@ import * as http from "http"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeVoicePlaybackArtifact } from "./playback"
+import { buildVoiceTranscript } from "./transcript"
 import { runVoiceLoopbackTurn, type VoiceRunSenseTurn } from "./turn"
 import type { VoiceTranscriber, VoiceTtsService } from "./types"
 
@@ -52,7 +53,6 @@ export interface TwilioPhoneBridgeOptions {
   defaultFriendId?: string
   recordTimeoutSeconds?: number
   recordMaxLengthSeconds?: number
-  greetingText?: string
   downloadRecording?: TwilioRecordingDownloader
 }
 
@@ -217,6 +217,38 @@ function friendIdFromCaller(from: string, callSid: string): string {
   return phoneish ? `twilio-${phoneish}` : `twilio-${safeSegment(callSid)}`
 }
 
+function voiceFriendId(options: TwilioPhoneBridgeOptions, from: string, callSid: string): string {
+  return options.defaultFriendId?.trim() || friendIdFromCaller(from, callSid)
+}
+
+function callConnectedPrompt(params: Record<string, string>): string {
+  const from = params.From?.trim()
+  const to = params.To?.trim()
+  return [
+    "A Twilio phone voice call just connected.",
+    "This is the first audible turn in the call.",
+    from ? `Twilio caller ID: ${from}.` : "Twilio did not provide caller ID.",
+    to ? `Dialed line: ${to}.` : "Twilio did not provide the dialed line.",
+    "Respond through the voice channel as yourself. Greet the caller naturally and briefly, then invite them to speak.",
+  ].join("\n")
+}
+
+function noSpeechPrompt(): string {
+  return [
+    "The last Twilio phone recording contained no intelligible speech.",
+    "The caller is still on the line.",
+    "Respond through the voice channel as yourself. Briefly ask them to try again or check whether they are there.",
+  ].join("\n")
+}
+
+function isNoSpeechTranscript(text: string): boolean {
+  const normalized = text.trim().replace(/[.!?]+$/g, "").toUpperCase()
+  return normalized === "[BLANK_AUDIO]"
+    || normalized === "BLANK_AUDIO"
+    || normalized === "[NO_SPEECH]"
+    || normalized === "NO_SPEECH"
+}
+
 function parseRecordingParams(params: Record<string, string>): RecordingCallbackParams | null {
   const callSid = params.CallSid?.trim()
   const recordingSid = params.RecordingSid?.trim()
@@ -241,6 +273,63 @@ function recordAgainResponse(options: TwilioPhoneBridgeOptions, basePath: string
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function nextInputTwiml(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  mode: "record" | "redirect",
+): string {
+  if (mode === "redirect") return redirectTwiml(options.publicBaseUrl, basePath)
+  return recordTwiml({
+    publicBaseUrl: options.publicBaseUrl,
+    basePath,
+    timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
+    maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
+  })
+}
+
+async function runPhonePromptTurn(options: {
+  bridgeOptions: TwilioPhoneBridgeOptions
+  basePath: string
+  callDir: string
+  safeCallSid: string
+  utteranceId: string
+  friendId: string
+  sessionKey: string
+  promptText: string
+  afterPlayback: "record" | "redirect"
+}): Promise<TwilioPhoneBridgeResponse> {
+  const transcript = buildVoiceTranscript({
+    utteranceId: options.utteranceId,
+    text: options.promptText,
+    source: "loopback",
+  })
+  const turn = await runVoiceLoopbackTurn({
+    agentName: options.bridgeOptions.agentName,
+    friendId: options.friendId,
+    sessionKey: options.sessionKey,
+    transcript,
+    tts: options.bridgeOptions.tts,
+    runSenseTurn: options.bridgeOptions.runSenseTurn,
+  })
+  const after = nextInputTwiml(options.bridgeOptions, options.basePath, options.afterPlayback)
+
+  if (turn.tts.status !== "delivered") {
+    return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${after}`)
+  }
+
+  const playback = await writeVoicePlaybackArtifact({
+    utteranceId: options.utteranceId,
+    delivery: turn.tts,
+    outputDir: options.callDir,
+  })
+  const audioUrl = routeUrl(
+    options.bridgeOptions.publicBaseUrl,
+    `${options.basePath}/audio/${encodeURIComponent(options.safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
+  )
+
+  return xmlResponse(`${playTwiml(audioUrl)}${after}`)
 }
 
 export function computeTwilioSignature(input: TwilioSignatureInput): string {
@@ -291,20 +380,50 @@ function verifyRequest(options: TwilioPhoneBridgeOptions, request: TwilioPhoneBr
   })
 }
 
-async function handleIncoming(options: TwilioPhoneBridgeOptions, basePath: string): Promise<TwilioPhoneBridgeResponse> {
-  const greeting = options.greetingText ?? "Connected to Ouro voice. Speak after the prompt."
+async function handleIncoming(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  params: Record<string, string>,
+): Promise<TwilioPhoneBridgeResponse> {
+  const callSid = params.CallSid?.trim() || "incoming"
+  const safeCallSid = safeSegment(callSid)
+  const callDir = path.join(options.outputDir, safeCallSid)
+  const utteranceId = `twilio-${safeCallSid}-connected`
   emitNervesEvent({
     component: "senses",
     event: "senses.voice_twilio_incoming",
     message: "Twilio voice call connected",
-    meta: { agentName: options.agentName },
+    meta: { agentName: options.agentName, callSid: safeCallSid },
   })
-  return xmlResponse(`${sayTwiml(greeting)}${recordTwiml({
-    publicBaseUrl: options.publicBaseUrl,
-    basePath,
-    timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
-    maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
-  })}`)
+
+  try {
+    await fs.mkdir(callDir, { recursive: true })
+    return await runPhonePromptTurn({
+      bridgeOptions: options,
+      basePath,
+      callDir,
+      safeCallSid,
+      utteranceId,
+      friendId: voiceFriendId(options, params.From?.trim() ?? "", callSid),
+      sessionKey: `twilio-${safeCallSid}`,
+      promptText: callConnectedPrompt(params),
+      afterPlayback: "record",
+    })
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.voice_twilio_incoming_error",
+      message: "Twilio incoming voice greeting turn failed",
+      meta: { agentName: options.agentName, callSid: safeCallSid, error: errorMessage(error) },
+    })
+    return xmlResponse(recordTwiml({
+      publicBaseUrl: options.publicBaseUrl,
+      basePath,
+      timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
+      maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
+    }))
+  }
 }
 
 async function handleListen(options: TwilioPhoneBridgeOptions, basePath: string): Promise<TwilioPhoneBridgeResponse> {
@@ -361,9 +480,24 @@ async function handleRecording(
       utteranceId,
       audioPath: inputPath,
     })
+
+    if (isNoSpeechTranscript(transcript.text)) {
+      return await runPhonePromptTurn({
+        bridgeOptions: options,
+        basePath,
+        callDir,
+        safeCallSid,
+        utteranceId: `${utteranceId}-nospeech`,
+        friendId: voiceFriendId(options, recording.from, recording.callSid),
+        sessionKey: `twilio-${safeCallSid}`,
+        promptText: noSpeechPrompt(),
+        afterPlayback: "redirect",
+      })
+    }
+
     const turn = await runVoiceLoopbackTurn({
       agentName: options.agentName,
-      friendId: options.defaultFriendId?.trim() || friendIdFromCaller(recording.from, recording.callSid),
+      friendId: voiceFriendId(options, recording.from, recording.callSid),
       sessionKey: `twilio-${safeCallSid}`,
       transcript,
       tts: options.tts,
@@ -466,7 +600,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         return textResponse(403, "invalid Twilio signature")
       }
 
-      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath)
+      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath, params)
       if (routePath === `${basePath}/listen`) return handleListen(options, basePath)
       if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params)
       return textResponse(404, "not found")

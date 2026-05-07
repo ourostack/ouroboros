@@ -205,6 +205,8 @@ function setupSettledTurn(text: string = "hello from the agent") {
 describe("runSenseTurn", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockLoadSession.mockReset()
+    mockLoadSession.mockReturnValue(null)
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
   })
@@ -516,6 +518,273 @@ describe("runSenseTurn", () => {
     })
     expect(result.response).toBe("recovered answer from session")
     expect(result.ponderDeferred).toBe(false)
+  })
+
+  it("recovers delivered settle text from a tool-required assistant message", async () => {
+    mockHandleInboundTurn.mockImplementation(async () => ({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    }))
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_settle",
+              type: "function",
+              function: {
+                name: "settle",
+                arguments: JSON.stringify({ answer: "me - I'm here\n\nwhat's up?", intent: "direct_reply" }),
+              },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_settle", content: "(delivered)" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toBe("me - I'm here\n\nwhat's up?")
+  })
+
+  it("recovers spoken tool text only after a spoken delivery ack", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_speak",
+              type: "function",
+              function: {
+                name: "speak",
+                arguments: JSON.stringify({ message: "I can say this out loud." }),
+              },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_speak", content: "(spoken)" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toBe("I can say this out loud.")
+  })
+
+  it("does not recover rejected or inner-dialog settle text as outward speech", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_settle",
+              type: "function",
+              function: {
+                name: "settle",
+                arguments: JSON.stringify({ answer: "private or rejected text", intent: "complete" }),
+              },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_settle", content: "(settled)" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toContain("agent responded but response was empty")
+    expect(result.response).not.toContain("private or rejected text")
+  })
+
+  it("does not recover malformed delivery tool arguments", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_settle",
+              type: "function",
+              function: {
+                name: "settle",
+                arguments: "{not-json",
+              },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_settle", content: "(delivered)" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toContain("agent responded but response was empty")
+  })
+
+  it("does not recover malformed delivery tool shapes", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              null,
+              {
+                id: "call_array",
+                type: "function",
+                function: { name: "settle", arguments: "[]" },
+              },
+              {
+                id: "call_non_string",
+                type: "function",
+                function: { name: "settle", arguments: JSON.stringify({ answer: 123 }) },
+              },
+              {
+                id: "call_blank",
+                type: "function",
+                function: { name: "settle", arguments: JSON.stringify({ answer: "   " }) },
+              },
+              {
+                type: "function",
+                function: { name: "settle", arguments: JSON.stringify({ answer: "missing id" }) },
+              },
+              {
+                id: "call_interrupted",
+                type: "function",
+                function: { name: "speak", arguments: JSON.stringify({ message: "not acknowledged" }) },
+              },
+            ],
+          },
+          { role: "tool", tool_call_id: "call_blank", content: "(delivered)" },
+          { role: "user", content: "next turn started before tool ack" },
+          { role: "tool", tool_call_id: "call_interrupted", content: "(spoken)" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toContain("agent responded but response was empty")
+  })
+
+  it("returns empty message when session readback has no assistant message", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    mockLoadSession
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        messages: [
+          { role: "system", content: "system" },
+          { role: "user", content: "hello" },
+        ],
+        state: {},
+      })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toContain("agent responded but response was empty")
   })
 
   it("returns empty message when session has messages but no assistant content", async () => {
