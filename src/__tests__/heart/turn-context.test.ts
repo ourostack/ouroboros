@@ -493,7 +493,7 @@ describe("buildTurnContext", () => {
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
       bluebubbles: { serverUrl: "http://bb", password: "pass" },
       mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
-      integrations: { elevenLabsApiKey: "eleven-key" },
+      integrations: { elevenLabsApiKey: "eleven-key", elevenLabsVoiceId: "voice_123" },
       voice: { whisperCliPath: "/opt/whisper", whisperModelPath: "/models/ggml-base.bin" },
     })
 

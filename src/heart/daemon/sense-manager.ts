@@ -262,6 +262,9 @@ function senseFactsFromRuntimeConfig(
   if (senses.voice.enabled) {
     const missing: string[] = []
     if (!textField(integrations, "elevenLabsApiKey")) missing.push("integrations.elevenLabsApiKey")
+    if (!textField(integrations, "elevenLabsVoiceId") && !textField(payload.voice as Record<string, unknown> | undefined, "elevenLabsVoiceId")) {
+      missing.push("integrations.elevenLabsVoiceId")
+    }
     if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
     if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
 

@@ -155,6 +155,20 @@ ouro connect bluebubbles --agent <agent>
 ouro connect voice --agent <agent>
 ```
 
+### Voice
+
+Voice is a single transcript-first sense with multiple transports. The Twilio phone transport is the current end-to-end phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal `voice` session turn runs, ElevenLabs generates MP3 audio, and Twilio plays that response before listening again.
+
+For a local phone smoke:
+
+```bash
+npm run build
+cloudflared tunnel --url http://127.0.0.1:18910
+node dist/senses/voice-twilio-entry.js --agent <agent> --port 18910 --public-url https://<cloudflare-tunnel>
+```
+
+Then set the Twilio number's Voice webhook to `POST https://<cloudflare-tunnel>/voice/twilio/incoming` and call the number. The transcript should land under the ordinary `state/sessions/<friend>/voice/twilio-<CallSid>.json` session path.
+
 ### Teams
 
 If Teams is enabled and configured:
@@ -318,4 +332,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item. For Voice, `ouro connect voice --agent <agent>` names the required ElevenLabs portable key and Whisper.cpp machine attachment fields, with meeting URL intake and local BlackHole/Multi-Output readiness checks available before live provider automation.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item. For Voice, `ouro connect voice --agent <agent>` names the required ElevenLabs portable key/voice ID and Whisper.cpp machine attachment fields, with Twilio phone transport setup, meeting URL intake, and local BlackHole/Multi-Output readiness checks available before live provider automation.

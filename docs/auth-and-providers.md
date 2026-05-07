@@ -92,7 +92,7 @@ When a human runs bare `ouro` in a TTY, Ouro opens the same command family from 
 
 `ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. If Ouro is already running, the connector recycles the daemon once so the local listener starts with the freshly saved machine attachment; if Ouro is not running, the next `ouro up` loads it. It does not make that local Mac Messages bridge portable to every machine.
 
-`ouro connect voice` describes the current voice foundation and the required config fields. ElevenLabs TTS uses `integrations.elevenLabsApiKey` in portable `runtime/config`. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and appear in Ouro Mailbox as text. Meeting links have URL intake plus BlackHole/Multi-Output readiness checks; live browser join/injection remains a handoff edge until provider automation lands.
+`ouro connect voice` describes the current voice foundation and the required config fields. Voice is one sense with multiple transports. ElevenLabs TTS uses `integrations.elevenLabsApiKey` and `integrations.elevenLabsVoiceId` in portable `runtime/config`. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and appear in Ouro Mailbox as text. Meeting links have URL intake plus BlackHole/Multi-Output readiness checks. The Twilio phone transport can be tested locally through Cloudflare Tunnel with Twilio Record -> Whisper.cpp -> voice session -> ElevenLabs -> Twilio Play. Live browser join/injection remains a handoff edge until provider automation lands.
 
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 
@@ -103,8 +103,13 @@ ouro vault config set --agent <agent> --key teams.clientSecret
 ouro vault config set --agent <agent> --key integrations.perplexityApiKey
 ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
 ouro vault config set --agent <agent> --key integrations.elevenLabsApiKey
+ouro vault config set --agent <agent> --key integrations.elevenLabsVoiceId
 ouro vault config set --agent <agent> --key voice.whisperCliPath --scope machine
 ouro vault config set --agent <agent> --key voice.whisperModelPath --scope machine
+ouro vault config set --agent <agent> --key voice.twilioAccountSid
+ouro vault config set --agent <agent> --key voice.twilioAuthToken
+ouro vault config set --agent <agent> --key voice.twilioPublicUrl --scope machine
+ouro vault config set --agent <agent> --key voice.twilioPort --value 18910 --scope machine
 ```
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
@@ -440,7 +445,7 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro connect voice --agent <agent>
    ```
 
-   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles and Voice are local attachments; run their connectors separately on each machine that should bridge iMessage or local audio.
+   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles and Voice transports are local attachments; run their connectors separately on each machine that should bridge iMessage, local audio, Twilio phone calls, or browser meeting audio.
 
 7. Choose this machine's provider/model lanes.
 

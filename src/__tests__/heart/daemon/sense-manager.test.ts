@@ -362,6 +362,7 @@ describe("daemon sense manager", () => {
     await cacheRuntimeConfig("slugger", {
       integrations: {
         elevenLabsApiKey: "eleven-key",
+        elevenLabsVoiceId: "voice_123",
       },
     })
     await cacheMachineRuntimeConfig("slugger", {
@@ -408,6 +409,7 @@ describe("daemon sense manager", () => {
     await cacheRuntimeConfig("slugger", {
       integrations: {
         elevenLabsApiKey: "eleven-key",
+        elevenLabsVoiceId: "voice_123",
       },
     })
     await cacheMachineRuntimeConfig("slugger", {
@@ -495,6 +497,7 @@ describe("daemon sense manager", () => {
         config: {
           integrations: {
             elevenLabsApiKey: "eleven-key",
+            elevenLabsVoiceId: "voice_123",
           },
         },
       }),
@@ -1531,6 +1534,7 @@ describe("daemon sense manager", () => {
       },
       integrations: {
         elevenLabsApiKey: "eleven-key",
+        elevenLabsVoiceId: "voice_123",
       },
     }
     let machineRuntimeConfig: Record<string, unknown> | null = {
@@ -1687,7 +1691,7 @@ describe("daemon sense manager", () => {
     expect(incompleteVoice).toEqual({
       ok: false,
       skip: true,
-      error: "voice is enabled for slugger but runtime credentials are not ready: missing integrations.elevenLabsApiKey/voice.whisperModelPath",
+      error: "voice is enabled for slugger but runtime credentials are not ready: missing integrations.elevenLabsApiKey/integrations.elevenLabsVoiceId/voice.whisperModelPath",
       fix: "Agent-runnable: run 'ouro connect voice --agent slugger' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.",
     })
     await vi.waitFor(() => {

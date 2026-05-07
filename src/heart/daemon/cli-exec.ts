@@ -3139,6 +3139,10 @@ async function buildConnectMenu(
   const elevenLabsApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsApiKey")
     : null
+  const elevenLabsVoiceId = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsVoiceId")
+      ?? readRuntimeConfigString(runtimeConfig.config, "voice.elevenLabsVoiceId")
+    : null
   const shouldVerifyPerplexity = runtimeConfig.ok && !!perplexityApiKey
   const shouldVerifyEmbeddings = runtimeConfig.ok && !!embeddingsApiKey
   let perplexityVerification: Awaited<ReturnType<typeof verifyPerplexityCapability>> | undefined
@@ -3209,6 +3213,7 @@ async function buildConnectMenu(
   const voiceStatus = runtimeConfig.ok
     ? machineRuntime.ok
       ? elevenLabsApiKey
+        && elevenLabsVoiceId
         && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath")
         && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath")
         && voiceEnabled
@@ -3316,6 +3321,7 @@ async function buildConnectMenu(
       detailLines: runtimeConfig.ok && machineRuntime.ok
         ? [
             elevenLabsApiKey ? "ElevenLabs API key saved in portable runtime config" : "missing integrations.elevenLabsApiKey",
+            elevenLabsVoiceId ? "ElevenLabs voice ID saved in portable runtime config" : "missing integrations.elevenLabsVoiceId",
             hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath") ? "Whisper.cpp CLI path saved for this machine" : "missing voice.whisperCliPath",
             hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath") ? "Whisper.cpp model path saved for this machine" : "missing voice.whisperModelPath",
           ]
@@ -5094,13 +5100,22 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
 async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<string> {
   const message = [
     `Voice foundation for ${agent}`,
-    "Configure the portable ElevenLabs API key with:",
+    "Configure portable ElevenLabs settings with:",
     `  ouro vault config set --agent ${agent} --key integrations.elevenLabsApiKey`,
+    `  ouro vault config set --agent ${agent} --key integrations.elevenLabsVoiceId`,
     "Configure this machine's Whisper.cpp attachment with:",
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
+    "Optional Twilio phone testing setup:",
+    `  ouro vault config set --agent ${agent} --key voice.twilioAccountSid`,
+    `  ouro vault config set --agent ${agent} --key voice.twilioAuthToken`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPublicUrl`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPort --value 18910`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value ari`,
+    `  node dist/senses/voice-twilio-entry.js --agent ${agent} --port 18910 --public-url https://<cloudflare-tunnel>`,
+    `Set the Twilio number's Voice webhook to POST https://<cloudflare-tunnel>/voice/twilio/incoming.`,
     "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
-    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Live browser join/injection is a handoff edge until provider automation lands.",
+    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Phone testing uses Twilio Record -> Whisper.cpp -> voice session -> ElevenLabs -> Twilio Play.",
   ].join("\n")
   deps.writeStdout(message)
   return message

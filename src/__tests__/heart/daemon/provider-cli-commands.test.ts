@@ -1355,9 +1355,11 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Voice foundation for Slugger")
     expect(result).toContain("integrations.elevenLabsApiKey")
+    expect(result).toContain("integrations.elevenLabsVoiceId")
     expect(result).toContain("voice.whisperCliPath")
     expect(result).toContain("voice.whisperModelPath")
-    expect(result).toContain("Meeting links use URL intake")
+    expect(result).toContain("voice.twilioPublicUrl")
+    expect(result).toContain("Twilio Record -> Whisper.cpp")
   })
 
   it("routes Voice setup from the root connect bay", async () => {
@@ -1393,6 +1395,7 @@ describe("provider CLI command execution", () => {
     writeRuntimeConfig("Slugger", {
       integrations: {
         elevenLabsApiKey: "eleven-secret",
+        elevenLabsVoiceId: "voice_123",
       },
     })
     writeMachineIdentity(homeDir, "machine_voice_incomplete")
@@ -1450,6 +1453,7 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     expectConnectStatus(prompt, 7, "Voice", "not attached")
     expect(prompt).toContain("missing integrations.elevenLabsApiKey")
+    expect(prompt).toContain("missing integrations.elevenLabsVoiceId")
     expect(prompt).toContain("missing voice.whisperCliPath")
   })
 
@@ -8140,6 +8144,7 @@ describe("provider CLI command execution", () => {
         perplexityApiKey: "pplx-secret",
         openaiEmbeddingsApiKey: "embed-secret",
         elevenLabsApiKey: "eleven-secret",
+        elevenLabsVoiceId: "voice_123",
       },
       teams: {
         clientId: "teams-client-id",

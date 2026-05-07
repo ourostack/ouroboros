@@ -666,7 +666,7 @@ describe("buildSystem", () => {
     patchRuntimeConfig({
       teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
       mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
-      integrations: { elevenLabsApiKey: "eleven-key" },
+      integrations: { elevenLabsApiKey: "eleven-key", elevenLabsVoiceId: "voice_123" },
       voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/ggml-base.en.bin" },
       providers: { minimax: { apiKey: "test-key" } },
     })

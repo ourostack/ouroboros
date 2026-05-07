@@ -223,6 +223,7 @@ function readSenseStatusLines(): string[] {
   const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
   const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
   const voice = recordOrUndefined(machinePayload.voice) ?? recordOrUndefined(payload.voice)
+  const portableVoice = recordOrUndefined(runtimePayload.voice) ?? recordOrUndefined(payload.voice)
   const integrations = recordOrUndefined(runtimePayload.integrations) ?? recordOrUndefined(payload.integrations)
   const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
@@ -230,7 +231,10 @@ function readSenseStatusLines(): string[] {
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
     mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
-    voice: hasTextField(integrations, "elevenLabsApiKey") && hasTextField(voice, "whisperCliPath") && hasTextField(voice, "whisperModelPath"),
+    voice: hasTextField(integrations, "elevenLabsApiKey")
+      && (hasTextField(integrations, "elevenLabsVoiceId") || hasTextField(portableVoice, "elevenLabsVoiceId"))
+      && hasTextField(voice, "whisperCliPath")
+      && hasTextField(voice, "whisperModelPath"),
   }
 
   const rows: Array<{ label: string; status: string }> = [
