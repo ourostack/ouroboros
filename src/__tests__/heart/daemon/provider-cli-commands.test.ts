@@ -1359,7 +1359,20 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("voice.whisperCliPath")
     expect(result).toContain("voice.whisperModelPath")
     expect(result).toContain("voice.twilioPublicUrl")
+    expect(result).toContain("/voice/agents/slugger/twilio")
     expect(result).toContain("Twilio Record -> Whisper.cpp")
+  })
+
+  it("uses a safe fallback segment in Voice setup guidance for punctuation-only agent names", async () => {
+    emitTestEvent("provider cli connect voice fallback path")
+    const bundlesRoot = makeTempDir("provider-cli-connect-voice-fallback-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-voice-fallback-home")
+    writeAgentConfig(bundlesRoot, "!!!")
+
+    const result = await runOuroCli(["connect", "voice", "--agent", "!!!"], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Voice foundation for !!!")
+    expect(result).toContain("/voice/agents/agent/twilio")
   })
 
   it("routes Voice setup from the root connect bay", async () => {

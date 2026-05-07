@@ -394,6 +394,54 @@ describe("daemon sense manager", () => {
     ])
   })
 
+  it("reports when the managed Twilio phone transport is attached to voice", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      integrations: {
+        elevenLabsApiKey: "eleven-key",
+        elevenLabsVoiceId: "voice_123",
+      },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
+        twilioPublicUrl: "https://voice.example.test",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:voice", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(
+      expect.objectContaining({
+        sense: "voice",
+        status: "running",
+        detail: "local Whisper.cpp STT + ElevenLabs TTS; Twilio phone transport attached",
+      }),
+    )
+  })
+
   it("reports voice setup gaps from portable and machine runtime config separately", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {

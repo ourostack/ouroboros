@@ -43,6 +43,7 @@ export interface TwilioPhoneBridgeOptions {
   agentName: string
   publicBaseUrl: string
   outputDir: string
+  basePath?: string
   transcriber: VoiceTranscriber
   tts: VoiceTtsService
   runSenseTurn?: VoiceRunSenseTurn
@@ -142,20 +143,41 @@ function routeUrl(publicBaseUrl: string, route: string): string {
   return new URL(route, publicBaseUrl).toString()
 }
 
+export function normalizeTwilioPhoneBasePath(value: string | undefined = TWILIO_PHONE_WEBHOOK_BASE_PATH): string {
+  const trimmed = value.trim()
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  const withoutTrailingSlash = withLeadingSlash.replace(/\/+$/, "")
+  if (!withoutTrailingSlash || withoutTrailingSlash === "/") {
+    throw new Error("Twilio phone webhook base path is empty")
+  }
+  if (!/^\/[A-Za-z0-9._~/-]+$/.test(withoutTrailingSlash) || withoutTrailingSlash.includes("//")) {
+    throw new Error(`invalid Twilio phone webhook base path: ${value}`)
+  }
+  return withoutTrailingSlash
+}
+
+export function twilioPhoneWebhookUrl(
+  publicBaseUrl: string,
+  basePath: string | undefined = TWILIO_PHONE_WEBHOOK_BASE_PATH,
+): string {
+  return routeUrl(publicBaseUrl, `${normalizeTwilioPhoneBasePath(basePath)}/incoming`)
+}
+
 function requestPublicUrl(publicBaseUrl: string, requestPath: string): string {
   return routeUrl(publicBaseUrl, requestPath)
 }
 
 function recordTwiml(options: {
   publicBaseUrl: string
+  basePath: string
   timeoutSeconds: number
   maxLengthSeconds: number
 }): string {
-  return `<Record action="${escapeXml(routeUrl(options.publicBaseUrl, `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/recording`))}" method="POST" playBeep="false" timeout="${options.timeoutSeconds}" maxLength="${options.maxLengthSeconds}" trim="trim-silence" />`
+  return `<Record action="${escapeXml(routeUrl(options.publicBaseUrl, `${options.basePath}/recording`))}" method="POST" playBeep="false" timeout="${options.timeoutSeconds}" maxLength="${options.maxLengthSeconds}" trim="trim-silence" />`
 }
 
-function redirectTwiml(publicBaseUrl: string): string {
-  return `<Redirect method="POST">${escapeXml(routeUrl(publicBaseUrl, `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/listen`))}</Redirect>`
+function redirectTwiml(publicBaseUrl: string, basePath: string): string {
+  return `<Redirect method="POST">${escapeXml(routeUrl(publicBaseUrl, `${basePath}/listen`))}</Redirect>`
 }
 
 function sayTwiml(message: string): string {
@@ -208,11 +230,12 @@ function parseRecordingParams(params: Record<string, string>): RecordingCallback
   }
 }
 
-function recordAgainResponse(publicBaseUrl: string, message: string): TwilioPhoneBridgeResponse {
+function recordAgainResponse(options: TwilioPhoneBridgeOptions, basePath: string, message: string): TwilioPhoneBridgeResponse {
   return xmlResponse(`${sayTwiml(message)}${recordTwiml({
-    publicBaseUrl,
-    timeoutSeconds: DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
-    maxLengthSeconds: DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
+    publicBaseUrl: options.publicBaseUrl,
+    basePath,
+    timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
+    maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   })}`)
 }
 
@@ -268,7 +291,7 @@ function verifyRequest(options: TwilioPhoneBridgeOptions, request: TwilioPhoneBr
   })
 }
 
-async function handleIncoming(options: TwilioPhoneBridgeOptions): Promise<TwilioPhoneBridgeResponse> {
+async function handleIncoming(options: TwilioPhoneBridgeOptions, basePath: string): Promise<TwilioPhoneBridgeResponse> {
   const greeting = options.greetingText ?? "Connected to Ouro voice. Speak after the prompt."
   emitNervesEvent({
     component: "senses",
@@ -278,14 +301,16 @@ async function handleIncoming(options: TwilioPhoneBridgeOptions): Promise<Twilio
   })
   return xmlResponse(`${sayTwiml(greeting)}${recordTwiml({
     publicBaseUrl: options.publicBaseUrl,
+    basePath,
     timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
     maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   })}`)
 }
 
-async function handleListen(options: TwilioPhoneBridgeOptions): Promise<TwilioPhoneBridgeResponse> {
+async function handleListen(options: TwilioPhoneBridgeOptions, basePath: string): Promise<TwilioPhoneBridgeResponse> {
   return xmlResponse(recordTwiml({
     publicBaseUrl: options.publicBaseUrl,
+    basePath,
     timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
     maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   }))
@@ -293,6 +318,7 @@ async function handleListen(options: TwilioPhoneBridgeOptions): Promise<TwilioPh
 
 async function handleRecording(
   options: TwilioPhoneBridgeOptions,
+  basePath: string,
   params: Record<string, string>,
 ): Promise<TwilioPhoneBridgeResponse> {
   const recording = parseRecordingParams(params)
@@ -304,7 +330,7 @@ async function handleRecording(
       message: "Twilio recording callback was missing required fields",
       meta: { agentName: options.agentName },
     })
-    return recordAgainResponse(options.publicBaseUrl, "I did not receive audio. Please try again.")
+    return recordAgainResponse(options, basePath, "I did not receive audio. Please try again.")
   }
 
   const safeCallSid = safeSegment(recording.callSid)
@@ -345,7 +371,7 @@ async function handleRecording(
     })
 
     if (turn.tts.status !== "delivered") {
-      return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${redirectTwiml(options.publicBaseUrl)}`)
+      return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${redirectTwiml(options.publicBaseUrl, basePath)}`)
     }
 
     const playback = await writeVoicePlaybackArtifact({
@@ -355,7 +381,7 @@ async function handleRecording(
     })
     const audioUrl = routeUrl(
       options.publicBaseUrl,
-      `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/audio/${encodeURIComponent(safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
+      `${basePath}/audio/${encodeURIComponent(safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
     )
 
     emitNervesEvent({
@@ -365,7 +391,7 @@ async function handleRecording(
       meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, audioPath: playback.audioPath },
     })
 
-    return xmlResponse(`${playTwiml(audioUrl)}${redirectTwiml(options.publicBaseUrl)}`)
+    return xmlResponse(`${playTwiml(audioUrl)}${redirectTwiml(options.publicBaseUrl, basePath)}`)
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -379,12 +405,12 @@ async function handleRecording(
         error: errorMessage(error),
       },
     })
-    return xmlResponse(`${sayTwiml("I could not process that audio. Please try again.")}${redirectTwiml(options.publicBaseUrl)}`)
+    return xmlResponse(`${sayTwiml("I could not process that audio. Please try again.")}${redirectTwiml(options.publicBaseUrl, basePath)}`)
   }
 }
 
-async function handleAudio(options: TwilioPhoneBridgeOptions, requestPath: string): Promise<TwilioPhoneBridgeResponse> {
-  const prefix = `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/audio/`
+async function handleAudio(options: TwilioPhoneBridgeOptions, basePath: string, requestPath: string): Promise<TwilioPhoneBridgeResponse> {
+  const prefix = `${basePath}/audio/`
   const pathOnly = requestPath.split("?")[0]!
   const rest = pathOnly.slice(prefix.length)
   const parts = rest.split("/")
@@ -413,16 +439,17 @@ async function handleAudio(options: TwilioPhoneBridgeOptions, requestPath: strin
 
 export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): TwilioPhoneBridge {
   new URL(options.publicBaseUrl)
+  const basePath = normalizeTwilioPhoneBasePath(options.basePath)
 
   return {
     async handle(request): Promise<TwilioPhoneBridgeResponse> {
       const method = request.method.toUpperCase()
       const requestPath = request.path.startsWith("/") ? request.path : `/${request.path}`
       const routePath = requestPath.split("?")[0]!
-      if (method === "GET" && requestPath.startsWith(`${TWILIO_PHONE_WEBHOOK_BASE_PATH}/audio/`)) {
-        return handleAudio(options, requestPath)
+      if (method === "GET" && requestPath.startsWith(`${basePath}/audio/`)) {
+        return handleAudio(options, basePath, requestPath)
       }
-      if (method === "GET" && routePath === `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/health`) {
+      if (method === "GET" && routePath === `${basePath}/health`) {
         return textResponse(200, "ok")
       }
       if (method !== "POST") return textResponse(405, "method not allowed")
@@ -439,9 +466,9 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         return textResponse(403, "invalid Twilio signature")
       }
 
-      if (routePath === `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/incoming`) return handleIncoming(options)
-      if (routePath === `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/listen`) return handleListen(options)
-      if (routePath === `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/recording`) return handleRecording(options, params)
+      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath)
+      if (routePath === `${basePath}/listen`) return handleListen(options, basePath)
+      if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params)
       return textResponse(404, "not found")
     },
   }

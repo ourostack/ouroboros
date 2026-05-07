@@ -159,15 +159,16 @@ ouro connect voice --agent <agent>
 
 Voice is a single transcript-first sense with multiple transports. The Twilio phone transport is the current end-to-end phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal `voice` session turn runs, ElevenLabs generates MP3 audio, and Twilio plays that response before listening again.
 
-For a local phone smoke:
+For a managed phone smoke, attach the transport to this machine and expose the Voice entrypoint through Cloudflare Tunnel:
 
 ```bash
-npm run build
-cloudflared tunnel --url http://127.0.0.1:18910
-node dist/senses/voice-twilio-entry.js --agent <agent> --port 18910 --public-url https://<cloudflare-tunnel>
+ouro connect voice --agent <agent>
+ouro vault config set --agent <agent> --scope machine --key voice.twilioPublicUrl --value https://<cloudflare-tunnel-or-hostname>
+ouro vault config set --agent <agent> --scope machine --key voice.twilioBasePath --value /voice/agents/<agent>/twilio
+ouro up --agent <agent>
 ```
 
-Then set the Twilio number's Voice webhook to `POST https://<cloudflare-tunnel>/voice/twilio/incoming` and call the number. The transcript should land under the ordinary `state/sessions/<friend>/voice/twilio-<CallSid>.json` session path.
+Then set the Twilio number's Voice webhook to `POST https://<cloudflare-tunnel-or-hostname>/voice/agents/<agent>/twilio/incoming` and call the number. The transcript should land under the ordinary `state/sessions/<friend>/voice/twilio-<CallSid>.json` session path. The standalone bridge remains available for one-off local testing with `node dist/senses/voice-twilio-entry.js --agent <agent> --public-url https://<cloudflare-tunnel>`.
 
 ### Teams
 

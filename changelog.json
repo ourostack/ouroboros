@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.564",
+      "changes": [
+        "Voice now keeps Twilio phone as a transport under the canonical `voice` sense, with configurable agent-scoped webhook paths such as `/voice/agents/slugger/twilio/incoming`.",
+        "The managed Voice entrypoint now starts the Twilio phone bridge when this machine has a public voice URL, sharing the same Whisper.cpp STT, voice session, and ElevenLabs TTS code as the standalone local smoke bridge.",
+        "Voice setup docs, daemon status, connect guidance, and tests now cover managed Twilio transport readiness while keeping the one-off standalone Twilio bridge available for local smoke testing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.563",
       "changes": [
         "The default agent credential vault host now points at the work-substrate Vaultwarden endpoint `https://vault.ouro.bot`.",

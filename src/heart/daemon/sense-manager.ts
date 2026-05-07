@@ -268,8 +268,14 @@ function senseFactsFromRuntimeConfig(
     if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
     if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
 
+    const twilioPublicUrl = textField(voice, "twilioPublicUrl")
     base.voice = missing.length === 0
-      ? { configured: true, detail: "local Whisper.cpp STT + ElevenLabs TTS" }
+      ? {
+          configured: true,
+          detail: twilioPublicUrl
+            ? "local Whisper.cpp STT + ElevenLabs TTS; Twilio phone transport attached"
+            : "local Whisper.cpp STT + ElevenLabs TTS",
+        }
       : {
           configured: false,
           optional: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing",

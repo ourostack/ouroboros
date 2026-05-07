@@ -7,7 +7,9 @@ import {
   computeTwilioSignature,
   createTwilioPhoneBridge,
   defaultTwilioRecordingDownloader,
+  normalizeTwilioPhoneBasePath,
   startTwilioPhoneBridgeServer,
+  twilioPhoneWebhookUrl,
   twilioRecordingMediaUrl,
   validateTwilioSignature,
 } from "../../../senses/voice/twilio-phone"
@@ -60,6 +62,15 @@ function baseBridgeOptions(outputDir: string) {
 }
 
 describe("Twilio phone voice bridge", () => {
+  it("normalizes transport webhook paths for single-agent and agent-scoped routes", () => {
+    expect(normalizeTwilioPhoneBasePath()).toBe("/voice/twilio")
+    expect(normalizeTwilioPhoneBasePath("voice/agents/slugger/twilio/")).toBe("/voice/agents/slugger/twilio")
+    expect(twilioPhoneWebhookUrl("https://voice.example.com/base/", "voice/agents/slugger/twilio"))
+      .toBe("https://voice.example.com/voice/agents/slugger/twilio/incoming")
+    expect(() => normalizeTwilioPhoneBasePath("   ")).toThrow("Twilio phone webhook base path is empty")
+    expect(() => normalizeTwilioPhoneBasePath("/voice//twilio")).toThrow("invalid Twilio phone webhook base path")
+  })
+
   it("answers inbound calls with a configurable Record action URL", async () => {
     const bridge = createTwilioPhoneBridge(baseBridgeOptions("/tmp/ouro-twilio-phone"))
     const response = await bridge.handle({
@@ -76,6 +87,47 @@ describe("Twilio phone voice bridge", () => {
     expect(String(response.body)).toContain("method=\"POST\"")
     expect(String(response.body)).toContain("maxLength=\"30\"")
     expect(String(response.body)).not.toContain("localhost")
+  })
+
+  it("keeps Twilio routes under a configured agent-scoped transport path", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))
+    try {
+      const options = {
+        ...baseBridgeOptions(outputDir),
+        basePath: "/voice/agents/slugger/twilio",
+      }
+      const bridge = createTwilioPhoneBridge(options)
+      const incoming = await bridge.handle({
+        method: "POST",
+        path: "/voice/agents/slugger/twilio/incoming",
+        headers: {},
+        body: formBody({ CallSid: "CA123", From: "+15551234567" }),
+      })
+      const oldPath = await bridge.handle({
+        method: "POST",
+        path: "/voice/twilio/incoming",
+        headers: {},
+        body: formBody({ CallSid: "CA123", From: "+15551234567" }),
+      })
+      const recording = await bridge.handle({
+        method: "POST",
+        path: "/voice/agents/slugger/twilio/recording",
+        headers: {},
+        body: formBody({
+          CallSid: "CA111",
+          RecordingSid: "RE222",
+          RecordingUrl: "https://api.twilio.com/Recordings/RE222",
+          From: "+15551234567",
+        }),
+      })
+
+      expect(String(incoming.body)).toContain("action=\"https://voice.example.com/voice/agents/slugger/twilio/recording\"")
+      expect(oldPath.statusCode).toBe(404)
+      expect(String(recording.body)).toContain("<Play>https://voice.example.com/voice/agents/slugger/twilio/audio/CA111/twilio-ca111-re222.mp3</Play>")
+      expect(String(recording.body)).toContain("<Redirect method=\"POST\">https://voice.example.com/voice/agents/slugger/twilio/listen</Redirect>")
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
   })
 
   it("escapes custom inbound call greetings", async () => {
@@ -665,7 +717,12 @@ describe("Twilio phone voice bridge", () => {
   it("uses default host and port for the local HTTP server when omitted", async () => {
     let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
     try {
-      server = await startTwilioPhoneBridgeServer(baseBridgeOptions("/tmp/ouro-twilio-phone"))
+      try {
+        server = await startTwilioPhoneBridgeServer(baseBridgeOptions("/tmp/ouro-twilio-phone"))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") return
+        throw error
+      }
       expect(server.localUrl).toBe("http://127.0.0.1:18910")
 
       const response = await fetch(`${server.localUrl}/voice/twilio/health`)

@@ -12,75 +12,19 @@ function readRequiredAgentName(): string {
 
 const agentName = readRequiredAgentName()
 
-import * as path from "path"
-import { getAgentRoot, loadAgentConfig, type AgentConfig, type AgentProvider } from "../heart/identity"
-import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
-import { refreshProviderCredentialPool } from "../heart/provider-credentials"
-import {
-  readMachineRuntimeCredentialConfig,
-  readRuntimeCredentialConfig,
-  refreshMachineRuntimeCredentialConfig,
-  refreshRuntimeCredentialConfig,
-  waitForRuntimeCredentialBootstrap,
-  type RuntimeCredentialConfig,
-  type RuntimeCredentialConfigReadResult,
-} from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
-import { createElevenLabsTtsClient } from "./voice/elevenlabs"
-import { createWhisperCppTranscriber } from "./voice/whisper"
 import {
-  DEFAULT_TWILIO_PHONE_PORT,
-  DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
-  DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
   TWILIO_PHONE_WEBHOOK_BASE_PATH,
-  startTwilioPhoneBridgeServer,
-} from "./voice/twilio-phone"
+  startConfiguredTwilioPhoneTransport,
+  type TwilioPhoneTransportRuntimeOverrides,
+} from "./voice"
 
 function argValue(name: string): string | undefined {
   const index = process.argv.indexOf(name)
   if (index < 0) return undefined
   const value = process.argv[index + 1]
   return value && !value.startsWith("--") ? value : undefined
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function configString(config: RuntimeCredentialConfig, dottedPath: string): string | undefined {
-  let cursor: unknown = config
-  for (const segment of dottedPath.split(".")) {
-    const record = asRecord(cursor)
-    if (!record) return undefined
-    cursor = record[segment]
-  }
-  return typeof cursor === "string" && cursor.trim() ? cursor.trim() : undefined
-}
-
-function configNumber(config: RuntimeCredentialConfig, dottedPath: string): number | undefined {
-  let cursor: unknown = config
-  for (const segment of dottedPath.split(".")) {
-    const record = asRecord(cursor)
-    if (!record) return undefined
-    cursor = record[segment]
-  }
-  if (typeof cursor === "number" && Number.isFinite(cursor)) return cursor
-  if (typeof cursor === "string" && cursor.trim()) {
-    const parsed = Number(cursor)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-  return undefined
-}
-
-function requireConfig(result: RuntimeCredentialConfigReadResult, label: string): RuntimeCredentialConfig {
-  if (result.ok) return result.config
-  throw new Error(`${label} unavailable: ${result.error}`)
-}
-
-function required(value: string | undefined, guidance: string): string {
-  if (value) return value
-  throw new Error(guidance)
 }
 
 function numberArg(name: string): number | undefined {
@@ -91,32 +35,28 @@ function numberArg(name: string): number | undefined {
   return parsed
 }
 
-function selectedAgentProviders(config: AgentConfig): AgentProvider[] {
-  const providers = new Set<AgentProvider>()
-  providers.add(config.humanFacing.provider)
-  providers.add(config.agentFacing.provider)
-  if (config.provider) providers.add(config.provider)
-  return [...providers]
-}
-
-async function cacheSelectedProviderCredentials(agentName: string): Promise<void> {
-  const providers = selectedAgentProviders(loadAgentConfig())
-  const pool = await refreshProviderCredentialPool(agentName, { providers })
-  if (!pool.ok) {
-    throw new Error(`provider credentials unavailable for phone voice: ${pool.error}`)
-  }
-  const missing = providers.filter((provider) => !pool.pool.providers[provider])
-  if (missing.length > 0) {
-    throw new Error(`missing provider credentials for phone voice: ${missing.join(", ")}`)
+function standaloneOverrides(): TwilioPhoneTransportRuntimeOverrides {
+  return {
+    publicBaseUrl: argValue("--public-url"),
+    basePath: argValue("--base-path"),
+    port: numberArg("--port"),
+    host: argValue("--host"),
+    outputDir: argValue("--output-dir"),
+    defaultFriendId: argValue("--friend"),
+    elevenLabsVoiceId: argValue("--elevenlabs-voice-id"),
+    whisperCliPath: argValue("--whisper-cli-path"),
+    whisperModelPath: argValue("--whisper-model-path"),
+    recordTimeoutSeconds: numberArg("--record-timeout"),
+    recordMaxLengthSeconds: numberArg("--record-max-length"),
   }
 }
 
-function writeReadyInstructions(localUrl: string, publicBaseUrl: string): void {
+function writeReadyInstructions(localUrl: string, publicBaseUrl: string, webhookUrl: string): void {
   process.stdout.write([
     "Twilio phone voice bridge ready.",
     `local: ${localUrl}`,
     `public: ${publicBaseUrl}`,
-    `Twilio Voice webhook: POST ${new URL(`${TWILIO_PHONE_WEBHOOK_BASE_PATH}/incoming`, publicBaseUrl).toString()}`,
+    `Twilio Voice webhook: POST ${webhookUrl}`,
     "",
   ].join("\n"))
 }
@@ -130,82 +70,20 @@ emitNervesEvent({
 })
 
 async function main(): Promise<void> {
-  await waitForRuntimeCredentialBootstrap(agentName)
-  const machine = loadOrCreateMachineIdentity()
-  await Promise.all([
-    refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined),
-    refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined),
-  ])
-  await cacheSelectedProviderCredentials(agentName)
-
-  const runtimeConfig = requireConfig(readRuntimeCredentialConfig(agentName), "portable runtime/config")
-  const machineConfig = requireConfig(readMachineRuntimeCredentialConfig(agentName), "machine runtime config")
-  const port = numberArg("--port")
-    ?? configNumber(machineConfig, "voice.twilioPort")
-    ?? DEFAULT_TWILIO_PHONE_PORT
-  const host = argValue("--host")
-    ?? configString(machineConfig, "voice.twilioHost")
-    ?? "127.0.0.1"
-  const publicBaseUrl = required(
-    argValue("--public-url") ?? configString(machineConfig, "voice.twilioPublicUrl"),
-    `missing public URL; run 'cloudflared tunnel --url http://127.0.0.1:${port}' and restart with --public-url https://<tunnel>`,
-  )
-  const elevenLabsApiKey = required(
-    configString(runtimeConfig, "integrations.elevenLabsApiKey"),
-    "missing integrations.elevenLabsApiKey; run 'ouro connect voice --agent <agent>' for setup guidance",
-  )
-  const elevenLabsVoiceId = required(
-    argValue("--elevenlabs-voice-id")
-      ?? configString(runtimeConfig, "integrations.elevenLabsVoiceId")
-      ?? configString(runtimeConfig, "voice.elevenLabsVoiceId"),
-    "missing integrations.elevenLabsVoiceId; save the ElevenLabs voice ID before starting phone voice",
-  )
-  const whisperCliPath = required(
-    configString(machineConfig, "voice.whisperCliPath"),
-    "missing voice.whisperCliPath in this machine's runtime config",
-  )
-  const whisperModelPath = required(
-    configString(machineConfig, "voice.whisperModelPath"),
-    "missing voice.whisperModelPath in this machine's runtime config",
-  )
-  const outputDir = argValue("--output-dir")
-    ?? configString(machineConfig, "voice.twilioOutputDir")
-    ?? path.join(getAgentRoot(agentName), "state", "voice", "twilio-phone")
-  const defaultFriendId = argValue("--friend")
-    ?? configString(machineConfig, "voice.twilioDefaultFriendId")
-  const twilioAccountSid = configString(runtimeConfig, "voice.twilioAccountSid")
-  const twilioAuthToken = configString(runtimeConfig, "voice.twilioAuthToken")
-  const recordTimeoutSeconds = numberArg("--record-timeout")
-    ?? configNumber(machineConfig, "voice.twilioRecordTimeoutSeconds")
-    ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS
-  const recordMaxLengthSeconds = numberArg("--record-max-length")
-    ?? configNumber(machineConfig, "voice.twilioRecordMaxLengthSeconds")
-    ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS
-
-  const transcriber = createWhisperCppTranscriber({
-    whisperCliPath,
-    modelPath: whisperModelPath,
-  })
-  const tts = createElevenLabsTtsClient({
-    apiKey: elevenLabsApiKey,
-    voiceId: elevenLabsVoiceId,
-    outputFormat: "mp3_44100_128",
-  })
-  const bridge = await startTwilioPhoneBridgeServer({
+  const transport = await startConfiguredTwilioPhoneTransport({
     agentName,
-    publicBaseUrl,
-    outputDir,
-    transcriber,
-    tts,
-    port,
-    host,
-    twilioAccountSid,
-    twilioAuthToken,
-    defaultFriendId,
-    recordTimeoutSeconds,
-    recordMaxLengthSeconds,
+    overrides: standaloneOverrides(),
+    defaultBasePath: TWILIO_PHONE_WEBHOOK_BASE_PATH,
+    requirePublicUrl: true,
   })
-  writeReadyInstructions(bridge.localUrl, publicBaseUrl)
+  if (transport.status !== "started") {
+    throw new Error(`Twilio phone voice transport did not start: ${transport.reason}`)
+  }
+  writeReadyInstructions(
+    transport.bridge.localUrl,
+    transport.settings.publicBaseUrl,
+    transport.settings.webhookUrl,
+  )
 }
 
 main().catch((error) => {

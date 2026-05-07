@@ -5098,6 +5098,7 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
 }
 
 async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<string> {
+  const agentPathSegment = agent.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "agent"
   const message = [
     `Voice foundation for ${agent}`,
     "Configure portable ElevenLabs settings with:",
@@ -5106,15 +5107,16 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
     "Configure this machine's Whisper.cpp attachment with:",
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
-    "Optional Twilio phone testing setup:",
+    "Optional managed Twilio phone transport setup:",
     `  ouro vault config set --agent ${agent} --key voice.twilioAccountSid`,
     `  ouro vault config set --agent ${agent} --key voice.twilioAuthToken`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPublicUrl`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioBasePath --value /voice/agents/${agentPathSegment}/twilio`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPort --value 18910`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value ari`,
-    `  node dist/senses/voice-twilio-entry.js --agent ${agent} --port 18910 --public-url https://<cloudflare-tunnel>`,
-    `Set the Twilio number's Voice webhook to POST https://<cloudflare-tunnel>/voice/twilio/incoming.`,
     "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
+    `The managed Voice entrypoint will listen at POST <public-url>/voice/agents/${agentPathSegment}/twilio/incoming.`,
+    `Standalone local smoke remains available with: node dist/senses/voice-twilio-entry.js --agent ${agent} --port 18910 --public-url https://<cloudflare-tunnel>.`,
     "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Phone testing uses Twilio Record -> Whisper.cpp -> voice session -> ElevenLabs -> Twilio Play.",
   ].join("\n")
   deps.writeStdout(message)

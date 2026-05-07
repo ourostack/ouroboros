@@ -1,6 +1,6 @@
 // Thin entrypoint for `node dist/senses/voice-entry.js --agent <name>`.
-// The voice foundation is library-first for now; this process gives the daemon
-// a real managed worker while live audio capture lands in the next milestone.
+// The voice sense owns shared transcript/session behavior and starts attached
+// voice transports for this machine.
 export {}
 
 const agentArgIndex = process.argv.indexOf("--agent")
@@ -22,26 +22,25 @@ emitNervesEvent({
   meta: { entry: "voice", agentName },
 })
 
-import("../heart/runtime-credentials")
+import("./voice/twilio-phone-runtime")
   .then(async ({
-    readMachineRuntimeCredentialConfig,
-    refreshMachineRuntimeCredentialConfig,
-    refreshRuntimeCredentialConfig,
-    waitForRuntimeCredentialBootstrap,
+    agentScopedTwilioPhoneBasePath,
+    startConfiguredTwilioPhoneTransport,
   }) => {
-    await waitForRuntimeCredentialBootstrap(agentName)
-    const { loadOrCreateMachineIdentity } = await import("../heart/machine-identity")
-    const machine = loadOrCreateMachineIdentity()
-    const machineConfig = readMachineRuntimeCredentialConfig(agentName)
-    if (!machineConfig.ok) {
-      await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
-    }
-    void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+    const twilioPhone = await startConfiguredTwilioPhoneTransport({
+      agentName,
+      defaultBasePath: agentScopedTwilioPhoneBasePath(agentName),
+    })
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_entry_ready",
       message: "Voice entrypoint is ready for managed voice turns",
-      meta: { entry: "voice", agentName, machineId: machine.machineId },
+      meta: {
+        entry: "voice",
+        agentName,
+        twilioPhone: twilioPhone.status,
+        webhookUrl: twilioPhone.status === "started" ? twilioPhone.settings.webhookUrl : undefined,
+      },
     })
     setInterval(() => undefined, 60_000)
   })
