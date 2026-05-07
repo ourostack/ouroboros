@@ -507,6 +507,29 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("detects Voice as ready when the ElevenLabs voice id is stored in voice config", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: {
+        elevenLabsVoiceId: "voice_123",
+        whisperCliPath: "/opt/whisper",
+        whisperModelPath: "/models/ggml-base.bin",
+      },
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: disabled",
+      "- Voice: ready",
+    ])
+  })
+
   it("detects mail from cached vault runtime credentials when local config is stale", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: true } },

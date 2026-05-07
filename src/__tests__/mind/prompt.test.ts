@@ -684,6 +684,46 @@ describe("buildSystem", () => {
     expect(result).toContain("Voice: ready")
   })
 
+  it("marks Voice ready when the ElevenLabs voice id is stored in voice config", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: {
+        elevenLabsVoiceId: "voice_123",
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
+      providers: { minimax: { apiKey: "test-key" } },
+    })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Voice: ready")
+  })
+
   it("uses cached vault runtime credentials for Mail sense status when local config is stale", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

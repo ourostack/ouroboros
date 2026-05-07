@@ -143,8 +143,7 @@ function routeUrl(publicBaseUrl: string, route: string): string {
 }
 
 function requestPublicUrl(publicBaseUrl: string, requestPath: string): string {
-  const normalized = requestPath.startsWith("/") ? requestPath : `/${requestPath}`
-  return routeUrl(publicBaseUrl, normalized)
+  return routeUrl(publicBaseUrl, requestPath)
 }
 
 function recordTwiml(options: {
@@ -209,12 +208,16 @@ function parseRecordingParams(params: Record<string, string>): RecordingCallback
   }
 }
 
-function recordAgainResponse(publicBaseUrl: string, message?: string): TwilioPhoneBridgeResponse {
-  return xmlResponse(`${message ? sayTwiml(message) : ""}${recordTwiml({
+function recordAgainResponse(publicBaseUrl: string, message: string): TwilioPhoneBridgeResponse {
+  return xmlResponse(`${sayTwiml(message)}${recordTwiml({
     publicBaseUrl,
     timeoutSeconds: DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
     maxLengthSeconds: DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   })}`)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 export function computeTwilioSignature(input: TwilioSignatureInput): string {
@@ -373,7 +376,7 @@ async function handleRecording(
         agentName: options.agentName,
         callSid: safeCallSid,
         recordingSid: safeRecordingSid,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       },
     })
     return xmlResponse(`${sayTwiml("I could not process that audio. Please try again.")}${redirectTwiml(options.publicBaseUrl)}`)
@@ -382,18 +385,17 @@ async function handleRecording(
 
 async function handleAudio(options: TwilioPhoneBridgeOptions, requestPath: string): Promise<TwilioPhoneBridgeResponse> {
   const prefix = `${TWILIO_PHONE_WEBHOOK_BASE_PATH}/audio/`
-  const pathOnly = requestPath.split("?")[0] ?? requestPath
-  if (!pathOnly.startsWith(prefix)) return textResponse(404, "not found")
+  const pathOnly = requestPath.split("?")[0]!
   const rest = pathOnly.slice(prefix.length)
   const parts = rest.split("/")
   if (parts.length !== 2) return textResponse(404, "not found")
-  const callSid = decodeSafeSegment(parts[0] ?? "")
-  const fileName = decodeSafeSegment(parts[1] ?? "")
+  const [callSidPart, fileNamePart] = parts as [string, string]
+  const callSid = decodeSafeSegment(callSidPart)
+  const fileName = decodeSafeSegment(fileNamePart)
   if (!callSid || !fileName) return textResponse(404, "not found")
 
   const baseDir = path.resolve(options.outputDir, callSid)
   const audioPath = path.resolve(baseDir, fileName)
-  if (!audioPath.startsWith(`${baseDir}${path.sep}`)) return textResponse(404, "not found")
 
   try {
     const audio = await fs.readFile(audioPath)
@@ -416,7 +418,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
     async handle(request): Promise<TwilioPhoneBridgeResponse> {
       const method = request.method.toUpperCase()
       const requestPath = request.path.startsWith("/") ? request.path : `/${request.path}`
-      const routePath = requestPath.split("?")[0] ?? requestPath
+      const routePath = requestPath.split("?")[0]!
       if (method === "GET" && requestPath.startsWith(`${TWILIO_PHONE_WEBHOOK_BASE_PATH}/audio/`)) {
         return handleAudio(options, requestPath)
       }
@@ -473,8 +475,8 @@ export async function startTwilioPhoneBridgeServer(
     try {
       const body = await readRequestBody(req)
       const response = await bridge.handle({
-        method: req.method ?? "GET",
-        path: req.url ?? "/",
+        method: req.method as string,
+        path: req.url as string,
         headers: req.headers,
         body,
       })
@@ -486,7 +488,7 @@ export async function startTwilioPhoneBridgeServer(
         component: "senses",
         event: "senses.voice_twilio_server_error",
         message: "Twilio voice bridge server failed a request",
-        meta: { agentName: options.agentName, error: error instanceof Error ? error.message : String(error) },
+        meta: { agentName: options.agentName, error: errorMessage(error) },
       })
       res.writeHead(500, { "content-type": "text/plain; charset=utf-8" })
       res.end("internal server error")
@@ -514,8 +516,7 @@ export async function startTwilioPhoneBridgeServer(
     meta: { agentName: options.agentName, host, port, publicBaseUrl: options.publicBaseUrl },
   })
 
-  const address = server.address()
-  const actualPort = typeof address === "object" && address ? address.port : port
+  const actualPort = (server.address() as { port: number }).port
 
   return {
     bridge,
