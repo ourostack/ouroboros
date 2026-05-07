@@ -2191,6 +2191,55 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("blocks internal meta final text when only chat identifier routing is present", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("[surfaced from inner dialog] heartbeat check-in")
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
+
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_meta_blocked",
+        meta: expect.objectContaining({
+          site: "flush",
+          chatGuid: null,
+        }),
+      }),
+    )
+  })
+
+  it("blocks internal meta speak flushes when only chat identifier routing is present", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("<think>private scratch</think>")
+      await callbacks.flushNow()
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
+
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_meta_blocked",
+        meta: expect.objectContaining({
+          site: "flushNow",
+          chatGuid: null,
+        }),
+      }),
+    )
+  })
+
   it("reuses existing session state and allows callback lifecycle hooks to no-op safely", async () => {
     mocks.loadSession.mockReturnValueOnce({
       messages: [{ role: "system", content: "existing prompt" }],
@@ -7859,6 +7908,102 @@ describe("drainAndSendPendingBlueBubbles", () => {
     expect(mocks.sendText).not.toHaveBeenCalled()
     expect(fs.existsSync(filePath)).toBe(false)
   })
+
+  it("drops pending messages whose content carries internal meta markers and deletes the file", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const filePath = writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "[surfaced from inner dialog] this should not be retried",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(result.sent).toBe(0)
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(fs.existsSync(filePath)).toBe(false)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_meta_blocked",
+        meta: expect.objectContaining({ site: "drain" }),
+      }),
+    )
+  })
+
+  it("blocks pending messages with reasoning <think> tags but still sends sibling normal pending messages", async () => {
+    const friend = makeFriend()
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const blockedPath = writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "<think>private reasoning leaked</think>",
+      timestamp: Date.now() - 1000,
+    })
+
+    // Sleep briefly so file ordering by timestamp is stable
+    const allowedPath = writePendingFile("friend-uuid-1", "session", {
+      from: "testagent",
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      content: "hey friend, just checking in",
+      timestamp: Date.now(),
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.drainAndSendPendingBlueBubbles({
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    }, pendingRoot)
+
+    expect(result.skipped).toBe(1)
+    expect(result.sent).toBe(1)
+    expect(fs.existsSync(blockedPath)).toBe(false)
+    expect(fs.existsSync(allowedPath)).toBe(false)
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      text: "hey friend, just checking in",
+    }))
+  })
 })
 
 describe("sendProactiveBlueBubblesMessageToSession", () => {
@@ -8603,6 +8748,81 @@ describe("sendProactiveBlueBubblesMessageToSession", () => {
 
     expect(result).toEqual({ delivered: false, reason: "internal_content_blocked" })
     expect(mocks.sendText).not.toHaveBeenCalled()
+  })
+
+  it("blocks proactive send before friend lookup when text contains internal meta markers", async () => {
+    const friendStoreGet = vi.fn().mockResolvedValue(makeFriend())
+    const friendStore = {
+      get: friendStoreGet,
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "[surfaced from inner dialog] surfaced reflection that should not leak",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: false, reason: "blocked_meta_content" })
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(friendStoreGet).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_meta_blocked",
+        meta: expect.objectContaining({ site: "proactive" }),
+      }),
+    )
+  })
+
+  it("allows proactive send for normal prose mentioning inner-dialog concepts in plain text", async () => {
+    const friendStore = {
+      get: vi.fn().mockResolvedValue(makeFriend()),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      hasAnyFriends: vi.fn(),
+      listAll: vi.fn(),
+    }
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const result = await bluebubbles.sendProactiveBlueBubblesMessageToSession({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;alice@icloud.com",
+      text: "hey, just thinking of you",
+    }, {
+      createClient: () => ({
+        sendText: mocks.sendText,
+        editMessage: mocks.editMessage,
+        setTyping: mocks.setTyping,
+        markChatRead: mocks.markChatRead,
+        checkHealth: mocks.checkHealth,
+        repairEvent: mocks.repairEvent,
+        getMessageText: mocks.getMessageText,
+      }),
+      createFriendStore: () => friendStore as any,
+    })
+
+    expect(result).toEqual({ delivered: true })
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+      text: "hey, just thinking of you",
+    }))
   })
 })
 

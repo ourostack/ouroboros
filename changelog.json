@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.562",
+      "changes": [
+        "BlueBubbles outbound delivery now blocks narrow internal/meta markers such as `[surfaced from inner dialog]`, `[pending from ...]:`, routing-control prompt sections, and `<think>` tags before they can reach iMessage.",
+        "The guard fails closed across surface, proactive BlueBubbles sends, pending-drain retries, normal flush, and speak/flushNow paths so blocked internal text is logged instead of queued for later delivery.",
+        "Regression coverage now keeps ordinary user-facing prose about inner-dialog concepts deliverable while preventing the reported internal surfaced-thought leakage path."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.561",
       "changes": [
         "Voice golden-path orchestration now accepts meeting URLs, checks local BlackHole/Multi-Output readiness, runs Whisper.cpp STT, routes text through ordinary `voice` sessions, streams ElevenLabs TTS, and writes playback-ready audio artifacts.",

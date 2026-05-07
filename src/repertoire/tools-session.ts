@@ -680,6 +680,12 @@ export const sessionToolDefinitions: ToolDefinition[] = [
                 detail: "bluebubbles could not resolve a routable target for that session",
               } as const
             }
+            if (result.reason === "blocked_meta_content") {
+              return {
+                status: "blocked",
+                detail: "blocked: contains internal meta markers",
+              } as const
+            }
             if (result.reason === "send_error") {
               return {
                 status: "failed",

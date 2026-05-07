@@ -19,6 +19,7 @@ import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
+import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
 import {
   BlueBubblesIgnoredEventError,
@@ -179,7 +180,7 @@ export interface ProactiveBlueBubblesSessionSendParams {
 
 export interface ProactiveBlueBubblesSessionSendResult {
   delivered: boolean
-  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked"
+  reason?: "friend_not_found" | "trust_skip" | "missing_target" | "send_error" | "group_blocked" | "internal_content_blocked" | "blocked_meta_content"
 }
 
 const defaultDeps: RuntimeDeps = {
@@ -711,6 +712,17 @@ export function createBlueBubblesCallbacks(
       const trimmed = textBuffer.trim()
       if (!trimmed) return
       textBuffer = ""
+      if (containsInternalMetaMarkers(trimmed)) {
+        emitBluebubblesMetaBlocked({
+          site: "flushNow",
+          message: "bluebubbles speak text blocked: internal meta markers",
+          meta: {
+            chatGuid: chat.chatGuid ?? null,
+            messageLength: trimmed.length,
+          },
+        })
+        return
+      }
       await client.sendText({
         chat,
         text: trimmed,
@@ -745,6 +757,17 @@ export function createBlueBubblesCallbacks(
         typingActive = false
         enqueue("typing_stop", async () => { await client.setTyping(chat, false) })
         await queue
+      }
+      if (containsInternalMetaMarkers(trimmed)) {
+        emitBluebubblesMetaBlocked({
+          site: "flush",
+          message: "bluebubbles outbound text blocked: internal meta markers",
+          meta: {
+            chatGuid: chat.chatGuid ?? null,
+            messageLength: trimmed.length,
+          },
+        })
+        return
       }
       await client.sendText({
         chat,
@@ -2175,6 +2198,18 @@ export async function sendProactiveBlueBubblesMessageToSession(
   params: ProactiveBlueBubblesSessionSendParams,
   deps: Partial<RuntimeDeps> = {},
 ): Promise<ProactiveBlueBubblesSessionSendResult> {
+  if (containsInternalMetaMarkers(params.text)) {
+    emitBluebubblesMetaBlocked({
+      site: "proactive",
+      message: "bluebubbles proactive send blocked: internal meta markers",
+      meta: {
+        friendId: params.friendId,
+        sessionKey: params.sessionKey,
+      },
+    })
+    return { delivered: false, reason: "blocked_meta_content" }
+  }
+
   const resolvedDeps = { ...defaultDeps, ...deps }
   const client = resolvedDeps.createClient()
   const store = resolvedDeps.createFriendStore()
@@ -2392,6 +2427,20 @@ export async function drainAndSendPendingBlueBubbles(
     if (!messageText.trim()) {
       result.skipped++
       try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      continue
+    }
+
+    if (containsInternalMetaMarkers(messageText)) {
+      result.skipped++
+      try { fs.unlinkSync(filePath) } catch { /* ignore */ }
+      emitBluebubblesMetaBlocked({
+        site: "drain",
+        message: "bluebubbles drain blocked: internal meta markers",
+        meta: {
+          friendId,
+          filePath,
+        },
+      })
       continue
     }
 

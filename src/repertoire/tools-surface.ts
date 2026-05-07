@@ -4,6 +4,8 @@ import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
 import { listSessionActivity } from "../heart/session-activity";
+import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
+import { emitNervesEvent } from "../nerves/runtime";
 import * as path from "path";
 import type { AttentionItem } from "../arc/attention-types";
 import type { ToolDefinition } from "./tools-base";
@@ -41,6 +43,22 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
 export const surfaceToolDefinition: ToolDefinition = {
   tool: surfaceToolDef,
   handler: async (args, ctx) => {
+    const rawContent = args.content ?? ""
+    if (containsInternalMetaMarkers(rawContent)) {
+      emitNervesEvent({
+        level: "warn",
+        component: "repertoire",
+        event: "tools.surface_meta_blocked",
+        message: "surface tool blocked: internal meta markers in content",
+        meta: {
+          hasDelegationId: Boolean(args.delegationId),
+          hasFriendId: Boolean(args.friendId),
+          contentLength: rawContent.length,
+        },
+      })
+      return "failed — blocked: contains internal meta markers"
+    }
+
     const queue = ctx?.delegatedOrigins ?? []
     const agentName = (() => { try { return getAgentName() } catch { return "unknown" } })()
 

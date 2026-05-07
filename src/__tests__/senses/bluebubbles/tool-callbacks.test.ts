@@ -293,6 +293,87 @@ describe("BlueBubbles createBlueBubblesCallbacks - flushNow (speak tool)", () =>
     expect(sendText).not.toHaveBeenCalled()
   })
 
+  it("flush() drops accumulated text containing internal meta markers and does NOT call client.sendText", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "g" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+
+    callbacks.onTextChunk("[surfaced from inner dialog] hi friend")
+    await (callbacks as any).flush()
+
+    expect(sendText).not.toHaveBeenCalled()
+
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    const blockedCall = (emitNervesEvent as any).mock.calls.find(
+      (call: any[]) => call[0]?.event === "senses.bluebubbles_meta_blocked",
+    )
+    expect(blockedCall).toBeDefined()
+    expect(blockedCall![0].level).toBe("warn")
+    expect(blockedCall![0].meta).toEqual(expect.objectContaining({ site: "flush" }))
+  })
+
+  it("flush() still delivers normal prose that mentions inner-dialog concepts in plain text", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "g" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+
+    callbacks.onTextChunk("had a thought from my inner dialog about your question")
+    await (callbacks as any).flush()
+
+    expect(sendText).toHaveBeenCalledTimes(1)
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({
+      text: "had a thought from my inner dialog about your question",
+    }))
+  })
+
+  it("flushNow drops speak text containing internal meta markers and does NOT call client.sendText", async () => {
+    const indexModule = await import("../../../senses/bluebubbles")
+    const { createBlueBubblesCallbacks } = indexModule
+    const sendText = vi.fn(async () => ({ messageGuid: "g" }))
+    const setTyping = vi.fn(async () => {})
+    const markChatRead = vi.fn(async () => {})
+    const editMessage = vi.fn(async () => {})
+    const checkHealth = vi.fn(async () => {})
+    const repairEvent = vi.fn(async (e: any) => e)
+    const getMessageText = vi.fn(async () => null)
+    const client = { sendText, editMessage, setTyping, markChatRead, checkHealth, repairEvent, getMessageText }
+    const chat = { chatGuid: "chat-1", participants: [] } as any
+    const replyTarget = { getReplyToMessageGuid: vi.fn(() => "reply-guid"), setSelection: vi.fn(() => "ok") }
+    const callbacks = createBlueBubblesCallbacks(client as any, chat, replyTarget as any, false)
+
+    callbacks.onTextChunk("<think>private speak leak</think>")
+    await (callbacks as any).flushNow()
+
+    expect(sendText).not.toHaveBeenCalled()
+
+    const { emitNervesEvent } = await import("../../../nerves/runtime")
+    const blockedCall = (emitNervesEvent as any).mock.calls.find(
+      (call: any[]) => call[0]?.event === "senses.bluebubbles_meta_blocked" && call[0]?.meta?.site === "flushNow",
+    )
+    expect(blockedCall).toBeDefined()
+    expect(blockedCall![0].level).toBe("warn")
+  })
+
   it("flushNow PROPAGATES rejection when client.sendText rejects (hard delivery failure)", async () => {
     const indexModule = await import("../../../senses/bluebubbles")
     const { createBlueBubblesCallbacks } = indexModule

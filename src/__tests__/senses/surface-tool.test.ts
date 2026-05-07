@@ -345,6 +345,38 @@ describe("surface tool", () => {
       expect(callOrder).toEqual(["advance-inner", "fulfill-heart"])
     })
 
+    it("surfaceToolDefinition handler fails closed when content contains internal meta markers", async () => {
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const { emitNervesEvent } = await import("../../nerves/runtime")
+
+      const result = await surfaceToolDefinition.handler({
+        content: "[surfaced from inner dialog] hi friend",
+        friendId: "ari",
+      }, { delegatedOrigins: [] } as any)
+
+      expect(typeof result).toBe("string")
+      expect((result as string).toLowerCase()).toContain("failed")
+      expect(result).toContain("blocked: contains internal meta markers")
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "warn",
+          event: "tools.surface_meta_blocked",
+        }),
+      )
+    })
+
+    it("surfaceToolDefinition handler also blocks <think> reasoning tag leaks", async () => {
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+
+      const result = await surfaceToolDefinition.handler({
+        content: "<think>private reasoning</think>",
+        friendId: "ari",
+      }, { delegatedOrigins: [] } as any)
+
+      expect((result as string).toLowerCase()).toContain("failed")
+      expect(result).toContain("blocked: contains internal meta markers")
+    })
+
     it("calls fulfillHeartObligation even when queue item has no obligationId", async () => {
       const queue: AttentionItem[] = [
         { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000 },
