@@ -101,7 +101,7 @@ function writeAgentConfig(homeDir: string, agentName: string): void {
     },
     vault: {
       email: `${agentName.toLowerCase()}@ouro.bot`,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     },
   }, null, 2)}\n`, "utf8")
 }
@@ -134,7 +134,7 @@ function installBwExecHarness(): void {
     bwHarness.commands.push(commandRecord)
 
     if (args[0] === "status") {
-      cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+      cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouro.bot" }), "")
       return
     }
 

@@ -5101,7 +5101,7 @@ describe("provider CLI command execution", () => {
       { homeDir },
     )
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
       "unlock-material",
       { homeDir, store: "plaintext-file" },
     )
@@ -5258,14 +5258,14 @@ describe("provider CLI command execution", () => {
 	    }))
 
 	    expect(result).toContain("vault created for Slugger")
-	    expect(result).toContain("vault: slugger@ouro.bot at https://vault.ouroboros.bot")
+	    expect(result).toContain("vault: slugger@ouro.bot at https://vault.ouro.bot")
 	    expect(promptQuestions).toEqual([
 	      "Choose Ouro vault unlock secret for slugger@ouro.bot: ",
 	      "Confirm Ouro vault unlock secret for slugger@ouro.bot: ",
 	    ])
 	    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
-      "https://vault.ouroboros.bot",
+      "https://vault.ouro.bot",
       "slugger@ouro.bot",
       "Chosen-vault-secret1!",
     )
@@ -5304,7 +5304,7 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeAgentVaultLocator(bundlesRoot, "Slugger", {
       email: "slugger@ouro.bot",
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
@@ -5327,7 +5327,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("   ouro vault unlock --agent Slugger")
     expect(prompts).toContain("Choose [1-4]: ")
     expect(mockVaultDeps.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+      { agentName: "Slugger", email: "slugger@ouro.bot", serverUrl: "https://vault.ouro.bot" },
       "saved-unlock-secret",
       { homeDir, store: undefined },
     )
@@ -5340,7 +5340,7 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeAgentVaultLocator(bundlesRoot, "Slugger", {
       email: "slugger@ouro.bot",
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
@@ -5427,7 +5427,7 @@ describe("provider CLI command execution", () => {
 	    ])
 	    expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
-      "https://vault.ouroboros.bot",
+      "https://vault.ouro.bot",
       "slugger@ouro.bot",
       "Chosen-vault-secret1!",
     )
@@ -5452,7 +5452,7 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeAgentVaultLocator(bundlesRoot, "Slugger", {
       email: "slugger@ouro.bot",
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
     writeUnavailableProviderCredentialPool("Slugger", "vault locked")
@@ -5578,7 +5578,7 @@ describe("provider CLI command execution", () => {
 	    ])
     expect(mockVaultDeps.createVaultAccount).toHaveBeenCalledWith(
       "Ouro credential vault",
-      "https://vault.ouroboros.bot",
+      "https://vault.ouro.bot",
       "operator@example.com",
       "Chosen-unlock-material1!",
     )
@@ -6126,7 +6126,7 @@ describe("provider CLI command execution", () => {
 	      promptSecret: async () => "Chosen-recovery-secret1!",
 	    }))
 
-	    expect(recovered).toContain("vault: agent@ouro.bot at https://vault.ouroboros.bot")
+	    expect(recovered).toContain("vault: agent@ouro.bot at https://vault.ouro.bot")
 	    expect(recovered).toContain("local unlock store: macos-keychain")
 	    expect(recovered).not.toContain("explicit plaintext fallback")
 

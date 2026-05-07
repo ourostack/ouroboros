@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.563",
+      "changes": [
+        "The default agent credential vault host now points at the work-substrate Vaultwarden endpoint `https://vault.ouro.bot`.",
+        "Vault config normalization keeps `https://vault.ouroboros.bot` and the underlying Azure Container Apps hostname as legacy unlock-source candidates during the hostname migration.",
+        "Vault config and unlock tests now cover the `vault.ouro.bot` canonical host while preserving side-effect-free fallback lookup for legacy local unlock material."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.562",
       "changes": [
         "BlueBubbles outbound delivery now blocks narrow internal/meta markers such as `[surfaced from inner dialog]`, `[pending from ...]:`, routing-control prompt sections, and `<think>` tags before they can reach iMessage.",

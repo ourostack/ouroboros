@@ -824,7 +824,7 @@ describe("ouro up: interactive repair wiring", () => {
     mocks.readAgentConfigForAgent.mockReturnValue({
       config: {
         humanFacing: { provider: "anthropic" },
-        vault: { email: "test-agent@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+        vault: { email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
       },
     })
     vaultMocks.storeVaultUnlockSecret.mockClear()
@@ -860,7 +860,7 @@ describe("ouro up: interactive repair wiring", () => {
       { homeDir: "/tmp/ouro-home" },
     )
     expect(vaultMocks.storeVaultUnlockSecret).toHaveBeenCalledWith(
-      { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouroboros.bot" },
+      { agentName: "test-agent", email: "test-agent@ouro.bot", serverUrl: "https://vault.ouro.bot" },
       "unlock-material",
       { homeDir: "/tmp/ouro-home", store: undefined },
     )

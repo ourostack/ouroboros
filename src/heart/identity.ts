@@ -92,9 +92,9 @@ export const DEFAULT_AGENT_PHRASES: AgentConfig["phrases"] = {
   followup: ["processing"],
 }
 
-export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouroboros.bot"
+export const DEFAULT_VAULT_SERVER_URL = "https://vault.ouro.bot"
 export const LEGACY_VAULT_SERVER_URL_ALIASES = [
-  "https://vault.ouro.bot",
+  "https://vault.ouroboros.bot",
   "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
 ] as const
 

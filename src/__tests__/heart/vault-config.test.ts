@@ -16,7 +16,7 @@ describe("resolveVaultConfig", () => {
     const result = resolveVaultConfig("ouroboros", undefined)
     expect(result.email).toBe("ouroboros@ouro.bot")
     expect(result.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
-    expect(result.serverUrl).toBe("https://vault.ouroboros.bot")
+    expect(result.serverUrl).toBe("https://vault.ouro.bot")
   })
 
   it("uses email from config when provided", () => {
@@ -30,8 +30,11 @@ describe("resolveVaultConfig", () => {
   })
 
   it("normalizes known legacy vault hosts and trailing slashes to the canonical host", () => {
-    const shortHost = resolveVaultConfig("ouroboros", { email: "x@y.com", serverUrl: "https://vault.ouro.bot/" })
-    expect(shortHost.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
+    const legacyWorkSubstrateHost = resolveVaultConfig("ouroboros", {
+      email: "x@y.com",
+      serverUrl: "https://vault.ouroboros.bot/",
+    })
+    expect(legacyWorkSubstrateHost.serverUrl).toBe(DEFAULT_VAULT_SERVER_URL)
 
     const legacyAzureHost = resolveVaultConfig("ouroboros", {
       email: "x@y.com",
@@ -42,18 +45,18 @@ describe("resolveVaultConfig", () => {
 
   it("normalizes blank vault hosts and keeps raw candidate variants for local unlock lookup", () => {
     expect(normalizeVaultServerUrl("   ")).toBe(DEFAULT_VAULT_SERVER_URL)
-    expect(getVaultServerUrlCandidates(" https://vault.ouroboros.bot/ ")).toEqual([
+    expect(getVaultServerUrlCandidates(" https://vault.ouro.bot/ ")).toEqual([
       DEFAULT_VAULT_SERVER_URL,
-      "https://vault.ouroboros.bot/",
-      "https://vault.ouro.bot",
+      "https://vault.ouro.bot/",
+      "https://vault.ouroboros.bot",
       "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
     ])
   })
 
   it("does not duplicate legacy aliases when the incoming vault host is already one of them", () => {
-    expect(getVaultServerUrlCandidates("https://vault.ouro.bot")).toEqual([
+    expect(getVaultServerUrlCandidates("https://vault.ouroboros.bot")).toEqual([
       DEFAULT_VAULT_SERVER_URL,
-      "https://vault.ouro.bot",
+      "https://vault.ouroboros.bot",
       "https://ouro-vault.gentleflower-74452a1e.eastus2.azurecontainerapps.io",
     ])
   })

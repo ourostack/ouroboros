@@ -241,13 +241,13 @@ describe("vault unlock local stores", () => {
   it("records canonical unlock self-heal only after validation callers invoke it", () => {
     emitTestEvent("vault unlock self-heal event")
 
-    noteVaultUnlockSelfHeal(config, "macos-keychain", "https://vault.ouro.bot")
+    noteVaultUnlockSelfHeal(config, "macos-keychain", "https://vault.ouroboros.bot")
 
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "repertoire.vault_unlock_self_healed",
       meta: expect.objectContaining({
         store: "macos-keychain",
-        sourceServerUrl: "https://vault.ouro.bot",
+        sourceServerUrl: "https://vault.ouroboros.bot",
         targetServerUrl: "https://vault.example.com",
       }),
     }))
@@ -412,10 +412,10 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock macos alias fallback")
     const canonicalConfig = {
       ...config,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     }
-    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
-    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const primaryAccount = "https://vault.ouro.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouroboros.bot:operator@example.com"
     const spawn = vi.fn((command: string, args: readonly string[]) => {
       expect(command).toBe("security")
       if (args[0] === "find-generic-password") {
@@ -428,7 +428,7 @@ describe("vault unlock local stores", () => {
 
     const loaded = readVaultUnlockSecret(canonicalConfig, { platform: "darwin", spawnSync: spawn as VaultUnlockDeps["spawnSync"] })
     expect(loaded.secret).toBe("legacy-unlock-material")
-    expect(loaded.source).toMatchObject({ serverUrl: "https://vault.ouro.bot" })
+    expect(loaded.source).toMatchObject({ serverUrl: "https://vault.ouroboros.bot" })
 
     const lookupAccounts = spawn.mock.calls
       .filter((call: unknown[]) => Array.isArray(call[1]) && (call[1] as string[])[0] === "find-generic-password")
@@ -441,10 +441,10 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock macos clear rejected")
     const canonicalConfig = {
       ...config,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     }
-    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
-    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const primaryAccount = "https://vault.ouro.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouroboros.bot:operator@example.com"
     const deleted: string[] = []
     const spawn = vi.fn((command: string, args: readonly string[]) => {
       expect(command).toBe("security")
@@ -541,10 +541,10 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock macos alias side-effect free")
     const canonicalConfig = {
       ...config,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     }
-    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
-    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const primaryAccount = "https://vault.ouro.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouroboros.bot:operator@example.com"
     const spawn = vi.fn((command: string, args: readonly string[]) => {
       expect(command).toBe("security")
       if (args[0] === "find-generic-password") {
@@ -613,10 +613,10 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock linux alias fallback")
     const canonicalConfig = {
       ...config,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     }
-    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
-    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const primaryAccount = "https://vault.ouro.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouroboros.bot:operator@example.com"
     const spawn = vi.fn((command: string, args: readonly string[], options: { input?: string } = {}) => {
       expect(command).toBe("secret-tool")
       if (args[0] === "--version") return ok("secret-tool 1.0\n")
@@ -630,7 +630,7 @@ describe("vault unlock local stores", () => {
 
     const loaded = readVaultUnlockSecret(canonicalConfig, { platform: "linux", spawnSync: spawn as VaultUnlockDeps["spawnSync"] })
     expect(loaded.secret).toBe("legacy-unlock-material")
-    expect(loaded.source).toMatchObject({ serverUrl: "https://vault.ouro.bot" })
+    expect(loaded.source).toMatchObject({ serverUrl: "https://vault.ouroboros.bot" })
     expect(spawn).not.toHaveBeenCalledWith("secret-tool", expect.arrayContaining(["store"]), expect.anything())
   })
 
@@ -638,10 +638,10 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock linux clear rejected")
     const canonicalConfig = {
       ...config,
-      serverUrl: "https://vault.ouroboros.bot",
+      serverUrl: "https://vault.ouro.bot",
     }
-    const primaryAccount = "https://vault.ouroboros.bot:operator@example.com"
-    const legacyAccount = "https://vault.ouro.bot:operator@example.com"
+    const primaryAccount = "https://vault.ouro.bot:operator@example.com"
+    const legacyAccount = "https://vault.ouroboros.bot:operator@example.com"
     const cleared: string[] = []
     const spawn = vi.fn((command: string, args: readonly string[]) => {
       expect(command).toBe("secret-tool")
@@ -773,7 +773,7 @@ describe("vault unlock local stores", () => {
   it("reuses legacy Windows DPAPI files without rewriting before validation", () => {
     emitTestEvent("vault unlock windows dpapi alias fallback")
     const homeDir = tempHome()
-    const legacyServerUrl = "https://vault.ouro.bot"
+    const legacyServerUrl = "https://vault.ouroboros.bot"
     const legacyPath = legacyWindowsDpapiPath(homeDir, legacyServerUrl, config.email)
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
     fs.writeFileSync(legacyPath, "legacy-ciphertext\n", "utf8")
@@ -786,25 +786,25 @@ describe("vault unlock local stores", () => {
     })
     const deps: VaultUnlockDeps = { platform: "win32", homeDir, spawnSync: spawn as VaultUnlockDeps["spawnSync"] }
 
-    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouro.bot" }, deps).secret).toBe("legacy-unlock-material")
 
-    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
     expect(fs.existsSync(canonicalStore.location)).toBe(false)
   })
 
   it("clears rejected Windows DPAPI unlock files", () => {
     emitTestEvent("vault unlock windows dpapi clear rejected")
     const homeDir = tempHome()
-    const legacyServerUrl = "https://vault.ouro.bot"
+    const legacyServerUrl = "https://vault.ouroboros.bot"
     const legacyPath = legacyWindowsDpapiPath(homeDir, legacyServerUrl, config.email)
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
     fs.writeFileSync(legacyPath, "legacy-ciphertext\n", "utf8")
 
     const deps: VaultUnlockDeps = { platform: "win32", homeDir }
 
-    clearVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    clearVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
 
-    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
     expect(fs.existsSync(canonicalStore.location)).toBe(false)
     expect(fs.existsSync(legacyPath)).toBe(false)
   })
@@ -880,15 +880,15 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock plaintext alias fallback")
     const homeDir = tempHome()
     const deps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
-    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouro.bot", config.email)
+    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouroboros.bot", config.email)
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true, mode: 0o700 })
     fs.writeFileSync(legacyPath, "legacy-unlock-material", { encoding: "utf8", mode: 0o600 })
     fs.chmodSync(path.dirname(legacyPath), 0o700)
     fs.chmodSync(legacyPath, 0o600)
 
-    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps).secret).toBe("legacy-unlock-material")
+    expect(readVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouro.bot" }, deps).secret).toBe("legacy-unlock-material")
 
-    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
     expect(fs.existsSync(canonicalStore.location)).toBe(false)
   })
 
@@ -896,16 +896,16 @@ describe("vault unlock local stores", () => {
     emitTestEvent("vault unlock plaintext clear rejected")
     const homeDir = tempHome()
     const deps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
-    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouro.bot", config.email)
+    const legacyPath = legacyPlaintextPath(homeDir, "https://vault.ouroboros.bot", config.email)
     const legacyDir = path.dirname(legacyPath)
     fs.mkdirSync(legacyDir, { recursive: true, mode: 0o700 })
     fs.writeFileSync(legacyPath, "legacy-unlock-material", { encoding: "utf8", mode: 0o600 })
     fs.chmodSync(legacyDir, 0o700)
     fs.chmodSync(legacyPath, 0o600)
 
-    clearVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    clearVaultUnlockSecret({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
 
-    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouroboros.bot" }, deps)
+    const canonicalStore = resolveVaultUnlockStore({ ...config, serverUrl: "https://vault.ouro.bot" }, deps)
     expect(fs.existsSync(canonicalStore.location)).toBe(false)
     expect(fs.existsSync(legacyPath)).toBe(false)
   })

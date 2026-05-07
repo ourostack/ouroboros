@@ -51,7 +51,7 @@ describe("BitwardenCredentialStore", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    store = new BitwardenCredentialStore("https://vault.ouroboros.bot", "ouroboros@ouro.bot", "masterpass123")
+    store = new BitwardenCredentialStore("https://vault.ouro.bot", "ouroboros@ouro.bot", "masterpass123")
   })
 
   describe("isReady", () => {
@@ -78,7 +78,7 @@ describe("BitwardenCredentialStore", () => {
       // First call: bw status
       expect(calls[0]).toEqual(["status"])
       // Second call: bw config server <url>
-      expect(calls[1]).toEqual(["config", "server", "https://vault.ouroboros.bot"])
+      expect(calls[1]).toEqual(["config", "server", "https://vault.ouro.bot"])
       // Third call: bw login
       expect(calls[2][0]).toBe("login")
       expect(calls[2][1]).toBe("ouroboros@ouro.bot")
@@ -149,7 +149,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
         } else if (args[0] === "unlock") {
           cb(null, "unlocked-session-token", "")
         } else {
@@ -174,7 +174,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unauthenticated", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "unauthenticated", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "login") {
@@ -199,7 +199,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, cb: Function) => {
         calls.push({ args, env: opts?.env ?? {} })
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -233,14 +233,14 @@ describe("BitwardenCredentialStore", () => {
     it("surfaces a wrong saved vault unlock secret clearly", async () => {
       const onInvalidUnlockSecret = vi.fn()
       store = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { onInvalidUnlockSecret },
       )
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -265,7 +265,7 @@ describe("BitwardenCredentialStore", () => {
     it("runs a post-login hook after a successful login", async () => {
       const onLoginSuccess = vi.fn()
       store = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { onLoginSuccess },
@@ -297,7 +297,7 @@ describe("BitwardenCredentialStore", () => {
 
     it("keeps the original login error when invalid-unlock cleanup fails", async () => {
       store = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         {
@@ -308,7 +308,7 @@ describe("BitwardenCredentialStore", () => {
       )
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -333,7 +333,7 @@ describe("BitwardenCredentialStore", () => {
 
     it("reports non-Error invalid-unlock cleanup failures", async () => {
       store = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         {
@@ -344,7 +344,7 @@ describe("BitwardenCredentialStore", () => {
       )
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock" || args[0] === "login") {
@@ -365,7 +365,7 @@ describe("BitwardenCredentialStore", () => {
       const calls: string[][] = []
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-stale-profile-"))
       const isolatedStore = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { appDataDir },
@@ -375,7 +375,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({
             status: "locked",
-            serverUrl: "https://vault.ouroboros.bot",
+            serverUrl: "https://vault.ouro.bot",
             userEmail: "someone-else@ouro.bot",
           }), "")
           return
@@ -459,7 +459,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({
             status: "locked",
-            serverUrl: "https://vault.ouroboros.bot",
+            serverUrl: "https://vault.ouro.bot",
             userEmail: "someone-else@ouro.bot",
           }), "")
           return
@@ -496,7 +496,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({
             status: "locked",
-            serverUrl: "https://vault.ouroboros.bot",
+            serverUrl: "https://vault.ouro.bot",
             userEmail: "someone-else@ouro.bot",
           }), "")
           return
@@ -527,7 +527,7 @@ describe("BitwardenCredentialStore", () => {
         event: "repertoire.bw_local_profile_logout_failed",
         meta: expect.objectContaining({
           email: "ouroboros@ouro.bot",
-          serverUrl: "https://vault.ouroboros.bot",
+          serverUrl: "https://vault.ouro.bot",
           error: "bw CLI error: profile cleanup failed",
         }),
       }))
@@ -540,7 +540,7 @@ describe("BitwardenCredentialStore", () => {
         if (args[0] === "status") {
           cb(null, JSON.stringify({
             status: "locked",
-            serverUrl: "https://vault.ouroboros.bot",
+            serverUrl: "https://vault.ouro.bot",
             userEmail: "ouroboros@ouro.bot",
           }), "")
           return
@@ -655,14 +655,14 @@ describe("BitwardenCredentialStore", () => {
       await store.login()
 
       expect(calls[0]).toEqual(["status"])
-      expect(calls[1]).toEqual(["config", "server", "https://vault.ouroboros.bot"])
+      expect(calls[1]).toEqual(["config", "server", "https://vault.ouro.bot"])
       expect(calls[2]).toEqual(["login", "ouroboros@ouro.bot", "--raw", "--passwordenv", "OURO_BW_MASTER_PASSWORD"])
     })
 
     it("uses an isolated Bitwarden app data directory when configured", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-appdata-"))
       const envCaptures: Array<Record<string, string | undefined>> = []
-      const isolatedStore = new BitwardenCredentialStore("https://vault.ouroboros.bot", "ouroboros@ouro.bot", "masterpass123", { appDataDir })
+      const isolatedStore = new BitwardenCredentialStore("https://vault.ouro.bot", "ouroboros@ouro.bot", "masterpass123", { appDataDir })
       mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, cb: Function) => {
         envCaptures.push(opts?.env ?? {})
         if (args[0] === "status") {
@@ -690,7 +690,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -756,7 +756,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -788,7 +788,7 @@ describe("BitwardenCredentialStore", () => {
       fs.utimesSync(cachePath, now, now)
 
       const isolatedStore = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { appDataDir },
@@ -798,7 +798,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -832,7 +832,7 @@ describe("BitwardenCredentialStore", () => {
       fs.utimesSync(dataPath, fresh, fresh)
 
       const isolatedStore = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { appDataDir },
@@ -842,7 +842,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -872,7 +872,7 @@ describe("BitwardenCredentialStore", () => {
       fs.utimesSync(cachePath, stale, stale)
 
       const isolatedStore = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { appDataDir },
@@ -882,7 +882,7 @@ describe("BitwardenCredentialStore", () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         calls.push(args)
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "unlocked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -1031,7 +1031,7 @@ describe("BitwardenCredentialStore", () => {
       const calls: string[][] = []
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-structured-search-"))
       const isolatedStore = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot",
+        "https://vault.ouro.bot",
         "ouroboros@ouro.bot",
         "masterpass123",
         { appDataDir },
@@ -2844,7 +2844,7 @@ describe("BitwardenCredentialStore", () => {
       let unlockCallCount = 0
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
-          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouroboros.bot" }), "")
+          cb(null, JSON.stringify({ status: "locked", serverUrl: "https://vault.ouro.bot" }), "")
           return
         }
         if (args[0] === "unlock") {
@@ -3147,10 +3147,10 @@ describe("BitwardenCredentialStore", () => {
     it("serializes concurrent execBw calls for the same appDataDir", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-same-"))
       const storeA = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
       const storeB = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       // Track the order in which "list items" commands START executing
@@ -3214,10 +3214,10 @@ describe("BitwardenCredentialStore", () => {
       const appDataDirA = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-a-"))
       const appDataDirB = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-b-"))
       const storeA = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirA },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirA },
       )
       const storeB = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirB },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir: appDataDirB },
       )
 
       const executionOrder: string[] = []
@@ -3271,7 +3271,7 @@ describe("BitwardenCredentialStore", () => {
     it("releases the lock after execBw completes successfully", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-release-"))
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -3302,7 +3302,7 @@ describe("BitwardenCredentialStore", () => {
     it("releases the lock after execBw fails with an error", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-error-"))
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       let listCallCount = 0
@@ -3343,7 +3343,7 @@ describe("BitwardenCredentialStore", () => {
     it("releases the lock when the bw process is killed (timeout)", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-timeout-"))
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       let listCallCount = 0
@@ -3389,7 +3389,7 @@ describe("BitwardenCredentialStore", () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-stale-"))
       const lockPath = path.join(appDataDir, ".ouro-bw.lock")
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       // Write a lock file with a definitely-dead PID
@@ -3425,7 +3425,7 @@ describe("BitwardenCredentialStore", () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-poll-"))
       const lockPath = path.join(appDataDir, ".ouro-bw.lock")
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       // Write a lock file with the CURRENT process PID (alive)
@@ -3462,7 +3462,7 @@ describe("BitwardenCredentialStore", () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-garbage-"))
       const lockPath = path.join(appDataDir, ".ouro-bw.lock")
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       // Write a lock file with garbage content -- parseInt returns NaN,
@@ -3499,7 +3499,7 @@ describe("BitwardenCredentialStore", () => {
     it("propagates non-EEXIST errors from openSync", async () => {
       const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-eacces-"))
       const storeInstance = new BitwardenCredentialStore(
-        "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
       )
 
       // Make the appDataDir read-only so openSync fails with EACCES (not EEXIST)
@@ -3536,7 +3536,7 @@ describe("BitwardenCredentialStore", () => {
         const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-timeout-live-"))
         const lockPath = path.join(appDataDir, ".ouro-bw.lock")
         const storeInstance = new BitwardenCredentialStore(
-          "https://vault.ouroboros.bot", "o@ouro.bot", "pass", { appDataDir },
+          "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
         )
 
         // Write a lock file with the CURRENT process PID (alive)
