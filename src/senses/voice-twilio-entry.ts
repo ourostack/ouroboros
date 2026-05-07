@@ -13,9 +13,10 @@ function readRequiredAgentName(): string {
 const agentName = readRequiredAgentName()
 
 import * as path from "path"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, loadAgentConfig, type AgentConfig, type AgentProvider } from "../heart/identity"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { configureDaemonRuntimeLogger } from "../heart/daemon/runtime-logging"
+import { refreshProviderCredentialPool } from "../heart/provider-credentials"
 import {
   readMachineRuntimeCredentialConfig,
   readRuntimeCredentialConfig,
@@ -90,6 +91,26 @@ function numberArg(name: string): number | undefined {
   return parsed
 }
 
+function selectedAgentProviders(config: AgentConfig): AgentProvider[] {
+  const providers = new Set<AgentProvider>()
+  providers.add(config.humanFacing.provider)
+  providers.add(config.agentFacing.provider)
+  if (config.provider) providers.add(config.provider)
+  return [...providers]
+}
+
+async function cacheSelectedProviderCredentials(agentName: string): Promise<void> {
+  const providers = selectedAgentProviders(loadAgentConfig())
+  const pool = await refreshProviderCredentialPool(agentName, { providers })
+  if (!pool.ok) {
+    throw new Error(`provider credentials unavailable for phone voice: ${pool.error}`)
+  }
+  const missing = providers.filter((provider) => !pool.pool.providers[provider])
+  if (missing.length > 0) {
+    throw new Error(`missing provider credentials for phone voice: ${missing.join(", ")}`)
+  }
+}
+
 function writeReadyInstructions(localUrl: string, publicBaseUrl: string): void {
   process.stdout.write([
     "Twilio phone voice bridge ready.",
@@ -115,6 +136,7 @@ async function main(): Promise<void> {
     refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined),
     refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined),
   ])
+  await cacheSelectedProviderCredentials(agentName)
 
   const runtimeConfig = requireConfig(readRuntimeCredentialConfig(agentName), "portable runtime/config")
   const machineConfig = requireConfig(readMachineRuntimeCredentialConfig(agentName), "machine runtime config")
