@@ -245,12 +245,6 @@ let _agentConfigOverride: AgentConfig | null = null
  */
 export function getAgentName(): string {
   if (_cachedAgentName) {
-    emitNervesEvent({
-      event: "identity.resolve",
-      component: "config/identity",
-      message: "resolved agent name from cache",
-      meta: { source: "cache" },
-    })
     return _cachedAgentName
   }
 

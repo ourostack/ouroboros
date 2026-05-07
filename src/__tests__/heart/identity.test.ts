@@ -11,8 +11,13 @@ vi.mock("../../heart/migrate-config", () => ({
   migrateAgentConfigV1ToV2: vi.fn(),
 }))
 
+vi.mock("../../nerves/runtime", () => ({
+  emitNervesEvent: vi.fn(),
+}))
+
 import * as fs from "fs"
 import { migrateAgentConfigV1ToV2 } from "../../heart/migrate-config"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 let savedArgv: string[]
 let savedWebsiteSiteName: string | undefined
@@ -22,6 +27,7 @@ beforeEach(() => {
   savedWebsiteSiteName = process.env.WEBSITE_SITE_NAME
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
+  vi.mocked(emitNervesEvent).mockReset()
 })
 
 afterEach(() => {
@@ -60,6 +66,26 @@ describe("getAgentName", () => {
 
     process.argv = ["node", "cli-entry.js", "--agent", "other"]
     expect(getAgentName()).toBe("ouroboros")
+  })
+
+  it("logs argv resolution once and leaves cache hits quiet", async () => {
+    process.argv = ["node", "cli-entry.js", "--agent", "ouroboros"]
+    const { getAgentName, resetIdentity } = await import("../../heart/identity")
+    resetIdentity()
+
+    expect(getAgentName()).toBe("ouroboros")
+    expect(getAgentName()).toBe("ouroboros")
+
+    const identityResolveEvents = vi
+      .mocked(emitNervesEvent)
+      .mock.calls.filter(([event]) => event.event === "identity.resolve")
+    expect(identityResolveEvents).toHaveLength(1)
+    expect(identityResolveEvents[0]?.[0]).toMatchObject({
+      component: "config/identity",
+      event: "identity.resolve",
+      message: "resolved agent name from argv",
+      meta: { source: "argv" },
+    })
   })
 })
 
