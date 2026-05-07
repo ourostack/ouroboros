@@ -211,6 +211,7 @@ function readSenseStatusLines(): string[] {
     teams: configuredSenses.teams ?? { enabled: false },
     bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
     mail: configuredSenses.mail ?? { enabled: false },
+    voice: configuredSenses.voice ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const agentName = getAgentName()
@@ -221,12 +222,15 @@ function readSenseStatusLines(): string[] {
   const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
   const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
   const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
+  const voice = recordOrUndefined(machinePayload.voice) ?? recordOrUndefined(payload.voice)
+  const integrations = recordOrUndefined(runtimePayload.integrations) ?? recordOrUndefined(payload.integrations)
   const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
     mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
+    voice: hasTextField(integrations, "elevenLabsApiKey") && hasTextField(voice, "whisperCliPath") && hasTextField(voice, "whisperModelPath"),
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -242,6 +246,10 @@ function readSenseStatusLines(): string[] {
     {
       label: "Mail",
       status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
+    },
+    {
+      label: "Voice",
+      status: !senses.voice.enabled ? "disabled" : configured.voice ? "ready" : "needs_config",
     },
   ]
 

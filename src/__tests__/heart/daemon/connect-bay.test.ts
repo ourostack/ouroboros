@@ -48,7 +48,7 @@ function providerVisibility(lanes: ProviderVisibilityLane[]): AgentProviderVisib
   }
 }
 
-function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "embeddings" | "teams" | "bluebubbles", Partial<ConnectMenuEntry>>> = {}): ConnectMenuEntry[] {
+function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "voice", Partial<ConnectMenuEntry>>> = {}): ConnectMenuEntry[] {
   return [
     {
       option: "1",
@@ -92,6 +92,14 @@ function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "e
       status: "not attached",
       description: "Local Mac Messages bridge.",
       ...overrides.bluebubbles,
+    },
+    {
+      option: "7",
+      name: "Voice",
+      section: "This machine",
+      status: "not attached",
+      description: "Conversational audio via local STT and TTS playback.",
+      ...overrides.voice,
     },
   ]
 }
@@ -278,11 +286,12 @@ describe("connect bay", () => {
       embeddings: { status: "ready" },
       teams: { status: "ready" },
       bluebubbles: { status: "attached" },
+      voice: { status: "attached" },
     }), {
       agent: "Slugger",
       isTTY: true,
       columns: 72,
-      prompt: "Choose [1-6] or type a name: ",
+      prompt: "Choose [1-7] or type a name: ",
     })
 
     expect(output).toContain("Everything here is already connected.")

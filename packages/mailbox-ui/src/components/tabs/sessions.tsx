@@ -30,6 +30,7 @@ function channelLabel(channel: string): string {
   if (channel === "teams") return "Teams"
   if (channel === "cli") return "CLI"
   if (channel === "mail") return "Mail"
+  if (channel === "voice") return "Voice"
   return channel
 }
 

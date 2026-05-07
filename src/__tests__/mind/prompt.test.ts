@@ -643,6 +643,7 @@ describe("buildSystem", () => {
         teams: { enabled: true },
         bluebubbles: { enabled: false },
         mail: { enabled: true },
+        voice: { enabled: true },
       },
       phrases: {
         thinking: ["working"],
@@ -665,6 +666,8 @@ describe("buildSystem", () => {
     patchRuntimeConfig({
       teams: { clientId: "cid", clientSecret: "secret", tenantId: "tenant" },
       mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: { whisperCliPath: "/opt/whisper.cpp/main", whisperModelPath: "/models/ggml-base.en.bin" },
       providers: { minimax: { apiKey: "test-key" } },
     })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
@@ -678,6 +681,7 @@ describe("buildSystem", () => {
     expect(result).toContain("Teams: ready")
     expect(result).toContain("BlueBubbles: disabled")
     expect(result).toContain("Mail: ready")
+    expect(result).toContain("Voice: ready")
   })
 
   it("uses cached vault runtime credentials for Mail sense status when local config is stale", async () => {
@@ -716,6 +720,38 @@ describe("buildSystem", () => {
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("Mail: ready")
+  })
+
+  it("marks the Voice sense as needs_config when enabled without STT/TTS config", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: true },
+      },
+      phrases: {
+        thinking: ["working"],
+        tool: ["running tool"],
+        followup: ["processing"],
+      },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("Voice: needs_config")
   })
 
   it("uses cached machine runtime credentials for BlueBubbles sense status when local config is stale", async () => {

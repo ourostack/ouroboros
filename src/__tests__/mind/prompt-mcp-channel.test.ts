@@ -153,4 +153,17 @@ describe("runtimeInfoSection mcp channel", () => {
     expect(result).not.toContain("Microsoft Teams")
     expect(result).not.toContain("iMessage")
   })
+
+  it("voice channel includes conversational transcript guidance", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("voice")
+    expect(result).toContain("voice session")
+    expect(result).toContain("interrupt-friendly")
+    expect(result).toContain("text transcript")
+  })
 })

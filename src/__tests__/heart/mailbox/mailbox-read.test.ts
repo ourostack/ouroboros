@@ -182,6 +182,83 @@ describe("mailbox direct reads", () => {
       messages: [],
       state: { lastFriendActivityAt: "2026-03-29T11:59:00.000Z" },
     })
+    writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "voice", "riverside.json"), {
+      version: 2,
+      events: [
+        {
+          id: "evt-voice-000001",
+          sequence: 1,
+          role: "user",
+          content: "can you hear me?",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-03-29T11:58:00.000Z",
+            authoredAtSource: "local",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-03-29T11:58:00.000Z",
+            recordedAtSource: "local",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: {
+            captureKind: "live",
+            legacyVersion: null,
+            sourceMessageIndex: null,
+          },
+        },
+        {
+          id: "evt-voice-000002",
+          sequence: 2,
+          role: "assistant",
+          content: "yes, loud and clear.",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: "2026-03-29T11:58:30.000Z",
+            authoredAtSource: "local",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-03-29T11:58:30.000Z",
+            recordedAtSource: "local",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: {
+            captureKind: "live",
+            legacyVersion: null,
+            sourceMessageIndex: null,
+          },
+        },
+      ],
+      projection: {
+        eventIds: ["evt-voice-000001", "evt-voice-000002"],
+        trimmed: false,
+        maxTokens: 80000,
+        contextMargin: 20,
+        inputTokens: null,
+        projectedAt: "2026-03-29T11:58:30.000Z",
+      },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-03-29T11:58:30.000Z" },
+    })
     writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
     writeJson(path.join(alphaRoot, "state", "sessions", "self", "inner", "dialog.json"), {
       version: 1,
@@ -235,7 +312,12 @@ describe("mailbox direct reads", () => {
     fs.mkdirSync(path.join(betaRoot, "state", "coding"), { recursive: true })
     fs.writeFileSync(path.join(betaRoot, "state", "coding", "sessions.json"), "{not-json", "utf-8")
 
-    const { readMailboxMachineState, readMailboxAgentState } = await import("../../../heart/mailbox/mailbox-read")
+    const {
+      readMailboxMachineState,
+      readMailboxAgentState,
+      readSessionInventory,
+      readSessionTranscript,
+    } = await import("../../../heart/mailbox/mailbox-read")
 
     const machine = readMailboxMachineState({
       bundlesRoot,
@@ -277,11 +359,38 @@ describe("mailbox direct reads", () => {
       "cross-session-followup",
     ])
     expect(alpha.obligations.items.map((item) => item.id)).toEqual(["ob-1", "ob-0"])
-    expect(alpha.sessions.liveCount).toBe(1)
+    expect(alpha.sessions.liveCount).toBe(2)
     expect(alpha.sessions.items[0]).toMatchObject({
       friendId: "friend-1",
       friendName: "Ari",
       channel: "cli",
+    })
+    expect(alpha.sessions.items[1]).toMatchObject({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "voice",
+      key: "riverside",
+    })
+
+    const sessionInventory = readSessionInventory("alpha", {
+      bundlesRoot,
+      now: () => new Date("2026-03-29T12:00:00.000Z"),
+    })
+    expect(sessionInventory.items.find((item) => item.channel === "voice")).toMatchObject({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "voice",
+      key: "riverside",
+      latestUserExcerpt: "can you hear me?",
+      latestAssistantExcerpt: "yes, loud and clear.",
+    })
+    const voiceTranscript = readSessionTranscript("alpha", "friend-1", "voice", "riverside", { bundlesRoot })
+    expect(voiceTranscript).toMatchObject({
+      friendId: "friend-1",
+      friendName: "Ari",
+      channel: "voice",
+      key: "riverside",
+      messageCount: 2,
     })
     expect(alpha.inner).toMatchObject({
       visibility: "summary",

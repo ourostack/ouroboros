@@ -23,6 +23,7 @@ Current first-class senses:
 - `teams`
 - `bluebubbles`
 - `mail`
+- `voice`
 
 (MCP is a bridge for developer tools — a separate channel, not a sense. See `src/heart/mcp/` for the implementation.)
 
@@ -47,7 +48,7 @@ The shared harness lives in `src/`:
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), Voice (in senses/voice/), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -95,7 +96,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, and BlueBubbles turns, and `inner` for inner dialogue.
+- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for inner dialogue.
 - Legacy `humanFacing`/`agentFacing` provider fields are read only as compatibility aliases for `outward`/`inner`; they are not a second config surface.
 - Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
@@ -104,6 +105,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 - Human TTY commands share one CLI surface family: bare `ouro` opens the home deck, `ouro up` uses the boot checklist, `ouro connect`/`ouro auth verify`/`ouro repair` agree on provider and vault truth, and `ouro help`/`ouro whoami`/`ouro versions`/`ouro hatch` render through the same Ouro-branded wizard/guide language instead of raw transcript walls. Orientation commands such as root `ouro connect` may use shorter live probes, while startup and verification commands own durable readiness updates.
 - Human-facing CLI commands that can wait on browser auth, vault IO, daemon startup, daemon restart, provider checks, or connector setup use a shared progress checklist. If a cursor may blink for more than a few seconds, the command should print or animate the current step instead of going quiet.
 - CLI commands that mutate bundle config, such as vault setup or `ouro connect bluebubbles`, run bundle sync after the change when `sync.enabled` is true and report a compact `bundle sync:` line.
+- Voice is transcript-first: voice sessions use the ordinary `state/sessions/<friend>/voice/<key>.json` session path and appear in Ouro Mailbox as text transcripts. ElevenLabs API credentials live in portable `runtime/config` at `integrations.elevenLabsApiKey`; Whisper.cpp CLI/model paths live in the machine runtime item at `voice.whisperCliPath` and `voice.whisperModelPath`.
 - The daemon discovers bundles dynamically from `~/AgentBundles`.
 - `ouro status` reports version, last-updated time, discovered agents, senses, and workers.
 - `bundle-meta.json` tracks the runtime version that last touched a bundle.
@@ -191,6 +193,7 @@ ouro connect perplexity --agent <name>
 ouro connect embeddings --agent <name>
 ouro connect teams --agent <name>
 ouro connect bluebubbles --agent <name>
+ouro connect voice --agent <name>
 ouro auth --agent <name>
 ouro auth --agent <name> --provider <provider>
 ouro auth verify --agent <name> [--provider <provider>]

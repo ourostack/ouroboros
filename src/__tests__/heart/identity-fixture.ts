@@ -46,6 +46,7 @@ export const FULL_AGENT_JSON = {
     teams: { enabled: false },
     bluebubbles: { enabled: true },
     mail: { enabled: false },
+    voice: { enabled: false },
   },
   mcpServers: {
     "test-server": {

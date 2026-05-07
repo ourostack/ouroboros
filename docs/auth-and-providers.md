@@ -13,8 +13,8 @@ The mental model is simple: an agent needs a password manager in the same way a 
 | Agent identity, phrases, senses, context, vault coordinates | `~/AgentBundles/<agent>.ouro/agent.json` | Vault coordinates are not secrets. |
 | Provider/model selection | `~/AgentBundles/<agent>.ouro/agent.json` | Two lanes: `outward` and `inner`. Legacy `humanFacing`/`agentFacing` fields are compatibility aliases only. There is no silent fallback between lanes. |
 | Provider credentials | The agent's Bitwarden/Vaultwarden vault item `providers/<provider>` | One vault per agent. No shared machine credential pool. |
-| Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, and similar credentials that should travel with the agent. |
-| Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
+| Portable runtime/integration credentials | The agent's Bitwarden/Vaultwarden vault item `runtime/config` | Teams, OAuth connection names, Perplexity, embeddings, ElevenLabs TTS, and similar credentials that should travel with the agent. |
+| Local sense attachments on this machine | The agent's Bitwarden/Vaultwarden vault item `runtime/machines/<machine-id>/config` | BlueBubbles server URL/password/listener config, Whisper.cpp CLI/model paths, and other local-only attachments. Missing local attachments are `not_attached`, not broken. |
 | Travel/tool credentials | Ordinary items in the agent's Bitwarden/Vaultwarden vault | Examples: `duffel.com`, `stripe.com`, or other service domains. |
 | Vault unlock material on this machine | Local unlock store | Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service. Plaintext fallback is allowed only by explicit human choice. |
 | Hot runtime | Process memory | Loaded from vault at defined refresh points, never fetched from the remote vault per request. |
@@ -27,7 +27,7 @@ Do not introduce a second credential source of truth. Raw credentials belong in 
 
 Every agent has two provider lanes in `agent.json`:
 
-- `outward`: CLI, Teams, BlueBubbles, and other human-facing senses.
+- `outward`: CLI, Teams, BlueBubbles, Mail, Voice, and other human-facing senses.
 - `inner`: inner dialogue and agent-facing model calls.
 
 Both lanes must be complete on each machine:
@@ -73,6 +73,7 @@ ouro connect perplexity --agent <agent>
 ouro connect embeddings --agent <agent>
 ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ```
 
 `ouro connect` opens the connect bay as a shared wizard: one recommended next step, separate sections for providers, portable capabilities, and machine-local attachments, and a prompt that lets the human choose by number or name instead of remembering subcommands first. Every time the root connect bay opens, Ouro uses the shared provider credential read and live ping machinery, but with an orientation policy: one live attempt, a short hard timeout, and no provider-lane mutation. That keeps the menu truthful without spending the full startup retry budget before the human can choose a setup task. `ouro up`, `ouro check`, `ouro auth verify`, and chat startup still own full provider retry behavior. Portable capabilities with saved keys, such as Perplexity search and memory embeddings, are live-checked there too. Before the menu appears, Ouro prints a short `checking current connections` progress step while it verifies providers and reads portable and machine-local runtime settings. If a provider is slow, that step says which provider/model is being checked and then routes the quick failure into the menu as `needs attention` instead of leaving the terminal looking dead.
@@ -91,6 +92,8 @@ When a human runs bare `ouro` in a TTY, Ouro opens the same command family from 
 
 `ouro connect bluebubbles` attaches this machine to BlueBubbles. It prompts for the local server URL, app password, webhook listener settings, stores them in `runtime/machines/<machine-id>/config`, and enables `senses.bluebubbles.enabled` in `agent.json`. If Ouro is already running, the connector recycles the daemon once so the local listener starts with the freshly saved machine attachment; if Ouro is not running, the next `ouro up` loads it. It does not make that local Mac Messages bridge portable to every machine.
 
+`ouro connect voice` describes the current voice foundation and the required config fields. ElevenLabs TTS uses `integrations.elevenLabsApiKey` in portable `runtime/config`. Whisper.cpp STT uses this machine's `voice.whisperCliPath` and `voice.whisperModelPath` in `runtime/machines/<machine-id>/config`. Enabling `senses.voice.enabled` gives the agent first-class `voice` sessions; those sessions are transcript-first and appear in Ouro Mailbox as text. Meeting-link joining, browser control, and system audio routing are a separate follow-up milestone.
+
 When a CLI auth/connect/vault repair command mutates the bundle, such as writing vault coordinates or enabling BlueBubbles in `agent.json`, Ouro runs the existing bundle sync path if `sync.enabled` is true. A successful command stays successful even if the bundle push fails, but the output includes a compact `bundle sync` line so the human and agent know whether the bundle change reached the remote.
 
 Low-level runtime fields can still be stored directly:
@@ -99,6 +102,9 @@ Low-level runtime fields can still be stored directly:
 ouro vault config set --agent <agent> --key teams.clientSecret
 ouro vault config set --agent <agent> --key integrations.perplexityApiKey
 ouro vault config set --agent <agent> --key bluebubbles.password --scope machine
+ouro vault config set --agent <agent> --key integrations.elevenLabsApiKey
+ouro vault config set --agent <agent> --key voice.whisperCliPath --scope machine
+ouro vault config set --agent <agent> --key voice.whisperModelPath --scope machine
 ```
 
 The values are written into the selected vault item and are not printed back. Prefer `ouro connect` for guided setup when it exists; use `vault config set` for fields that do not have a guided connector yet.
@@ -431,9 +437,10 @@ Use this checklist for any existing agent that predates the vault-backed credent
    ouro connect embeddings --agent <agent>
    ouro connect teams --agent <agent>
    ouro connect bluebubbles --agent <agent>
+   ouro connect voice --agent <agent>
    ```
 
-   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles is a local attachment; run `ouro connect bluebubbles` separately on each machine that should bridge iMessage.
+   Use `ouro connect` when a guided connector exists. Use `vault config set` only for fields that do not have a guided connector yet. BlueBubbles and Voice are local attachments; run their connectors separately on each machine that should bridge iMessage or local audio.
 
 7. Choose this machine's provider/model lanes.
 
@@ -478,6 +485,7 @@ ouro connect perplexity --agent <agent>
 ouro connect embeddings --agent <agent>
 ouro connect teams --agent <agent>
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ouro auth --agent <agent> --provider <provider>
 ouro auth verify --agent <agent> [--provider <provider>]
 ouro repair --agent <agent>

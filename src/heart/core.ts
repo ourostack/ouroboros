@@ -360,7 +360,7 @@ export type RunAgentOutcome =
  *  where mid-turn delivery is meaningful. Inner dialog has `ponder`. MCP returns
  *  synchronously. Mail is batch. Anything else (unknown channel) treats as non-chat. */
 export function isChatStyleChannel(channel: string): boolean {
-  return channel === "cli" || channel === "teams" || channel === "bluebubbles";
+  return channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice";
 }
 
 // Sole-call tools must be the only tool call in a turn. When they appear

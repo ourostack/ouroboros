@@ -11,6 +11,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "teams", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "bluebubbles", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 
@@ -28,6 +29,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "teams", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "bluebubbles", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 
@@ -43,6 +45,7 @@ describe("sense truth model", () => {
       {
         teams: { configured: false },
         bluebubbles: { configured: false },
+        voice: { configured: false },
       },
     )
 
@@ -51,6 +54,27 @@ describe("sense truth model", () => {
     )
     expect(inventory.find((item) => item.sense === "bluebubbles")).toEqual(
       expect.objectContaining({ enabled: true, daemonManaged: true, status: "needs_config" satisfies SenseStatus }),
+    )
+    expect(inventory.find((item) => item.sense === "voice")).toEqual(
+      expect.objectContaining({ enabled: false, daemonManaged: true, status: "disabled" satisfies SenseStatus }),
+    )
+  })
+
+  it("reports voice as a daemon-managed local sense once enabled", () => {
+    const inventory = getSenseInventory(
+      {
+        senses: {
+          cli: { enabled: true },
+          voice: { enabled: true },
+        },
+      },
+      {
+        voice: { configured: true, runtime: "running" },
+      },
+    )
+
+    expect(inventory.find((item) => item.sense === "voice")).toEqual(
+      expect.objectContaining({ enabled: true, daemonManaged: true, status: "running" satisfies SenseStatus }),
     )
   })
 

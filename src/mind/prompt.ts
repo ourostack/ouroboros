@@ -334,6 +334,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   teams: "teams handler",
   bluebubbles: "bluebubbles handler",
   mail: "mail handler",
+  voice: "voice handler",
   mcp: "mcp bridge",
 }
 
@@ -404,6 +405,14 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     lines.push(
       "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before settle.",
     );
+  } else if (channel === "mail") {
+    lines.push(
+      "i am responding from an agent mail session. i keep the response clear, auditable, and grounded in visible mail facts.",
+    )
+  } else if (channel === "voice") {
+    lines.push(
+      "i am responding in a voice session. i keep turns conversational, concise, and interrupt-friendly. the overview shows the text transcript as the durable record.",
+    )
   } else {
     lines.push(
       "i am responding in Microsoft Teams. i keep responses concise. i use markdown formatting. i do not introduce myself on boot.",
@@ -433,6 +442,7 @@ function localSenseStatusLines(): string[] {
     teams: configuredSenses.teams ?? { enabled: false },
     bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
     mail: configuredSenses.mail ?? { enabled: false },
+    voice: configuredSenses.voice ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
@@ -442,12 +452,15 @@ function localSenseStatusLines(): string[] {
   const teams = recordOrUndefined(runtimePayload.teams) ?? recordOrUndefined(payload.teams)
   const bluebubbles = recordOrUndefined(machinePayload.bluebubbles) ?? recordOrUndefined(payload.bluebubbles)
   const mailroom = recordOrUndefined(runtimePayload.mailroom) ?? recordOrUndefined(payload.mailroom)
+  const voice = recordOrUndefined(machinePayload.voice) ?? recordOrUndefined(payload.voice)
+  const integrations = recordOrUndefined(runtimePayload.integrations) ?? recordOrUndefined(payload.integrations)
   const privateKeys = mailroom?.privateKeys
   const configured: Record<SenseName, boolean> = {
     cli: true,
     teams: hasTextField(teams, "clientId") && hasTextField(teams, "clientSecret") && hasTextField(teams, "tenantId"),
     bluebubbles: hasTextField(bluebubbles, "serverUrl") && hasTextField(bluebubbles, "password"),
     mail: hasTextField(mailroom, "mailboxAddress") && !!privateKeys && typeof privateKeys === "object" && !Array.isArray(privateKeys),
+    voice: hasTextField(integrations, "elevenLabsApiKey") && hasTextField(voice, "whisperCliPath") && hasTextField(voice, "whisperModelPath"),
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -463,6 +476,10 @@ function localSenseStatusLines(): string[] {
     {
       label: "Mail",
       status: !senses.mail.enabled ? "disabled" : configured.mail ? "ready" : "needs_config",
+    },
+    {
+      label: "Voice",
+      status: !senses.voice.enabled ? "disabled" : configured.voice ? "ready" : "needs_config",
     },
   ]
 
@@ -502,6 +519,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation, but they are evidence inside those paths, not additional paths. If asked to name golden paths, do not include diagnostic commands, tool names, or status checks in the answer.")
   lines.push("mail diagnostic naming: `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
   lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
+  lines.push("voice setup truth: voice sessions are transcript-first local sessions. ElevenLabs credentials belong in portable runtime/config at `integrations.elevenLabsApiKey`; Whisper.cpp CLI/model paths belong in the machine runtime item under `voice.whisperCliPath` and `voice.whisperModelPath`. Meeting-link joining and browser/system audio routing are a later milestone, not current setup truth.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }

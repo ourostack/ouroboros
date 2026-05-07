@@ -105,6 +105,7 @@ function defaultSenses(): AgentSensesConfig {
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
     mail: { ...DEFAULT_AGENT_SENSES.mail },
+    voice: { ...DEFAULT_AGENT_SENSES.voice },
   }
 }
 
@@ -133,7 +134,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles", "mail"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -186,6 +187,7 @@ function senseFactsFromRuntimeConfig(
     teams: { configured: false, detail: "not enabled in agent.json" },
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
     mail: { configured: false, detail: "not enabled in agent.json" },
+    voice: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -196,6 +198,8 @@ function senseFactsFromRuntimeConfig(
   const bluebubbles = machinePayload.bluebubbles as Record<string, unknown> | undefined
   const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
   const mailroom = payload.mailroom as Record<string, unknown> | undefined
+  const integrations = payload.integrations as Record<string, unknown> | undefined
+  const voice = machinePayload.voice as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -255,6 +259,27 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
+  if (senses.voice.enabled) {
+    const missing: string[] = []
+    if (!textField(integrations, "elevenLabsApiKey")) missing.push("integrations.elevenLabsApiKey")
+    if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
+    if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
+
+    base.voice = missing.length === 0
+      ? { configured: true, detail: "local Whisper.cpp STT + ElevenLabs TTS" }
+      : {
+          configured: false,
+          optional: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing",
+          detail: !machineRuntimeConfig.ok && machineRuntimeConfig.reason === "missing"
+            ? "not attached on this machine"
+            : runtimeConfig.ok && machineRuntimeConfig.ok
+              ? `missing ${missing.join("/")}`
+              : !runtimeConfig.ok
+                ? unavailableDetail
+                : runtimeConfigUnavailableDetail(agent, machineRuntimeConfig),
+        }
+  }
+
   return base
 }
 
@@ -264,6 +289,9 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   }
   if (sense === "mail") {
     return `Agent-runnable: provision Mailroom access with 'ouro connect mail --agent ${agent}', then restart with 'ouro up'.`
+  }
+  if (sense === "voice") {
+    return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -276,7 +304,7 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice") return null
   return { agent, sense }
 }
 
@@ -288,6 +316,7 @@ function runtimeInfoFor(status: string): SenseRuntimeInfo {
 function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
   if (sense === "teams") return "senses/teams-entry.js"
   if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
+  if (sense === "voice") return "senses/voice-entry.js"
   return "senses/mail-entry.js"
 }
 
@@ -299,8 +328,8 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   providerCredentialRecords?: ProviderCredentialRecord[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
-  const machineId = sense === "bluebubbles" ? currentMachineId() : undefined
-  const machine = sense === "bluebubbles" ? readMachineRuntimeCredentialConfig(agent) : null
+  const machineId = sense === "bluebubbles" || sense === "voice" ? currentMachineId() : undefined
+  const machine = sense === "bluebubbles" || sense === "voice" ? readMachineRuntimeCredentialConfig(agent) : null
   const providerPool = readProviderCredentialPool(agent)
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
@@ -503,7 +532,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles", "mail"] as Exclude<SenseName, "cli">[])
+      return (["teams", "bluebubbles", "mail", "voice"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
@@ -567,7 +596,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
     try {
       const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-      const machineRefreshed = parsed.sense === "bluebubbles"
+      const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice"
         ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
         : readMachineRuntimeCredentialConfig(parsed.agent)
       const context = this.contexts.get(parsed.agent)
@@ -689,6 +718,11 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         mail: {
           configured: context.facts.mail.configured,
           ...(runtime.get(agent)?.mail ?? {}),
+        },
+        voice: {
+          configured: context.facts.voice.configured,
+          optional: context.facts.voice.optional,
+          ...(runtime.get(agent)?.voice ?? {}),
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

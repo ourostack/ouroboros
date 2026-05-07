@@ -36,7 +36,7 @@ The important design goal is one coherent runtime truth:
    - `ouro chat`
    - `ouro msg`
    - `ouro poke`
-   - daemon-managed senses like Teams and BlueBubbles
+   - daemon-managed senses like Teams, BlueBubbles, Mail, and Voice
    - MCP bridge (dev tools like Claude Code and Codex)
    - lifecycle hooks (SessionStart, Stop, PostToolUse)
 
@@ -114,6 +114,7 @@ Current senses (`SenseName` in `src/heart/identity.ts`):
 - `teams`
 - `bluebubbles`
 - `mail`
+- `voice`
 
 Sense status model:
 
@@ -125,7 +126,7 @@ Sense status model:
 - `running`
 - `error`
 
-The daemon manages daemon-hosted senses (teams, bluebubbles, mail) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted.
+The daemon manages daemon-hosted senses (teams, bluebubbles, mail, voice) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted. Voice is local-machine attached: transcript sessions are normal `voice` channel sessions, ElevenLabs TTS credentials are portable runtime config, and Whisper.cpp paths are machine runtime config.
 
 MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex). It's described below for completeness but lives at `src/heart/mcp/`, not under `src/senses/`. Tool calls coming through MCP route into the same agent runtime as senses do, but MCP is a transport, not a managed input channel.
 
@@ -172,7 +173,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
 - `src/repertoire/`
   Tool registry (split into category modules: tools-files, tools-shell, tools-notes, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Voice (in senses/voice/), MCP bridge, activity transport, trust gating, inner-dialog worker logic, and contextual heartbeat.
 - `src/nerves/`
   Structured runtime events, log rotation, and deterministic audit coverage.
 

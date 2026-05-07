@@ -18,7 +18,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles" | "mail"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -31,6 +31,7 @@ export interface AgentSensesConfig {
   teams: AgentSenseConfig
   bluebubbles: AgentSenseConfig
   mail: AgentSenseConfig
+  voice: AgentSenseConfig
 }
 
 export interface McpServerConfig {
@@ -156,6 +157,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   teams: { enabled: false },
   bluebubbles: { enabled: false },
   mail: { enabled: false },
+  voice: { enabled: false },
 }
 
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
@@ -164,6 +166,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     teams: { ...DEFAULT_AGENT_SENSES.teams },
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
     mail: { ...DEFAULT_AGENT_SENSES.mail },
+    voice: { ...DEFAULT_AGENT_SENSES.voice },
   }
 
   if (value === undefined) {
@@ -181,7 +184,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -226,6 +229,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       teams: { ...DEFAULT_AGENT_SENSES.teams },
       bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
       mail: { ...DEFAULT_AGENT_SENSES.mail },
+      voice: { ...DEFAULT_AGENT_SENSES.voice },
     },
     phrases: {
       thinking: [...DEFAULT_AGENT_PHRASES.thinking],

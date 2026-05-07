@@ -22,7 +22,7 @@ export function isIdentityProvider(value: unknown): value is IdentityProvider {
 
 // -- Channel --
 // Closed union: which sense/channel a session belongs to
-export type Channel = "cli" | "teams" | "bluebubbles" | "mail" | "inner" | "mcp"
+export type Channel = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "inner" | "mcp"
 
 // -- Integration --
 // Closed union: which external service an action targets

@@ -60,6 +60,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ agent: "slugger", sense: "teams", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ agent: "slugger", sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
     ])
 
     await manager.startAutoStartSenses()
@@ -204,6 +205,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "teams", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
       expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
       expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
+      expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -341,7 +343,188 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "teams", status: "error", detail: ":5000" }),
       expect.objectContaining({ sense: "bluebubbles", status: "running", detail: ":18888 /hooks/bb" }),
       expect.objectContaining({ sense: "mail", status: "ready", detail: "slugger@ouro.bot" }),
+      expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
     ])
+  })
+
+  it("reports voice as running when ElevenLabs and local Whisper.cpp settings are configured", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      integrations: {
+        elevenLabsApiKey: "eleven-key",
+      },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:voice", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toEqual([
+      expect.objectContaining({ sense: "cli", status: "interactive", detail: "local interactive terminal" }),
+      expect.objectContaining({ sense: "teams", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "voice", status: "running", detail: "local Whisper.cpp STT + ElevenLabs TTS" }),
+    ])
+  })
+
+  it("reports voice setup gaps from portable and machine runtime config separately", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      integrations: {
+        elevenLabsApiKey: "eleven-key",
+      },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "voice")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "missing voice.whisperModelPath",
+      }),
+    )
+  })
+
+  it("reports voice portable runtime trouble after the local Whisper.cpp attachment exists", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "voice")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "missing vault runtime/config (slugger)",
+      }),
+    )
+  })
+
+  it("reports voice machine runtime trouble after the portable ElevenLabs credential exists", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => ({
+        ok: true,
+        itemPath: "vault:slugger:runtime/config",
+        revision: "runtime_voice",
+        updatedAt: "2026-05-07T08:00:00.000Z",
+        config: {
+          integrations: {
+            elevenLabsApiKey: "eleven-key",
+          },
+        },
+      }),
+      readMachineRuntimeCredentialConfig: () => ({
+        ok: false,
+        reason: "unavailable",
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        error: "machine runtime config is malformed",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [],
+      },
+    })
+
+    expect(manager.listSenseRows().find((row) => row.sense === "voice")).toEqual(
+      expect.objectContaining({
+        status: "needs_config",
+        detail: "vault runtime/machines/machine_test/config unavailable (machine runtime config is malformed)",
+      }),
+    )
   })
 
   it("surfaces upstream BlueBubbles runtime failures even when the listener process is still running", async () => {
@@ -408,6 +591,11 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "voice",
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
@@ -481,6 +669,11 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({
+        sense: "voice",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -546,6 +739,11 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "voice",
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
@@ -616,6 +814,11 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "voice",
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
@@ -827,6 +1030,11 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({
+        sense: "voice",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -897,6 +1105,11 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({
+        sense: "voice",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -962,6 +1175,11 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "voice",
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
@@ -1034,6 +1252,11 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({
+        sense: "voice",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
     ])
   })
 
@@ -1101,6 +1324,11 @@ describe("daemon sense manager", () => {
       }),
       expect.objectContaining({
         sense: "mail",
+        status: "disabled",
+        detail: "not enabled in agent.json",
+      }),
+      expect.objectContaining({
+        sense: "voice",
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
@@ -1285,6 +1513,7 @@ describe("daemon sense manager", () => {
         teams: { enabled: true },
         bluebubbles: { enabled: true },
         mail: { enabled: true },
+        voice: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -1300,11 +1529,18 @@ describe("daemon sense manager", () => {
           mail_slugger_primary: "secret",
         },
       },
+      integrations: {
+        elevenLabsApiKey: "eleven-key",
+      },
     }
     let machineRuntimeConfig: Record<string, unknown> | null = {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
+      },
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+        whisperModelPath: "/models/ggml-base.en.bin",
       },
     }
 
@@ -1390,6 +1626,7 @@ describe("daemon sense manager", () => {
     await expect(options.configCheck("missing:teams")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:teams")).resolves.toEqual({ ok: true })
     await expect(options.configCheck("slugger:mail")).resolves.toEqual({ ok: true })
+    await expect(options.configCheck("slugger:voice")).resolves.toEqual({ ok: true })
 
     runtimeConfig = {
     }
@@ -1437,6 +1674,21 @@ describe("daemon sense manager", () => {
       skip: true,
       error: "bluebubbles is enabled for slugger but runtime credentials are not ready: missing bluebubbles.password",
       fix: "Run 'ouro connect bluebubbles --agent slugger' to attach BlueBubbles on this machine; then run 'ouro up' again.",
+    })
+    runtimeConfig = {
+      integrations: {},
+    }
+    machineRuntimeConfig = {
+      voice: {
+        whisperCliPath: "/opt/whisper.cpp/main",
+      },
+    }
+    const incompleteVoice = await options.configCheck("slugger:voice")
+    expect(incompleteVoice).toEqual({
+      ok: false,
+      skip: true,
+      error: "voice is enabled for slugger but runtime credentials are not ready: missing integrations.elevenLabsApiKey/voice.whisperModelPath",
+      fix: "Agent-runnable: run 'ouro connect voice --agent slugger' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.",
     })
     await vi.waitFor(() => {
       expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", expect.any(String), { preserveCachedOnFailure: true })
@@ -1992,12 +2244,14 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
+      expect.objectContaining({ sense: "voice", status: "disabled" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
+      expect.objectContaining({ sense: "voice", status: "disabled" }),
     ])
   })
 
@@ -2221,6 +2475,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "teams", status: "disabled" }),
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
+      expect.objectContaining({ sense: "voice", status: "disabled" }),
     ])
   })
 })

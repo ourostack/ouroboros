@@ -10,7 +10,7 @@ vi.mock("../../nerves/runtime", () => ({
 const mockGetAgentRoot = vi.fn().mockReturnValue("/mock/agent-root")
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({
-  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false } },
+  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false } },
 })
 
 vi.mock("../../heart/identity", () => ({
@@ -487,12 +487,14 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
       bluebubbles: { serverUrl: "http://bb", password: "pass" },
       mailroom: { mailboxAddress: "slugger@ouro.bot", privateKeys: { mail_slugger_primary: "secret" } },
+      integrations: { elevenLabsApiKey: "eleven-key" },
+      voice: { whisperCliPath: "/opt/whisper", whisperModelPath: "/models/ggml-base.bin" },
     })
 
     const ctx = await buildTurnContext(makeInput())
@@ -501,6 +503,7 @@ describe("buildTurnContext", () => {
       "- Teams: ready",
       "- BlueBubbles: ready",
       "- Mail: ready",
+      "- Voice: ready",
     ])
   })
 
@@ -528,6 +531,7 @@ describe("buildTurnContext", () => {
       "- Teams: disabled",
       "- BlueBubbles: disabled",
       "- Mail: ready",
+      "- Voice: disabled",
     ])
   })
 
@@ -555,12 +559,13 @@ describe("buildTurnContext", () => {
       "- Teams: disabled",
       "- BlueBubbles: ready",
       "- Mail: disabled",
+      "- Voice: disabled",
     ])
   })
 
   it("detects needs_config when senses enabled but runtime config is incomplete", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({ teams: {}, bluebubbles: {} })
 
@@ -570,6 +575,7 @@ describe("buildTurnContext", () => {
       "- Teams: needs_config",
       "- BlueBubbles: not_attached",
       "- Mail: needs_config",
+      "- Voice: needs_config",
     ])
   })
 
@@ -582,6 +588,7 @@ describe("buildTurnContext", () => {
       "- Teams: disabled",
       "- BlueBubbles: disabled",
       "- Mail: disabled",
+      "- Voice: disabled",
     ])
   })
 

@@ -33,6 +33,7 @@ export default defineConfig({
         "src/**/*.tsx",
         "src/senses/cli/**",
         "src/senses/*-entry.ts",
+        "src/senses/voice/index.ts",
         "src/reflection/*-entry.ts",
         "src/repertoire/coding/types.ts",
         "src/mind/friends/store.ts",

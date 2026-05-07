@@ -56,6 +56,15 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
     supportsRichCards: false,
     maxMessageLength: Infinity,
   },
+  voice: {
+    channel: "voice",
+    senseType: "local",
+    availableIntegrations: [],
+    supportsMarkdown: false,
+    supportsStreaming: true,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  },
   inner: {
     channel: "inner",
     senseType: "internal",

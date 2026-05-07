@@ -140,11 +140,11 @@ function transcriptMessage(sequence: number, role: "user" | "assistant", content
   }
 }
 
-function transcriptPayload(messages: MailboxTranscriptMessage[]) {
+function transcriptPayload(messages: MailboxTranscriptMessage[], channel = "bluebubbles") {
   return {
     friendId: "ari",
     friendName: "Ari",
-    channel: "bluebubbles",
+    channel,
     key: "main",
     sessionPath: "/tmp/session.json",
     messageCount: messages.length,
@@ -305,6 +305,61 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("renders voice sessions as text transcripts", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/sessions")) {
+        return jsonResponse({
+          totalCount: 1,
+          activeCount: 1,
+          staleCount: 0,
+          items: [{
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "voice",
+            key: "riverside",
+            sessionPath: "/tmp/session.json",
+            lastActivityAt: "2026-04-09T17:00:00.000Z",
+            activitySource: "event-timeline",
+            replyState: "monitoring",
+            messageCount: 2,
+            lastUsage: null,
+            continuity: null,
+            latestUserExcerpt: "can you hear me?",
+            latestAssistantExcerpt: "yes, loud and clear.",
+            latestToolCallNames: [],
+            estimatedTokens: 12,
+          }],
+        })
+      }
+      if (url.endsWith("/sessions/ari/voice/riverside")) {
+        return jsonResponse(transcriptPayload([
+          transcriptMessage(1, "user", "can you hear me?"),
+          transcriptMessage(2, "assistant", "yes, loud and clear."),
+        ], "voice"))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus="ari/voice/riverside"
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={0}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.container.textContent).toContain("Voice")
+    expect(ui.container.textContent).toContain("can you hear me?")
+    expect(ui.container.textContent).toContain("yes, loud and clear.")
   })
 
   it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {

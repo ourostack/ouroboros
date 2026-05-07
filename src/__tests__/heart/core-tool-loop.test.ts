@@ -142,11 +142,12 @@ describe("runAgent tool loop guard", () => {
     await setupMinimax()
   })
 
-  it("isChatStyleChannel returns true for cli/teams/bluebubbles, false otherwise", async () => {
+  it("isChatStyleChannel returns true for live conversational channels, false otherwise", async () => {
     const { isChatStyleChannel } = await import("../../heart/core")
     expect(isChatStyleChannel("cli")).toBe(true)
     expect(isChatStyleChannel("teams")).toBe(true)
     expect(isChatStyleChannel("bluebubbles")).toBe(true)
+    expect(isChatStyleChannel("voice")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
     expect(isChatStyleChannel("mcp")).toBe(false)
     expect(isChatStyleChannel("mail")).toBe(false)

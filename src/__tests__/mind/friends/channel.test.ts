@@ -34,6 +34,16 @@ describe("getChannelCapabilities", () => {
     expect(caps.maxMessageLength).toBe(Infinity)
   })
 
+  it("returns Voice capabilities with conversational local defaults", () => {
+    const caps = getChannelCapabilities("voice")
+    expect(caps.channel).toBe("voice")
+    expect(caps.availableIntegrations).toEqual([])
+    expect(caps.supportsMarkdown).toBe(false)
+    expect(caps.supportsStreaming).toBe(true)
+    expect(caps.supportsRichCards).toBe(false)
+    expect(caps.maxMessageLength).toBe(Infinity)
+  })
+
   it("returns minimal default capabilities for unknown channel", () => {
     const caps = getChannelCapabilities("slack" as any)
     expect(caps.channel).toBe("cli") // falls back to CLI-like defaults
@@ -62,7 +72,7 @@ describe("getChannelCapabilities", () => {
   })
 
   it("all capability fields are present and correctly typed", () => {
-    for (const channel of ["cli", "teams", "bluebubbles"] as const) {
+    for (const channel of ["cli", "teams", "bluebubbles", "voice"] as const) {
       const caps = getChannelCapabilities(channel)
       expect(typeof caps.channel).toBe("string")
       expect(Array.isArray(caps.availableIntegrations)).toBe(true)
@@ -112,8 +122,13 @@ describe("getChannelCapabilities", () => {
       expect(caps.senseType).toBe("internal")
     })
 
+    it("voice has senseType 'local'", () => {
+      const caps = getChannelCapabilities("voice")
+      expect(caps.senseType).toBe("local")
+    })
+
     it("all channels have a senseType defined", () => {
-      for (const channel of ["cli", "teams", "bluebubbles", "inner"] as const) {
+      for (const channel of ["cli", "teams", "bluebubbles", "voice", "inner"] as const) {
         const caps = getChannelCapabilities(channel)
         expect(caps.senseType).toBeDefined()
         expect(["open", "closed", "local", "internal"]).toContain(caps.senseType)
@@ -133,6 +148,10 @@ describe("channelToFacing", () => {
 
   it("maps bluebubbles to human", () => {
     expect(channelToFacing("bluebubbles")).toBe("human")
+  })
+
+  it("maps voice to human", () => {
+    expect(channelToFacing("voice")).toBe("human")
   })
 
   it("maps inner to agent", () => {

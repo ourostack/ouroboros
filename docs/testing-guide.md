@@ -116,7 +116,7 @@ Expected:
 - use `ouro use --agent <agent> --lane <outward|inner> --provider <provider> --model <model>` to switch a lane after credentials exist and the provider/model check passes
 - use `ouro provider refresh --agent <agent>` to refresh the daemon's in-memory provider credential cache from the vault
 - use `ouro vault config status --agent <agent> --scope all` to inspect portable and machine-local runtime credential fields without printing values
-- use `ouro connect --agent <agent>` for the guided connect bay, or jump directly to `ouro connect providers|perplexity|embeddings|teams|bluebubbles --agent <agent>`
+- use `ouro connect --agent <agent>` for the guided connect bay, or jump directly to `ouro connect providers|perplexity|embeddings|teams|bluebubbles|voice --agent <agent>`
 - if a session already failed, the follow-up move is to retry the failed `ouro` command or reconnect the session
 
 ## 5. Daemon Messaging Smoke
@@ -152,6 +152,7 @@ If BlueBubbles is enabled but not attached here, `ouro status` should show `not_
 
 ```bash
 ouro connect bluebubbles --agent <agent>
+ouro connect voice --agent <agent>
 ```
 
 ### Teams
@@ -317,4 +318,4 @@ ouro status
 ouro logs
 ```
 
-Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item.
+Then verify the sense-specific credentials are configured for that integration, the sense is enabled in `agent.json`, and the relevant outward/inner lane is configured in `agent.json`. Prefer the guided connect bay for repairs. For BlueBubbles specifically, `ouro connect bluebubbles --agent <agent>` stores local server details under this machine's vault item. For Voice, `ouro connect voice --agent <agent>` names the required ElevenLabs portable key and Whisper.cpp machine attachment fields; meeting-link joining remains a separate milestone.

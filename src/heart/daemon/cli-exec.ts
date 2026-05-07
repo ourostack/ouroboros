@@ -3053,7 +3053,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3068,30 +3068,33 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     teams: senses.teams ?? { enabled: false },
     bluebubbles: senses.bluebubbles ?? { enabled: false },
     mail: senses.mail ?? { enabled: false },
+    voice: senses.voice ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-const CONNECT_MENU_PROMPT = "Choose [1-6] or type a name: "
+const CONNECT_MENU_PROMPT = "Choose [1-7] or type a name: "
 
 function connectMenuIsTTY(deps: OuroCliDeps): boolean {
   return deps.isTTY ?? process.stdout.isTTY === true
 }
 
-function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean } {
+function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean; voiceEnabled: boolean } {
   const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
     senses?: {
       teams?: { enabled?: boolean }
       bluebubbles?: { enabled?: boolean }
       mail?: { enabled?: boolean }
+      voice?: { enabled?: boolean }
     }
   }
   return {
     teamsEnabled: parsed.senses?.teams?.enabled === true,
     blueBubblesEnabled: parsed.senses?.bluebubbles?.enabled === true,
     mailEnabled: parsed.senses?.mail?.enabled === true,
+    voiceEnabled: parsed.senses?.voice?.enabled === true,
   }
 }
 
@@ -3126,12 +3129,15 @@ async function buildConnectMenu(
   const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
   onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
-  const { teamsEnabled, blueBubblesEnabled, mailEnabled } = readConnectBaySenseFlags(agent, deps)
+  const { teamsEnabled, blueBubblesEnabled, mailEnabled, voiceEnabled } = readConnectBaySenseFlags(agent, deps)
   const perplexityApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
     : null
   const embeddingsApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  const elevenLabsApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsApiKey")
     : null
   const shouldVerifyPerplexity = runtimeConfig.ok && !!perplexityApiKey
   const shouldVerifyEmbeddings = runtimeConfig.ok && !!embeddingsApiKey
@@ -3200,6 +3206,16 @@ async function buildConnectMenu(
       ? "attached"
       : "not attached"
     : machineRuntimeReadStatus(machineRuntime)
+  const voiceStatus = runtimeConfig.ok
+    ? machineRuntime.ok
+      ? elevenLabsApiKey
+        && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath")
+        && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath")
+        && voiceEnabled
+        ? "attached"
+        : "not attached"
+      : machineRuntimeReadStatus(machineRuntime)
+    : runtimeConfigReadStatus(runtimeConfig)
   const mailroomConfig = runtimeConfig.ok && runtimeConfig.config.mailroom && typeof runtimeConfig.config.mailroom === "object" && !Array.isArray(runtimeConfig.config.mailroom)
     ? runtimeConfig.config.mailroom as Record<string, unknown>
     : {}
@@ -3290,6 +3306,26 @@ async function buildConnectMenu(
         section: "Portable",
         status: mailStatus,
       }) ? `ouro connect mail --agent ${agent}` : undefined,
+    },
+    {
+      option: "7",
+      name: "Voice",
+      section: "This machine",
+      status: voiceStatus,
+      description: "Conversational audio via local Whisper.cpp STT and ElevenLabs TTS.",
+      detailLines: runtimeConfig.ok && machineRuntime.ok
+        ? [
+            elevenLabsApiKey ? "ElevenLabs API key saved in portable runtime config" : "missing integrations.elevenLabsApiKey",
+            hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath") ? "Whisper.cpp CLI path saved for this machine" : "missing voice.whisperCliPath",
+            hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath") ? "Whisper.cpp model path saved for this machine" : "missing voice.whisperModelPath",
+          ]
+        : [],
+      nextAction: connectEntryNeedsAttention({
+        option: "7",
+        name: "Voice",
+        section: "This machine",
+        status: voiceStatus,
+      }) ? `ouro connect voice --agent ${agent}` : undefined,
     },
   ]
 
@@ -5043,7 +5079,7 @@ function machineRuntimeReadStatus(
   return "needs attention"
 }
 
-function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "cancel" {
+function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "cancel" {
   const normalized = answer.trim().toLowerCase()
   if (normalized === "1" || normalized === "providers" || normalized === "provider" || normalized === "auth") return "providers"
   if (normalized === "2" || normalized === "perplexity" || normalized === "perplexity-search" || normalized === "search") return "perplexity"
@@ -5051,7 +5087,23 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
   if (normalized === "4" || normalized === "teams" || normalized === "msteams" || normalized === "microsoft-teams") return "teams"
   if (normalized === "5" || normalized === "bluebubbles" || normalized === "imessage" || normalized === "messages") return "bluebubbles"
   if (normalized === "6" || normalized === "mail" || normalized === "email" || normalized === "mailroom") return "mail"
+  if (normalized === "7" || normalized === "voice" || normalized === "audio" || normalized === "speech") return "voice"
   return "cancel"
+}
+
+async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<string> {
+  const message = [
+    `Voice foundation for ${agent}`,
+    "Configure the portable ElevenLabs API key with:",
+    `  ouro vault config set --agent ${agent} --key integrations.elevenLabsApiKey`,
+    "Configure this machine's Whisper.cpp attachment with:",
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
+    "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
+    "Meeting-link joining and browser/system audio routing are tracked as the next milestone.",
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
 }
 
 async function executeConnect(
@@ -5064,6 +5116,7 @@ async function executeConnect(
   if (command.target === "teams") return executeConnectTeams(command.agent, deps)
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
+  if (command.target === "voice") return executeConnectVoice(command.agent, deps)
 
   const progress = createHumanCommandProgress(deps, "connect")
   let menu: string
@@ -5080,7 +5133,7 @@ async function executeConnect(
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
-      menu.replace(/\nChoose \[1-6\] or type a name: $/, ""),
+      menu.replace(/\nChoose \[1-7\] or type a name: $/, ""),
       "",
       `Run: ouro connect providers --agent ${command.agent}`,
       `Run: ouro connect perplexity --agent ${command.agent}`,
@@ -5088,6 +5141,7 @@ async function executeConnect(
       `Run: ouro connect teams --agent ${command.agent}`,
       `Run: ouro connect bluebubbles --agent ${command.agent}`,
       `Run: ouro connect mail --agent ${command.agent}`,
+      `Run: ouro connect voice --agent ${command.agent}`,
     ].join("\n")
     deps.writeStdout(message)
     return message
@@ -5099,6 +5153,7 @@ async function executeConnect(
   if (answer === "teams") return executeConnectTeams(command.agent, deps)
   if (answer === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   if (answer === "mail") return executeConnectMail(command.agent, deps)
+  if (answer === "voice") return executeConnectVoice(command.agent, deps)
   const message = "connect cancelled."
   deps.writeStdout(message)
   return message
