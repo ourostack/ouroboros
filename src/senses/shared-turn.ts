@@ -7,11 +7,12 @@
 
 import * as os from "os"
 import * as path from "path"
+import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
-import { sessionPath } from "../heart/config"
+import { sanitizeKey } from "../heart/config"
 import { stampIngressTime } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
@@ -123,7 +124,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const mcpManager = await getSharedMcpManager() ?? undefined
 
   // Session path and loading
-  const sessPath = sessionPath(friendId, channel, sessionKey)
+  const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
+  fs.mkdirSync(sessionDir, { recursive: true })
+  const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined

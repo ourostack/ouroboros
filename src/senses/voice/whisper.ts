@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
+import { spawn } from "child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { buildVoiceTranscript } from "./transcript"
 import type { VoiceTranscriber, VoiceTranscriptionRequest, VoiceTranscript } from "./types"
@@ -15,7 +16,7 @@ export interface WhisperCppTranscriberOptions {
   whisperCliPath: string
   modelPath: string
   timeoutMs?: number
-  processRunner: WhisperCppProcessRunner
+  processRunner?: WhisperCppProcessRunner
   readFile?: (filePath: string, encoding: BufferEncoding) => Promise<string>
   makeTempDir?: () => Promise<string>
   removeDir?: (dir: string) => Promise<void>
@@ -58,11 +59,39 @@ async function defaultRemoveDir(dir: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true })
 }
 
+export function createNodeWhisperCppProcessRunner(): WhisperCppProcessRunner {
+  return (command, args, options) => new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM")
+      reject(new Error(`command timed out after ${options.timeoutMs}ms`))
+    }, options.timeoutMs)
+
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk))
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk))
+    child.on("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on("close", (exitCode) => {
+      clearTimeout(timer)
+      resolve({
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        exitCode: exitCode ?? 0,
+      })
+    })
+  })
+}
+
 export function createWhisperCppTranscriber(options: WhisperCppTranscriberOptions): VoiceTranscriber {
   const timeoutMs = options.timeoutMs ?? 120_000
   const readFile = options.readFile ?? fs.readFile
   const makeTempDir = options.makeTempDir ?? defaultMakeTempDir
   const removeDir = options.removeDir ?? defaultRemoveDir
+  const processRunner = options.processRunner ?? createNodeWhisperCppProcessRunner()
 
   return {
     async transcribe(request: VoiceTranscriptionRequest): Promise<VoiceTranscript> {
@@ -87,7 +116,7 @@ export function createWhisperCppTranscriber(options: WhisperCppTranscriberOption
       })
 
       try {
-        const result = await options.processRunner(options.whisperCliPath, args, { timeoutMs })
+        const result = await processRunner(options.whisperCliPath, args, { timeoutMs })
         if (typeof result.exitCode === "number" && result.exitCode !== 0) {
           throw new Error(`exit ${result.exitCode}${result.stderr ? `: ${result.stderr}` : ""}`)
         }

@@ -5100,7 +5100,7 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
     "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
-    "Meeting-link joining and browser/system audio routing are tracked as the next milestone.",
+    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Live browser join/injection is a handoff edge until provider automation lands.",
   ].join("\n")
   deps.writeStdout(message)
   return message

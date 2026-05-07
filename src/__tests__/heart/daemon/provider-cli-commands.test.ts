@@ -1357,7 +1357,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("integrations.elevenLabsApiKey")
     expect(result).toContain("voice.whisperCliPath")
     expect(result).toContain("voice.whisperModelPath")
-    expect(result).toContain("Meeting-link joining")
+    expect(result).toContain("Meeting links use URL intake")
   })
 
   it("routes Voice setup from the root connect bay", async () => {

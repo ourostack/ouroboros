@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import { describe, expect, it, vi } from "vitest"
 import {
+  createNodeWhisperCppProcessRunner,
   createWhisperCppTranscriber,
   parseWhisperCppTranscriptJson,
 } from "../../../senses/voice/whisper"
@@ -102,6 +103,22 @@ describe("Whisper.cpp voice transcriber", () => {
     expect(result.text).toBe("Default temp works.")
   })
 
+  it("uses the default Node process runner when no runner is injected", async () => {
+    const transcriber = createWhisperCppTranscriber({
+      whisperCliPath: "/definitely/not-a-real-ouro-command",
+      modelPath: "/models/model.bin",
+      readFile: async () => "{}",
+      makeTempDir: async () => "/tmp/ouro-voice-default-runner",
+      removeDir: async () => undefined,
+      timeoutMs: 5_000,
+    })
+
+    await expect(transcriber.transcribe({
+      utteranceId: "utt_default_runner_error",
+      audioPath: "/tmp/input.wav",
+    })).rejects.toThrow("whisper.cpp transcription failed:")
+  })
+
   it("wraps non-zero whisper exit codes and stderr", async () => {
     const transcriber = createWhisperCppTranscriber({
       whisperCliPath: "/opt/whisper-cli",
@@ -132,6 +149,20 @@ describe("Whisper.cpp voice transcriber", () => {
       utteranceId: "utt_exit_no_stderr",
       audioPath: "/tmp/input.wav",
     })).rejects.toThrow("whisper.cpp transcription failed: exit 3")
+  })
+
+  it("provides a Node process runner for live Whisper.cpp execution", async () => {
+    const runner = createNodeWhisperCppProcessRunner()
+
+    const result = await runner(process.execPath, ["-e", "process.stdout.write('voice-runner-ok')"], { timeoutMs: 5_000 })
+    const stderr = await runner(process.execPath, ["-e", "process.stderr.write('voice-runner-err')"], { timeoutMs: 5_000 })
+    await expect(runner(process.execPath, ["-e", "setTimeout(() => undefined, 50)"], { timeoutMs: 1 }))
+      .rejects.toThrow("command timed out")
+    await expect(runner("/definitely/not-a-real-ouro-command", [], { timeoutMs: 5_000 }))
+      .rejects.toThrow()
+
+    expect(result).toMatchObject({ stdout: "voice-runner-ok", stderr: "", exitCode: 0 })
+    expect(stderr).toMatchObject({ stdout: "", stderr: "voice-runner-err", exitCode: 0 })
   })
 
   it("wraps non-Error transcription failures defensively", async () => {

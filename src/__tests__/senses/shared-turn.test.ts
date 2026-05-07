@@ -276,6 +276,20 @@ describe("runSenseTurn", () => {
     expect(input.sessionKey).toBe("my-session")
   })
 
+  it("uses the explicit agentName for session storage instead of process argv", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "Voice/Session:123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(mockGetAgentRoot).toHaveBeenCalledWith("test-agent")
+    expect(mockLoadSession).toHaveBeenCalledWith("/tmp/test-agent/state/sessions/friend-1/voice/Voice_Session_123.json")
+  })
+
   it("passes user message to handleInboundTurn", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
