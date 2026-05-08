@@ -543,6 +543,15 @@ export function createBlueBubblesCallbacks(
   let queue = Promise.resolve()
   let lastVisibleActivityMs = Date.now()
   let silenceWatchdog: ReturnType<typeof setInterval> | null = null
+  // Per-turn outward-send dedupe. A single createBlueBubblesCallbacks lifetime
+  // serves one inbound turn, so collapsing identical outward bodies inside
+  // this closure is scoped tightly: each fresh inbound turn starts with an
+  // empty set. Mid-turn settle/proof retry loops historically caused the
+  // agent to re-emit the same answer through multiple speak calls and a
+  // final flush, surfacing as 4 near-identical iMessages from one ask
+  // (2026-05-08 06:18 incident). The guard lets the engine retry harmlessly
+  // without duplicating outward delivery to the friend.
+  const sentOutwardTextNorms = new Set<string>()
 
   function enqueue(operation: string, task: () => Promise<void>): void {
     queue = queue.then(task).catch((error) => {
@@ -577,6 +586,27 @@ export function createBlueBubblesCallbacks(
   function recordVisibleActivity(): void {
     lastVisibleActivityMs = Date.now()
     onVisibleActivity?.()
+  }
+
+  function isDuplicateOutwardText(trimmed: string): boolean {
+    const norm = trimmed.replace(/\s+/g, " ").trim().toLowerCase()
+    if (sentOutwardTextNorms.has(norm)) return true
+    sentOutwardTextNorms.add(norm)
+    return false
+  }
+
+  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush", messageLength: number): void {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "bluebubbles.duplicate_outward_suppressed",
+      message: "suppressed near-identical outward send within single inbound turn",
+      meta: {
+        site,
+        chatGuid: chat.chatGuid ?? null,
+        messageLength,
+      },
+    })
   }
 
   function stopSilenceWatchdog(): void {
@@ -723,6 +753,10 @@ export function createBlueBubblesCallbacks(
         })
         return
       }
+      if (isDuplicateOutwardText(trimmed)) {
+        emitDuplicateOutwardSuppressed("flushNow", trimmed.length)
+        return
+      }
       await client.sendText({
         chat,
         text: trimmed,
@@ -767,6 +801,10 @@ export function createBlueBubblesCallbacks(
             messageLength: trimmed.length,
           },
         })
+        return
+      }
+      if (isDuplicateOutwardText(trimmed)) {
+        emitDuplicateOutwardSuppressed("flush", trimmed.length)
         return
       }
       await client.sendText({

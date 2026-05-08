@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.569",
+      "changes": [
+        "BlueBubbles ordinary chat turns no longer trigger external-state proof retry loops merely because the inbound text populated currentObligation.",
+        "BlueBubbles now suppresses duplicate normalized outward text within a single inbound turn across flush and flushNow delivery paths, preventing retry loops from sending repeated iMessages.",
+        "Regression coverage locks the 2026-05-08 duplicate outward-send incident while preserving distinct same-turn replies and per-turn re-sends."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.568",
       "changes": [
         "Twilio phone recordings that Whisper.cpp reports as empty speech now route through an agent-authored voice reprompt instead of failing the Twilio audio stream.",

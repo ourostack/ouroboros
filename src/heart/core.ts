@@ -485,7 +485,7 @@ export function getSettleRetryError(
   _sawQuerySession?: boolean,
   currentObligation?: string | null,
   innerJob?: InnerJob,
-  sawExternalStateQuery?: boolean,
+  _sawExternalStateQuery?: boolean,
 ): string | null {
   // Delegation adherence removed: the delegation decision is surfaced in the
   // system prompt as a suggestion. Hard-gating settle caused infinite
@@ -506,10 +506,6 @@ export function getSettleRetryError(
   // 5. mustResolveBeforeHandoff + complete while a live return loop is still active
   if (mustResolveBeforeHandoff && intent === "complete" && currentObligation && !sawSteeringFollowUp) {
     return "you still owe the live session a visible return on this work. don't end the turn yet — continue until you've brought back the external-state update, or use intent=blocked with the concrete blocker.";
-  }
-  // 6. External-state grounding: obligation + complete requires fresh external verification
-  if (intent === "complete" && currentObligation && !sawExternalStateQuery && !sawSteeringFollowUp) {
-    return "you're claiming this work is complete, but the external state hasn't been verified this turn. ground your claim with a fresh check (gh pr view, npm view, gh run view, etc.) before calling settle.";
   }
   return null;
 }
