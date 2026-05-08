@@ -30,7 +30,7 @@ import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
 const RESPONSE_CAP = 50_000
-const DELIVERY_TOOL_ACKS = new Map([
+const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["settle", "(delivered)"],
   ["speak", "(spoken)"],
 ])
@@ -88,7 +88,7 @@ function hasDeliveredToolResult(
   toolName: "settle" | "speak",
 ): boolean {
   if (typeof toolCallId !== "string" || !toolCallId.trim()) return false
-  const expectedAck = DELIVERY_TOOL_ACKS.get(toolName)!
+  const expectedAck = OUTWARD_DELIVERY_TOOL_ACKS.get(toolName)!
 
   for (let index = assistantIndex + 1; index < messages.length; index++) {
     const message = messages[index] as ChatCompletionMessageParam & { tool_call_id?: unknown }
@@ -105,7 +105,7 @@ function hasDeliveredToolResult(
   return false
 }
 
-function deliveredTextFromAssistantTools(
+function outwardDeliveryTextFromAssistantTools(
   messages: ChatCompletionMessageParam[],
   assistantIndex: number,
 ): string | null {
@@ -133,12 +133,28 @@ function deliveredTextFromAssistantTools(
   return delivered.length > 0 ? delivered.join("\n") : null
 }
 
-function responseFromSessionMessages(messages: ChatCompletionMessageParam[]): string | null {
+/**
+ * Recover the text that actually reached a friend in an outward sense turn.
+ *
+ * Ouro runs outward channels in tool-required mode. That means the visible
+ * response may be a `settle({ answer })` or `speak({ message })` tool call
+ * whose assistant message has `content: null`. The authoritative delivery
+ * signal is the following tool ack:
+ *
+ * - `(delivered)` for `settle.answer`
+ * - `(spoken)` for `speak.message`
+ *
+ * Inner-dialog `(settled)`, malformed tool arguments, rejected tools, and
+ * interrupted tool-call sequences are not outward speech. Sense transports
+ * that need to replay the turn later (Voice/Twilio TTS, future meeting audio)
+ * should use this helper instead of reading `assistant.content` directly.
+ */
+export function extractOutwardSenseDeliveryText(messages: ChatCompletionMessageParam[]): string | null {
   const assistantIndex = messages.findLastIndex((message) => message.role === "assistant")
   if (assistantIndex < 0) return null
   const assistant = messages[assistantIndex]
   return assistantContentText(assistant.content)
-    ?? deliveredTextFromAssistantTools(messages, assistantIndex)
+    ?? outwardDeliveryTextFromAssistantTools(messages, assistantIndex)
 }
 
 export interface RunSenseTurnOptions {
@@ -287,7 +303,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
-      finalResponse = responseFromSessionMessages(postTurnSession.messages)
+      finalResponse = extractOutwardSenseDeliveryText(postTurnSession.messages)
         ?? "(agent responded but response was empty)"
     } else {
       finalResponse = "(agent responded but response was empty)"

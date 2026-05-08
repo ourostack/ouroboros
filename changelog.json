@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.566",
+      "changes": [
+        "Shared sense delivery recovery is now an exported contract so replaying transports such as Voice/Twilio recover tool-required `settle`/`speak` output only after outward delivery acknowledgements.",
+        "Sense development docs now spell out the sense/transport boundary and the tool-required delivery rules for future Voice, meeting, Twilio, and other adapter work."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.565",
       "changes": [
         "Voice shared-turn readback now recovers tool-required `settle` and `speak` deliveries from acknowledged tool calls instead of treating null assistant content as an empty response.",

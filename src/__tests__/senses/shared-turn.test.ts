@@ -202,6 +202,101 @@ function setupSettledTurn(text: string = "hello from the agent") {
 
 // ── Tests ──────────────────────────────────────────────────────
 
+describe("extractOutwardSenseDeliveryText", () => {
+  it("prefers latest assistant content when present", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "assistant", content: "older answer" },
+      { role: "user", content: "new question" },
+      { role: "assistant", content: "latest visible answer" },
+    ]
+
+    expect(extractOutwardSenseDeliveryText(messages)).toBe("latest visible answer")
+  })
+
+  it("recovers tool-required outward delivery from acknowledged settle and speak calls", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_speak",
+            type: "function",
+            function: {
+              name: "speak",
+              arguments: JSON.stringify({ message: "quick update" }),
+            },
+          },
+          {
+            id: "call_settle",
+            type: "function",
+            function: {
+              name: "settle",
+              arguments: JSON.stringify({ answer: "final answer", intent: "complete" }),
+            },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_speak", content: "(spoken)" },
+      { role: "tool", tool_call_id: "call_settle", content: "(delivered)" },
+    ]
+
+    expect(extractOutwardSenseDeliveryText(messages)).toBe("quick update\nfinal answer")
+  })
+
+  it("does not treat inner-dialog settle ack as outward delivery", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+    const messages: ChatCompletionMessageParam[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_settle",
+          type: "function",
+          function: {
+            name: "settle",
+            arguments: JSON.stringify({ answer: "private inner text", intent: "complete" }),
+          },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_settle", content: "(settled)" },
+    ]
+
+    expect(extractOutwardSenseDeliveryText(messages)).toBeNull()
+  })
+
+  it("rejects unacknowledged delivery tool calls once another message starts", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+    const messages: ChatCompletionMessageParam[] = [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_speak",
+          type: "function",
+          function: {
+            name: "speak",
+            arguments: JSON.stringify({ message: "not actually spoken" }),
+          },
+        }],
+      },
+      { role: "user", content: "new turn before ack" },
+      { role: "tool", tool_call_id: "call_speak", content: "(spoken)" },
+    ]
+
+    expect(extractOutwardSenseDeliveryText(messages)).toBeNull()
+  })
+
+  it("returns null when no assistant message exists", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+
+    expect(extractOutwardSenseDeliveryText([{ role: "user", content: "hello" }])).toBeNull()
+  })
+})
+
 describe("runSenseTurn", () => {
   beforeEach(() => {
     vi.clearAllMocks()
