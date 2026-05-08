@@ -13,15 +13,22 @@ the outside world.
 - A voice session should persist as ordinary text under
   `state/sessions/<friend>/voice/<session>.json`; audio is an attachment or
   playback artifact, not the canonical transcript.
+- Transport connection IDs are not automatically session IDs. For example,
+  Twilio CallSid belongs to a single phone call, while the voice session key
+  should represent the stable phone voice channel so repeated calls continue
+  the same conversation.
 
 ## Turn Contract
 
 All outward sense turns run in tool-required mode. A visible response is not
 necessarily stored in `assistant.content`.
 
-Use `runSenseTurn()` for non-interactive senses. If a transport needs to replay
-the text after the turn, use `extractOutwardSenseDeliveryText()` from
-`src/senses/shared-turn.ts` instead of reading session messages by hand.
+Use `runSenseTurn()` for non-interactive senses. If a transport needs live
+delivery, pass a `deliverySink`; the sink receives the same outward `speak` and
+`settle` text that chat-style channels receive through callbacks. If a
+transport needs to replay the text after the turn, use
+`extractOutwardSenseDeliveryText()` from `src/senses/shared-turn.ts` instead of
+reading session messages by hand.
 
 Authoritative outward delivery is:
 
@@ -40,8 +47,11 @@ These are not outward delivery:
 
 Voice is one transcript-first sense with multiple speaking transports.
 
-- Twilio phone: call webhook -> record -> Whisper.cpp -> voice session ->
-  tool-delivered text -> ElevenLabs -> Twilio Play.
+- Twilio phone: call webhook -> record -> Whisper.cpp -> stable voice session
+  -> tool-delivered text -> ElevenLabs -> Twilio Play. The default managed
+  phone path gives Twilio a streaming Play URL, so ElevenLabs audio chunks can
+  flow as they arrive. Full duplex interruption/barge-in is a future
+  bidirectional media-stream transport, not a separate voice sense.
 - Meeting/browser: meeting URL intake and audio routing should feed the same
   Voice session contract. Browser automation joins the room; it should not
   become a separate conversational sense unless it has a distinct durable
@@ -62,4 +72,3 @@ When adding or changing a sense transport:
    `extractOutwardSenseDeliveryText()`.
 6. Persist artifacts beside the sense state and make the text transcript the
    thing humans inspect in overview surfaces.
-

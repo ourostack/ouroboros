@@ -168,6 +168,23 @@ export interface RunSenseTurnOptions {
   friendId: string
   /** The user's message text. */
   userMessage: string
+  /** Optional transport delivery hook for outward `speak`/`settle` text. */
+  deliverySink?: OutwardSenseDeliverySink
+}
+
+export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
+
+export interface OutwardSenseDelivery {
+  kind: OutwardSenseDeliveryKind
+  text: string
+}
+
+export interface OutwardSenseDeliveryFailure extends OutwardSenseDelivery {
+  error: string
+}
+
+export interface OutwardSenseDeliverySink {
+  onDelivery(delivery: OutwardSenseDelivery): Promise<void> | void
 }
 
 export interface RunSenseTurnResult {
@@ -175,6 +192,10 @@ export interface RunSenseTurnResult {
   response: string
   /** Deprecated compatibility field. Ponder no longer implies outward deferral. */
   ponderDeferred: boolean
+  /** Outward deliveries that reached the channel delivery hook, or were observed when no hook was configured. */
+  deliveries: OutwardSenseDelivery[]
+  /** Delivery failures observed after the model's terminal answer. Mid-turn `speak` failures are returned to the model immediately. */
+  deliveryFailures: OutwardSenseDeliveryFailure[]
 }
 
 /**
@@ -240,17 +261,67 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
 
-  // Accumulate response text via callbacks
-  let responseText = ""
+  // Accumulate outward text through the same callback boundary used by chat
+  // channels. `speak` flushes pending text immediately; `settle` is delivered
+  // once the turn completes.
+  let committedResponseText = ""
+  let pendingResponseText = ""
+  let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
+  const deliveries: OutwardSenseDelivery[] = []
+  const deliveryFailures: OutwardSenseDeliveryFailure[] = []
+
+  const commitResponseText = (text: string): void => {
+    const cleaned = stripThinkBlocks(text)
+    /* v8 ignore next -- deliverPending strips first; this is a defensive direct-call guard @preserve */
+    if (!cleaned) return
+    committedResponseText = committedResponseText
+      ? `${committedResponseText}\n${cleaned}`
+      : cleaned
+  }
+
+  const deliveryErrorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
+
+  const deliverPending = async (
+    kind: OutwardSenseDeliveryKind,
+    optionsForDelivery: { throwOnError: boolean },
+  ): Promise<void> => {
+    const text = stripThinkBlocks(pendingResponseText)
+    pendingResponseText = ""
+    if (!text) return
+
+    const delivery: OutwardSenseDelivery = { kind, text }
+    try {
+      await options.deliverySink?.onDelivery(delivery)
+      deliveries.push(delivery)
+      commitResponseText(text)
+    } catch (error) {
+      const failure = { ...delivery, error: deliveryErrorMessage(error) }
+      deliveryFailures.push(failure)
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.shared_turn_delivery_error",
+        message: "shared turn outward delivery failed",
+        meta: { agentName, channel, sessionKey, friendId, kind, error: failure.error, textLength: text.length },
+      })
+      if (optionsForDelivery.throwOnError) throw error
+      commitResponseText(text)
+    }
+  }
+
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
     onModelStart: () => {},
     onModelStreamStart: () => {},
-    onTextChunk: (chunk: string) => { responseText += chunk },
+    onTextChunk: (chunk: string) => { pendingResponseText += chunk },
     onReasoningChunk: () => {},
     onToolStart: () => {},
-    onToolEnd: () => {},
+    onToolEnd: (name: string, _summary: string, success: boolean) => {
+      if (name === "settle" && success) terminalDeliveryKind = "settle"
+    },
     onError: () => {},
+    onClearText: () => { pendingResponseText = "" },
+    flushNow: () => deliverPending("speak", { throwOnError: true }),
   }
   /* v8 ignore stop */
 
@@ -292,11 +363,13 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     accumulateFriendTokens,
   })
 
+  await deliverPending(terminalDeliveryKind, { throwOnError: false })
+
   const ponderDeferred = false
 
   // Build response
   let finalResponse: string
-  if (responseText.length === 0) {
+  if (committedResponseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
     // Await deferred persist so the session file is up-to-date before readback
     /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
@@ -309,7 +382,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       finalResponse = "(agent responded but response was empty)"
     }
   } else {
-    finalResponse = responseText
+    finalResponse = committedResponseText
   }
 
   // Strip MiniMax-style <think>...</think> blocks from the final response.
@@ -344,5 +417,5 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred }
+  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures }
 }

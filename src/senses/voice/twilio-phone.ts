@@ -5,13 +5,16 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { writeVoicePlaybackArtifact } from "./playback"
 import { buildVoiceTranscript } from "./transcript"
-import { runVoiceLoopbackTurn, type VoiceRunSenseTurn } from "./turn"
+import { runVoiceLoopbackTurn, type VoiceLoopbackTurnResult, type VoiceRunSenseTurn } from "./turn"
 import type { VoiceTranscriber, VoiceTtsService } from "./types"
 
 export const DEFAULT_TWILIO_PHONE_PORT = 18910
 export const DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS = 2
 export const DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS = 30
 export const TWILIO_PHONE_WEBHOOK_BASE_PATH = "/voice/twilio"
+export const DEFAULT_TWILIO_PHONE_PLAYBACK_MODE = "stream"
+
+export type TwilioPhonePlaybackMode = "stream" | "buffered"
 
 export interface TwilioSignatureInput {
   authToken: string
@@ -29,7 +32,7 @@ export interface TwilioPhoneBridgeRequest {
 export interface TwilioPhoneBridgeResponse {
   statusCode: number
   headers: Record<string, string>
-  body: string | Uint8Array
+  body: string | Uint8Array | AsyncIterable<Uint8Array>
 }
 
 export interface TwilioRecordingDownloadRequest {
@@ -54,6 +57,7 @@ export interface TwilioPhoneBridgeOptions {
   recordTimeoutSeconds?: number
   recordMaxLengthSeconds?: number
   downloadRecording?: TwilioRecordingDownloader
+  playbackMode?: TwilioPhonePlaybackMode
 }
 
 export interface TwilioPhoneBridge {
@@ -76,6 +80,7 @@ interface RecordingCallbackParams {
   recordingSid: string
   recordingUrl: string
   from: string
+  to: string
 }
 
 function bodyText(body: string | Uint8Array | undefined): string {
@@ -130,6 +135,23 @@ function binaryResponse(body: Uint8Array, contentType: string): TwilioPhoneBridg
   }
 }
 
+function streamResponse(body: AsyncIterable<Uint8Array>, contentType: string): TwilioPhoneBridgeResponse {
+  return {
+    statusCode: 200,
+    headers: {
+      "content-type": contentType,
+      "cache-control": "no-store",
+    },
+    body,
+  }
+}
+
+function isAsyncIterableBody(body: TwilioPhoneBridgeResponse["body"]): body is AsyncIterable<Uint8Array> {
+  return typeof body === "object"
+    && body !== null
+    && Symbol.asyncIterator in body
+}
+
 function escapeXml(input: string): string {
   return input
     .replace(/&/g, "&amp;")
@@ -154,6 +176,12 @@ export function normalizeTwilioPhoneBasePath(value: string | undefined = TWILIO_
     throw new Error(`invalid Twilio phone webhook base path: ${value}`)
   }
   return withoutTrailingSlash
+}
+
+export function normalizeTwilioPhonePlaybackMode(value: string | undefined): TwilioPhonePlaybackMode {
+  const normalized = (value ?? DEFAULT_TWILIO_PHONE_PLAYBACK_MODE).trim().toLowerCase()
+  if (normalized === "stream" || normalized === "buffered") return normalized
+  throw new Error(`invalid Twilio phone playback mode: ${value}`)
 }
 
 export function twilioPhoneWebhookUrl(
@@ -221,6 +249,29 @@ function voiceFriendId(options: TwilioPhoneBridgeOptions, from: string, callSid:
   return options.defaultFriendId?.trim() || friendIdFromCaller(from, callSid)
 }
 
+function phoneIdentitySegment(input: string): string {
+  const phoneish = input.replace(/[^0-9A-Za-z]+/g, "")
+  return phoneish || safeSegment(input)
+}
+
+export function twilioPhoneVoiceSessionKey(options: {
+  defaultFriendId?: string
+  from?: string
+  to?: string
+  callSid?: string
+}): string {
+  const friendSegment = options.defaultFriendId?.trim()
+    ? safeSegment(options.defaultFriendId)
+    : options.from?.trim()
+      ? phoneIdentitySegment(options.from)
+      : ""
+  const lineSegment = options.to?.trim() ? phoneIdentitySegment(options.to) : ""
+  if (friendSegment && lineSegment) return `twilio-phone-${friendSegment}-via-${lineSegment}`
+  if (friendSegment) return `twilio-phone-${friendSegment}`
+  if (lineSegment) return `twilio-phone-line-${lineSegment}`
+  return `twilio-phone-${safeSegment(options.callSid ?? "incoming")}`
+}
+
 function callConnectedPrompt(params: Record<string, string>): string {
   const from = params.From?.trim()
   const to = params.To?.trim()
@@ -259,6 +310,7 @@ function parseRecordingParams(params: Record<string, string>): RecordingCallback
     recordingSid,
     recordingUrl,
     from: params.From?.trim() ?? "",
+    to: params.To?.trim() ?? "",
   }
 }
 
@@ -287,6 +339,214 @@ function nextInputTwiml(
     timeoutSeconds: options.recordTimeoutSeconds ?? DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
     maxLengthSeconds: options.recordMaxLengthSeconds ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   })
+}
+
+class TwilioAudioStreamJob {
+  private readonly chunks: Buffer[] = []
+  private readonly waiters = new Set<() => void>()
+  private status: "pending" | "completed" | "failed" = "pending"
+  private failure: string | null = null
+  byteLength = 0
+
+  constructor(
+    readonly callSid: string,
+    readonly jobId: string,
+    readonly mimeType: string,
+  ) {}
+
+  append(chunk: Uint8Array): void {
+    /* v8 ignore next -- append is only called while pending with non-empty chunks in bridge flow @preserve */
+    if (this.status !== "pending" || chunk.byteLength === 0) return
+    const buffered = Buffer.from(chunk)
+    this.chunks.push(buffered)
+    this.byteLength += buffered.byteLength
+    this.notify()
+  }
+
+  complete(): void {
+    /* v8 ignore next -- completion is single-shot inside startTwilioPlaybackStreamJob @preserve */
+    if (this.status !== "pending") return
+    this.status = "completed"
+    this.notify()
+  }
+
+  fail(error: unknown): void {
+    /* v8 ignore next -- failure is single-shot inside startTwilioPlaybackStreamJob @preserve */
+    if (this.status !== "pending") return
+    this.status = "failed"
+    this.failure = errorMessage(error)
+    this.notify()
+  }
+
+  async *stream(): AsyncIterable<Uint8Array> {
+    let index = 0
+    let yielded = false
+    for (;;) {
+      while (index < this.chunks.length) {
+        yielded = true
+        yield this.chunks[index++]!
+      }
+      if (this.status === "completed") return
+      if (this.status === "failed") {
+        if (yielded) return
+        throw new Error(this.failure!)
+      }
+      await new Promise<void>((resolve) => {
+        this.waiters.add(resolve)
+      })
+    }
+  }
+
+  private notify(): void {
+    const waiters = [...this.waiters]
+    this.waiters.clear()
+    for (const waiter of waiters) waiter()
+  }
+}
+
+class TwilioAudioStreamJobStore {
+  private readonly jobs = new Map<string, TwilioAudioStreamJob>()
+
+  create(callSid: string, jobId: string, mimeType = "audio/mpeg"): TwilioAudioStreamJob {
+    const key = this.key(callSid, jobId)
+    const job = new TwilioAudioStreamJob(callSid, jobId, mimeType)
+    this.jobs.set(key, job)
+    return job
+  }
+
+  get(callSid: string, jobId: string): TwilioAudioStreamJob | null {
+    return this.jobs.get(this.key(callSid, jobId)) ?? null
+  }
+
+  /* v8 ignore start -- stream job cleanup is delayed beyond request-scope tests @preserve */
+  delete(callSid: string, jobId: string): void {
+    this.jobs.delete(this.key(callSid, jobId))
+  }
+  /* v8 ignore stop */
+
+  private key(callSid: string, jobId: string): string {
+    return `${callSid}/${jobId}`
+  }
+}
+
+function deliveredSegments(turn: VoiceLoopbackTurnResult): Array<Extract<VoiceLoopbackTurnResult["speechSegments"][number]["tts"], { status: "delivered" }>> {
+  return turn.speechSegments.map((segment) => segment.tts)
+}
+
+async function writeVoiceTurnPlaybackArtifacts(options: {
+  bridgeOptions: TwilioPhoneBridgeOptions
+  basePath: string
+  callDir: string
+  safeCallSid: string
+  baseUtteranceId: string
+  turn: VoiceLoopbackTurnResult
+}): Promise<string[]> {
+  const urls: string[] = []
+  for (const segment of options.turn.speechSegments) {
+    const playback = await writeVoicePlaybackArtifact({
+      utteranceId: segment.utteranceId,
+      delivery: segment.tts,
+      outputDir: options.callDir,
+    })
+    urls.push(routeUrl(
+      options.bridgeOptions.publicBaseUrl,
+      `${options.basePath}/audio/${encodeURIComponent(options.safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
+    ))
+  }
+  return urls
+}
+
+function playManyTwiml(urls: string[]): string {
+  return urls.map(playTwiml).join("")
+}
+
+function streamAudioUrl(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  safeCallSid: string,
+  jobId: string,
+): string {
+  return routeUrl(
+    options.publicBaseUrl,
+    `${basePath}/audio-stream/${encodeURIComponent(safeCallSid)}/${encodeURIComponent(`${jobId}.mp3`)}`,
+  )
+}
+
+function scheduleJobCleanup(jobs: TwilioAudioStreamJobStore, safeCallSid: string, jobId: string): void {
+  /* v8 ignore start -- stream job cleanup is delayed beyond request-scope tests @preserve */
+  const cleanup = setTimeout(() => {
+    jobs.delete(safeCallSid, jobId)
+  }, 5 * 60_000)
+  cleanup.unref?.()
+  /* v8 ignore stop */
+}
+
+function startTwilioPlaybackStreamJob(options: {
+  jobs: TwilioAudioStreamJobStore
+  bridgeOptions: TwilioPhoneBridgeOptions
+  basePath: string
+  callDir: string
+  safeCallSid: string
+  jobId: string
+  baseUtteranceId: string
+  runTurn: (onAudioChunk: (chunk: Uint8Array) => void) => Promise<VoiceLoopbackTurnResult>
+  meta: Record<string, string>
+}): TwilioAudioStreamJob {
+  const job = options.jobs.create(options.safeCallSid, options.jobId)
+  void (async () => {
+    try {
+      const turn = await options.runTurn((chunk) => job.append(chunk))
+      const deliveries = deliveredSegments(turn)
+      if (job.byteLength === 0 && deliveries.length > 0) {
+        for (const delivery of deliveries) job.append(delivery.audio)
+      }
+      if (deliveries.length === 0) {
+        /* v8 ignore next -- runVoiceLoopbackTurn cannot return delivered TTS with zero speech segments @preserve */
+        if (turn.tts.status === "failed") throw new Error(turn.tts.error)
+        /* v8 ignore next -- runVoiceLoopbackTurn emits a speech segment whenever TTS is delivered @preserve */
+        throw new Error("voice turn produced no audio")
+      }
+
+      try {
+        await writeVoiceTurnPlaybackArtifacts({
+          bridgeOptions: options.bridgeOptions,
+          basePath: options.basePath,
+          callDir: options.callDir,
+          safeCallSid: options.safeCallSid,
+          baseUtteranceId: options.baseUtteranceId,
+          turn,
+        })
+      } catch (artifactError) {
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.voice_twilio_stream_artifact_error",
+          message: "Twilio stream audio was delivered but artifact persistence failed",
+          meta: { ...options.meta, error: errorMessage(artifactError) },
+        })
+      }
+
+      job.complete()
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.voice_twilio_stream_end",
+        message: "finished Twilio streaming voice playback job",
+        meta: { ...options.meta, byteLength: String(job.byteLength), segmentCount: String(deliveries.length) },
+      })
+    } catch (error) {
+      job.fail(error)
+      emitNervesEvent({
+        level: "error",
+        component: "senses",
+        event: "senses.voice_twilio_stream_error",
+        message: "Twilio streaming voice playback job failed",
+        meta: { ...options.meta, error: errorMessage(error) },
+      })
+    } finally {
+      scheduleJobCleanup(options.jobs, options.safeCallSid, options.jobId)
+    }
+  })()
+  return job
 }
 
 async function runPhonePromptTurn(options: {
@@ -319,17 +579,16 @@ async function runPhonePromptTurn(options: {
     return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${after}`)
   }
 
-  const playback = await writeVoicePlaybackArtifact({
-    utteranceId: options.utteranceId,
-    delivery: turn.tts,
-    outputDir: options.callDir,
+  const audioUrls = await writeVoiceTurnPlaybackArtifacts({
+    bridgeOptions: options.bridgeOptions,
+    basePath: options.basePath,
+    callDir: options.callDir,
+    safeCallSid: options.safeCallSid,
+    baseUtteranceId: options.utteranceId,
+    turn,
   })
-  const audioUrl = routeUrl(
-    options.bridgeOptions.publicBaseUrl,
-    `${options.basePath}/audio/${encodeURIComponent(options.safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
-  )
 
-  return xmlResponse(`${playTwiml(audioUrl)}${after}`)
+  return xmlResponse(`${playManyTwiml(audioUrls)}${after}`)
 }
 
 export function computeTwilioSignature(input: TwilioSignatureInput): string {
@@ -384,28 +643,65 @@ async function handleIncoming(
   options: TwilioPhoneBridgeOptions,
   basePath: string,
   params: Record<string, string>,
+  jobs: TwilioAudioStreamJobStore,
 ): Promise<TwilioPhoneBridgeResponse> {
   const callSid = params.CallSid?.trim() || "incoming"
   const safeCallSid = safeSegment(callSid)
   const callDir = path.join(options.outputDir, safeCallSid)
   const utteranceId = `twilio-${safeCallSid}-connected`
+  const friendId = voiceFriendId(options, params.From?.trim() ?? "", callSid)
+  const sessionKey = twilioPhoneVoiceSessionKey({
+    defaultFriendId: options.defaultFriendId,
+    from: params.From?.trim() ?? "",
+    to: params.To?.trim() ?? "",
+    callSid,
+  })
   emitNervesEvent({
     component: "senses",
     event: "senses.voice_twilio_incoming",
     message: "Twilio voice call connected",
-    meta: { agentName: options.agentName, callSid: safeCallSid },
+    meta: { agentName: options.agentName, callSid: safeCallSid, sessionKey },
   })
 
   try {
     await fs.mkdir(callDir, { recursive: true })
+    if (normalizeTwilioPhonePlaybackMode(options.playbackMode) === "stream") {
+      const transcript = buildVoiceTranscript({
+        utteranceId,
+        text: callConnectedPrompt(params),
+        source: "loopback",
+      })
+      const jobId = safeSegment(utteranceId)
+      startTwilioPlaybackStreamJob({
+        jobs,
+        bridgeOptions: options,
+        basePath,
+        callDir,
+        safeCallSid,
+        jobId,
+        baseUtteranceId: utteranceId,
+        runTurn: (onAudioChunk) => runVoiceLoopbackTurn({
+          agentName: options.agentName,
+          friendId,
+          sessionKey,
+          transcript,
+          tts: options.tts,
+          runSenseTurn: options.runSenseTurn,
+          onAudioChunk,
+        }),
+        meta: { agentName: options.agentName, callSid: safeCallSid, utteranceId },
+      })
+      return xmlResponse(`${playTwiml(streamAudioUrl(options, basePath, safeCallSid, jobId))}${nextInputTwiml(options, basePath, "record")}`)
+    }
+
     return await runPhonePromptTurn({
       bridgeOptions: options,
       basePath,
       callDir,
       safeCallSid,
       utteranceId,
-      friendId: voiceFriendId(options, params.From?.trim() ?? "", callSid),
-      sessionKey: `twilio-${safeCallSid}`,
+      friendId,
+      sessionKey,
       promptText: callConnectedPrompt(params),
       afterPlayback: "record",
     })
@@ -439,6 +735,7 @@ async function handleRecording(
   options: TwilioPhoneBridgeOptions,
   basePath: string,
   params: Record<string, string>,
+  jobs: TwilioAudioStreamJobStore,
 ): Promise<TwilioPhoneBridgeResponse> {
   const recording = parseRecordingParams(params)
   if (!recording) {
@@ -458,15 +755,67 @@ async function handleRecording(
   const inputPath = path.join(callDir, `${safeRecordingSid}.wav`)
   const utteranceId = `twilio-${safeCallSid}-${safeRecordingSid}`
   const downloadRecording = options.downloadRecording ?? defaultTwilioRecordingDownloader
+  const friendId = voiceFriendId(options, recording.from, recording.callSid)
+  const sessionKey = twilioPhoneVoiceSessionKey({
+    defaultFriendId: options.defaultFriendId,
+    from: recording.from,
+    to: recording.to,
+    callSid: recording.callSid,
+  })
 
   emitNervesEvent({
     component: "senses",
     event: "senses.voice_twilio_turn_start",
     message: "starting Twilio voice turn",
-    meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid },
+    meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, sessionKey },
   })
 
   try {
+    if (normalizeTwilioPhonePlaybackMode(options.playbackMode) === "stream") {
+      const jobId = safeSegment(utteranceId)
+      startTwilioPlaybackStreamJob({
+        jobs,
+        bridgeOptions: options,
+        basePath,
+        callDir,
+        safeCallSid,
+        jobId,
+        baseUtteranceId: utteranceId,
+        runTurn: async (onAudioChunk) => {
+          await fs.mkdir(callDir, { recursive: true })
+          const mediaUrl = twilioRecordingMediaUrl(recording.recordingUrl)
+          const audio = await downloadRecording({
+            recordingUrl: mediaUrl,
+            accountSid: options.twilioAccountSid?.trim() || undefined,
+            authToken: options.twilioAuthToken?.trim() || undefined,
+          })
+          await fs.writeFile(inputPath, audio)
+          const transcript = await options.transcriber.transcribe({
+            utteranceId,
+            audioPath: inputPath,
+          })
+          const turnTranscript = isNoSpeechTranscript(transcript.text)
+            ? buildVoiceTranscript({
+                utteranceId: `${utteranceId}-nospeech`,
+                text: noSpeechPrompt(),
+                source: "loopback",
+              })
+            : transcript
+          return runVoiceLoopbackTurn({
+            agentName: options.agentName,
+            friendId,
+            sessionKey,
+            transcript: turnTranscript,
+            tts: options.tts,
+            runSenseTurn: options.runSenseTurn,
+            onAudioChunk,
+          })
+        },
+        meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, utteranceId },
+      })
+      return xmlResponse(`${playTwiml(streamAudioUrl(options, basePath, safeCallSid, jobId))}${redirectTwiml(options.publicBaseUrl, basePath)}`)
+    }
+
     await fs.mkdir(callDir, { recursive: true })
     const mediaUrl = twilioRecordingMediaUrl(recording.recordingUrl)
     const audio = await downloadRecording({
@@ -488,8 +837,8 @@ async function handleRecording(
         callDir,
         safeCallSid,
         utteranceId: `${utteranceId}-nospeech`,
-        friendId: voiceFriendId(options, recording.from, recording.callSid),
-        sessionKey: `twilio-${safeCallSid}`,
+        friendId,
+        sessionKey,
         promptText: noSpeechPrompt(),
         afterPlayback: "redirect",
       })
@@ -497,8 +846,8 @@ async function handleRecording(
 
     const turn = await runVoiceLoopbackTurn({
       agentName: options.agentName,
-      friendId: voiceFriendId(options, recording.from, recording.callSid),
-      sessionKey: `twilio-${safeCallSid}`,
+      friendId,
+      sessionKey,
       transcript,
       tts: options.tts,
       runSenseTurn: options.runSenseTurn,
@@ -508,24 +857,23 @@ async function handleRecording(
       return xmlResponse(`${sayTwiml("voice output failed after the text response was captured.")}${redirectTwiml(options.publicBaseUrl, basePath)}`)
     }
 
-    const playback = await writeVoicePlaybackArtifact({
-      utteranceId,
-      delivery: turn.tts,
-      outputDir: callDir,
+    const audioUrls = await writeVoiceTurnPlaybackArtifacts({
+      bridgeOptions: options,
+      basePath,
+      callDir,
+      safeCallSid,
+      baseUtteranceId: utteranceId,
+      turn,
     })
-    const audioUrl = routeUrl(
-      options.publicBaseUrl,
-      `${basePath}/audio/${encodeURIComponent(safeCallSid)}/${encodeURIComponent(path.basename(playback.audioPath))}`,
-    )
 
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_twilio_turn_end",
       message: "finished Twilio voice turn",
-      meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, audioPath: playback.audioPath },
+      meta: { agentName: options.agentName, callSid: safeCallSid, recordingSid: safeRecordingSid, playbackCount: audioUrls.length },
     })
 
-    return xmlResponse(`${playTwiml(audioUrl)}${redirectTwiml(options.publicBaseUrl, basePath)}`)
+    return xmlResponse(`${playManyTwiml(audioUrls)}${redirectTwiml(options.publicBaseUrl, basePath)}`)
   } catch (error) {
     emitNervesEvent({
       level: "error",
@@ -571,9 +919,38 @@ async function handleAudio(options: TwilioPhoneBridgeOptions, basePath: string, 
   }
 }
 
+async function handleAudioStream(
+  options: TwilioPhoneBridgeOptions,
+  basePath: string,
+  requestPath: string,
+  jobs: TwilioAudioStreamJobStore,
+): Promise<TwilioPhoneBridgeResponse> {
+  const prefix = `${basePath}/audio-stream/`
+  const pathOnly = requestPath.split("?")[0]!
+  const rest = pathOnly.slice(prefix.length)
+  const parts = rest.split("/")
+  if (parts.length !== 2) return textResponse(404, "not found")
+  const [callSidPart, fileNamePart] = parts as [string, string]
+  const callSid = decodeSafeSegment(callSidPart)
+  const fileName = decodeSafeSegment(fileNamePart)
+  if (!callSid || !fileName) return textResponse(404, "not found")
+  const jobId = fileName.replace(/\.[A-Za-z0-9]+$/, "")
+  const job = jobs.get(callSid, jobId)
+  if (!job) return textResponse(404, "not found")
+
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.voice_twilio_stream_served",
+    message: "served Twilio voice streaming audio job",
+    meta: { agentName: options.agentName, callSid, jobId },
+  })
+  return streamResponse(job.stream(), job.mimeType)
+}
+
 export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): TwilioPhoneBridge {
   new URL(options.publicBaseUrl)
   const basePath = normalizeTwilioPhoneBasePath(options.basePath)
+  const jobs = new TwilioAudioStreamJobStore()
 
   return {
     async handle(request): Promise<TwilioPhoneBridgeResponse> {
@@ -582,6 +959,9 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       const routePath = requestPath.split("?")[0]!
       if (method === "GET" && requestPath.startsWith(`${basePath}/audio/`)) {
         return handleAudio(options, basePath, requestPath)
+      }
+      if (method === "GET" && requestPath.startsWith(`${basePath}/audio-stream/`)) {
+        return handleAudioStream(options, basePath, requestPath, jobs)
       }
       if (method === "GET" && routePath === `${basePath}/health`) {
         return textResponse(200, "ok")
@@ -600,9 +980,9 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         return textResponse(403, "invalid Twilio signature")
       }
 
-      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath, params)
+      if (routePath === `${basePath}/incoming`) return handleIncoming(options, basePath, params, jobs)
       if (routePath === `${basePath}/listen`) return handleListen(options, basePath)
-      if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params)
+      if (routePath === `${basePath}/recording`) return handleRecording(options, basePath, params, jobs)
       return textResponse(404, "not found")
     },
   }
@@ -626,6 +1006,38 @@ function readRequestBody(req: http.IncomingMessage, limitBytes = 1_000_000): Pro
   })
 }
 
+/* v8 ignore start -- HTTP backpressure is platform-dependent in unit tests @preserve */
+function waitForDrain(res: http.ServerResponse): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onDrain = (): void => {
+      res.off("error", onError)
+      resolve()
+    }
+    const onError = (error: Error): void => {
+      res.off("drain", onDrain)
+      reject(error)
+    }
+    res.once("drain", onDrain)
+    res.once("error", onError)
+  })
+}
+/* v8 ignore stop */
+
+async function writeResponseBody(res: http.ServerResponse, body: TwilioPhoneBridgeResponse["body"]): Promise<void> {
+  if (!isAsyncIterableBody(body)) {
+    res.end(body)
+    return
+  }
+
+  for await (const chunk of body) {
+    /* v8 ignore next -- exercised only when Node reports socket backpressure @preserve */
+    if (!res.write(chunk)) {
+      await waitForDrain(res)
+    }
+  }
+  res.end()
+}
+
 export async function startTwilioPhoneBridgeServer(
   options: StartTwilioPhoneBridgeServerOptions,
 ): Promise<TwilioPhoneBridgeServer> {
@@ -642,7 +1054,7 @@ export async function startTwilioPhoneBridgeServer(
         body,
       })
       res.writeHead(response.statusCode, response.headers)
-      res.end(response.body)
+      await writeResponseBody(res, response.body)
     } catch (error) {
       emitNervesEvent({
         level: "error",
@@ -651,8 +1063,13 @@ export async function startTwilioPhoneBridgeServer(
         message: "Twilio voice bridge server failed a request",
         meta: { agentName: options.agentName, error: errorMessage(error) },
       })
-      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" })
-      res.end("internal server error")
+      /* v8 ignore next -- defensive path for async stream failures after headers @preserve */
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : new Error(String(error)))
+      } else {
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" })
+        res.end("internal server error")
+      }
     }
   })
 

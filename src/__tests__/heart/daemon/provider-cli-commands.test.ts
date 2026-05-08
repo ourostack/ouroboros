@@ -1359,6 +1359,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("voice.whisperCliPath")
     expect(result).toContain("voice.whisperModelPath")
     expect(result).toContain("voice.twilioPublicUrl")
+    expect(result).toContain("voice.twilioPlaybackMode")
     expect(result).toContain("/voice/agents/slugger/twilio")
     expect(result).toContain("Twilio Record -> Whisper.cpp")
   })

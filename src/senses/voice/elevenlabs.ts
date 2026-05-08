@@ -198,7 +198,18 @@ export function createElevenLabsTtsClient(options: ElevenLabsTtsClientOptions): 
           try {
             const parsed = JSON.parse(payloadText(payload)) as { audio?: unknown; isFinal?: unknown }
             if (typeof parsed.audio === "string" && parsed.audio.length > 0) {
-              chunks.push(Buffer.from(parsed.audio, "base64"))
+              const chunk = Buffer.from(parsed.audio, "base64")
+              chunks.push(chunk)
+              if (request.onAudioChunk) {
+                try {
+                  const chunkResult = request.onAudioChunk(chunk)
+                  if (chunkResult && typeof (chunkResult as Promise<void>).then === "function") {
+                    void (chunkResult as Promise<void>).catch(fail)
+                  }
+                } catch (error) {
+                  fail(error)
+                }
+              }
             }
             if (parsed.isFinal === true) {
               finish()

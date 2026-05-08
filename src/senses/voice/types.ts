@@ -33,6 +33,7 @@ export interface VoiceTranscriber {
 export interface VoiceTtsRequest {
   utteranceId: string
   text: string
+  onAudioChunk?: (chunk: Uint8Array) => void | Promise<void>
 }
 
 export interface VoiceTtsResult {

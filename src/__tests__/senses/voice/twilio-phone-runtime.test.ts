@@ -113,6 +113,7 @@ describe("Twilio phone transport runtime", () => {
         defaultFriendId: "ari",
         recordTimeoutSeconds: 3,
         recordMaxLengthSeconds: 30,
+        playbackMode: "stream",
       },
     })
   })
@@ -265,6 +266,7 @@ describe("Twilio phone transport runtime", () => {
         defaultFriendId: "bea",
         elevenLabsVoiceId: "voice_override",
         recordTimeoutSeconds: 4,
+        playbackMode: "buffered",
       },
     })
 
@@ -281,6 +283,7 @@ describe("Twilio phone transport runtime", () => {
         elevenLabsVoiceId: "voice_override",
         recordTimeoutSeconds: 4,
         recordMaxLengthSeconds: 12,
+        playbackMode: "buffered",
       },
     })
   })
@@ -305,6 +308,7 @@ describe("Twilio phone transport runtime", () => {
         host: "127.0.0.1",
         recordTimeoutSeconds: 2,
         recordMaxLengthSeconds: 30,
+        playbackMode: "stream",
       },
     })
 
@@ -430,6 +434,7 @@ describe("Twilio phone transport runtime", () => {
       defaultFriendId: "ari",
       recordTimeoutSeconds: 2,
       recordMaxLengthSeconds: 30,
+      playbackMode: "stream",
     }))
   })
 

@@ -19,10 +19,13 @@ import {
   DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
   DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS,
   TWILIO_PHONE_WEBHOOK_BASE_PATH,
+  DEFAULT_TWILIO_PHONE_PLAYBACK_MODE,
   normalizeTwilioPhoneBasePath,
+  normalizeTwilioPhonePlaybackMode,
   startTwilioPhoneBridgeServer,
   twilioPhoneWebhookUrl,
   type StartTwilioPhoneBridgeServerOptions,
+  type TwilioPhonePlaybackMode,
   type TwilioPhoneBridgeServer,
 } from "./twilio-phone"
 import { createWhisperCppTranscriber } from "./whisper"
@@ -40,6 +43,7 @@ export interface TwilioPhoneTransportRuntimeOverrides {
   whisperModelPath?: string
   recordTimeoutSeconds?: number
   recordMaxLengthSeconds?: number
+  playbackMode?: TwilioPhonePlaybackMode
 }
 
 export interface TwilioPhoneTransportRuntimeSettings {
@@ -59,6 +63,7 @@ export interface TwilioPhoneTransportRuntimeSettings {
   defaultFriendId?: string
   recordTimeoutSeconds: number
   recordMaxLengthSeconds: number
+  playbackMode: TwilioPhonePlaybackMode
 }
 
 export type TwilioPhoneTransportRuntimeResolution =
@@ -267,6 +272,8 @@ export function resolveTwilioPhoneTransportRuntime(
     recordMaxLengthSeconds: overrides.recordMaxLengthSeconds
       ?? configNumber(options.machineConfig, "voice.twilioRecordMaxLengthSeconds")
       ?? DEFAULT_TWILIO_RECORD_MAX_LENGTH_SECONDS,
+    playbackMode: overrides.playbackMode
+      ?? normalizeTwilioPhonePlaybackMode(configString(options.machineConfig, "voice.twilioPlaybackMode") ?? DEFAULT_TWILIO_PHONE_PLAYBACK_MODE),
   }
   return { status: "configured", settings }
 }
@@ -339,6 +346,7 @@ export async function startConfiguredTwilioPhoneTransport(
     defaultFriendId: settings.defaultFriendId,
     recordTimeoutSeconds: settings.recordTimeoutSeconds,
     recordMaxLengthSeconds: settings.recordMaxLengthSeconds,
+    playbackMode: settings.playbackMode,
   })
 
   emitNervesEvent({

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.567",
+      "changes": [
+        "Voice transports now receive outward `speak` and `settle` text through the shared sense delivery callback path, so voice audio is driven by the same tool-required delivery semantics as chat channels.",
+        "Twilio phone sessions are now keyed to the stable phone voice channel instead of CallSid, while CallSid remains the per-call artifact directory.",
+        "Managed Twilio playback now supports streaming Play URLs backed by ElevenLabs audio chunks, with buffered playback still available for compatibility testing."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.566",
       "changes": [
         "Shared sense delivery recovery is now an exported contract so replaying transports such as Voice/Twilio recover tool-required `settle`/`speak` output only after outward delivery acknowledgements.",

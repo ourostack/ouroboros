@@ -70,13 +70,13 @@ describe("voice golden path orchestrator", () => {
       audioPath: "/tmp/input.wav",
       language: "en",
     })
-    expect(runSenseTurn).toHaveBeenCalledWith({
+    expect(runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
       agentName: "slugger",
       channel: "voice",
       friendId: "ari",
       sessionKey: result.meeting.sessionKey,
       userMessage: "Can you hear me from the golden path?",
-    })
+    }))
     expect(tts.synthesize).toHaveBeenCalledWith({ utteranceId: "utt_gold", text: "I hear you." })
     expect(playback).toHaveBeenCalledWith(expect.objectContaining({
       utteranceId: "utt_gold",
