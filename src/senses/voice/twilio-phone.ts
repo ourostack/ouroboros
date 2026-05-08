@@ -6,7 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { writeVoicePlaybackArtifact } from "./playback"
 import { buildVoiceTranscript } from "./transcript"
 import { runVoiceLoopbackTurn, type VoiceLoopbackTurnResult, type VoiceRunSenseTurn } from "./turn"
-import type { VoiceTranscriber, VoiceTtsService } from "./types"
+import type { VoiceTranscript, VoiceTranscriber, VoiceTtsService } from "./types"
 
 export const DEFAULT_TWILIO_PHONE_PORT = 18910
 export const DEFAULT_TWILIO_RECORD_TIMEOUT_SECONDS = 2
@@ -298,6 +298,41 @@ function isNoSpeechTranscript(text: string): boolean {
     || normalized === "BLANK_AUDIO"
     || normalized === "[NO_SPEECH]"
     || normalized === "NO_SPEECH"
+}
+
+function isNoSpeechTranscriptionError(error: unknown): boolean {
+  const normalized = errorMessage(error).toLowerCase()
+  return normalized.includes("empty whisper.cpp transcript")
+    || normalized.includes("voice transcript text is empty")
+}
+
+function buildNoSpeechTranscript(utteranceId: string): VoiceTranscript {
+  return buildVoiceTranscript({
+    utteranceId: `${utteranceId}-nospeech`,
+    text: noSpeechPrompt(),
+    source: "loopback",
+  })
+}
+
+async function transcribeRecordingOrNoSpeech(options: {
+  transcriber: VoiceTranscriber
+  utteranceId: string
+  inputPath: string
+}): Promise<VoiceTranscript> {
+  try {
+    const transcript = await options.transcriber.transcribe({
+      utteranceId: options.utteranceId,
+      audioPath: options.inputPath,
+    })
+    return isNoSpeechTranscript(transcript.text)
+      ? buildNoSpeechTranscript(options.utteranceId)
+      : transcript
+  } catch (error) {
+    if (isNoSpeechTranscriptionError(error)) {
+      return buildNoSpeechTranscript(options.utteranceId)
+    }
+    throw error
+  }
 }
 
 function parseRecordingParams(params: Record<string, string>): RecordingCallbackParams | null {
@@ -790,17 +825,11 @@ async function handleRecording(
             authToken: options.twilioAuthToken?.trim() || undefined,
           })
           await fs.writeFile(inputPath, audio)
-          const transcript = await options.transcriber.transcribe({
+          const turnTranscript = await transcribeRecordingOrNoSpeech({
+            transcriber: options.transcriber,
             utteranceId,
-            audioPath: inputPath,
+            inputPath,
           })
-          const turnTranscript = isNoSpeechTranscript(transcript.text)
-            ? buildVoiceTranscript({
-                utteranceId: `${utteranceId}-nospeech`,
-                text: noSpeechPrompt(),
-                source: "loopback",
-              })
-            : transcript
           return runVoiceLoopbackTurn({
             agentName: options.agentName,
             friendId,
@@ -825,12 +854,13 @@ async function handleRecording(
     })
     await fs.writeFile(inputPath, audio)
 
-    const transcript = await options.transcriber.transcribe({
+    const transcript = await transcribeRecordingOrNoSpeech({
+      transcriber: options.transcriber,
       utteranceId,
-      audioPath: inputPath,
+      inputPath,
     })
 
-    if (isNoSpeechTranscript(transcript.text)) {
+    if (transcript.utteranceId === `${utteranceId}-nospeech`) {
       return await runPhonePromptTurn({
         bridgeOptions: options,
         basePath,
