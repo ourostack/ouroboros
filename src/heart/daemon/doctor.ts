@@ -401,15 +401,26 @@ export function checkTrips(deps: DoctorDeps): DoctorCategory {
   }
 
   for (const agentDir of agents) {
-    const tripsRootPath = `${deps.bundlesRoot}/${agentDir}/state/trips`
-    if (!deps.existsSync(tripsRootPath)) {
-      // Trip ledger is optional; absence is fine. Pass with a hint.
-      checks.push({ label: `${agentDir} trip ledger`, status: "pass", detail: "no ledger directory (no trips ensured yet)" })
+    const durableTripsRoot = `${deps.bundlesRoot}/${agentDir}/trips`
+    const legacyTripsRoot = `${deps.bundlesRoot}/${agentDir}/state/trips`
+    const hasDurableTrips = deps.existsSync(durableTripsRoot)
+    const hasLegacyTrips = deps.existsSync(legacyTripsRoot)
+    if (!hasDurableTrips) {
+      if (hasLegacyTrips) {
+        checks.push({
+          label: `${agentDir} trip ledger`,
+          status: "warn",
+          detail: "legacy state/trips exists but durable trips/ missing — run any trip tool to copy legacy storage into trips/",
+        })
+      } else {
+        // Trip ledger is optional; absence is fine. Pass with a hint.
+        checks.push({ label: `${agentDir} trip ledger`, status: "pass", detail: "no ledger directory (no trips ensured yet)" })
+      }
       continue
     }
-    const ledgerPath = `${tripsRootPath}/ledger.json`
+    const ledgerPath = `${durableTripsRoot}/ledger.json`
     if (!deps.existsSync(ledgerPath)) {
-      checks.push({ label: `${agentDir} trip ledger`, status: "warn", detail: "state/trips/ exists but ledger.json missing — run trip_ensure_ledger" })
+      checks.push({ label: `${agentDir} trip ledger`, status: "warn", detail: "trips/ exists but ledger.json missing — run trip_ensure_ledger" })
       continue
     }
     let raw: string
@@ -446,7 +457,7 @@ export function checkTrips(deps: DoctorDeps): DoctorCategory {
       continue
     }
     let recordCount = 0
-    const recordsDir = `${tripsRootPath}/records`
+    const recordsDir = `${durableTripsRoot}/records`
     /* v8 ignore start -- defensive: records dir presence and readdir error are filesystem-state branches not all exercised by tests; pluralization branch likewise depends on record count fixtures @preserve */
     if (deps.existsSync(recordsDir)) {
       try {
@@ -455,15 +466,52 @@ export function checkTrips(deps: DoctorDeps): DoctorCategory {
         // ignore — the warn detail will still report 0 records
       }
     }
+    const legacyDiverges = hasLegacyTrips && tripStoresDiffer(deps, durableTripsRoot, legacyTripsRoot)
     checks.push({
       label: `${agentDir} trip ledger`,
-      status: "pass",
-      detail: `${ledgerId} (${recordCount} record${recordCount === 1 ? "" : "s"})`,
+      status: legacyDiverges ? "warn" : "pass",
+      detail: `${ledgerId} (${recordCount} record${recordCount === 1 ? "" : "s"})${legacyDiverges ? "; legacy state/trips differs from durable trips/ — durable trips/ is authoritative" : ""}`,
     })
     /* v8 ignore stop */
   }
 
   return { name: "Trips", checks }
+}
+
+function listTripStoreFiles(deps: DoctorDeps, root: string): string[] {
+  const files: string[] = []
+  if (deps.existsSync(`${root}/ledger.json`)) {
+    files.push("ledger.json")
+  }
+  const recordsDir = `${root}/records`
+  if (deps.existsSync(recordsDir)) {
+    for (const name of deps.readdirSync(recordsDir)) {
+      if (name.endsWith(".json")) {
+        files.push(`records/${name}`)
+      }
+    }
+  }
+  return files.sort()
+}
+
+function tripStoresDiffer(deps: DoctorDeps, durableRoot: string, legacyRoot: string): boolean {
+  const relativePaths = new Set([
+    ...listTripStoreFiles(deps, durableRoot),
+    ...listTripStoreFiles(deps, legacyRoot),
+  ])
+  for (const relativePath of relativePaths) {
+    const durablePath = `${durableRoot}/${relativePath}`
+    const legacyPath = `${legacyRoot}/${relativePath}`
+    const durableExists = deps.existsSync(durablePath)
+    const legacyExists = deps.existsSync(legacyPath)
+    if (durableExists !== legacyExists) {
+      return true
+    }
+    if (durableExists && deps.readFileSync(durablePath) !== deps.readFileSync(legacyPath)) {
+      return true
+    }
+  }
+  return false
 }
 
 export function checkMailroom(deps: DoctorDeps): DoctorCategory {

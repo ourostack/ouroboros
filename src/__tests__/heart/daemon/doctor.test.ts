@@ -1373,9 +1373,11 @@ describe("checkTrips", () => {
         "/tmp/bundles/test.ouro/trips",
         "/tmp/bundles/test.ouro/trips/ledger.json",
         "/tmp/bundles/test.ouro/trips/records",
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json",
         "/tmp/bundles/test.ouro/state/trips",
         "/tmp/bundles/test.ouro/state/trips/ledger.json",
         "/tmp/bundles/test.ouro/state/trips/records",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_b.json",
       ]),
       readdirSync: readdirFor({
         "/tmp/bundles": ["test.ouro"],
