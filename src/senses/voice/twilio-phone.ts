@@ -4660,6 +4660,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
       if (method === "GET" && routePath === `${sipWebhookPath}/health`) {
         return textResponse(200, "ok")
       }
+      if (method === "GET") return textResponse(404, "not found")
       if (method !== "POST") return textResponse(405, "method not allowed")
 
       if (routePath === sipWebhookPath) {

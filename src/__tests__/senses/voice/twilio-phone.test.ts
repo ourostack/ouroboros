@@ -2439,6 +2439,33 @@ describe("Twilio phone voice bridge", () => {
     })
   })
 
+  it("returns not found for unknown GET routes outside the configured voice path", async () => {
+    const bridge = createTwilioPhoneBridge({
+      ...baseBridgeOptions("/tmp/ouro-twilio-phone"),
+      basePath: "/voice/agents/slugger/twilio",
+    })
+
+    const staleHealthProbe = await bridge.handle({
+      method: "GET",
+      path: "/voice/twilio/health",
+      headers: {},
+    })
+    const configuredHealthProbe = await bridge.handle({
+      method: "GET",
+      path: "/voice/agents/slugger/twilio/health",
+      headers: {},
+    })
+
+    expect(staleHealthProbe).toMatchObject({
+      statusCode: 404,
+      body: "not found",
+    })
+    expect(configuredHealthProbe).toMatchObject({
+      statusCode: 200,
+      body: "ok",
+    })
+  })
+
   it("fails closed when a Twilio auth token is configured and the request is unsigned", async () => {
     const bridge = createTwilioPhoneBridge({
       ...baseBridgeOptions("/tmp/ouro-twilio-phone"),
@@ -3537,11 +3564,11 @@ describe("Twilio phone voice bridge", () => {
     }
   })
 
-  it("rejects non-POST Twilio routes that are not health or audio", async () => {
+  it("rejects unsupported non-GET and non-POST Twilio routes", async () => {
     const bridge = createTwilioPhoneBridge(baseBridgeOptions("/tmp/ouro-twilio-phone"))
 
     const response = await bridge.handle({
-      method: "GET",
+      method: "PUT",
       path: "/voice/twilio/incoming",
       headers: {},
     })
