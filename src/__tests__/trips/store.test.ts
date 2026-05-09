@@ -154,12 +154,23 @@ describe("trips store", () => {
       const root = mountAgentRoot()
       const trip = tripRecord({ tripId: "trip_legacy_0000000000000000" })
       const legacy = writeLegacyStore(root, trip)
+      fs.writeFileSync(path.join(root, "state", "trips", "records", "notes.txt"), "ignore me", "utf-8")
 
       expect(listTripIds("slugger")).toEqual([trip.tripId])
       expect(readTripRecord("slugger", trip.tripId)).toEqual(trip)
       expect(fs.readFileSync(path.join(root, "trips", "ledger.json"), "utf-8")).toBe(legacy.rawLedger)
       expect(fs.readFileSync(path.join(root, "trips", "records", `${trip.tripId}.json`), "utf-8")).toBe(legacy.rawRecord)
+      expect(fs.existsSync(path.join(root, "trips", "records", "notes.txt"))).toBe(false)
       expect(fs.existsSync(path.join(root, "state", "trips", "ledger.json"))).toBe(true)
+    })
+
+    it("migrates a legacy ledger even when the legacy records directory is absent", () => {
+      const root = mountAgentRoot()
+      const legacy = writeLegacyStore(root)
+      fs.rmSync(path.join(root, "state", "trips", "records"), { recursive: true, force: true })
+
+      expect(listTripIds("slugger")).toEqual([])
+      expect(fs.readFileSync(path.join(root, "trips", "ledger.json"), "utf-8")).toBe(legacy.rawLedger)
     })
 
     it("prefers durable trips storage and reports legacy divergence without merging", () => {
@@ -168,14 +179,58 @@ describe("trips store", () => {
       const durableTrip = tripRecord({ tripId: "trip_durable_0000000000000000", name: "Durable" })
       ensureAgentTripLedger({ agentName: "slugger" })
       upsertTripRecord("slugger", durableTrip)
+      fs.writeFileSync(path.join(root, "trips", "records", "notes.txt"), "ignore me", "utf-8")
       const legacyTrip = tripRecord({ tripId: "trip_legacy_0000000000000000", name: "Legacy" })
       writeLegacyStore(root, legacyTrip)
+      fs.writeFileSync(path.join(root, "state", "trips", "records", "notes.txt"), "ignore me", "utf-8")
       events.splice(0)
 
       expect(listTripIds("slugger")).toEqual([durableTrip.tripId])
       expect(() => readTripRecord("slugger", legacyTrip.tripId)).toThrow(TripNotFoundError)
       expect(fs.existsSync(path.join(root, "trips", "records", `${legacyTrip.tripId}.json`))).toBe(false)
       expect(events.some((event) => event.event === "trips.legacy_diverged" && event.level === "warn")).toBe(true)
+    })
+
+    it("does not report divergence when durable and legacy ledger-only stores match", () => {
+      const root = mountAgentRoot()
+      const legacy = writeLegacyStore(root)
+      fs.rmSync(path.join(root, "state", "trips", "records"), { recursive: true, force: true })
+      fs.mkdirSync(path.join(root, "trips"), { recursive: true })
+      fs.writeFileSync(path.join(root, "trips", "ledger.json"), legacy.rawLedger, "utf-8")
+      const events = captureNervesEvents()
+
+      const result = ensureAgentTripLedger({ agentName: "slugger" })
+
+      expect(result.added).toBe(false)
+      expect(events.some((event) => event.event === "trips.legacy_diverged")).toBe(false)
+    })
+
+    it("reports divergence when legacy state has records but no ledger", () => {
+      const root = mountAgentRoot()
+      const durableTrip = tripRecord({ tripId: "trip_durable_0000000000000000" })
+      ensureAgentTripLedger({ agentName: "slugger" })
+      upsertTripRecord("slugger", durableTrip)
+      fs.mkdirSync(path.join(root, "state", "trips", "records"), { recursive: true })
+      fs.writeFileSync(path.join(root, "state", "trips", "records", "trip_legacy.json"), "{}", "utf-8")
+      const events = captureNervesEvents()
+
+      expect(listTripIds("slugger")).toEqual([durableTrip.tripId])
+      expect(events.some((event) => event.event === "trips.legacy_diverged")).toBe(true)
+    })
+
+    it("cleans temporary durable migration directories when legacy copy fails", () => {
+      const root = mountAgentRoot()
+      writeLegacyStore(root, tripRecord({ tripId: "trip_legacy_0000000000000000" }))
+
+      fs.chmodSync(root, 0o500)
+      try {
+        expect(() => listTripIds("slugger")).toThrow()
+      } finally {
+        fs.chmodSync(root, 0o700)
+      }
+      expect(fs.existsSync(path.join(root, "trips"))).toBe(false)
+      expect(fs.readdirSync(root).filter((entry) => entry.startsWith("trips.tmp-"))).toEqual([])
+      expect(fs.existsSync(path.join(root, "state", "trips", "ledger.json"))).toBe(true)
     })
 
     it("overwrites the prior record on a second upsert with the same tripId", () => {
