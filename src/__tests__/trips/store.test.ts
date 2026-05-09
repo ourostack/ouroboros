@@ -233,6 +233,21 @@ describe("trips store", () => {
       expect(fs.existsSync(path.join(root, "state", "trips", "ledger.json"))).toBe(true)
     })
 
+    it("cleans stale migration temp files before copying legacy storage", () => {
+      const root = mountAgentRoot()
+      const trip = tripRecord({ tripId: "trip_legacy_0000000000000000" })
+      writeLegacyStore(root, trip)
+      vi.spyOn(Date, "now").mockReturnValue(1234)
+      const staleTmpRoot = path.join(root, `trips.tmp-${process.pid}-1234`)
+      fs.mkdirSync(path.join(staleTmpRoot, "records"), { recursive: true })
+      fs.writeFileSync(path.join(staleTmpRoot, "ledger.json"), "stale ledger", "utf-8")
+      fs.writeFileSync(path.join(staleTmpRoot, "records", "stale.json"), "stale record", "utf-8")
+
+      expect(listTripIds("slugger")).toEqual([trip.tripId])
+      expect(fs.existsSync(staleTmpRoot)).toBe(false)
+      expect(readTripRecord("slugger", trip.tripId)).toEqual(trip)
+    })
+
     it("overwrites the prior record on a second upsert with the same tripId", () => {
       mountAgentRoot()
       ensureAgentTripLedger({ agentName: "slugger" })

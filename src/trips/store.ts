@@ -53,6 +53,23 @@ function recordsDirFor(root: string): string {
   return path.join(root, "records")
 }
 
+function removeMigrationTempRoot(tmpRoot: string): void {
+  const records = recordsDirFor(tmpRoot)
+  if (fs.existsSync(records)) {
+    for (const entry of fs.readdirSync(records)) {
+      fs.unlinkSync(path.join(records, entry))
+    }
+    fs.rmdirSync(records)
+  }
+  const ledger = ledgerPathFor(tmpRoot)
+  if (fs.existsSync(ledger)) {
+    fs.unlinkSync(ledger)
+  }
+  if (fs.existsSync(tmpRoot)) {
+    fs.rmdirSync(tmpRoot)
+  }
+}
+
 function copyLegacyTripsIfNeeded(agentName: string): void {
   const durableRoot = tripsRoot(agentName)
   const legacyRoot = legacyTripsRoot(agentName)
@@ -61,7 +78,7 @@ function copyLegacyTripsIfNeeded(agentName: string): void {
   }
 
   const tmpRoot = `${durableRoot}.tmp-${process.pid}-${Date.now()}`
-  fs.rmSync(tmpRoot, { recursive: true, force: true })
+  removeMigrationTempRoot(tmpRoot)
   try {
     fs.mkdirSync(recordsDirFor(tmpRoot), { recursive: true })
     fs.copyFileSync(ledgerPathFor(legacyRoot), ledgerPathFor(tmpRoot))
@@ -77,7 +94,7 @@ function copyLegacyTripsIfNeeded(agentName: string): void {
 
     fs.renameSync(tmpRoot, durableRoot)
   } catch (error) {
-    fs.rmSync(tmpRoot, { recursive: true, force: true })
+    removeMigrationTempRoot(tmpRoot)
     throw error
   }
 }
