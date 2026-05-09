@@ -167,6 +167,7 @@ function isBwItemNotFoundError(error: Error): boolean {
 const BW_LOCK_FILENAME = ".ouro-bw.lock"
 const BW_LOCK_TIMEOUT_MS = 30_000
 const BW_LOCK_POLL_MS = 100
+const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
 const BW_DATA_FILENAME = "data.json"
 const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
 const BW_SYNC_FRESH_MS = 60_000
@@ -181,6 +182,51 @@ function isPidAlive(pid: number): boolean {
   } catch {
     return false
   }
+}
+
+type StaleBwLock = {
+  reason: "dead-pid" | "stale-age"
+  pid: number | undefined
+  ageMs: number
+}
+
+function parseBwLockPid(content: string): number | undefined {
+  const pid = Number.parseInt(content, 10)
+  return Number.isFinite(pid) ? pid : undefined
+}
+
+function getStaleBwLock(lockPath: string, content: string): StaleBwLock | undefined {
+  const pid = parseBwLockPid(content)
+  const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
+  if (pid !== undefined && !isPidAlive(pid)) {
+    return { reason: "dead-pid", pid, ageMs }
+  }
+  if (ageMs >= BW_LOCK_STALE_MS) {
+    return { reason: "stale-age", pid, ageMs }
+  }
+  return undefined
+}
+
+function reapStaleBwLock(lockPath: string, staleLock: StaleBwLock): void {
+  try {
+    fs.unlinkSync(lockPath)
+  } catch {
+    // Race with another process cleaning the same stale lock.
+    /* v8 ignore next -- race: another process may reap the same stale lock between stat and unlink @preserve */
+    return
+  }
+  emitNervesEvent({
+    level: "warn",
+    event: "repertoire.bw_lock_stale_reaped",
+    component: "repertoire",
+    message: "stale bw CLI lock reaped",
+    meta: {
+      lockPath,
+      reason: staleLock.reason,
+      pid: staleLock.pid === undefined ? "unknown" : String(staleLock.pid),
+      ageMs: String(Math.round(staleLock.ageMs)),
+    },
+  })
 }
 
 async function acquireFileLock(lockPath: string): Promise<void> {
@@ -200,10 +246,9 @@ async function acquireFileLock(lockPath: string): Promise<void> {
       // Lock file exists -- check for stale lock
       try {
         const existing = fs.readFileSync(lockPath, "utf8").trim()
-        const pid = parseInt(existing, 10)
-        if (!isNaN(pid) && !isPidAlive(pid)) {
-          // Stale lock -- remove and retry immediately
-          try { fs.unlinkSync(lockPath) } catch { /* race with another cleaner is fine */ }
+        const staleLock = getStaleBwLock(lockPath, existing)
+        if (staleLock) {
+          reapStaleBwLock(lockPath, staleLock)
           continue
         }
       } catch { /* v8 ignore next -- race: lock file disappeared between openSync and readFileSync @preserve */
