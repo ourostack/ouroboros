@@ -2,6 +2,68 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.576",
+      "changes": [
+        "Twilio phone voice can now route live phone-number calls through OpenAI SIP, with Ouro owning the Realtime control socket, transcript persistence, voice tools, and hangup policy under the canonical Voice sense.",
+        "Slugger's Realtime phone voice now supports agent-scoped style and speed config so the first audible SIP greeting carries the current spoken identity instead of a generic provider voice.",
+        "Outbound SIP calls now hold Realtime auto-response while Twilio async AMD is pending, release on human evidence, and hang up silently on voicemail/fax or unanswered AMD timeouts.",
+        "Direct SIP voice sessions expose `voice_play_audio` for short model-rendered tone cues while reporting that URL/file clip byte injection needs a later media-bridge transport.",
+        "Voice pending delivery now expires stale live-call residue before model injection so old phone scripts or superseded voice identity notes cannot surprise a fresh call.",
+        "Live voice turns run on a live latency profile, avoid blocking audible responses on bundle sync, and use tighter Media Stream VAD defaults for synchronous conversations."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.575",
+      "changes": [
+        "Outbound Twilio calls now prewarm the agent-authored first voice turn before dialing in Media Stream mode, so a human who answers is not left listening to silence while the model thinks.",
+        "Outbound Answering Machine Detection now runs asynchronously, allowing the call webhook and prepared greeting to start immediately while still recording and closing non-human answers when Twilio classifies voicemail or fax.",
+        "Outbound Twilio Media Stream calls now stop when Whisper.cpp hears a voicemail menu prompt after connection, giving the Voice sense a fallback when carrier or answering-machine detection initially reports a human answer.",
+        "Voicemail-menu fallbacks mark the outbound call job as terminal voicemail without starting another agent turn, so the stable voice session stays reserved for actual human conversation."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.574",
+      "changes": [
+        "Outbound Twilio phone calls now request Answering Machine Detection so the Voice sense can distinguish a human answer from voicemail or fax.",
+        "Outbound call webhooks now hang up before starting an agent voice turn when Twilio reports a non-human answer such as `machine_start` or `machine_end_beep`, preventing agents from talking to voicemail as if it were the caller.",
+        "Voicemail and fax outcomes are recorded as terminal outbound call statuses so the redial guard does not treat a missed call as an active live conversation."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.573",
+      "changes": [
+        "`send_message` with `channel=voice` now places a first-class Voice outbound phone call to trusted friends instead of falling through to the generic pending-message queue.",
+        "Voice outbound calling now has a shared policy/routing primitive used by both outward `send_message channel=voice` and inner-dialog `surface channel=voice`, keeping Twilio phone as a transport under the canonical Voice sense.",
+        "Voice prompt and tool status guidance now distinguish normal outward voice calls from inner-dialog surfacing, with regression coverage for trusted calls, untrusted blocks, and missing-phone blocks."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.572",
+      "changes": [
+        "Twilio phone outbound calls now live under the canonical Voice sense: the runtime writes outbound call jobs, creates Twilio Calls API requests, serves answered-call TwiML, and records status callbacks without creating a separate Twilio sense.",
+        "The `surface` tool now supports `channel=voice` for intentional live phone calls to trusted friends, resolving phone-shaped friend handles and enforcing a short redial guard before dialing.",
+        "Outbound phone calls reuse the same stable voice session, agent-authored greeting turn, media-stream playback, transcript path, and Twilio status tracking as inbound phone voice."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.571",
+      "changes": [
+        "Twilio media-stream calls now prebuffer the agent-authored greeting before returning TwiML, so callers keep hearing normal ringing until the first voice audio is ready or the Twilio webhook budget is nearly spent.",
+        "The Media Stream WebSocket now reuses that prebuffered greeting job instead of starting a duplicate greeting turn, then continues with the same VAD, barge-in clear, and stable voice session path.",
+        "Managed phone Voice startup now trusts daemon-bootstrapped runtime and provider credentials when present, avoiding redundant vault reads before the Twilio bridge binds."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.570",
+      "changes": [
+        "Twilio phone voice now defaults to a shorter record timeout and can prebuffer the initial streamed greeting so inbound calls keep ringing briefly until first audio is ready.",
+        "Twilio phone voice now has an optional `media-stream` transport mode under the same Voice sense, using bidirectional Twilio Media Streams, VAD-framed caller utterances, Whisper.cpp utterance WAVs, stable voice sessions, and ElevenLabs `ulaw_8000` chunks back to the call.",
+        "Media Streams playback now sends Twilio `clear` when the caller speaks during agent audio and queues the utterance as an interruption/follow-up instead of losing it.",
+        "Voice prompt/runtime guidance now tells agents to prioritize interrupted or follow-up caller utterances, answer early with `speak`, and keep spoken tool-required deliveries short enough for synchronous conversation.",
+        "Twilio streaming playback now serves a valid silent MP3 fallback for pre-audio failures and treats client disconnects as clean call-stream endings instead of escalating them into application errors."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.569",
       "changes": [
         "BlueBubbles ordinary chat turns no longer trigger external-state proof retry loops merely because the inbound text populated currentObligation.",

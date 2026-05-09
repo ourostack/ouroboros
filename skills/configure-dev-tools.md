@@ -48,31 +48,29 @@ After setup, verify the connection:
 
 Once connected, these tools are available:
 
-### Conversation tools (new)
+### Conversation tools
 - **send_message** -- Send a message and get a synchronous agent response (full turn with tools)
+- **ask** -- Ask the agent a question through the same full turn path as `send_message`
+- **delegate** -- Ask the agent to handle a task through a full conversation turn
+- **request_decision** -- Ask agent to make a decision through a full conversation turn
+- **check_scope** -- Ask whether something is in scope through a full conversation turn
+- **check_guidance** -- Ask for guidance through a full conversation turn
+- **report_progress** -- Tell the agent about delegated-work progress through a full conversation turn
+- **report_blocker** -- Tell the agent about a delegated-work blocker through a full conversation turn
+- **report_complete** -- Tell the agent delegated work is complete through a full conversation turn
 - **check_response** -- Check for pending messages from the agent (after ponder or proactive surface)
 
 ### Read-only tools
-- **ask** -- Ask the agent a question (uses diary, journal, and context)
 - **status** -- Get agent's current status and activity
 - **catchup** -- Get recent activity summary
 - **get_context** -- Get agent's current working context
-- **search_notes** -- Search the agent's diary for specific topics
+- **search_notes** -- Read-only note search for specific topics; missing hits are not evidence that the agent has no belief or preference
 - **get_task** -- Get details of the agent's current task
-- **check_scope** -- Verify if something is in scope for current work
-- **check_guidance** -- Get guidance on how to approach something
-
-### Write tools
-- **delegate** -- Request the agent to handle a task (runs full conversation turn)
-- **request_decision** -- Ask agent to make a decision about something
-- **report_progress** -- Report progress on delegated work
-- **report_blocker** -- Report a blocker on delegated work
-- **report_complete** -- Report completion of delegated work
 
 ## Troubleshooting
 
 ### "Daemon not running" error
-Most read-only tools work without the daemon (reads filesystem directly). For write operations and `send_message`, start the daemon with `ouro up` or `ouro dev`.
+Read-only inspection tools work without the daemon because they read local state directly. Conversation tools need the daemon because they run real agent turns with the normal identity, prompt, tools, and session continuity.
 
 ### MCP server not appearing
 - Run `claude mcp list` or `codex mcp list` to verify registration

@@ -299,6 +299,8 @@ export interface RunAgentOptions {
   pendingMessages?: Array<{ from: string; content: string }>;
   /** Rendered start-of-turn packet for continuity-aware prompt. */
   startOfTurnPacket?: string;
+  /** Skip pre-model kept-note judging for latency-critical live senses. */
+  skipKeptNotes?: boolean;
   /** Safe provider/model/readiness view for this machine. */
   providerVisibility?: AgentProviderVisibility;
 
@@ -767,7 +769,7 @@ export async function runAgent(
     }
   }
 
-  if (channel) {
+  if (channel && options?.skipKeptNotes !== true) {
     await injectKeptNotes(messages, {
       channel,
       friend: currentContext?.friend,

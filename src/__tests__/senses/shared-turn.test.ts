@@ -373,6 +373,23 @@ describe("runSenseTurn", () => {
     expect(input.sessionKey).toBe("my-session")
   })
 
+  it("passes transport tool context through to the agent turn", async () => {
+    const voiceCall = { requestEnd: vi.fn() }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "call-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      toolContext: { voiceCall },
+    })
+
+    expect(mockHandleInboundTurn).toHaveBeenCalledTimes(1)
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.runAgentOptions.toolContext.voiceCall).toBe(voiceCall)
+  })
+
   it("uses the explicit agentName for session storage instead of process argv", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
@@ -452,6 +469,22 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.runAgentOptions).toBeDefined()
     expect(input.runAgentOptions.mcpManager).toBe(fakeMcpManager)
+  })
+
+  it("passes live latency mode through to the shared pipeline", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "voice",
+      sessionKey: "phone",
+      friendId: "friend-1",
+      userMessage: "hello",
+      latencyMode: "live",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.latencyMode).toBe("live")
+    expect(input.runAgentOptions.skipKeptNotes).toBe(true)
   })
 
   it("handles null mcpManager gracefully (no MCP servers)", async () => {

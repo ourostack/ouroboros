@@ -510,6 +510,42 @@ describe("handleInboundTurn", () => {
       expect(allContent).not.toContain("someone tried to reach you")
     })
 
+    it("archives stale voice pending instead of injecting it into a later live call", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "voice-pending-expiry-"))
+      const now = Date.parse("2026-05-09T01:30:00.000Z")
+      vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      vi.spyOn(Date, "now").mockReturnValue(now)
+      const pendingDir = path.join(agentRoot, "state", "pending", "friend-1", "voice", "twilio-phone-friend-1")
+      const pendingMsgs: PendingMessage[] = [
+        { from: "slugger", content: "old voice thing", timestamp: now - (16 * 60 * 1_000) },
+        { from: "slugger", content: "fresh voice thing", timestamp: now - (2 * 60 * 1_000) },
+      ]
+      const input = makeInput({
+        channel: "voice" as Channel,
+        capabilities: makeCapabilities({ channel: "voice", senseType: "local" }),
+        pendingDir,
+        drainPending: vi.fn().mockReturnValue(pendingMsgs),
+      })
+
+      try {
+        await handleInboundTurn(input)
+
+        const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+        const options = runAgentCall[4] as RunAgentOptions
+        expect(options.pendingMessages).toEqual([
+          { from: "slugger", content: "fresh voice thing" },
+        ])
+        const archiveDir = path.join(agentRoot, "state", "pending-expired", "friend-1", "voice", "twilio-phone-friend-1")
+        const archiveFiles = fs.readdirSync(archiveDir).filter((file) => file.endsWith(".json"))
+        expect(archiveFiles).toHaveLength(1)
+        const archived = JSON.parse(fs.readFileSync(path.join(archiveDir, archiveFiles[0]!), "utf-8")) as { content?: string; expirationReason?: string }
+        expect(archived.content).toBe("old voice thing")
+        expect(archived.expirationReason).toBe("voice_freshness_window")
+      } finally {
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
     it("does not inject live world-state checkpoint in user messages (moved to system prompt)", async () => {
       const input = makeInput({
         continuityIngressTexts: ["what are you up to?"],
@@ -1090,6 +1126,20 @@ describe("handleInboundTurn", () => {
           reasons: expect.arrayContaining(["explicit_reflection"]),
         }),
       )
+    })
+
+    it("marks live-latency turns to skip pre-model kept-note judging", async () => {
+      const input = makeInput({
+        channel: "voice",
+        capabilities: makeCapabilities({ channel: "voice", senseType: "local" }),
+        latencyMode: "live",
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = runAgentCall[4] as RunAgentOptions
+      expect(options.skipKeptNotes).toBe(true)
     })
 
     it("threads explicit cross-relationship target candidates into the active-work frame without inventing a shared-work suggestion from raw text alone", async () => {

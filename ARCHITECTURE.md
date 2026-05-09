@@ -126,7 +126,7 @@ Sense status model:
 - `running`
 - `error`
 
-The daemon manages daemon-hosted senses (teams, bluebubbles, mail, voice) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted. Voice is local-machine attached: transcript sessions are normal `voice` channel sessions, ElevenLabs TTS credentials are portable runtime config, and Whisper.cpp paths are machine runtime config.
+The daemon manages daemon-hosted senses (teams, bluebubbles, mail, voice) and reports them in `ouro status`. CLI remains `interactive` rather than daemon-hosted. Voice is local-machine attached today: transcript sessions are normal `voice` channel sessions, ElevenLabs TTS credentials are portable runtime config for the legacy cascade path, and Whisper.cpp paths are machine runtime config. Native Realtime phone voice is configured through `voice.openaiRealtimeVoice`; OpenAI SIP is the target phone transport once provisioned, without changing Voice session ownership.
 
 MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex). It's described below for completeness but lives at `src/heart/mcp/`, not under `src/senses/`. Tool calls coming through MCP route into the same agent runtime as senses do, but MCP is a transport, not a managed input channel.
 
@@ -135,10 +135,10 @@ MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex
 The MCP bridge is how agents talk to developer tools like Claude Code and Codex. It works like this:
 
 - `ouro mcp-serve --agent <name>` starts a JSON-RPC 2.0 server on stdin/stdout. The dev tool launches this as a subprocess.
-- The MCP server exposes tools (e.g., `send_message`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.
-- `send_message` runs a full agent turn via `runSenseTurn()` — the agent gets their complete system prompt, diary, tools, everything. It's not a thin read-only proxy; it's a real conversation turn.
+- The MCP server exposes tools (e.g., `send_message`, `ask`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.
+- Conversation-shaped tools (`send_message`, `ask`, `delegate`, `check_guidance`, `request_decision`, `report_progress`, `report_blocker`, `report_complete`) run full agent turns via `runSenseTurn()` — the agent gets their complete system prompt, diary, tools, everything. They are not thin read-only proxies; they are real conversation turns.
 - Sessions are keyed by the dev tool's session ID (e.g., Claude Code's session ID). This means each Claude Code session gets its own conversation thread with the agent.
-- Read-only tools like `status` and `search_notes` work even without the daemon running (they read the filesystem directly). Write operations and `send_message` require the daemon.
+- Read-only tools like `status` and `search_notes` work even without the daemon running because they read the filesystem directly. `search_notes` is lookup only; missing hits are not evidence that the agent has no belief or preference. Conversation tools require the daemon.
 
 The `ouro setup --tool <tool> --agent <name>` command handles registration automatically, including lifecycle hooks.
 
@@ -201,7 +201,7 @@ Other important tools include coding session orchestration, bridge management, a
 
 The MCP bridge adds bidirectional conversation tools:
 
-- **send_message** — a dev tool sends a message and gets a synchronous agent response (full turn with tools, system prompt, diary — everything)
+- **send_message / ask** — a dev tool sends a message or question and gets a synchronous agent response (full turn with tools, system prompt, diary — everything)
 - **check_response** — polls for pending messages from the agent (e.g., after the agent ponders something and later surfaces a thought back)
 
 This creates a natural conversation rhythm between agents and developer tools. The agent is a full participant, not a thin lookup proxy.

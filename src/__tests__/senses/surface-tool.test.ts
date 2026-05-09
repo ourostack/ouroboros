@@ -45,6 +45,12 @@ describe("surface tool", () => {
       expect(params.properties.delegationId).toBeDefined()
       expect(params.properties.friendId).toBeDefined()
     })
+
+    it("can request the voice delivery channel for live calls", () => {
+      const params = surfaceToolDef.function.parameters as any
+      expect(params.properties.channel.enum).toContain("voice")
+      expect(params.properties.phoneNumber).toBeDefined()
+    })
   })
 
   describe("handleSurface", () => {
@@ -228,6 +234,20 @@ describe("surface tool", () => {
       })
 
       expect(routeToFriend).toHaveBeenCalledWith("bob", "hey there", undefined)
+    })
+
+    it("passes delivery hints only when a non-default channel is requested", async () => {
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "delivered", detail: "voice call initiated" })
+      await handleSurface({
+        content: "call me about the alpha",
+        friendId: "ari",
+        deliveryHint: { channel: "voice" },
+        queue: [],
+        routeToFriend,
+        advanceObligation: () => {},
+      })
+
+      expect(routeToFriend).toHaveBeenCalledWith("ari", "call me about the alpha", undefined, { channel: "voice" })
     })
   })
 

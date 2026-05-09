@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+function runtimeCredentialMock(overrides: Record<string, unknown> = {}) {
+  return {
+    waitForRuntimeCredentialBootstrap: vi.fn(async () => false),
+    readRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing" })),
+    readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+    refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    refreshMachineRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
+    ...overrides,
+  }
+}
+
 describe("agent entrypoint", () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -12,9 +23,7 @@ describe("agent entrypoint", () => {
     const configureCliRuntimeLogger = vi.fn()
     vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock())
 
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
       "node",
@@ -42,7 +51,7 @@ describe("agent entrypoint", () => {
     })
     vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       refreshRuntimeCredentialConfig,
     }))
 
@@ -70,7 +79,7 @@ describe("agent entrypoint", () => {
     const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
     vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       refreshRuntimeCredentialConfig,
     }))
 
@@ -87,6 +96,42 @@ describe("agent entrypoint", () => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
       expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
     })
+    argvSpy.mockRestore()
+  })
+
+  it("accepts daemon runtime bootstrap before starting work", async () => {
+    vi.resetModules()
+
+    const startInnerDialogWorker = vi.fn(async () => undefined)
+    const configureCliRuntimeLogger = vi.fn()
+    const refreshRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => ({ ok: false, reason: "missing" }))
+    const waitForRuntimeCredentialBootstrap = vi.fn(async () => true)
+    vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      waitForRuntimeCredentialBootstrap,
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/machine", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      refreshRuntimeCredentialConfig,
+      refreshMachineRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    await import("../../heart/agent-entry")
+
+    await vi.waitFor(() => {
+      expect(waitForRuntimeCredentialBootstrap).toHaveBeenCalledWith("slugger")
+      expect(startInnerDialogWorker).toHaveBeenCalledTimes(1)
+    })
+    expect(refreshRuntimeCredentialConfig).not.toHaveBeenCalled()
+    expect(refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
     argvSpy.mockRestore()
   })
 
@@ -119,9 +164,7 @@ describe("agent entrypoint", () => {
     const configureCliRuntimeLogger = vi.fn()
     vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock())
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
@@ -152,9 +195,7 @@ describe("agent entrypoint", () => {
     const configureCliRuntimeLogger = vi.fn()
     vi.doMock("../../senses/inner-dialog-worker", () => ({ startInnerDialogWorker }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
-    vi.doMock("../../heart/runtime-credentials", () => ({
-      refreshRuntimeCredentialConfig: vi.fn(async () => ({ ok: false, reason: "missing" })),
-    }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock())
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)

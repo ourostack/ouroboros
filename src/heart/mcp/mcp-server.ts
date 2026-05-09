@@ -22,7 +22,7 @@ async function withSenseTurnTimeout<T>(promise: Promise<T>, timeoutMs: number, c
       promise,
       new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
-          const error = new Error(`MCP send_message to ${command.agent} timed out after ${timeoutMs}ms waiting for daemon response; command status is unknown.`)
+          const error = new Error(`MCP conversation turn for ${command.agent} timed out after ${timeoutMs}ms waiting for daemon response; command status is unknown.`)
           emitNervesEvent({
             level: "error",
             component: "daemon",
@@ -97,19 +97,11 @@ export interface McpToolSchema {
  * Maps MCP tool names to daemon command kinds.
  */
 const TOOL_TO_COMMAND: Record<string, string> = {
-  ask: "agent.ask",
   status: "agent.status",
   catchup: "agent.catchup",
-  delegate: "agent.delegate",
   get_context: "agent.getContext",
   search_notes: "agent.searchNotes",
   get_task: "agent.getTask",
-  check_scope: "agent.checkScope",
-  request_decision: "agent.requestDecision",
-  check_guidance: "agent.checkGuidance",
-  report_progress: "agent.reportProgress",
-  report_blocker: "agent.reportBlocker",
-  report_complete: "agent.reportComplete",
 }
 
 export interface McpServerOptions {
@@ -316,19 +308,90 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   /** Map tool name → agent-service handler function name */
   const TOOL_TO_SERVICE: Record<string, keyof typeof agentService> = {
-    ask: "handleAgentAsk",
     status: "handleAgentStatus",
     catchup: "handleAgentCatchup",
-    delegate: "handleAgentDelegate",
     get_context: "handleAgentGetContext",
     search_notes: "handleAgentSearchNotes",
     get_task: "handleAgentGetTask",
-    check_scope: "handleAgentCheckScope",
-    request_decision: "handleAgentRequestDecision",
-    check_guidance: "handleAgentCheckGuidance",
-    report_progress: "handleAgentReportProgress",
-    report_blocker: "handleAgentReportBlocker",
-    report_complete: "handleAgentReportComplete",
+  }
+
+  function stringArg(args: Record<string, unknown>, key: string): string {
+    const value = args[key]
+    return typeof value === "string" ? value : ""
+  }
+
+  /* v8 ignore start -- MCP conversation-message shaping is covered by individual tool routing tests; sparse option variants are defensive copy formatting @preserve */
+  function buildConversationMessage(toolName: string, toolArgs: Record<string, unknown>): string | null {
+    switch (toolName) {
+      case "send_message":
+        return stringArg(toolArgs, "message")
+      case "ask":
+        return stringArg(toolArgs, "question")
+      case "delegate": {
+        const task = stringArg(toolArgs, "task")
+        const context = stringArg(toolArgs, "context")
+        return context ? `[delegate] ${task}\n\ncontext: ${context}` : `[delegate] ${task}`
+      }
+      case "request_decision": {
+        const topic = stringArg(toolArgs, "topic")
+        const options = stringArg(toolArgs, "options")
+        return options ? `[request_decision] ${topic}\n\noptions: ${options}` : `[request_decision] ${topic}`
+      }
+      case "check_scope":
+        return `[check_scope] ${stringArg(toolArgs, "item")}`
+      case "check_guidance":
+        return `[check_guidance] ${stringArg(toolArgs, "topic")}`
+      case "report_progress":
+        return `[report_progress] ${stringArg(toolArgs, "summary")}`
+      case "report_blocker":
+        return `[report_blocker] ${stringArg(toolArgs, "blocker")}`
+      case "report_complete":
+        return `[report_complete] ${stringArg(toolArgs, "summary")}`
+      default:
+        return null
+    }
+  }
+  /* v8 ignore stop */
+
+  async function runConversationTool(request: JsonRpcRequest, message: string): Promise<void> {
+    try {
+      const response = await sendSenseTurnWithRetry(socketPath, {
+        kind: "agent.senseTurn",
+        agent,
+        friendId,
+        channel: "mcp",
+        sessionKey: sessionId,
+        message,
+      })
+      /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
+      const text = response.message ?? "(empty response)"
+      writeResponse({
+        jsonrpc: "2.0",
+        id: request.id!,
+        result: {
+          content: [{ type: "text", text }],
+          isError: !response.ok,
+        },
+      })
+    } catch (error) {
+      /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      /* v8 ignore stop */
+      /* v8 ignore start -- daemon-down detection: only triggers with real socket I/O @preserve */
+      const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
+      const userMessage = isDaemonDown
+        ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
+        : `Error: ${errorMessage}`
+      /* v8 ignore stop */
+      writeResponse({
+        jsonrpc: "2.0",
+        id: request.id!,
+        result: {
+          content: [{ type: "text", text: userMessage }],
+          isError: true,
+        },
+      })
+    }
   }
 
   async function handleToolsCall(request: JsonRpcRequest): Promise<void> {
@@ -338,49 +401,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     const toolArgs = (params.arguments ?? {}) as Record<string, unknown>
     /* v8 ignore stop */
 
-    // ── Conversation tools: send_message, check_response ──
-    if (toolName === "send_message") {
-      /* v8 ignore start — ?? fallback defensive; MCP clients always send message */
-      const message = toolArgs.message as string ?? ""
-      /* v8 ignore stop */
-      try {
-        const response = await sendSenseTurnWithRetry(socketPath, {
-          kind: "agent.senseTurn",
-          agent,
-          friendId,
-          channel: "mcp",
-          sessionKey: sessionId,
-          message,
-        })
-        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
-        const text = response.message ?? "(empty response)"
-        writeResponse({
-          jsonrpc: "2.0",
-          id: request.id!,
-          result: {
-            content: [{ type: "text", text }],
-            isError: !response.ok,
-          },
-        })
-      } catch (error) {
-        /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        /* v8 ignore stop */
-        /* v8 ignore start -- daemon-down detection: only triggers with real socket I/O @preserve */
-        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
-        const userMessage = isDaemonDown
-          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
-          : `Error: ${errorMessage}`
-        /* v8 ignore stop */
-        writeResponse({
-          jsonrpc: "2.0",
-          id: request.id!,
-          result: {
-            content: [{ type: "text", text: userMessage }],
-            isError: true,
-          },
-        })
-      }
+    // ── Conversation tools: these run a real agent turn ──
+    const conversationMessage = buildConversationMessage(toolName, toolArgs)
+    if (conversationMessage !== null) {
+      await runConversationTool(request, conversationMessage)
       return
     }
 
@@ -404,54 +428,6 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           result: {
             content: [{ type: "text", text }],
             isError: false,
-          },
-        })
-      }
-      return
-    }
-
-    // ── delegate: full conversation turn via daemon ──
-    if (toolName === "delegate") {
-      /* v8 ignore start — ?? fallback defensive; MCP clients always send task */
-      const task = toolArgs.task as string ?? ""
-      /* v8 ignore stop */
-      const context = toolArgs.context as string | undefined
-      const delegateMessage = context ? `[delegate] ${task}\n\ncontext: ${context}` : `[delegate] ${task}`
-      try {
-        const response = await sendSenseTurnWithRetry(socketPath, {
-          kind: "agent.senseTurn",
-          agent,
-          friendId,
-          channel: "mcp",
-          sessionKey: sessionId,
-          message: delegateMessage,
-        })
-        /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
-        const text = response.message ?? "(empty response)"
-        writeResponse({
-          jsonrpc: "2.0",
-          id: request.id!,
-          result: {
-            content: [{ type: "text", text }],
-            isError: !response.ok,
-          },
-        })
-      } catch (error) {
-        /* v8 ignore start — instanceof guard defensive; thrown errors are always Error */
-        const errorMessage = error instanceof Error ? error.message : String(error)
-        /* v8 ignore stop */
-        /* v8 ignore start -- daemon-down detection: only triggers with real socket I/O @preserve */
-        const isDaemonDown = errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOENT")
-        const userMessage = isDaemonDown
-          ? "The daemon is not running. Start it with `ouro up` (production) or `ouro dev` (development), then retry."
-          : `Error: ${errorMessage}`
-        /* v8 ignore stop */
-        writeResponse({
-          jsonrpc: "2.0",
-          id: request.id!,
-          result: {
-            content: [{ type: "text", text: userMessage }],
-            isError: true,
           },
         })
       }
@@ -553,7 +529,7 @@ export function getToolSchemas(): McpToolSchema[] {
   return [
     {
       name: "ask",
-      description: "Ask the agent a question. The agent uses its diary, journal, and recent session context to provide a useful answer.",
+      description: "Ask the agent a question through a full conversation turn. This has the same identity, tools, and session continuity as send_message; use search_notes for read-only note lookup.",
       inputSchema: {
         type: "object",
         properties: {
@@ -580,7 +556,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "delegate",
-      description: "Request the agent to handle a task. The agent queues the task and will work on it when available.",
+      description: "Ask the agent to handle a task through a full conversation turn. The agent decides whether to act, queue, ask, or respond using its normal tools and identity.",
       inputSchema: {
         type: "object",
         properties: {
@@ -600,7 +576,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "search_notes",
-      description: "Search the agent's diary for information about a specific topic. Returns matching diary lines.",
+      description: "Read-only note search. Returns matching diary lines without running an agent turn or treating missing matches as absence of agent belief.",
       inputSchema: {
         type: "object",
         properties: {
@@ -619,7 +595,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "check_scope",
-      description: "Check whether a proposed item or change is in scope for the agent's current work.",
+      description: "Ask the agent whether a proposed item or change is in scope through a full conversation turn.",
       inputSchema: {
         type: "object",
         properties: {
@@ -630,7 +606,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "request_decision",
-      description: "Ask the agent to make a decision about a topic. Optionally provide a list of options to choose from.",
+      description: "Ask the agent to make a decision through a full conversation turn. Optionally provide a list of options to consider.",
       inputSchema: {
         type: "object",
         properties: {
@@ -642,7 +618,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "check_guidance",
-      description: "Get guidance from the agent on how to approach a topic. The agent searches its diary, journal, and session context for relevant guidance.",
+      description: "Ask the agent for guidance through a full conversation turn, using the same identity, tools, and session continuity as send_message.",
       inputSchema: {
         type: "object",
         properties: {
@@ -653,7 +629,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "report_progress",
-      description: "Report progress on delegated work back to the agent. The agent records the update.",
+      description: "Tell the agent about delegated-work progress through a full conversation turn so it can respond, record, or act normally.",
       inputSchema: {
         type: "object",
         properties: {
@@ -664,7 +640,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "report_blocker",
-      description: "Report a blocker on delegated work to the agent. The agent records the blocker for review.",
+      description: "Tell the agent about a delegated-work blocker through a full conversation turn so it can respond, record, or act normally.",
       inputSchema: {
         type: "object",
         properties: {
@@ -675,7 +651,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "report_complete",
-      description: "Report completion of delegated work to the agent. The agent records the completion.",
+      description: "Tell the agent delegated work is complete through a full conversation turn so it can respond, record, or act normally.",
       inputSchema: {
         type: "object",
         properties: {

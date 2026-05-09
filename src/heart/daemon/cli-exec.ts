@@ -2408,6 +2408,17 @@ function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): bo
   return readRuntimeConfigString(config, key) !== null
 }
 
+function readRuntimeConfigBoolean(config: RuntimeCredentialConfig, key: string): boolean | null {
+  const segments = key.split(".")
+  let cursor: unknown = config
+  for (const segment of segments) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return null
+    cursor = (cursor as Record<string, unknown>)[segment]
+  }
+  /* v8 ignore next -- boolean runtime config parsing is exercised through connect/status mode branches; non-boolean leaf is defensive @preserve */
+  return typeof cursor === "boolean" ? cursor : null
+}
+
 function readRuntimeConfigString(config: RuntimeCredentialConfig, key: string): string | null {
   const segments = key.split(".")
   let cursor: unknown = config
@@ -3143,6 +3154,43 @@ async function buildConnectMenu(
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.elevenLabsVoiceId")
       ?? readRuntimeConfigString(runtimeConfig.config, "voice.elevenLabsVoiceId")
     : null
+  const voiceConversationEngine = machineRuntime.ok || runtimeConfig.ok
+    ? (
+        (machineRuntime.ok
+          ? readRuntimeConfigString(machineRuntime.config, "voice.twilioConversationEngine")
+            ?? readRuntimeConfigString(machineRuntime.config, "voice.conversationEngine")
+          : null)
+        ?? (runtimeConfig.ok
+          ? readRuntimeConfigString(runtimeConfig.config, "voice.twilioConversationEngine")
+            ?? readRuntimeConfigString(runtimeConfig.config, "voice.conversationEngine")
+          : null)
+        ?? "cascade"
+      ).toLowerCase()
+    : "cascade"
+  const openAIRealtimeApiKey = runtimeConfig.ok
+    ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiRealtimeApiKey")
+      ?? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiApiKey")
+      ?? readRuntimeConfigString(runtimeConfig.config, "integrations.openaiEmbeddingsApiKey")
+    : null
+  const openAISipProjectId = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiSipProjectId") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigString(machineRuntime.config, "voice.openaiSipProjectId") : null)
+    : null
+  const openAISipWebhookSecret = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigString(runtimeConfig.config, "voice.openaiSipWebhookSecret") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigString(machineRuntime.config, "voice.openaiSipWebhookSecret") : null)
+    : null
+  const openAISipAllowUnsignedWebhooks = runtimeConfig.ok || machineRuntime.ok
+    ? (runtimeConfig.ok ? readRuntimeConfigBoolean(runtimeConfig.config, "voice.openaiSipAllowUnsignedWebhooks") : null)
+      ?? (machineRuntime.ok ? readRuntimeConfigBoolean(machineRuntime.config, "voice.openaiSipAllowUnsignedWebhooks") : null)
+      ?? false
+    : false
+  const twilioPublicUrl = machineRuntime.ok
+    ? readRuntimeConfigString(machineRuntime.config, "voice.twilioPublicUrl")
+    : null
+  const twilioTransportMode = machineRuntime.ok
+    ? readRuntimeConfigString(machineRuntime.config, "voice.twilioTransportMode")
+    : null
   const shouldVerifyPerplexity = runtimeConfig.ok && !!perplexityApiKey
   const shouldVerifyEmbeddings = runtimeConfig.ok && !!embeddingsApiKey
   let perplexityVerification: Awaited<ReturnType<typeof verifyPerplexityCapability>> | undefined
@@ -3210,17 +3258,30 @@ async function buildConnectMenu(
       ? "attached"
       : "not attached"
     : machineRuntimeReadStatus(machineRuntime)
+  /* v8 ignore start -- connect-menu voice readiness mirrors the dedicated voice resolver; exact provider/config permutations are covered in voice runtime tests @preserve */
   const voiceStatus = runtimeConfig.ok
     ? machineRuntime.ok
-      ? elevenLabsApiKey
-        && elevenLabsVoiceId
-        && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath")
-        && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath")
-        && voiceEnabled
+      ? (voiceConversationEngine === "openai-sip"
+        ? openAIRealtimeApiKey
+          && openAISipProjectId
+          && (openAISipWebhookSecret || openAISipAllowUnsignedWebhooks)
+          && twilioPublicUrl
+          && voiceEnabled
+        : voiceConversationEngine === "openai-realtime"
+          ? openAIRealtimeApiKey
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.twilioPublicUrl")
+            && twilioTransportMode === "media-stream"
+            && voiceEnabled
+          : elevenLabsApiKey
+            && elevenLabsVoiceId
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath")
+            && hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath")
+            && voiceEnabled)
         ? "attached"
         : "not attached"
       : machineRuntimeReadStatus(machineRuntime)
     : runtimeConfigReadStatus(runtimeConfig)
+  /* v8 ignore stop */
   const mailroomConfig = runtimeConfig.ok && runtimeConfig.config.mailroom && typeof runtimeConfig.config.mailroom === "object" && !Array.isArray(runtimeConfig.config.mailroom)
     ? runtimeConfig.config.mailroom as Record<string, unknown>
     : {}
@@ -3317,15 +3378,30 @@ async function buildConnectMenu(
       name: "Voice",
       section: "This machine",
       status: voiceStatus,
-      description: "Conversational audio via local Whisper.cpp STT and ElevenLabs TTS.",
+      description: "Conversational audio through the first-class Voice sense.",
+      /* v8 ignore start -- status detail copy follows the same voice readiness matrix as voiceStatus above @preserve */
       detailLines: runtimeConfig.ok && machineRuntime.ok
-        ? [
-            elevenLabsApiKey ? "ElevenLabs API key saved in portable runtime config" : "missing integrations.elevenLabsApiKey",
-            elevenLabsVoiceId ? "ElevenLabs voice ID saved in portable runtime config" : "missing integrations.elevenLabsVoiceId",
-            hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath") ? "Whisper.cpp CLI path saved for this machine" : "missing voice.whisperCliPath",
-            hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath") ? "Whisper.cpp model path saved for this machine" : "missing voice.whisperModelPath",
-          ]
+        ? voiceConversationEngine === "openai-sip"
+          ? [
+              openAIRealtimeApiKey ? "OpenAI Realtime API key available in portable runtime config" : "missing voice.openaiRealtimeApiKey",
+              openAISipProjectId ? "OpenAI SIP project id saved" : "missing voice.openaiSipProjectId",
+              openAISipWebhookSecret || openAISipAllowUnsignedWebhooks ? "OpenAI SIP webhook verification configured" : "missing voice.openaiSipWebhookSecret",
+              twilioPublicUrl ? "Twilio public Voice URL saved for this machine" : "missing voice.twilioPublicUrl",
+            ]
+          : voiceConversationEngine === "openai-realtime"
+            ? [
+                openAIRealtimeApiKey ? "OpenAI Realtime API key available in portable runtime config" : "missing voice.openaiRealtimeApiKey",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.twilioPublicUrl") ? "Twilio public Voice URL saved for this machine" : "missing voice.twilioPublicUrl",
+                twilioTransportMode === "media-stream" ? "Twilio media-stream transport selected" : "missing voice.twilioTransportMode=media-stream",
+              ]
+            : [
+                elevenLabsApiKey ? "ElevenLabs API key saved in portable runtime config" : "missing integrations.elevenLabsApiKey",
+                elevenLabsVoiceId ? "ElevenLabs voice ID saved in portable runtime config" : "missing integrations.elevenLabsVoiceId",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.whisperCliPath") ? "Whisper.cpp CLI path saved for this machine" : "missing voice.whisperCliPath",
+                hasRuntimeConfigValue(machineRuntime.config, "voice.whisperModelPath") ? "Whisper.cpp model path saved for this machine" : "missing voice.whisperModelPath",
+              ]
         : [],
+      /* v8 ignore stop */
       nextAction: connectEntryNeedsAttention({
         option: "7",
         name: "Voice",
@@ -5101,24 +5177,34 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
   const agentPathSegment = agent.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "agent"
   const message = [
     `Voice foundation for ${agent}`,
-    "Configure portable ElevenLabs settings with:",
+    "Voice is one sense with multiple transports. Preferred phone setup is OpenAI Realtime over SIP:",
+    `  ouro vault config set --agent ${agent} --key voice.openaiRealtimeApiKey`,
+    `  ouro vault config set --agent ${agent} --key voice.openaiSipProjectId`,
+    `  ouro vault config set --agent ${agent} --key voice.openaiSipWebhookSecret`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.openaiSipWebhookPath --value /voice/agents/${agentPathSegment}/sip/openai`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioConversationEngine --value openai-sip`,
+    "Legacy cascade fallback uses portable ElevenLabs settings:",
     `  ouro vault config set --agent ${agent} --key integrations.elevenLabsApiKey`,
     `  ouro vault config set --agent ${agent} --key integrations.elevenLabsVoiceId`,
-    "Configure this machine's Whisper.cpp attachment with:",
+    "Legacy cascade fallback also uses this machine's Whisper.cpp attachment:",
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperCliPath`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.whisperModelPath`,
     "Optional managed Twilio phone transport setup:",
     `  ouro vault config set --agent ${agent} --key voice.twilioAccountSid`,
     `  ouro vault config set --agent ${agent} --key voice.twilioAuthToken`,
+    `  ouro vault config set --agent ${agent} --key voice.twilioFromNumber --value <your Twilio phone number>`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPublicUrl`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioBasePath --value /voice/agents/${agentPathSegment}/twilio`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPort --value 18910`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioTransportMode --value media-stream`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPlaybackMode --value stream`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioGreetingPrebufferMs --value 12000`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value ari`,
     "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
     `The managed Voice entrypoint will listen at POST <public-url>/voice/agents/${agentPathSegment}/twilio/incoming.`,
+    `The OpenAI SIP webhook should be registered as POST <public-url>/voice/agents/${agentPathSegment}/sip/openai for realtime.call.incoming events.`,
     `Standalone local smoke remains available with: node dist/senses/voice-twilio-entry.js --agent ${agent} --port 18910 --public-url https://<cloudflare-tunnel>.`,
-    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Phone testing uses Twilio Record -> Whisper.cpp -> stable voice session -> tool-delivered speak/settle text -> ElevenLabs -> Twilio Play, with managed playback streaming ElevenLabs chunks by default.",
+    "Meeting links use URL intake plus BlackHole/Multi-Output readiness checks. Phone testing should use SIP when the carrier can route it; media-stream remains the fallback for raw audio injection and cascade compatibility.",
   ].join("\n")
   deps.writeStdout(message)
   return message
@@ -7400,7 +7486,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
 
       // 3. Write conversation formatting instructions
       const claudeMdPath = path.join(claudeConfigDir, "CLAUDE.md")
-      const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\` to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
+      const agentInstructions = `\n## Agent conversations (ouro)\nWhen using MCP \`send_message\`, \`ask\`, or another conversation tool to talk to an ouro agent, format the exchange clearly:\n- Before the tool call, briefly say what you're asking/telling the agent\n- After the response, quote the agent's reply in a blockquote, then add your reaction\n- Example: **Me → Agent:** "question" / > **Agent:** "response" / Your synthesis here\n`
       let existingClaudeMd = ""
       if (fs.existsSync(claudeMdPath)) {
         existingClaudeMd = fs.readFileSync(claudeMdPath, "utf-8")

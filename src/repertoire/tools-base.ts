@@ -40,6 +40,26 @@ export interface BlueBubblesReplyTargetController {
   setSelection: (selection: BlueBubblesReplyTargetSelection) => string;
 }
 
+export interface VoiceCallAudioRequest {
+  source?: "tone" | "url" | "file";
+  url?: string;
+  path?: string;
+  label?: string;
+  toneHz?: number;
+  durationMs?: number;
+}
+
+export interface VoiceCallAudioResult {
+  label: string;
+  durationMs: number;
+  toolResult?: string;
+}
+
+export interface VoiceCallControl {
+  requestEnd: (reason?: string) => Promise<void> | void;
+  playAudio?: (request: VoiceCallAudioRequest) => Promise<VoiceCallAudioResult> | VoiceCallAudioResult;
+}
+
 export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
@@ -64,6 +84,7 @@ export interface ToolContext {
   supportedReasoningEfforts?: readonly string[];
   setReasoningEffort?: (level: string) => void;
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
+  voiceCall?: VoiceCallControl;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

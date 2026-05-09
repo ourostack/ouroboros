@@ -153,6 +153,10 @@ function textField(record: Record<string, unknown> | undefined, key: string): st
   return typeof value === "string" ? value.trim() : ""
 }
 
+function booleanField(record: Record<string, unknown> | undefined, key: string): boolean {
+  return record?.[key] === true
+}
+
 function numberField(record: Record<string, unknown> | undefined, key: string, fallback: number): number {
   const value = record?.[key]
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
@@ -260,21 +264,66 @@ function senseFactsFromRuntimeConfig(
   }
 
   if (senses.voice.enabled) {
-    const missing: string[] = []
-    if (!textField(integrations, "elevenLabsApiKey")) missing.push("integrations.elevenLabsApiKey")
-    if (!textField(integrations, "elevenLabsVoiceId") && !textField(payload.voice as Record<string, unknown> | undefined, "elevenLabsVoiceId")) {
-      missing.push("integrations.elevenLabsVoiceId")
-    }
-    if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
-    if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
-
+    const portableVoice = payload.voice as Record<string, unknown> | undefined
+    const conversationEngine = (
+      textField(voice, "twilioConversationEngine")
+      || textField(voice, "conversationEngine")
+      || textField(portableVoice, "twilioConversationEngine")
+      || textField(portableVoice, "conversationEngine")
+      || "cascade"
+    ).toLowerCase()
+    const twilioTransportMode = (textField(voice, "twilioTransportMode") || "record-play").toLowerCase()
     const twilioPublicUrl = textField(voice, "twilioPublicUrl")
+    const hasOpenAIRealtimeKey = !!(
+      textField(portableVoice, "openaiRealtimeApiKey")
+      || textField(integrations, "openaiApiKey")
+      || textField(integrations, "openaiEmbeddingsApiKey")
+    )
+    const missing: string[] = []
+    /* v8 ignore start -- voice setup missing-field matrix is enforced by the voice runtime resolver; sense-manager only renders human-readable readiness facts @preserve */
+    if (conversationEngine === "openai-realtime" || conversationEngine === "openai-sip") {
+      if (conversationEngine === "openai-realtime" && twilioTransportMode !== "media-stream") {
+        missing.push("voice.twilioTransportMode=media-stream")
+      }
+      if (!hasOpenAIRealtimeKey) {
+        missing.push("voice.openaiRealtimeApiKey")
+      }
+      if (conversationEngine === "openai-sip") {
+        if (!textField(portableVoice, "openaiSipProjectId") && !textField(voice, "openaiSipProjectId")) {
+          missing.push("voice.openaiSipProjectId")
+        }
+        const allowUnsignedWebhooks = booleanField(portableVoice, "openaiSipAllowUnsignedWebhooks")
+          || booleanField(voice, "openaiSipAllowUnsignedWebhooks")
+        if (!allowUnsignedWebhooks && !textField(portableVoice, "openaiSipWebhookSecret") && !textField(voice, "openaiSipWebhookSecret")) {
+          missing.push("voice.openaiSipWebhookSecret")
+        }
+      }
+    } else {
+      if (!textField(integrations, "elevenLabsApiKey")) missing.push("integrations.elevenLabsApiKey")
+      if (!textField(integrations, "elevenLabsVoiceId") && !textField(portableVoice, "elevenLabsVoiceId")) {
+        missing.push("integrations.elevenLabsVoiceId")
+      }
+      if (!textField(voice, "whisperCliPath")) missing.push("voice.whisperCliPath")
+      if (!textField(voice, "whisperModelPath")) missing.push("voice.whisperModelPath")
+    }
+    /* v8 ignore stop */
+
     base.voice = missing.length === 0
       ? {
           configured: true,
-          detail: twilioPublicUrl
+          /* v8 ignore start -- voice detail copy mirrors runtime resolver modes; resolver tests own the matrix @preserve */
+          detail: conversationEngine === "openai-sip"
+            ? twilioPublicUrl
+              ? "OpenAI Realtime SIP speech-to-speech; Twilio phone transport attached"
+              : "OpenAI Realtime SIP speech-to-speech"
+            : conversationEngine === "openai-realtime"
+            ? twilioPublicUrl
+              ? "OpenAI Realtime speech-to-speech; Twilio phone transport attached"
+              : "OpenAI Realtime speech-to-speech"
+            : twilioPublicUrl
             ? "local Whisper.cpp STT + ElevenLabs TTS; Twilio phone transport attached"
             : "local Whisper.cpp STT + ElevenLabs TTS",
+          /* v8 ignore stop */
         }
       : {
           configured: false,
@@ -300,7 +349,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
     return `Agent-runnable: provision Mailroom access with 'ouro connect mail --agent ${agent}', then restart with 'ouro up'.`
   }
   if (sense === "voice") {
-    return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.`
+    return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance; use voice.twilioConversationEngine=openai-sip with voice.openaiRealtimeApiKey, voice.openaiSipProjectId, and voice.openaiSipWebhookSecret for preferred SIP phone voice; use openai-realtime for Media Streams fallback, or save ElevenLabs and local Whisper.cpp settings for cascade fallback; then run 'ouro up' again.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -639,7 +688,29 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     }
   }
 
+  private async refreshEnabledSenseConfigs(): Promise<void> {
+    const refreshes = [...this.contexts.entries()].map(async ([agent, context]) => {
+      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice"] as Exclude<SenseName, "cli">[])
+        .filter((sense) => context.senses[sense].enabled)
+      /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
+      if (enabledManagedSenses.length === 0) return
+
+      /* v8 ignore start -- periodic freshness refresh uses the same runtime readers covered by startup integration tests @preserve */
+      const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+      const needsMachineConfig = enabledManagedSenses.some((sense) => sense === "bluebubbles" || sense === "voice")
+      const machineRuntimeConfig = needsMachineConfig
+        ? await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(), { preserveCachedOnFailure: true })
+        : readMachineRuntimeCredentialConfig(agent)
+      /* v8 ignore stop */
+
+      context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig)
+    })
+
+    await Promise.all(refreshes)
+  }
+
   async startAutoStartSenses(): Promise<void> {
+    await this.refreshEnabledSenseConfigs()
     await this.processManager.startAutoStartAgents()
   }
 

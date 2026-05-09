@@ -35,6 +35,7 @@ export interface ElevenLabsTtsClientOptions {
   voiceId: string
   modelId?: string
   outputFormat?: string
+  autoMode?: boolean
   socketFactory?: (url: string) => ElevenLabsSocketLike
 }
 
@@ -42,9 +43,20 @@ function cleanTtsText(text: string): string {
   return text.replace(/\s+/g, " ").trim()
 }
 
-function elevenLabsStreamUrl(voiceId: string, modelId: string, outputFormat: string): string {
+function elevenLabsStreamUrl(voiceId: string, modelId: string, outputFormat: string, autoMode: boolean): string {
   const params = new URLSearchParams({ model_id: modelId, output_format: outputFormat })
+  if (autoMode) params.set("auto_mode", "true")
   return `wss://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/stream-input?${params.toString()}`
+}
+
+function mimeTypeForOutputFormat(outputFormat: string): string {
+  if (outputFormat === "pcm_16000") return "audio/pcm;rate=16000"
+  if (outputFormat === "ulaw_8000") return "audio/x-mulaw;rate=8000"
+  if (outputFormat.startsWith("pcm_")) {
+    const rate = outputFormat.slice("pcm_".length)
+    return /^\d+$/.test(rate) ? `audio/pcm;rate=${rate}` : "audio/pcm"
+  }
+  return "audio/mpeg"
 }
 
 function payloadText(payload: unknown): string {
@@ -111,10 +123,9 @@ export function createNodeElevenLabsSocketFactory(
 export function createElevenLabsTtsClient(options: ElevenLabsTtsClientOptions): VoiceTtsService {
   const modelId = options.modelId ?? DEFAULT_ELEVENLABS_MODEL_ID
   const outputFormat = options.outputFormat ?? DEFAULT_ELEVENLABS_OUTPUT_FORMAT
+  const autoMode = options.autoMode ?? true
   const socketFactory = options.socketFactory ?? createNodeElevenLabsSocketFactory()
-  const mimeType = outputFormat === DEFAULT_ELEVENLABS_OUTPUT_FORMAT
-    ? DEFAULT_ELEVENLABS_MIME_TYPE
-    : "audio/mpeg"
+  const mimeType = mimeTypeForOutputFormat(outputFormat)
 
   return {
     async synthesize(request: VoiceTtsRequest): Promise<VoiceTtsResult> {
@@ -130,7 +141,7 @@ export function createElevenLabsTtsClient(options: ElevenLabsTtsClientOptions): 
         throw new Error("voice TTS text is empty")
       }
 
-      const url = elevenLabsStreamUrl(options.voiceId, modelId, outputFormat)
+      const url = elevenLabsStreamUrl(options.voiceId, modelId, outputFormat, autoMode)
       const socket = socketFactory(url)
       const chunks: Buffer[] = []
 

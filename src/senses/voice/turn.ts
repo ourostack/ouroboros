@@ -8,6 +8,7 @@ import {
 } from "../shared-turn"
 import { transcriptToPromptText } from "./transcript"
 import type { VoiceTranscript, VoiceTtsResult, VoiceTtsService } from "./types"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 export type VoiceRunSenseTurn = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 
@@ -34,6 +35,7 @@ export interface VoiceLoopbackTurnOptions {
   tts: VoiceTtsService
   runSenseTurn?: VoiceRunSenseTurn
   onAudioChunk?: (chunk: Uint8Array) => void | Promise<void>
+  voiceCall?: ToolContext["voiceCall"]
 }
 
 export interface VoiceSpeechSegment {
@@ -153,7 +155,9 @@ export async function runVoiceLoopbackTurn(options: VoiceLoopbackTurnOptions): P
     friendId: options.friendId,
     sessionKey: options.sessionKey,
     userMessage,
+    latencyMode: "live",
     deliverySink: { onDelivery: synthesizeDelivery },
+    ...(options.voiceCall ? { toolContext: { voiceCall: options.voiceCall } } : {}),
   })
 
   if (speechSegments.length > 0) {

@@ -1,9 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
+
+const mockRunSenseTurn = vi.hoisted(() => vi.fn(async () => ({
+  response: "full turn response",
+  ponderDeferred: false,
+})))
+
+vi.mock("../../../senses/shared-turn", () => ({
+  runSenseTurn: (...args: any[]) => mockRunSenseTurn(...args),
+}))
 
 import { OuroDaemon } from "../../../heart/daemon/daemon"
 
@@ -28,6 +37,14 @@ function sendRaw(socketPath: string, payload: string): Promise<string> {
 }
 
 describe("daemon agent service command routing", () => {
+  beforeEach(() => {
+    mockRunSenseTurn.mockClear()
+    mockRunSenseTurn.mockResolvedValue({
+      response: "full turn response",
+      ponderDeferred: false,
+    })
+  })
+
   const make = (socketPath: string) => {
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
@@ -110,7 +127,7 @@ describe("daemon agent service command routing", () => {
     })
   })
 
-  it("routes agent.ask command through to agent service", async () => {
+  it("routes agent.ask command through a full sense turn", async () => {
     const socketPath = tmpSocketPath("agent-ask")
     const { daemon } = make(socketPath)
     await daemon.start()
@@ -130,7 +147,15 @@ describe("daemon agent service command routing", () => {
     }))
     const response = JSON.parse(raw)
     expect(response.ok).toBe(true)
-    expect(response.message).toBeDefined()
+    expect(response.ok).toBe(true)
+    expect(response.message).toBe("full turn response")
+    expect(mockRunSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
+      agentName: "test-agent",
+      channel: "mcp",
+      friendId: "friend-1",
+      sessionKey: "agent-ask:friend-1",
+      userMessage: "What is the project about?",
+    }))
 
     await daemon.stop()
 

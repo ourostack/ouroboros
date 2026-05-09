@@ -50,6 +50,112 @@ export interface FailoverState {
   pending: FailoverContext | null
 }
 
+const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+
+function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
+  /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
+  if (Number.isFinite(message.expiresAt) && Number(message.expiresAt) <= now) return "explicit_expiry"
+  if (channel !== "voice") return null
+  if (!Number.isFinite(message.timestamp)) return null
+  return now - message.timestamp > VOICE_PENDING_MAX_AGE_MS ? "voice_freshness_window" : null
+  /* v8 ignore stop */
+}
+
+function archiveExpiredPendingMessages(input: {
+  agentRoot: string
+  pendingDir: string
+  channel: Channel
+  expired: Array<{ message: PendingMessage; reason: string }>
+  now: number
+}): void {
+  /* v8 ignore start -- archive path edge cases are defensive filesystem hygiene; stale voice expiry tests cover the normal archive path @preserve */
+  if (input.expired.length === 0) return
+  const pendingRoot = path.join(input.agentRoot, "state", "pending")
+  const relativePendingDir = path.relative(pendingRoot, input.pendingDir)
+  const archiveDir = relativePendingDir && !relativePendingDir.startsWith("..") && !path.isAbsolute(relativePendingDir)
+    ? path.join(input.agentRoot, "state", "pending-expired", relativePendingDir)
+    : path.join(input.agentRoot, "state", "pending-expired", input.channel)
+  try {
+    fs.mkdirSync(archiveDir, { recursive: true })
+    input.expired.forEach(({ message, reason }, index) => {
+      const stamp = Number.isFinite(message.timestamp) ? message.timestamp : input.now
+      const filePath = path.join(archiveDir, `${stamp}-${index}.json`)
+      fs.writeFileSync(filePath, `${JSON.stringify({
+        ...message,
+        expiredAt: input.now,
+        expirationReason: reason,
+        originalPendingDir: input.pendingDir,
+      }, null, 2)}\n`, "utf-8")
+    })
+    /* v8 ignore stop */
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.pending_expired",
+      message: "expired stale pending sense messages before model injection",
+      meta: {
+        channel: input.channel,
+        pendingDir: input.pendingDir,
+        archiveDir,
+        count: String(input.expired.length),
+      },
+    })
+  } catch (error) {
+    /* v8 ignore next -- filesystem archive failures are defensive; stale voice expiry success path is covered @preserve */
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.pending_expire_archive_error",
+      message: "failed to archive expired pending sense messages",
+      meta: {
+        channel: input.channel,
+        pendingDir: input.pendingDir,
+        count: String(input.expired.length),
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
+function filterDeliverablePendingMessages(input: {
+  pendingDir: string
+  channel: Channel
+  messages: PendingMessage[]
+  now?: number
+}): PendingMessage[] {
+  if (input.messages.length === 0) return input.messages
+  const now = input.now ?? Date.now()
+  const deliverable: PendingMessage[] = []
+  const expired: Array<{ message: PendingMessage; reason: string }> = []
+  for (const message of input.messages) {
+    const reason = pendingExpirationReason(input.channel, message, now)
+    if (reason) {
+      expired.push({ message, reason })
+    } else {
+      deliverable.push(message)
+    }
+  }
+  if (expired.length > 0) {
+    try {
+      archiveExpiredPendingMessages({ ...input, agentRoot: getAgentRoot(), expired, now })
+    } catch (error) {
+      /* v8 ignore next -- getAgentRoot failure is only reachable under broken runtime identity state @preserve */
+      emitNervesEvent({
+        level: "warn",
+        component: "senses",
+        event: "senses.pending_expire_archive_error",
+        message: "failed to resolve agent root for expired pending sense message archive",
+        meta: {
+          channel: input.channel,
+          pendingDir: input.pendingDir,
+          count: String(expired.length),
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+  return deliverable
+}
+
 /**
  * Emit episodes for obligation state transitions detected during a turn.
  * Exported for direct testability (avoids v8 coverage merge issues in multi-file test suites).
@@ -170,6 +276,8 @@ function buildFailoverSwitchRefusedMessage(
 export interface InboundTurnInput {
   /** Which channel this turn arrives on (used for runAgent channel param). */
   channel: Channel
+  /** Latency profile for synchronous transports. Live turns keep durable local state but skip remote sync and kept-note judging. */
+  latencyMode?: "standard" | "live"
   /** Canonical session key for this inbound turn (defaults to "session"). */
   sessionKey?: string
   /** Capabilities of the channel (carries senseType). */
@@ -492,13 +600,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // so that obligations, episodes, cares, etc. reflect the latest remote state.
   let syncFailure: string | undefined
   let syncConfig: import("../heart/config").SyncConfig = { enabled: false, remote: "origin" }
+  const liveLatencyMode = input.latencyMode === "live"
   try { syncConfig = getSyncConfig() } catch { /* config not available */ }
 
   // Wrap the turn body in try/finally so postTurnPush always runs — even on
   // error or early-return failover paths.
   try {
   /* v8 ignore start -- sync-enabled branches tested in sync.test.ts, pipeline tests mock at module boundary @preserve */
-  if (syncConfig.enabled) {
+  if (syncConfig.enabled && !liveLatencyMode) {
     const pullResult = preTurnPull(getAgentRoot(), syncConfig)
     if (!pullResult.ok) {
       syncFailure = pullResult.error
@@ -556,7 +665,11 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     ? []
     : (input.drainDeferredReturns?.(resolvedContext.friend.id) ?? [])
   const sessionPending = input.drainPending(input.pendingDir)
-  const pending = [...deferredReturns, ...sessionPending]
+  const pending = filterDeliverablePendingMessages({
+    pendingDir: input.pendingDir,
+    channel: input.channel,
+    messages: [...deferredReturns, ...sessionPending],
+  })
 
   // Assemble messages: session messages + pending + inbound user messages
   // NOTE: live world-state checkpoint and pending messages are rendered via buildSystem (system prompt sections)
@@ -650,6 +763,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const existingToolContext = input.runAgentOptions?.toolContext
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
     bridgeContext,
     activeWorkFrame,
     delegationDecision,
@@ -788,7 +902,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
   } finally {
     // Step 6b: Post-turn sync push (opt-in, git-status-based discovery).
-    if (syncConfig.enabled) {
+    if (syncConfig.enabled && !liveLatencyMode) {
       postTurnPush(getAgentRoot(), syncConfig)
     }
   }

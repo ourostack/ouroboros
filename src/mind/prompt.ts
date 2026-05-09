@@ -40,40 +40,42 @@ export function flattenSystemPrompt(sp: SystemPrompt): string {
   return parts.join("\n\n");
 }
 
-// Lazy-loaded psyche text cache
-let _psycheCache: {
+interface PsycheText {
   soul: string;
   identity: string;
   lore: string;
   tacitKnowledge: string;
   aspirations: string;
+}
+
+// Lazy-loaded psyche text cache, scoped by agent root. The daemon can host
+// multiple agents, so identity text must never be cached process-wide.
+let _psycheCache: {
+  agentRoot: string;
+  psyche: PsycheText;
 } | null = null;
 
-function loadPsycheFile(name: string): string {
+function loadPsycheFile(agentRoot: string, name: string): string {
   try {
-    const psycheDir = path.join(getAgentRoot(), "psyche");
+    const psycheDir = path.join(agentRoot, "psyche");
     return fs.readFileSync(path.join(psycheDir, name), "utf-8").trim();
   } catch {
     return "";
   }
 }
 
-function loadPsyche(): {
-  soul: string;
-  identity: string;
-  lore: string;
-  tacitKnowledge: string;
-  aspirations: string;
-} {
-  if (_psycheCache) return _psycheCache;
-  _psycheCache = {
-    soul: loadPsycheFile("SOUL.md"),
-    identity: loadPsycheFile("IDENTITY.md"),
-    lore: loadPsycheFile("LORE.md"),
-    tacitKnowledge: loadPsycheFile("TACIT.md"),
-    aspirations: loadPsycheFile("ASPIRATIONS.md"),
+function loadPsyche(): PsycheText {
+  const agentRoot = getAgentRoot();
+  if (_psycheCache?.agentRoot === agentRoot) return _psycheCache.psyche;
+  const psyche = {
+    soul: loadPsycheFile(agentRoot, "SOUL.md"),
+    identity: loadPsycheFile(agentRoot, "IDENTITY.md"),
+    lore: loadPsycheFile(agentRoot, "LORE.md"),
+    tacitKnowledge: loadPsycheFile(agentRoot, "TACIT.md"),
+    aspirations: loadPsycheFile(agentRoot, "ASPIRATIONS.md"),
   };
-  return _psycheCache;
+  _psycheCache = { agentRoot, psyche };
+  return psyche;
 }
 
 export function resetPsycheCache(): void {
@@ -411,7 +413,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     )
   } else if (channel === "voice") {
     lines.push(
-      "i am responding in a voice session. i keep turns conversational, concise, and interrupt-friendly. the overview shows the text transcript as the durable record.",
+      "i am responding in a live voice session. the person is waiting in real time, so i answer early and often, keep spoken turns to one or two short sentences, stay interruption-friendly, avoid markdown and lists unless explicitly asked, and use speak before any tool work that may take more than a moment. if a later transcript says the caller interrupted or followed up while i was speaking, i prioritize that newest utterance before continuing the older answer. the overview shows the text transcript as the durable record.",
     )
   } else {
     lines.push(
@@ -523,7 +525,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation, but they are evidence inside those paths, not additional paths. If asked to name golden paths, do not include diagnostic commands, tool names, or status checks in the answer.")
   lines.push("mail diagnostic naming: `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
   lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
-  lines.push("voice setup truth: voice sessions are transcript-first local sessions. ElevenLabs credentials belong in portable runtime/config at `integrations.elevenLabsApiKey` and `integrations.elevenLabsVoiceId`; Whisper.cpp CLI/model paths belong in the machine runtime item under `voice.whisperCliPath` and `voice.whisperModelPath`. Meeting links have URL intake and local BlackHole/Multi-Output readiness checks; phone testing uses Twilio Record -> Whisper.cpp -> stable voice session -> tool-delivered speak/settle text -> ElevenLabs -> Twilio Play, with managed playback streaming ElevenLabs chunks by default. Live browser join/injection remains an explicit handoff edge until provider automation lands.")
+  lines.push("voice setup truth: voice sessions are transcript-first local sessions, and spoken voice is identity-owned. Do not present multiple provider voices as equally canonical; `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target, and `voice.openaiRealtimeVoiceSpeed` is only a small cadence nudge. ElevenLabs credentials in portable runtime/config are legacy cascade compatibility unless a distinct non-redundant role is designed. Whisper.cpp CLI/model paths belong in the machine runtime item under `voice.whisperCliPath` and `voice.whisperModelPath`. Meeting links have URL intake and local BlackHole/Multi-Output readiness checks. Twilio phone is a transport under the same voice sense: `voice.twilioTransportMode=record-play` uses Twilio Record -> Whisper.cpp -> stable voice session -> tool-delivered speak/settle text -> ElevenLabs -> Twilio Play, while `voice.twilioTransportMode=media-stream` can run cascade or `voice.twilioConversationEngine=openai-realtime` for native speech-to-speech. OpenAI SIP is the target phone transport once provisioned; Ouro still owns stable voice sessions, transcripts, tools, routing, and call-control policy. Outbound phone calls are first-class Voice delivery: normal outward/tool contexts use `send_message` with `channel=voice`, inner dialogue uses `surface` with `channel=voice`, and both start a phone call to a trusted friend through the same Voice outbound path. Outbound calls require `voice.twilioFromNumber`. Live browser join/injection remains an explicit handoff edge until provider automation lands.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
@@ -702,6 +704,9 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
       lines.push(`- I do not call no-op tools before \`settle\`.`)
       lines.push(`- when told to work autonomously, I use ponder to absorb new messages and continue using tools. I settle only with the final result.`)
       lines.push(`- if nothing calls for words, I observe.`)
+      if (channel === "voice") {
+        lines.push(`- voice is synchronous: I keep \`speak\` and \`settle\` short, plain, and fast. If I need a tool, I first call \`speak\` with a tiny status line, then call the tool, then \`settle\` with the shortest useful answer. If the caller interrupts, I acknowledge the interruption and answer the newest thing first.`)
+      }
     }
   }
 
@@ -1172,7 +1177,7 @@ export function ponderPacketSopsSection(): string {
 }
 
 export function speakSopsSection(channel: string): string {
-  const isChatStyle = channel === "cli" || channel === "teams" || channel === "bluebubbles"
+  const isChatStyle = channel === "cli" || channel === "teams" || channel === "bluebubbles" || channel === "voice"
   if (!isChatStyle) return ""
   return [
     "## speaking mid-turn",
@@ -1182,6 +1187,12 @@ export function speakSopsSection(channel: string): string {
     "- if my next step depends on a reply, i settle. otherwise, i speak.",
     "- i speak at phase boundaries during heavy work — after acking a heavy ask, after hitting a major constraint, before switching strategy, before a long externally-visible step. i don't narrate individual tool calls.",
     "- speak is progress, not invitation. my friend won't steer me mid-turn after i speak — if i need steering, i settle.",
+    ...(channel === "voice"
+      ? [
+          "- in voice, i keep spoken updates brief and natural. before tool work that may take more than a moment, i say a tiny bridge line.",
+          "- when a call is genuinely finished, i request `voice_end_call`, then settle with the shortest natural goodbye if i have not already spoken one.",
+        ]
+      : []),
   ].join("\n")
 }
 

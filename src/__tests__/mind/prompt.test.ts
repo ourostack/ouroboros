@@ -1381,6 +1381,14 @@ describe("buildSystem", () => {
     expect(result).toContain("`settle` must be the only tool call in that turn")
   })
 
+  it("voice channel includes mid-turn speak guidance", async () => {
+    const { speakSopsSection } = await import("../../mind/prompt")
+    const result = speakSopsSection("voice")
+    expect(result).toContain("## speaking mid-turn")
+    expect(result).toContain("i have a `speak` tool")
+    expect(result).toContain("i don't narrate individual tool calls")
+  })
+
   it("outward channel tool behavior includes autonomous execution guidance", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
@@ -1809,6 +1817,7 @@ describe("psyche loading", () => {
     vi.resetModules()
     vi.mocked(fs.existsSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
+    vi.mocked(identity.getAgentRoot).mockReturnValue("/mock/repo/testagent")
     setAgentProvider("minimax")
   })
 
@@ -1863,6 +1872,37 @@ describe("psyche loading", () => {
       .slice(callCount1)
       .filter(c => String(c[0]).includes("psyche"))
     expect(psycheCallsAfterFirst.length).toBe(0)
+  })
+
+  it("reloads psyche text when the active agent root changes", async () => {
+    let activeRoot = "/mock/repo/alpha"
+    vi.mocked(identity.getAgentRoot).mockImplementation(() => activeRoot)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any, _encoding?: any) => {
+      const p = String(filePath)
+      if (p.endsWith("SOUL.md")) return p.includes("/alpha/") ? "alpha soul" : "beta soul"
+      if (p.endsWith("IDENTITY.md")) return p.includes("/alpha/") ? "alpha identity" : "beta identity"
+      if (p.endsWith("LORE.md")) return ""
+      if (p.endsWith("TACIT.md")) return ""
+      if (p.endsWith("ASPIRATIONS.md")) return ""
+      if (p.endsWith("secrets.json")) return JSON.stringify({})
+      if (p.endsWith("package.json")) return MOCK_PACKAGE_JSON
+      return ""
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const alphaPrompt = flattenSystemPrompt(await buildSystem())
+    activeRoot = "/mock/repo/beta"
+    const betaPrompt = flattenSystemPrompt(await buildSystem())
+
+    expect(alphaPrompt).toContain("alpha soul")
+    expect(alphaPrompt).toContain("alpha identity")
+    expect(betaPrompt).toContain("beta soul")
+    expect(betaPrompt).toContain("beta identity")
+    expect(betaPrompt).not.toContain("alpha identity")
   })
 
   it("resetPsycheCache clears cached psyche text", async () => {

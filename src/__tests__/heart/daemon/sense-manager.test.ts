@@ -442,6 +442,103 @@ describe("daemon sense manager", () => {
     )
   })
 
+  it("reports OpenAI Realtime as the configured Twilio phone voice engine", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      integrations: {
+        openaiApiKey: "openai-key",
+      },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        twilioPublicUrl: "https://voice.example.test",
+        twilioTransportMode: "media-stream",
+        twilioConversationEngine: "openai-realtime",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:voice", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(
+      expect.objectContaining({
+        sense: "voice",
+        status: "running",
+        detail: "OpenAI Realtime speech-to-speech; Twilio phone transport attached",
+      }),
+    )
+  })
+
+  it("reports OpenAI SIP as the configured Twilio phone voice engine", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        voice: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheRuntimeConfig("slugger", {
+      integrations: {
+        openaiApiKey: "openai-key",
+      },
+      voice: {
+        openaiSipProjectId: "proj_test",
+        openaiSipWebhookSecret: "whsec_test",
+      },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      voice: {
+        twilioPublicUrl: "https://voice.example.test",
+        twilioConversationEngine: "openai-sip",
+      },
+    })
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager: {
+        startAutoStartAgents: async () => undefined,
+        stopAll: async () => undefined,
+        listAgentSnapshots: () => [
+          { name: "slugger:voice", status: "running" },
+        ],
+      },
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(
+      expect.objectContaining({
+        sense: "voice",
+        status: "running",
+        detail: "OpenAI Realtime SIP speech-to-speech; Twilio phone transport attached",
+      }),
+    )
+  })
+
   it("reports voice setup gaps from portable and machine runtime config separately", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {
@@ -1740,7 +1837,7 @@ describe("daemon sense manager", () => {
       ok: false,
       skip: true,
       error: "voice is enabled for slugger but runtime credentials are not ready: missing integrations.elevenLabsApiKey/integrations.elevenLabsVoiceId/voice.whisperModelPath",
-      fix: "Agent-runnable: run 'ouro connect voice --agent slugger' for config guidance, save ElevenLabs and local Whisper.cpp settings, then run 'ouro up' again.",
+      fix: "Agent-runnable: run 'ouro connect voice --agent slugger' for config guidance; use voice.twilioConversationEngine=openai-sip with voice.openaiRealtimeApiKey, voice.openaiSipProjectId, and voice.openaiSipWebhookSecret for preferred SIP phone voice; use openai-realtime for Media Streams fallback, or save ElevenLabs and local Whisper.cpp settings for cascade fallback; then run 'ouro up' again.",
     })
     await vi.waitFor(() => {
       expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", expect.any(String), { preserveCachedOnFailure: true })

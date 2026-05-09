@@ -14,6 +14,7 @@ import { getAgentRoot } from "../heart/identity";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
+import { voiceToolDefinitions } from "./tools-voice";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -31,7 +32,7 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, surfaceToolDefinition];
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
 // Kept separate from allDefinitions so execTool can find them.
@@ -89,11 +90,14 @@ export function getToolsForChannel(
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
     ? bluebubblesToolDefinitions.map((d) => d.tool)
     : [];
+  const voiceTools = capabilities?.channel === "voice"
+    ? voiceToolDefinitions.map((d) => d.tool)
+    : [];
 
   let result: OpenAI.ChatCompletionFunctionTool[];
 
   if (!capabilities || capabilities.availableIntegrations.length === 0) {
-    result = [...baseTools, ...bluebubblesTools];
+    result = [...baseTools, ...bluebubblesTools, ...voiceTools];
   } else {
     const available = new Set(capabilities.availableIntegrations);
     const channelDefs = [...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions];
@@ -103,7 +107,7 @@ export function getToolsForChannel(
     );
 
     if (!toolPreferences || Object.keys(toolPreferences).length === 0) {
-      result = [...baseTools, ...bluebubblesTools, ...integrationDefs.map((d) => d.tool)];
+      result = [...baseTools, ...bluebubblesTools, ...voiceTools, ...integrationDefs.map((d) => d.tool)];
     } else {
       // Build a map of integration -> preference text for fast lookup
       const prefMap = new Map<string, string>();
@@ -118,7 +122,7 @@ export function getToolsForChannel(
         return pref ? applyPreference(d.tool, pref) : d.tool;
       });
 
-      result = [...baseTools, ...bluebubblesTools, ...enrichedIntegrationTools];
+      result = [...baseTools, ...bluebubblesTools, ...voiceTools, ...enrichedIntegrationTools];
     }
   }
 

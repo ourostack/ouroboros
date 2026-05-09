@@ -48,6 +48,9 @@ function standaloneOverrides(): TwilioPhoneTransportRuntimeOverrides {
     whisperModelPath: argValue("--whisper-model-path"),
     recordTimeoutSeconds: numberArg("--record-timeout"),
     recordMaxLengthSeconds: numberArg("--record-max-length"),
+    greetingPrebufferMs: numberArg("--greeting-prebuffer-ms"),
+    transportMode: argValue("--transport-mode") as TwilioPhoneTransportRuntimeOverrides["transportMode"],
+    playbackMode: argValue("--playback-mode") as TwilioPhoneTransportRuntimeOverrides["playbackMode"],
   }
 }
 

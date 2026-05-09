@@ -3292,6 +3292,19 @@ describe("runAgent", () => {
     expect(mockKeptNotesJudge).toHaveBeenCalledWith({ query: "hello", candidates: [] })
   })
 
+  it("skips kept notes injection when a live sense asks for the latency fast lane", async () => {
+    mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+
+    const messages: any[] = [
+      { role: "system", content: "stale old prompt" },
+      { role: "user", content: "hello" },
+    ]
+    await runAgent(messages, noopCallbacks, "voice", undefined, { skipKeptNotes: true })
+
+    expect(mockInjectKeptNotes).not.toHaveBeenCalled()
+    expect(mockCreate).toHaveBeenCalled()
+  })
+
   it("refreshes system prompt for teams channel", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
 

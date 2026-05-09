@@ -34,6 +34,7 @@ const mockRunInnerDialogTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
+const mockPlaceConfiguredTwilioPhoneCall = vi.fn()
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -51,6 +52,11 @@ vi.mock("../../senses/bluebubbles", () => ({
 vi.mock("../../senses/teams", () => ({
   sendProactiveTeamsMessageToSession: (...args: any[]) =>
     mockSendProactiveTeamsMessageToSession(...args),
+}))
+
+vi.mock("../../senses/voice/twilio-phone-runtime", () => ({
+  placeConfiguredTwilioPhoneCall: (...args: any[]) =>
+    mockPlaceConfiguredTwilioPhoneCall(...args),
 }))
 
 const mockEmitNervesEvent = vi.fn()
@@ -82,11 +88,20 @@ beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
+  vi.mocked(fs.readdirSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
   mockRunInnerDialogTurn.mockReset()
   mockRequestInnerWake.mockReset()
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
+  mockPlaceConfiguredTwilioPhoneCall.mockReset()
+  mockPlaceConfiguredTwilioPhoneCall.mockResolvedValue({
+    outboundId: "outbound-test",
+    callSid: "CAOUT",
+    status: "queued",
+    webhookUrl: "https://voice.example.test/voice/agents/testagent/twilio/outgoing/outbound-test",
+    statusCallbackUrl: "https://voice.example.test/voice/agents/testagent/twilio/outgoing/outbound-test/status",
+  })
   mockRequestInnerWake.mockResolvedValue(null)
   mockEmitNervesEvent.mockReset()
   mockCreateObligation.mockReset()
@@ -168,6 +183,35 @@ describe("send_message tool", () => {
       botApi: { id: "bot-123" },
       ...overrides,
     }
+  }
+
+  function mockVoiceFriendRecord(overrides: Partial<any> = {}): any {
+    const record = {
+      id: "friend-uuid-1",
+      name: "Ari",
+      trustLevel: "friend",
+      externalIds: [
+        {
+          provider: "imessage-handle",
+          externalId: "+15551234567",
+          linkedAt: "2026-03-14T00:00:00.000Z",
+        },
+      ],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: {},
+      totalTokens: 0,
+      createdAt: "2026-03-14T00:00:00.000Z",
+      updatedAt: "2026-03-14T00:00:00.000Z",
+      schemaVersion: 1,
+      ...overrides,
+    }
+    vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+      String(filePath).endsWith("/friends/friend-uuid-1.json"),
+    )
+    vi.mocked(fs.readdirSync).mockReturnValue(["friend-uuid-1.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(record))
+    return record
   }
 
   it("is registered in baseToolDefinitions", async () => {
@@ -570,6 +614,73 @@ describe("send_message tool", () => {
       expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-4\/teams\/target-thread\/\d+-.+\.json$/),
       expect.any(String),
     )
+  })
+
+  it("places a voice call for send_message channel=voice instead of queuing text", async () => {
+    mockVoiceFriendRecord()
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "ari",
+      channel: "voice",
+      key: "twilio-phone-ari-via-15551234567",
+      content: "call Ari and say hello",
+      voiceAudioSource: "tone",
+      voiceAudioLabel: "hello tone",
+      voiceAudioToneHz: "440",
+      voiceAudioDurationMs: "80",
+    })
+
+    expect(result.toLowerCase()).toContain("delivered now")
+    expect(result).toContain("voice call initiated")
+    expect(mockPlaceConfiguredTwilioPhoneCall).toHaveBeenCalledWith({
+      agentName: "testagent",
+      friendId: "friend-uuid-1",
+      to: "+15551234567",
+      reason: "call Ari and say hello",
+      initialAudio: {
+        source: "tone",
+        label: "hello tone",
+        toneHz: 440,
+        durationMs: 80,
+      },
+    })
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("blocks send_message channel=voice to untrusted friends without queuing a fallback", async () => {
+    mockVoiceFriendRecord({ trustLevel: "stranger" })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "ari",
+      channel: "voice",
+      content: "call Ari anyway",
+    })
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(result).toContain("voice calls are limited to trusted friends")
+    expect(mockPlaceConfiguredTwilioPhoneCall).not.toHaveBeenCalled()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("blocks send_message channel=voice when no phone number is available", async () => {
+    mockVoiceFriendRecord({ externalIds: [] })
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "ari",
+      channel: "voice",
+      content: "call Ari without a number",
+    })
+
+    expect(result.toLowerCase()).toContain("blocked")
+    expect(result).toContain("no phone number is available for voice call")
+    expect(mockPlaceConfiguredTwilioPhoneCall).not.toHaveBeenCalled()
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
   describe("self-routing special case", () => {

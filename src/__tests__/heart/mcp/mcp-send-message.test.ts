@@ -34,7 +34,7 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
 }))
 
-// Mock agent-service (for existing tools like ask, status)
+// Mock agent-service for read-only tools like status/search_notes.
 vi.mock("../../../heart/daemon/agent-service", () => ({
   handleAgentStatus: vi.fn(async () => ({ ok: true, message: "Status" })),
   handleAgentAsk: vi.fn(async () => ({ ok: true, message: "Answer" })),

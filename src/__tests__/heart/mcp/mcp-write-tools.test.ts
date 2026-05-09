@@ -182,7 +182,7 @@ describe("MCP write tools routing", () => {
   })
 
   describe("report_progress", () => {
-    it("report_progress sends daemon command and returns immediately", async () => {
+    it("report_progress runs a full conversation turn", async () => {
       const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -209,16 +209,22 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      // report_* should NOT route through daemon senseTurn
-      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
-      // Should return a response (via agent-service fallback)
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+      expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+        "/tmp/test.sock",
+        expect.objectContaining({
+          kind: "agent.senseTurn",
+          channel: "mcp",
+          message: "[report_progress] halfway done",
+        }),
+      )
       const response = parseResponse(output)
-      expect(response.result.content[0].text).toBeDefined()
+      expect(response.result.content[0].text).toBe("task accepted and working on it")
     })
   })
 
   describe("report_blocker", () => {
-    it("report_blocker returns without routing through daemon", async () => {
+    it("report_blocker runs a full conversation turn", async () => {
       const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -245,14 +251,22 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+      expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+        "/tmp/test.sock",
+        expect.objectContaining({
+          kind: "agent.senseTurn",
+          channel: "mcp",
+          message: "[report_blocker] waiting on API key",
+        }),
+      )
       const response = parseResponse(output)
       expect(response.result.isError).toBeFalsy()
     })
   })
 
   describe("report_complete", () => {
-    it("report_complete returns without routing through daemon", async () => {
+    it("report_complete runs a full conversation turn", async () => {
       const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
       const server = createMcpServer({
         agent: "test-agent",
@@ -279,7 +293,15 @@ describe("MCP write tools routing", () => {
       const output = await outputPromise
       server.stop()
 
-      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+      expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+        "/tmp/test.sock",
+        expect.objectContaining({
+          kind: "agent.senseTurn",
+          channel: "mcp",
+          message: "[report_complete] widget built",
+        }),
+      )
       const response = parseResponse(output)
       expect(response.result.isError).toBeFalsy()
     })

@@ -28,6 +28,7 @@ import { handleInboundTurn } from "./pipeline"
 import type { Channel } from "../mind/friends/types"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { ToolContext } from "../repertoire/tools-base"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -168,8 +169,12 @@ export interface RunSenseTurnOptions {
   friendId: string
   /** The user's message text. */
   userMessage: string
+  /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
+  latencyMode?: "standard" | "live"
   /** Optional transport delivery hook for outward `speak`/`settle` text. */
   deliverySink?: OutwardSenseDeliverySink
+  /** Optional transport-specific controls surfaced to tools during this turn. */
+  toolContext?: Partial<ToolContext>
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -330,6 +335,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   stampIngressTime(userMsg)
   await handleInboundTurn({
     channel,
+    latencyMode: options.latencyMode,
     sessionKey,
     capabilities,
     messages: [userMsg],
@@ -351,7 +357,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     externalId: friendId,
     enforceTrustGate,
     drainPending,
-    runAgentOptions: { mcpManager },
+    runAgentOptions: {
+      mcpManager,
+      ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
+      ...(options.toolContext ? { toolContext: options.toolContext as ToolContext } : {}),
+    },
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {

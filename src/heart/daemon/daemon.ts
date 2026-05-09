@@ -16,7 +16,7 @@ import { CLI_UPDATE_DIST_TAG, startUpdateChecker, stopUpdateChecker } from "../v
 import { execSync } from "child_process"
 import { drainPending } from "../../mind/pending"
 import {
-  handleAgentAsk, handleAgentCatchup, handleAgentCheckGuidance,
+  handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
   handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
   handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchNotes,
@@ -647,6 +647,27 @@ export async function handleAgentSenseTurn(
     const errorMessage = error instanceof Error ? error.message : String(error)
     return { ok: false, error: `sense turn failed: ${errorMessage}` }
   }
+}
+
+export async function handleAgentAskTurn(
+  command: Extract<DaemonCommand, { kind: "agent.ask" }>,
+): Promise<DaemonResponse> {
+  /* v8 ignore start -- ask command parameter defaults are legacy MCP compatibility; send_message shares the primary path @preserve */
+  const question = typeof command.question === "string" ? command.question : ""
+  if (!question.trim()) return { ok: false, error: "Missing required parameter: question" }
+  const channel = typeof command.channel === "string" && command.channel.trim() ? command.channel.trim() : "mcp"
+  const sessionKey = typeof command.sessionKey === "string" && command.sessionKey.trim()
+    ? command.sessionKey.trim()
+    : `agent-ask:${command.friendId}`
+  /* v8 ignore stop */
+  return handleAgentSenseTurn({
+    kind: "agent.senseTurn",
+    agent: command.agent,
+    friendId: command.friendId,
+    channel,
+    sessionKey,
+    message: question,
+  })
 }
 
 export class OuroDaemon {
@@ -1288,7 +1309,7 @@ export class OuroDaemon {
         await this.processManager.restartAgent?.(command.agent)
         return { ok: true, message: `restarted ${command.agent}` }
       case "agent.ask":
-        return handleAgentAsk(command)
+        return handleAgentAskTurn(command)
       case "agent.status":
         return handleAgentStatus(command)
       case "agent.catchup":

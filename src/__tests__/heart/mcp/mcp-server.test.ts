@@ -822,6 +822,61 @@ describe("MCP server protocol layer", () => {
     })
   })
 
+  it("routes ask through the same full conversation turn as send_message", async () => {
+    mockSendDaemonCommand.mockResolvedValueOnce({ ok: true, message: "answer from agent", data: { ponderDeferred: false } })
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const localStdin = new PassThrough()
+    const localStdout = new PassThrough()
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "test-friend",
+      socketPath: "/tmp/test.sock",
+      stdin: localStdin,
+      stdout: localStdout,
+    })
+
+    const outputPromise = collectOutput(localStdout)
+    server.start()
+
+    writeJsonRpc(localStdin, {
+      jsonrpc: "2.0",
+      id: 63,
+      method: "tools/call",
+      params: {
+        name: "ask",
+        arguments: { question: "what is your voice preference?" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+    localStdin.end()
+
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        kind: "agent.senseTurn",
+        agent: "test-agent",
+        friendId: "test-friend",
+        channel: "mcp",
+        sessionKey: "test-session-id",
+        message: "what is your voice preference?",
+      }),
+    )
+
+    const output = await outputPromise
+    const match = output.match(/\{.*\}/s)
+    expect(match).not.toBeNull()
+    const response = JSON.parse(match![0])
+    expect(response.id).toBe(63)
+    expect(response.result.isError).toBe(false)
+    expect(response.result.content[0].text).toBe("answer from agent")
+
+    localStdin.destroy()
+    localStdout.destroy()
+  })
+
   it("returns error when send_message throws", async () => {
     mockSendDaemonCommand.mockRejectedValueOnce(new Error("pipeline broke"))
 

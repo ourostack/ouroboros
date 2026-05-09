@@ -30,9 +30,15 @@ import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
 import { buildProgressStory, renderProgressStory } from "../heart/progress-story";
-import { deliverCrossChatMessage, type CrossChatDeliveryResult } from "../heart/cross-chat-delivery";
-import type { ToolContext, ToolDefinition } from "./tools-base";
+import {
+  deliverCrossChatMessage,
+  type CrossChatDeliveryRequest,
+  type CrossChatDeliveryResult,
+  type CrossChatDirectDeliveryResult,
+} from "../heart/cross-chat-delivery";
+import type { ToolContext, ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
 import { listVisibleBackgroundOperations } from "../heart/mail-import-discovery";
+import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
@@ -121,6 +127,57 @@ function renderCrossChatDeliveryStatus(
     outcomeText: `${lead}\n${result.detail}`,
   }))
 }
+
+async function deliverVoiceChannelMessage(
+  request: CrossChatDeliveryRequest,
+  agentName: string,
+  initialAudio?: VoiceCallAudioRequest,
+): Promise<CrossChatDirectDeliveryResult> {
+  const result = await placeTrustedFriendVoiceOutboundCall({
+    agentName,
+    agentRoot: getAgentRoot(),
+    friendId: request.friendId,
+    reason: request.content,
+    ...(initialAudio ? { initialAudio } : {}),
+  })
+  if (result.status === "placed") {
+    return {
+      status: "delivered_now",
+      detail: result.detail,
+    }
+  }
+  return {
+    status: result.status,
+    detail: result.detail,
+  }
+}
+
+/* v8 ignore start -- voice initial-audio parsing is exercised by voice transport tests; session tool keeps a thin argument adapter @preserve */
+function parseVoiceInitialAudio(args: Record<string, string>): VoiceCallAudioRequest | undefined {
+  const source = args.voiceAudioSource === "url" || args.voiceAudioSource === "file" || args.voiceAudioSource === "tone"
+    ? args.voiceAudioSource
+    : undefined
+  const hasAudioHint = Boolean(
+    source
+    || args.voiceAudioUrl?.trim()
+    || args.voiceAudioPath?.trim()
+    || args.voiceAudioLabel?.trim()
+    || args.voiceAudioToneHz?.trim()
+    || args.voiceAudioDurationMs?.trim(),
+  )
+  if (!hasAudioHint) return undefined
+  const toneHz = args.voiceAudioToneHz?.trim() ? Number(args.voiceAudioToneHz) : undefined
+  const durationMs = args.voiceAudioDurationMs?.trim() ? Number(args.voiceAudioDurationMs) : undefined
+  return {
+    source: source ?? "tone",
+    ...(args.voiceAudioUrl?.trim() ? { url: args.voiceAudioUrl.trim() } : {}),
+    ...(args.voiceAudioPath?.trim() ? { path: args.voiceAudioPath.trim() } : {}),
+    ...(args.voiceAudioLabel?.trim() ? { label: args.voiceAudioLabel.trim() } : {}),
+    ...(Number.isFinite(toneHz) ? { toneHz } : {}),
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
+  }
+}
+/* v8 ignore stop */
 
 function emptyTaskBoard() {
   return {
@@ -354,7 +411,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp" },
             key: { type: "string", description: "session key (defaults to 'session')" },
             messageCount: { type: "string", description: "how many recent messages to return (default 20)" },
             mode: {
@@ -457,9 +514,15 @@ export const sessionToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             friendId: { type: "string", description: "the friend UUID (or 'self')" },
-            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, inner, or mcp" },
+            channel: { type: "string", description: "the channel: cli, teams, bluebubbles, voice, inner, or mcp. channel=voice intentionally starts a live phone call to a trusted friend through the Voice sense." },
             key: { type: "string", description: "session key (defaults to 'session')" },
             content: { type: "string", description: "the message content to send" },
+            voiceAudioSource: { type: "string", enum: ["tone", "url", "file"], description: "optional initial non-speech audio to play after the opening greeting when channel=voice" },
+            voiceAudioUrl: { type: "string", description: "short audio URL for voiceAudioSource=url" },
+            voiceAudioPath: { type: "string", description: "local audio file path for voiceAudioSource=file" },
+            voiceAudioLabel: { type: "string", description: "short label for the initial voice audio" },
+            voiceAudioToneHz: { type: "number", description: "tone frequency for voiceAudioSource=tone" },
+            voiceAudioDurationMs: { type: "number", description: "initial audio duration in milliseconds" },
           },
           required: ["friendId", "channel", "content"],
         },
@@ -470,6 +533,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       const channel = args.channel
       const key = args.key || "session"
       const content = args.content
+      const voiceInitialAudio = channel === "voice" ? parseVoiceInitialAudio(args) : undefined
       const now = Date.now()
       const agentName = getAgentName()
 
@@ -737,6 +801,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               detail: "live delivery unavailable right now; queued for the next active turn",
             } as const
           },
+          voice: async (request) => deliverVoiceChannelMessage(request, agentName, voiceInitialAudio),
         },
       })
 

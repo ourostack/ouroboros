@@ -41,6 +41,7 @@ describe("voice loopback turn", () => {
       friendId: "ari",
       sessionKey: "riverside",
       userMessage: "Can you hear me?",
+      latencyMode: "live",
     }))
     expect(tts.synthesize).toHaveBeenCalledWith({
       utteranceId: "utt_turn_001",
@@ -55,6 +56,44 @@ describe("voice loopback turn", () => {
         mimeType: "audio/pcm;rate=16000",
       },
     })
+  })
+
+  it("passes voice call controls into the shared voice session turn", async () => {
+    const transcript = buildVoiceTranscript({
+      utteranceId: "utt_control",
+      text: "Can you hang up after this?",
+      source: "loopback",
+    })
+    const voiceCall = { requestEnd: vi.fn() }
+    const runSenseTurn = vi.fn(async () => ({
+      response: "Yes, ending the call.",
+      ponderDeferred: false,
+    }))
+    const tts: VoiceTtsService = {
+      synthesize: vi.fn(async () => ({
+        utteranceId: "utt_control",
+        audio: Buffer.from("audio"),
+        byteLength: 5,
+        chunkCount: 1,
+        modelId: "eleven_flash_v2_5",
+        voiceId: "voice_123",
+        mimeType: "audio/pcm;rate=16000",
+      })),
+    }
+
+    await runVoiceLoopbackTurn({
+      agentName: "slugger",
+      friendId: "ari",
+      sessionKey: "phone",
+      transcript,
+      runSenseTurn,
+      tts,
+      voiceCall,
+    })
+
+    expect(runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
+      toolContext: { voiceCall },
+    }))
   })
 
   it("rejects empty transcript text before the agent turn", async () => {

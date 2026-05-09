@@ -530,6 +530,45 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("detects Voice as ready when SIP-native phone voice is configured", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      config: {
+        integrations: { openaiApiKey: "openai-key" },
+        voice: {
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      itemPath: "vault:test-agent:runtime/config",
+      updatedAt: new Date(0),
+    })
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      config: {
+        voice: {
+          twilioConversationEngine: "openai-sip",
+          twilioPublicUrl: "https://voice.example.test",
+        },
+      },
+      itemPath: "vault:test-agent:runtime/machines/machine_test/config",
+      updatedAt: new Date(0),
+    })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toEqual([
+      "- CLI: interactive",
+      "- Teams: disabled",
+      "- BlueBubbles: disabled",
+      "- Mail: disabled",
+      "- Voice: ready",
+    ])
+  })
+
   it("detects mail from cached vault runtime credentials when local config is stale", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: true } },

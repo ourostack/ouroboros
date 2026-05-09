@@ -128,7 +128,7 @@ describe("ElevenLabs streaming TTS client", () => {
     socket.emit("error", new Error("ignored after final"))
 
     expect(urls).toEqual([
-      "wss://api.elevenlabs.io/v1/text-to-speech/voice_123/stream-input?model_id=eleven_flash_v2_5&output_format=pcm_16000",
+      "wss://api.elevenlabs.io/v1/text-to-speech/voice_123/stream-input?model_id=eleven_flash_v2_5&output_format=pcm_16000&auto_mode=true",
     ])
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
       expect.objectContaining({ text: " ", xi_api_key: "eleven-secret" }),
@@ -253,8 +253,93 @@ describe("ElevenLabs streaming TTS client", () => {
       voiceId: "voice with spaces",
     })
     expect(urls).toEqual([
-      "wss://api.elevenlabs.io/v1/text-to-speech/voice%20with%20spaces/stream-input?model_id=eleven_multilingual_v2&output_format=mp3_44100_128",
+      "wss://api.elevenlabs.io/v1/text-to-speech/voice%20with%20spaces/stream-input?model_id=eleven_multilingual_v2&output_format=mp3_44100_128&auto_mode=true",
     ])
+  })
+
+  it("supports Twilio Media Streams ulaw output", async () => {
+    const socket = new FakeSocket()
+    const urls: string[] = []
+    const client = createElevenLabsTtsClient({
+      apiKey: "eleven-secret",
+      voiceId: "voice_123",
+      outputFormat: "ulaw_8000",
+      socketFactory: (url) => {
+        urls.push(url)
+        return socket
+      },
+    })
+
+    const resultPromise = client.synthesize({
+      utteranceId: "utt_ulaw_tts",
+      text: "Phone native audio.",
+    })
+
+    socket.emit("open")
+    socket.emit("message", JSON.stringify({ audio: Buffer.from("ulaw").toString("base64"), isFinal: true }))
+
+    await expect(resultPromise).resolves.toMatchObject({
+      byteLength: 4,
+      chunkCount: 1,
+      mimeType: "audio/x-mulaw;rate=8000",
+    })
+    expect(urls).toEqual([
+      "wss://api.elevenlabs.io/v1/text-to-speech/voice_123/stream-input?model_id=eleven_flash_v2_5&output_format=ulaw_8000&auto_mode=true",
+    ])
+  })
+
+  it("maps arbitrary PCM output formats to their sample-rate MIME type", async () => {
+    const socket = new FakeSocket()
+    const client = createElevenLabsTtsClient({
+      apiKey: "eleven-secret",
+      voiceId: "voice_123",
+      outputFormat: "pcm_24000",
+      socketFactory: () => socket,
+    })
+
+    const resultPromise = client.synthesize({
+      utteranceId: "utt_pcm24_tts",
+      text: "Higher rate PCM.",
+    })
+
+    socket.emit("open")
+    socket.emit("message", JSON.stringify({ audio: Buffer.from("pcm").toString("base64"), isFinal: true }))
+
+    await expect(resultPromise).resolves.toMatchObject({
+      byteLength: 3,
+      chunkCount: 1,
+      mimeType: "audio/pcm;rate=24000",
+    })
+  })
+
+  it("can disable auto mode and falls back for malformed PCM format names", async () => {
+    const socket = new FakeSocket()
+    const urls: string[] = []
+    const client = createElevenLabsTtsClient({
+      apiKey: "eleven-secret",
+      voiceId: "voice_123",
+      outputFormat: "pcm_fast",
+      autoMode: false,
+      socketFactory: (url) => {
+        urls.push(url)
+        return socket
+      },
+    })
+
+    const resultPromise = client.synthesize({
+      utteranceId: "utt_pcm_fallback_tts",
+      text: "Fallback PCM.",
+    })
+
+    socket.emit("open")
+    socket.emit("message", JSON.stringify({ audio: Buffer.from("pcm").toString("base64"), isFinal: true }))
+
+    await expect(resultPromise).resolves.toMatchObject({
+      byteLength: 3,
+      chunkCount: 1,
+      mimeType: "audio/pcm",
+    })
+    expect(urls[0]).toBe("wss://api.elevenlabs.io/v1/text-to-speech/voice_123/stream-input?model_id=eleven_flash_v2_5&output_format=pcm_fast")
   })
 
   it("adapts Node global WebSocket-style sockets to the internal socket contract", () => {

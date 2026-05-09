@@ -34,6 +34,7 @@ export default defineConfig({
         "src/senses/cli/**",
         "src/senses/*-entry.ts",
         "src/senses/voice/index.ts",
+        "src/senses/voice/types.ts",
         "src/reflection/*-entry.ts",
         "src/repertoire/coding/types.ts",
         "src/mind/friends/store.ts",
