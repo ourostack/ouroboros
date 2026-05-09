@@ -1262,15 +1262,15 @@ describe("checkTrips", () => {
 
   it("warns when trips dir exists but ledger.json is missing", () => {
     const deps = createMockDeps({
-      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/state/trips"]),
+      existsSync: existsFor(["/tmp/bundles", "/tmp/bundles/test.ouro/trips"]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("warn")
-    expect(cat.checks[0].detail).toContain("ledger.json missing")
+    expect(cat.checks[0].detail).toContain("trips/ exists but ledger.json missing")
   })
 
-  it("fails when ledger.json is unparseable", () => {
+  it("warns when only legacy state/trips exists", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
@@ -1278,7 +1278,23 @@ describe("checkTrips", () => {
         "/tmp/bundles/test.ouro/state/trips/ledger.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": "{not json" }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson() }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("legacy state/trips")
+    expect(cat.checks[0].detail).toContain("durable trips/ missing")
+  })
+
+  it("fails when ledger.json is unparseable", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/trips/ledger.json": "{not json" }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("fail")
@@ -1289,11 +1305,11 @@ describe("checkTrips", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/bundles/test.ouro/state/trips",
-        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----" }) }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/trips/ledger.json": JSON.stringify({ privateKeyPem: "-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----" }) }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("warn")
@@ -1304,11 +1320,11 @@ describe("checkTrips", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/bundles/test.ouro/state/trips",
-        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": JSON.stringify({ ledgerId: "lg" }) }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/trips/ledger.json": JSON.stringify({ ledgerId: "lg" }) }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("fail")
@@ -1319,15 +1335,15 @@ describe("checkTrips", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/bundles/test.ouro/state/trips",
-        "/tmp/bundles/test.ouro/state/trips/ledger.json",
-        "/tmp/bundles/test.ouro/state/trips/records",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips/records",
       ]),
       readdirSync: readdirFor({
         "/tmp/bundles": ["test.ouro"],
-        "/tmp/bundles/test.ouro/state/trips/records": ["trip_a.json", "trip_b.json", "ignore.txt"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json", "trip_b.json", "ignore.txt"],
       }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": ledgerJson() }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/trips/ledger.json": ledgerJson() }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("pass")
@@ -1339,15 +1355,43 @@ describe("checkTrips", () => {
     const deps = createMockDeps({
       existsSync: existsFor([
         "/tmp/bundles",
-        "/tmp/bundles/test.ouro/state/trips",
-        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
       ]),
       readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
-      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson() }),
+      readFileSync: readFileFor({ "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson() }),
     })
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("pass")
     expect(cat.checks[0].detail).toContain("ledger_slugger_nested")
+  })
+
+  it("warns when legacy state/trips differs from durable trips", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips/records",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips/records",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_b.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json": "{}",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_b.json": "{}",
+      }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("legacy state/trips differs")
   })
 })
 
