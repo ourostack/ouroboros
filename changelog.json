@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.578",
+      "changes": [
+        "Release preflight now requires releasable implementation changes to keep the current version as the top changelog entry and update `changelog.json` no earlier than the changed source, script, skill, or wrapper-code paths."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.577",
       "changes": [
         "Bitwarden vault access now reaps over-age `.ouro-bw.lock` files even when the recorded owner PID is still alive, preventing stale local locks from making provider and vault status look broken after the `bw` child process is gone."
