@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.581",
+      "changes": [
+        "Trip ledger storage now uses git-controlled bundle-root `trips/` as canonical local storage, with copy-only import from legacy ignored `state/trips/` and divergence warnings instead of silent merges.",
+        "`ouro doctor` now checks durable trip ledgers and reports legacy-only or divergent `state/trips/` data clearly so bundle sync and backup gaps surface before travel facts are lost."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.580",
       "changes": [
         "OpenAI Realtime phone voice now queues manual `response.create` requests while another response is active, preventing SIP calls from hitting `conversation_already_has_active_response` and losing conversational state during tool followups.",
