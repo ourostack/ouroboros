@@ -1381,8 +1381,8 @@ describe("checkTrips", () => {
       ]),
       readdirSync: readdirFor({
         "/tmp/bundles": ["test.ouro"],
-        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json"],
-        "/tmp/bundles/test.ouro/state/trips/records": ["trip_b.json"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json", "ignore.txt"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_b.json", "ignore.txt"],
       }),
       readFileSync: readFileFor({
         "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
@@ -1394,6 +1394,114 @@ describe("checkTrips", () => {
     const cat = checkTrips(deps)
     expect(cat.checks[0].status).toBe("warn")
     expect(cat.checks[0].detail).toContain("legacy state/trips differs")
+  })
+
+  it("warns when legacy state/trips has records but no legacy ledger", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips/records",
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/records",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_b.json",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_b.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json": "{}",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_b.json": "{}",
+      }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("legacy state/trips differs")
+  })
+
+  it("warns when legacy state/trips has the same record path with different content", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips/records",
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips/records",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_a.json",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_a.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json": "{\"source\":\"durable\"}",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_a.json": "{\"source\":\"legacy\"}",
+      }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("warn")
+    expect(cat.checks[0].detail).toContain("legacy state/trips differs")
+  })
+
+  it("passes when durable trips and legacy state/trips match", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/trips/records",
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips/records",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_a.json",
+      ]),
+      readdirSync: readdirFor({
+        "/tmp/bundles": ["test.ouro"],
+        "/tmp/bundles/test.ouro/trips/records": ["trip_a.json"],
+        "/tmp/bundles/test.ouro/state/trips/records": ["trip_a.json"],
+      }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/trips/records/trip_a.json": "{\"source\":\"same\"}",
+        "/tmp/bundles/test.ouro/state/trips/records/trip_a.json": "{\"source\":\"same\"}",
+      }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).not.toContain("legacy state/trips differs")
+  })
+
+  it("passes when durable trips and legacy state/trips have matching ledgers and no records", () => {
+    const deps = createMockDeps({
+      existsSync: existsFor([
+        "/tmp/bundles",
+        "/tmp/bundles/test.ouro/trips",
+        "/tmp/bundles/test.ouro/trips/ledger.json",
+        "/tmp/bundles/test.ouro/state/trips",
+        "/tmp/bundles/test.ouro/state/trips/ledger.json",
+      ]),
+      readdirSync: readdirFor({ "/tmp/bundles": ["test.ouro"] }),
+      readFileSync: readFileFor({
+        "/tmp/bundles/test.ouro/trips/ledger.json": nestedLedgerJson(),
+        "/tmp/bundles/test.ouro/state/trips/ledger.json": nestedLedgerJson(),
+      }),
+    })
+    const cat = checkTrips(deps)
+    expect(cat.checks[0].status).toBe("pass")
+    expect(cat.checks[0].detail).toContain("0 records")
   })
 })
 
