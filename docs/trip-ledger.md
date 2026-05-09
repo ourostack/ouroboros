@@ -137,15 +137,23 @@ loopback, family friend records) can invoke them.
 ## On-disk layout (harness side)
 
 ```
-state/trips/
+trips/
   ledger.json                 # the agent's keypair record
   records/
     <tripId>.json             # one encrypted TripRecord per trip
 ```
 
-`ledger.json` is the only file containing the private key. Treat it
-like any other secret material — the bundle's normal access controls
-apply.
+`trips/` lives in the git-controlled portion of the agent bundle so
+clone/sync restores usable trip records on another machine. `ledger.json`
+is the only file containing the private key. Treat it like any other
+secret material — the bundle's normal access controls apply.
+
+Legacy local stores may still exist at `state/trips/` from earlier
+harness versions. `state/` remains ignored runtime/local state. The
+harness copies `state/trips/ledger.json` and `state/trips/records/*.json`
+into durable `trips/` only when `trips/` is absent. Once `trips/` exists,
+it is authoritative; if legacy state differs, tools and doctor checks
+surface that divergence instead of silently merging.
 
 ## Hosted layout (trip-control service)
 
@@ -165,7 +173,7 @@ by a single agent.
 
 ## Why local-first today
 
-The harness reads/writes trips on local disk via `state/trips/`. The
+The harness reads/writes trips on local disk via bundle-root `trips/`. The
 substrate's hosted `trip-control` service is provisioned and runs in
 Azure (with the `AzureBlobTripLedgerStore` and etag concurrency for the
 registry), but the harness tools don't talk to it yet. This is
