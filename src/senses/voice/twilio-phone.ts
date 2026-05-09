@@ -1368,6 +1368,7 @@ const OPENAI_REALTIME_BARGE_IN_MIN_SPEECH_MS = 160
 const OPENAI_REALTIME_BARGE_IN_RMS_THRESHOLD = 900
 const OPENAI_REALTIME_MIN_VOICE_SPEED = 0.25
 const OPENAI_REALTIME_MAX_VOICE_SPEED = 1.5
+const OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS = 50
 const OPENAI_SIP_OUTBOUND_AMD_GREETING_TIMEOUT_MS = 10_000
 
 interface RealtimePlaybackMark {
@@ -1388,6 +1389,10 @@ interface RealtimeToolResponseState {
   responseDone: boolean
   followupRequested: boolean
   suppressFollowup: boolean
+}
+
+interface PendingRealtimeResponseRequest {
+  response?: Record<string, unknown>
 }
 
 interface OpenAISipHeader {
@@ -1756,18 +1761,7 @@ function realtimeBootstrapInstructions(agentName: string, voiceStyle?: string): 
 }
 
 function realtimeBootstrapTools(): Array<{ type: "function"; name: string; description?: string; parameters?: unknown }> {
-  return [{
-    type: "function",
-    name: "voice_end_call",
-    description: "End the active live voice phone call after a natural goodbye.",
-    parameters: {
-      type: "object",
-      properties: {
-        reason: { type: "string", description: "Short reason for ending the call." },
-      },
-      additionalProperties: false,
-    },
-  }]
+  return realtimeToolsFromChatTools(getToolsForChannel(getChannelCapabilities("voice")))
 }
 
 function timeoutAfter(ms: number): Promise<undefined> {
@@ -1828,6 +1822,10 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private readonly playbackMarks = new Map<string, RealtimePlaybackMark>()
   private readonly toolResponses = new Map<string, RealtimeToolResponseState>()
   private readonly completedRealtimeResponseIds = new Set<string>()
+  private activeRealtimeResponseId: string | null = null
+  private pendingRealtimeResponse: PendingRealtimeResponseRequest | null = null
+  private pendingRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
+  private responseCreateHoldUntilMs = 0
   private initialAudio: VoiceCallAudioRequest | undefined
   private initialAudioPlayed = false
   private callerBargeInSpeechMs = 0
@@ -2170,12 +2168,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
           createdAt: new Date().toISOString(),
         }, { From: this.to, To: this.from })
       : callConnectedPrompt({ From: this.from, To: this.to })
-    this.sendOpenAI({
-      type: "response.create",
-      response: {
-        instructions: promptText,
-      },
-    })
+    this.requestRealtimeResponse({ instructions: promptText })
   }
 
   private handleMedia(media: TwilioMediaPayload | undefined): void {
@@ -2230,6 +2223,10 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       return
     }
     const type = typeof event.type === "string" ? event.type : ""
+    if (type === "response.created") {
+      this.noteRealtimeResponseCreated(event)
+      return
+    }
     if (type === "response.output_audio.delta" && typeof event.delta === "string") {
       this.handleOpenAIAudioDelta(event)
       return
@@ -2251,7 +2248,9 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       return
     }
     if (type === "response.done") {
-      if (this.completeRealtimeToolResponse(realtimeResponseId(event))) return
+      const responseId = realtimeResponseId(event)
+      this.noteRealtimeResponseDone(responseId)
+      if (this.completeRealtimeToolResponse(responseId)) return
       void this.playInitialAudioAfterGreeting()
       this.completeHangupIfReady("response_done")
       return
@@ -2360,7 +2359,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     state.followupRequested = true
     this.toolResponses.delete(responseId)
     if (state.suppressFollowup) return true
-    this.sendOpenAI({ type: "response.create" })
+    this.requestRealtimeResponse()
     return true
   }
 
@@ -2407,8 +2406,65 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       },
     })
     if (!this.completeRealtimeToolCall(responseId, callId) && !coordinated) {
-      this.sendOpenAI({ type: "response.create" })
+      this.requestRealtimeResponse()
     }
+  }
+
+  private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
+    const responseId = realtimeResponseId(event)
+    if (responseId) this.activeRealtimeResponseId = responseId
+  }
+
+  private noteRealtimeResponseDone(responseId: string): void {
+    if (!responseId || this.activeRealtimeResponseId === responseId) {
+      this.activeRealtimeResponseId = null
+    }
+    this.responseCreateHoldUntilMs = Math.max(
+      this.responseCreateHoldUntilMs,
+      Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
+    )
+    this.schedulePendingRealtimeResponse(OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS)
+  }
+
+  private requestRealtimeResponse(response?: Record<string, unknown>): void {
+    if (this.closed) return
+    const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
+    if (this.activeRealtimeResponseId || waitMs > 0) {
+      const pendingResponse = response ?? this.pendingRealtimeResponse?.response
+      this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
+      if (!this.activeRealtimeResponseId) this.schedulePendingRealtimeResponse(waitMs)
+      return
+    }
+    this.sendRealtimeResponseCreate(response ? { response } : {})
+  }
+
+  private schedulePendingRealtimeResponse(delayMs: number): void {
+    if (!this.pendingRealtimeResponse) return
+    if (this.pendingRealtimeResponseTimer) clearTimeout(this.pendingRealtimeResponseTimer)
+    this.pendingRealtimeResponseTimer = setTimeout(() => {
+      this.pendingRealtimeResponseTimer = null
+      this.flushPendingRealtimeResponse()
+    }, Math.max(0, delayMs))
+    this.pendingRealtimeResponseTimer.unref?.()
+  }
+
+  private flushPendingRealtimeResponse(): void {
+    if (!this.pendingRealtimeResponse || this.closed || this.activeRealtimeResponseId) return
+    const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
+    if (waitMs > 0) {
+      this.schedulePendingRealtimeResponse(waitMs)
+      return
+    }
+    const pending = this.pendingRealtimeResponse
+    this.pendingRealtimeResponse = null
+    this.sendRealtimeResponseCreate(pending)
+  }
+
+  private sendRealtimeResponseCreate(request: PendingRealtimeResponseRequest): void {
+    this.sendOpenAI({
+      type: "response.create",
+      ...(request.response ? { response: request.response } : {}),
+    })
   }
 
   private flushPendingAudio(): void {
@@ -2527,6 +2583,10 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     if (this.openaiWs && (this.openaiWs.readyState === WebSocket.OPEN || this.openaiWs.readyState === WebSocket.CONNECTING)) {
       this.openaiWs.close()
     }
+    if (this.pendingRealtimeResponseTimer) {
+      clearTimeout(this.pendingRealtimeResponseTimer)
+      this.pendingRealtimeResponseTimer = null
+    }
     this.lifecycle?.onClose?.(this, { callSid: this.callSid, outboundId: this.outboundId })
     emitNervesEvent({
       component: "senses",
@@ -2556,6 +2616,10 @@ class OpenAISipPhoneSession {
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
   private readonly toolResponses = new Map<string, RealtimeToolResponseState>()
   private readonly completedRealtimeResponseIds = new Set<string>()
+  private activeRealtimeResponseId: string | null = null
+  private pendingRealtimeResponse: PendingRealtimeResponseRequest | null = null
+  private pendingRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
+  private responseCreateHoldUntilMs = 0
 
   constructor(
     private readonly options: TwilioPhoneBridgeOptions,
@@ -3103,11 +3167,8 @@ class OpenAISipPhoneSession {
     if (this.initialGreetingSent) return
     if (!this.openaiWs || this.openaiWs.readyState !== WebSocket.OPEN) return
     this.initialGreetingSent = true
-    this.sendOpenAI({
-      type: "response.create",
-      response: {
-        instructions: openAISipCallConnectedPrompt(this.metadata, this.options.openaiRealtime?.voiceStyle),
-      },
+    this.requestRealtimeResponse({
+      instructions: openAISipCallConnectedPrompt(this.metadata, this.options.openaiRealtime?.voiceStyle),
     })
   }
 
@@ -3119,6 +3180,10 @@ class OpenAISipPhoneSession {
       return
     }
     const type = typeof event.type === "string" ? event.type : ""
+    if (type === "response.created") {
+      this.noteRealtimeResponseCreated(event)
+      return
+    }
     if (type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
       this.recordOutboundAmdTranscriptCandidate(event.transcript)
       this.appendTranscript("user", event.transcript)
@@ -3133,7 +3198,9 @@ class OpenAISipPhoneSession {
       return
     }
     if (type === "response.done") {
-      if (this.completeRealtimeToolResponse(realtimeResponseId(event))) return
+      const responseId = realtimeResponseId(event)
+      this.noteRealtimeResponseDone(responseId)
+      if (this.completeRealtimeToolResponse(responseId)) return
       this.completeHangupIfReady("response_done")
       return
     }
@@ -3188,7 +3255,7 @@ class OpenAISipPhoneSession {
       this.completeHangupIfReady("tool_response_done")
       return true
     }
-    this.sendOpenAI({ type: "response.create" })
+    this.requestRealtimeResponse()
     return true
   }
 
@@ -3235,8 +3302,65 @@ class OpenAISipPhoneSession {
       },
     })
     if (!this.completeRealtimeToolCall(responseId, callId) && !coordinated) {
-      this.sendOpenAI({ type: "response.create" })
+      this.requestRealtimeResponse()
     }
+  }
+
+  private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
+    const responseId = realtimeResponseId(event)
+    if (responseId) this.activeRealtimeResponseId = responseId
+  }
+
+  private noteRealtimeResponseDone(responseId: string): void {
+    if (!responseId || this.activeRealtimeResponseId === responseId) {
+      this.activeRealtimeResponseId = null
+    }
+    this.responseCreateHoldUntilMs = Math.max(
+      this.responseCreateHoldUntilMs,
+      Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
+    )
+    this.schedulePendingRealtimeResponse(OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS)
+  }
+
+  private requestRealtimeResponse(response?: Record<string, unknown>): void {
+    if (this.closed) return
+    const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
+    if (this.activeRealtimeResponseId || waitMs > 0) {
+      const pendingResponse = response ?? this.pendingRealtimeResponse?.response
+      this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
+      if (!this.activeRealtimeResponseId) this.schedulePendingRealtimeResponse(waitMs)
+      return
+    }
+    this.sendRealtimeResponseCreate(response ? { response } : {})
+  }
+
+  private schedulePendingRealtimeResponse(delayMs: number): void {
+    if (!this.pendingRealtimeResponse) return
+    if (this.pendingRealtimeResponseTimer) clearTimeout(this.pendingRealtimeResponseTimer)
+    this.pendingRealtimeResponseTimer = setTimeout(() => {
+      this.pendingRealtimeResponseTimer = null
+      this.flushPendingRealtimeResponse()
+    }, Math.max(0, delayMs))
+    this.pendingRealtimeResponseTimer.unref?.()
+  }
+
+  private flushPendingRealtimeResponse(): void {
+    if (!this.pendingRealtimeResponse || this.closed || this.activeRealtimeResponseId) return
+    const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
+    if (waitMs > 0) {
+      this.schedulePendingRealtimeResponse(waitMs)
+      return
+    }
+    const pending = this.pendingRealtimeResponse
+    this.pendingRealtimeResponse = null
+    this.sendRealtimeResponseCreate(pending)
+  }
+
+  private sendRealtimeResponseCreate(request: PendingRealtimeResponseRequest): void {
+    this.sendOpenAI({
+      type: "response.create",
+      ...(request.response ? { response: request.response } : {}),
+    })
   }
 
   private requestHangupFromTool(): void {
@@ -3305,6 +3429,10 @@ class OpenAISipPhoneSession {
     this.registry?.unregister(this)
     if (this.openaiWs && (this.openaiWs.readyState === WebSocket.OPEN || this.openaiWs.readyState === WebSocket.CONNECTING)) {
       this.openaiWs.close()
+    }
+    if (this.pendingRealtimeResponseTimer) {
+      clearTimeout(this.pendingRealtimeResponseTimer)
+      this.pendingRealtimeResponseTimer = null
     }
     emitNervesEvent({
       component: "senses",

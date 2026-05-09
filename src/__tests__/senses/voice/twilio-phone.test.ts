@@ -805,6 +805,7 @@ describe("Twilio phone voice bridge", () => {
       expect(acceptBody.instructions).toContain("source=tone")
       expect(acceptBody.tools?.some((tool) => tool.name === "voice_end_call")).toBe(true)
       expect(acceptBody.tools?.some((tool) => tool.name === "voice_play_audio")).toBe(true)
+      expect(acceptBody.tools?.some((tool) => tool.name === "web_search")).toBe(true)
 
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
       const greeting = openaiMessages.find((event) => event.type === "response.create") as { response?: { instructions?: string } }
@@ -825,6 +826,27 @@ describe("Twilio phone voice bridge", () => {
         expect(saved?.messages.some((message) => message.role === "user" && message.content === "hello there")).toBe(true)
         expect(saved?.messages.some((message) => message.role === "assistant" && message.content === "Hi, Ari.")).toBe(true)
       })
+
+      const greetingResponseCreateCount = openaiMessages.filter((event) => event.type === "response.create").length
+      openaiSockets[0]?.send(JSON.stringify({ type: "response.created", response: { id: "resp-greeting" } }))
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "tool-queued-audio",
+        name: "voice_play_audio",
+        arguments: JSON.stringify({ source: "tone", label: "queued beep", toneHz: 660, durationMs: 80 }),
+      }))
+      await vi.waitFor(() => expect(openaiMessages.some((event) => {
+        if (event.type !== "conversation.item.create") return false
+        const item = event.item as { type?: string; call_id?: string; output?: string } | undefined
+        return item?.type === "function_call_output"
+          && item.call_id === "tool-queued-audio"
+          && item.output?.includes("Render the requested audio cue now")
+      })).toBe(true), { timeout: 10_000 })
+      expect(openaiMessages.filter((event) => event.type === "response.create")).toHaveLength(greetingResponseCreateCount)
+      openaiSockets[0]?.send(JSON.stringify({ type: "response.done", response: { id: "resp-greeting" } }))
+      await vi.waitFor(() => {
+        expect(openaiMessages.filter((event) => event.type === "response.create").length).toBeGreaterThan(greetingResponseCreateCount)
+      }, { timeout: 10_000 })
 
       openaiSockets[0]?.send(JSON.stringify({
         type: "response.function_call_arguments.done",

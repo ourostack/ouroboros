@@ -215,6 +215,10 @@ const BLUEBUBBLES_FIRST_CATCHUP_LOOKBACK_MS = 10 * 60 * 1000
 
 interface BlueBubblesHandleOptions {
   timeoutMs?: number
+  preclaimedInFlight?: {
+    sessionKey: string
+    messageGuid: string
+  }
 }
 
 class BlueBubblesRecoveryTurnTimeoutError extends Error {
@@ -1030,11 +1034,20 @@ async function handleBlueBubblesNormalizedEvent(
   let ownsInFlightMessage = false
   let releaseInFlightAfterTurnSettles = false
   let activeTurnId: string | null = null
+  const inFlightKey = event.kind === "message"
+    ? {
+        sessionKey: options.preclaimedInFlight?.sessionKey ?? event.chat.sessionKey,
+        messageGuid: options.preclaimedInFlight?.messageGuid ?? event.messageGuid,
+      }
+    : null
   if (event.kind === "message") {
     if (
       hasProcessedBlueBubblesMessage(agentName, event.chat.sessionKey, event.messageGuid)
       || hasProcessedBlueBubblesMessageGuid(agentName, event.messageGuid)
     ) {
+      if (inFlightKey && options.preclaimedInFlight) {
+        endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_recovery_skip",
@@ -1048,7 +1061,9 @@ async function handleBlueBubblesNormalizedEvent(
       })
       return { handled: true, notifiedAgent: false, kind: event.kind, reason: "already_processed" }
     }
-    if (!beginBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)) {
+    if (options.preclaimedInFlight) {
+      ownsInFlightMessage = true
+    } else if (!beginBlueBubblesMessageInFlight(inFlightKey!.sessionKey, inFlightKey!.messageGuid)) {
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_recovery_skip",
@@ -1220,8 +1235,8 @@ async function handleBlueBubblesNormalizedEvent(
       timeoutTimer = setTimeout(() => {
         const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
         recoveryTimedOut = true
-        if (liveWebhookTimeout && ownsInFlightMessage && event.kind === "message") {
-          endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+        if (liveWebhookTimeout && ownsInFlightMessage && inFlightKey) {
+          endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
           ownsInFlightMessage = false
         } else {
           releaseInFlightAfterTurnSettles = true
@@ -1325,8 +1340,8 @@ async function handleBlueBubblesNormalizedEvent(
           })
         })
         .finally(() => {
-          if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && event.kind === "message") {
-            endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+          if (releaseInFlightAfterTurnSettles && ownsInFlightMessage && inFlightKey) {
+            endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
           }
         })
       /* v8 ignore stop */
@@ -1412,8 +1427,8 @@ async function handleBlueBubblesNormalizedEvent(
     })
   } finally {
     if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)
-    if (ownsInFlightMessage && event.kind === "message" && !releaseInFlightAfterTurnSettles) {
-      endBlueBubblesMessageInFlight(event.chat.sessionKey, event.messageGuid)
+    if (ownsInFlightMessage && inFlightKey && !releaseInFlightAfterTurnSettles) {
+      endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
     }
   }
 }
@@ -1491,8 +1506,30 @@ export async function handleBlueBubblesEvent(
     })
     return handleBlueBubblesNormalizedEvent(normalized, resolvedDeps, "webhook")
   }
-  const event = await client.repairEvent(normalized)
-  return handleBlueBubblesNormalizedEvent(event, resolvedDeps, "webhook")
+
+  let preclaimedInFlight = false
+  let handedPreclaimToTurn = false
+  if (normalized.kind === "message") {
+    beginBlueBubblesMessageInFlight(normalized.chat.sessionKey, normalized.messageGuid)
+    preclaimedInFlight = true
+  }
+
+  try {
+    const event = await client.repairEvent(normalized)
+    handedPreclaimToTurn = preclaimedInFlight && event.kind === "message"
+    return handleBlueBubblesNormalizedEvent(
+      event,
+      resolvedDeps,
+      "webhook",
+      handedPreclaimToTurn
+        ? { preclaimedInFlight: { sessionKey: normalized.chat.sessionKey, messageGuid: normalized.messageGuid } }
+        : {},
+    )
+  } finally {
+    if (preclaimedInFlight && !handedPreclaimToTurn) {
+      endBlueBubblesMessageInFlight(normalized.chat.sessionKey, normalized.messageGuid)
+    }
+  }
 }
 
 export interface BlueBubblesRecoveryResult {

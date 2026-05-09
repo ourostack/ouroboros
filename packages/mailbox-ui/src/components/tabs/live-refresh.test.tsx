@@ -420,7 +420,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(transcriptFetches).toBe(1))
-    const panel = ui.getByTestId("session-transcript-scroll")
+    const panel = await ui.findByTestId("session-transcript-scroll")
     Object.defineProperty(panel, "scrollHeight", { configurable: true, value: 1000 })
     Object.defineProperty(panel, "clientHeight", { configurable: true, value: 200 })
     panel.scrollTop = 250
@@ -506,7 +506,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(transcriptFetches).toBe(1))
-    const panel = ui.getByTestId("session-transcript-scroll")
+    const panel = await ui.findByTestId("session-transcript-scroll")
     Object.defineProperty(panel, "scrollHeight", { configurable: true, value: 1000 })
     Object.defineProperty(panel, "clientHeight", { configurable: true, value: 200 })
     panel.scrollTop = 800

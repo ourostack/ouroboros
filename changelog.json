@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.580",
+      "changes": [
+        "OpenAI Realtime phone voice now queues manual `response.create` requests while another response is active, preventing SIP calls from hitting `conversation_already_has_active_response` and losing conversational state during tool followups.",
+        "Voice Realtime bootstrap now exposes the native voice/base tool set immediately instead of only `voice_end_call`, so early phone turns can still use tools while the full friend/MCP tool refresh finishes.",
+        "BlueBubbles webhook handling now claims message GUIDs before repair/hydrate work starts and releases those claims if repair discovers an already-processed message, preventing duplicate webhook deliveries from racing into overlapping agent turns for the same message."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.579",
       "changes": [
         "Twilio phone voice now returns `404 not found` for unknown GET routes outside the configured voice webhook path, so stale health probes no longer look like unsupported methods while the active route remains healthy."
