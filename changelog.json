@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.582",
+      "changes": [
+        "BlueBubbles now suppresses same-turn near-duplicate outward sends using token/Jaccard similarity, covering rewritten retry answers, repeated status messages, and retry-loop variants without blocking short distinct replies.",
+        "BlueBubbles status sends now pass through the same duplicate guard as normal outward text, preserving inner/meta leak protections while reducing repeated iMessage status loops."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.581",
       "changes": [
         "Trip ledger storage now uses git-controlled bundle-root `trips/` as canonical local storage, with copy-only import from legacy ignored `state/trips/` and divergence warnings instead of silent merges.",

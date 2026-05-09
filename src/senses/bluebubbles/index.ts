@@ -70,6 +70,30 @@ export function enrichReactionText(baseText: string, originalText: string | null
   return `${baseText} to: "${truncated}"`
 }
 
+// ── Near-duplicate outward-text detection ────────────────────────
+// Used by createBlueBubblesCallbacks to collapse mid-turn rephrasings of the
+// same answer/status into a single delivery. Exposed for direct unit testing
+// of the similarity behavior without spinning up the full callbacks closure.
+
+const NEAR_DUPLICATE_JACCARD_THRESHOLD = 0.7
+const NEAR_DUPLICATE_MIN_TOKENS = 5
+
+export function tokenizeForDedupe(text: string): Set<string> {
+  const matches = text.toLowerCase().match(/[a-z0-9']+/g)
+  if (!matches) return new Set()
+  return new Set(matches)
+}
+
+export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let intersection = 0
+  for (const token of a) {
+    if (b.has(token)) intersection += 1
+  }
+  const union = a.size + b.size - intersection
+  return intersection / union
+}
+
 export interface StatusBatcher {
   add(text: string): void
   flush(): void
@@ -555,7 +579,16 @@ export function createBlueBubblesCallbacks(
   // final flush, surfacing as 4 near-identical iMessages from one ask
   // (2026-05-08 06:18 incident). The guard lets the engine retry harmlessly
   // without duplicating outward delivery to the friend.
+  //
+  // PR #699 used exact whitespace+case-normalized match. Post-#699 evidence
+  // (2026-05-09 05:25 UTC, evt-001814 + evt-001818) showed two answers that
+  // start "yep — I looked it up… Assuming you mean AMC's The Audacity…" with
+  // substantially the same content but slight rephrasing — the LLM rewrites
+  // the same answer on a retry/recovery loop and bypasses an exact-match
+  // guard. We now also keep the original token sets so a fuzzy (Jaccard)
+  // check catches near-duplicates from the same turn.
   const sentOutwardTextNorms = new Set<string>()
+  const sentOutwardTokenSets: Array<Set<string>> = []
 
   function enqueue(operation: string, task: () => Promise<void>): void {
     queue = queue.then(task).catch((error) => {
@@ -595,11 +628,28 @@ export function createBlueBubblesCallbacks(
   function isDuplicateOutwardText(trimmed: string): boolean {
     const norm = trimmed.replace(/\s+/g, " ").trim().toLowerCase()
     if (sentOutwardTextNorms.has(norm)) return true
+    // Fuzzy near-duplicate: when the same answer is rephrased between speak
+    // and settle (or across two speak calls in a recovery loop), the exact
+    // norm differs but token overlap is very high. We compare against every
+    // already-sent body's token set; if any has Jaccard overlap >= the
+    // threshold, treat as a duplicate. We require a minimum token count on
+    // the new body so single-word replies ("yes", "ok") don't get suppressed
+    // against any previous short one with shared tokens.
+    const newTokens = tokenizeForDedupe(trimmed)
+    if (newTokens.size >= NEAR_DUPLICATE_MIN_TOKENS) {
+      for (const prevTokens of sentOutwardTokenSets) {
+        if (prevTokens.size < NEAR_DUPLICATE_MIN_TOKENS) continue
+        if (jaccardSimilarity(newTokens, prevTokens) >= NEAR_DUPLICATE_JACCARD_THRESHOLD) {
+          return true
+        }
+      }
+    }
     sentOutwardTextNorms.add(norm)
+    sentOutwardTokenSets.push(newTokens)
     return false
   }
 
-  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush", messageLength: number): void {
+  function emitDuplicateOutwardSuppressed(site: "flushNow" | "flush" | "status", messageLength: number): void {
     emitNervesEvent({
       level: "warn",
       component: "senses",
@@ -632,10 +682,24 @@ export function createBlueBubblesCallbacks(
   }
 
   function sendStatus(text: string): void {
+    const trimmed = text.trim()
+    /* v8 ignore next -- defensive guard; current status callers always provide non-empty text @preserve */
+    if (!trimmed) return
+    // Status surfaces share the per-turn dedupe set so a status-style
+    // outward message (tool description, error notice, watchdog ping)
+    // can't deliver a near-duplicate of an already-sent answer or status
+    // (post-#699 evidence: evt-001820 + evt-001821 + evt-001823 on
+    // 2026-05-09 — overlapping status surface updates about the same
+    // duplicate issue, which the flushNow/flush-only guard could not catch
+    // because sendStatus writes directly via client.sendText).
+    if (isDuplicateOutwardText(trimmed)) {
+      emitDuplicateOutwardSuppressed("status", trimmed.length)
+      return
+    }
     enqueue("send_status", async () => {
       await client.sendText({
         chat,
-        text,
+        text: trimmed,
         replyToMessageGuid: replyTarget.getReplyToMessageGuid(),
       })
       recordVisibleActivity()
