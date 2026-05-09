@@ -3638,6 +3638,8 @@ describe("BitwardenCredentialStore", () => {
 
         // Write a lock file with the CURRENT process PID (alive)
         fs.writeFileSync(lockPath, `${process.pid}\n`)
+        const freshUntilAfterTimeout = new Date(Date.now() + 120_000)
+        fs.utimesSync(lockPath, freshUntilAfterTimeout, freshUntilAfterTimeout)
 
         mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
           if (args[0] === "status") {
