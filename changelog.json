@@ -2,6 +2,17 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.583",
+      "changes": [
+        "Outbound SIP phone calls now start the Realtime greeting immediately after answer unless Twilio has already positively identified voicemail or fax, preventing humans from hearing post-pickup silence when async AMD returns unknown.",
+        "Twilio phone voice now defaults outbound calls to OpenAI Realtime Media Streams when inbound calls use OpenAI SIP on a Media Stream machine, while still allowing `voice.twilioOutboundConversationEngine` overrides, so humans avoid post-pickup SIP ringback.",
+        "Realtime voice now resolves phone callers through the canonical friend graph, preferring existing friend ids and otherwise matching normalized phone numbers via `imessage-handle`, so trust-aware tools see the same friend context as text and mail.",
+        "Realtime media-stream voice now treats empty caller metadata as absent and preserves local voice friend identities, keeping outbound and provider-simulated calls attached to the intended friend instead of inventing a blank phone identity.",
+        "Realtime voice response creation now backs off and retries after provider active-response conflicts, holds user turns under Ouro floor-control instead of provider auto-response, and long-running voice tools can emit one tiny holding phrase instead of leaving seconds of unexplained silence.",
+        "Realtime voice VAD and local barge-in thresholds are less twitchy by default, reducing accidental interruption from tiny room sounds while preserving deliberate caller interruption."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.582",
       "changes": [
         "BlueBubbles now suppresses same-turn near-duplicate outward sends using token/Jaccard similarity, covering rewritten retry answers, repeated status messages, and retry-loop variants without blocking short distinct replies.",

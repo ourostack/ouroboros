@@ -240,6 +240,41 @@ describe("Twilio phone transport runtime", () => {
     })
   })
 
+  it("infers OpenAI Realtime phone voice from a key on Media Stream transports", () => {
+    const resolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          twilioTransportMode: "media-stream",
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+
+    expect(resolution).toMatchObject({
+      status: "configured",
+      settings: {
+        conversationEngine: "openai-realtime",
+        outboundConversationEngine: "openai-realtime",
+        elevenLabsApiKey: "",
+        whisperCliPath: "",
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          apiKeySource: "voice.openaiRealtimeApiKey",
+        },
+      },
+    })
+  })
+
   it("requires Media Streams and an OpenAI key for the Realtime phone engine", () => {
     expect(() => resolveTwilioPhoneTransportRuntime({
       agentName: "slugger",
@@ -254,7 +289,7 @@ describe("Twilio phone transport runtime", () => {
         },
       },
       defaultBasePath: "/voice/agents/ignored/twilio",
-    })).toThrow("voice.twilioConversationEngine=openai-realtime requires voice.twilioTransportMode=media-stream")
+    })).toThrow("voice.twilioConversationEngine/openai-realtime requires voice.twilioTransportMode=media-stream")
 
     expect(() => resolveTwilioPhoneTransportRuntime({
       agentName: "slugger",
@@ -302,6 +337,7 @@ describe("Twilio phone transport runtime", () => {
       status: "configured",
       settings: {
         conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
         transportMode: "media-stream",
         elevenLabsApiKey: "",
         elevenLabsVoiceId: "",
@@ -321,6 +357,140 @@ describe("Twilio phone transport runtime", () => {
           webhookSecret: "whsec_test",
         },
         openaiSipWebhookUrl: "https://voice.example.test/voice/agents/slugger/sip/openai",
+      },
+    })
+  })
+
+  it("can keep inbound SIP while routing outbound calls through OpenAI Realtime Media Streams", () => {
+    const resolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          twilioTransportMode: "media-stream",
+          twilioConversationEngine: "openai-sip",
+          twilioOutboundConversationEngine: "openai-realtime",
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+
+    expect(resolution).toMatchObject({
+      status: "configured",
+      settings: {
+        conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
+        transportMode: "media-stream",
+        elevenLabsApiKey: "",
+        whisperCliPath: "",
+        openaiRealtime: {
+          apiKey: "openai-secret",
+        },
+        openaiSip: {
+          projectId: "proj_test",
+        },
+      },
+    })
+
+    const invalidCascadeResolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          twilioTransportMode: "media-stream",
+          twilioConversationEngine: "openai-sip",
+          twilioOutboundConversationEngine: "cascade",
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+    expect(invalidCascadeResolution).toMatchObject({
+      status: "configured",
+      settings: {
+        conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
+      },
+    })
+  })
+
+  it("infers OpenAI SIP voice from SIP credentials when the engine field is absent", () => {
+    const resolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          twilioTransportMode: "media-stream",
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+
+    expect(resolution).toMatchObject({
+      status: "configured",
+      settings: {
+        conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
+        openaiRealtime: { apiKey: "openai-secret" },
+        openaiSip: { projectId: "proj_test" },
+      },
+    })
+
+    const staleCascadeResolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          twilioConversationEngine: "cascade",
+          openaiRealtimeApiKey: "openai-secret",
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          twilioTransportMode: "media-stream",
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+    expect(staleCascadeResolution).toMatchObject({
+      status: "configured",
+      settings: {
+        conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
       },
     })
   })

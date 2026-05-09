@@ -157,13 +157,15 @@ ouro connect voice --agent <agent>
 
 ### Voice
 
-Voice is a single transcript-first sense with multiple transports. The Twilio phone transport has two modes. `record-play` is the conservative phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal stable `voice` session turn runs, ElevenLabs generates MP3 audio from tool-delivered `speak`/`settle` text, and Twilio plays that response before listening again. `media-stream` is the lower-latency conversational path. In cascade mode it opens a bidirectional Twilio Media Stream, frames caller utterances with VAD, uses Whisper.cpp plus ElevenLabs `ulaw_8000`, and clears playback on barge-in. In native Realtime mode it routes Twilio audio through OpenAI Realtime speech-to-speech, keeps the same stable voice transcript/session key, exposes action tools plus `voice_end_call`, and uses a compact voice-native identity prompt rather than the full general-purpose prompt. For phone-number lanes that can route SIP, `voice.twilioConversationEngine=openai-sip` is the preferred smoke path: Twilio returns `<Dial><Sip>` to OpenAI, OpenAI calls Ouro's SIP webhook, and Ouro owns the Realtime control socket, transcript, tools, and hangup.
+Voice is a single transcript-first sense with multiple transports. The Twilio phone transport has two modes. `record-play` is the conservative phone smoke path: Twilio records the caller, Ouro downloads the recording, Whisper.cpp transcribes it, the normal stable `voice` session turn runs, ElevenLabs generates MP3 audio from tool-delivered `speak`/`settle` text, and Twilio plays that response before listening again. `media-stream` is the lower-latency conversational path. In cascade mode it opens a bidirectional Twilio Media Stream, frames caller utterances with VAD, uses Whisper.cpp plus ElevenLabs `ulaw_8000`, and clears playback on barge-in. In native Realtime mode it routes Twilio audio through OpenAI Realtime speech-to-speech, keeps the same stable voice transcript/session key, exposes action tools plus `voice_end_call`, and uses a compact voice-native identity prompt rather than the full general-purpose prompt. For phone-number lanes that can route SIP, `voice.twilioConversationEngine=openai-sip` is the preferred inbound smoke path: Twilio returns `<Dial><Sip>` to OpenAI, OpenAI calls Ouro's SIP webhook, and Ouro owns the Realtime control socket, transcript, tools, and hangup. When SIP is paired with `media-stream`, outbound defaults to OpenAI Realtime Media Streams so pickup goes straight to the agent instead of making the human hear Twilio-to-SIP ringback after answering.
 
 Spoken voice is part of the agent's identity. For native OpenAI Realtime phone testing, `voice.openaiRealtimeVoice` is the current phone voice and should be auditioned as a single coherent identity. `voice.openaiRealtimeVoiceStyle` must be audible in the first greeting as well as later turns, and `voice.openaiRealtimeVoiceSpeed` should stay close to `1.0` unless the live call remains too slow or too sleepy. ElevenLabs tests cover legacy cascade compatibility only unless a future design gives it a distinct non-redundant job.
 
-Live voice tools should be exercised as media controls. `voice_end_call` must end the active call after a natural goodbye. `voice_play_audio` must inject a short tone or clip into the phone media stream on Media Stream transports. On direct OpenAI SIP, `source=tone` should produce a short model-rendered audio cue through Realtime; URL/file clips should return the media-bridge limitation instead of claiming playback succeeded.
+Live voice tools should be exercised as media controls. `voice_end_call` must end the active call after a natural goodbye. `voice_play_audio` must inject a short tone or clip into the phone media stream on Media Stream transports. On direct OpenAI SIP, `source=tone` should produce a short model-rendered audio cue through Realtime; URL/file clips should return the media-bridge limitation instead of claiming playback succeeded. Tool calls on voice must also keep the caller oriented: long-running tools may trigger one tiny holding phrase, and the final result should arrive through the same response queue instead of racing a second `response.create`. Native Realtime phone tests should assert `turn_detection.create_response=false`; Ouro owns floor-control and should request the next response only after a short post-transcript hold that is cancelled by new caller speech.
 
-Outbound SIP AMD tests must cover all three release paths: `human` releases the held greeting, explicit machine/fax hangs up without `response.create`, and `unknown` releases only when Realtime already transcribed a short human-like greeting such as "hello".
+Outbound SIP AMD tests must cover the current pickup contract: `human` and `unknown` answers start the greeting immediately, explicit machine/fax can still hang up after answer, and no OpenAI SIP TwiML should contain Twilio `answerOnBridge`. For Twilio outbound UX, also cover the default outbound Realtime Media Stream route because `<Dial><Sip>` can still leak answered-call ringback while the SIP leg connects.
+
+Voice friend-resolution tests should prove the phone path reuses canonical friend context. A known phone number should resolve through the same `imessage-handle` friend record used by BlueBubbles/text, including trust level, so family-only tools do not fail just because the interaction is happening over voice.
 
 Pending voice delivery is intentionally short-lived. Voice pending older than fifteen minutes should be archived to `state/pending-expired/...` before it reaches `pendingMessages`, preserving evidence without letting stale phone scripts or obsolete voice-identity notes appear in a later live call.
 
@@ -176,6 +178,7 @@ ouro connect voice --agent <agent>
 ouro vault config set --agent <agent> --scope machine --key voice.twilioPublicUrl --value https://<cloudflare-tunnel-or-hostname>
 ouro vault config set --agent <agent> --scope machine --key voice.twilioBasePath --value /voice/agents/<agent>/twilio
 ouro vault config set --agent <agent> --scope machine --key voice.twilioTransportMode --value media-stream
+ouro vault config set --agent <agent> --scope machine --key voice.twilioOutboundConversationEngine --value openai-realtime
 ouro up --agent <agent>
 ```
 
@@ -185,6 +188,7 @@ For the SIP smoke, keep the same Twilio Voice webhook and add:
 
 ```bash
 ouro vault config set --agent <agent> --scope machine --key voice.twilioConversationEngine --value openai-sip
+ouro vault config set --agent <agent> --scope machine --key voice.twilioOutboundConversationEngine --value openai-realtime
 ouro vault config set --agent <agent> --key voice.openaiSipProjectId
 ouro vault config set --agent <agent> --key voice.openaiSipWebhookSecret
 ouro vault config set --agent <agent> --scope machine --key voice.openaiSipWebhookPath --value /voice/agents/<agent>/sip/openai

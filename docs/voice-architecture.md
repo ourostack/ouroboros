@@ -84,6 +84,13 @@ SIP does not remove Ouro from the loop. Ouro still owns acceptance policy,
 session keys, transcript persistence, voice tools, outbound intent, identity,
 and audit.
 
+Phone transports resolve the caller into the same friend graph used by text,
+mail, and other senses. An explicit friend id is honored only when it names an
+existing friend record; otherwise a normalized phone number resolves through the
+canonical `imessage-handle` external id. Voice trust and tool permissions must
+therefore follow the known friend record instead of creating a phone-only
+stranger identity.
+
 Remaining media questions before replacing Twilio Media Streams:
 
 - Direct OpenAI SIP does not expose an output-audio append primitive. It can
@@ -92,9 +99,12 @@ Remaining media questions before replacing Twilio Media Streams:
   need a media bridge, most likely a Twilio Conference/SIP mixer or another SIP
   B2BUA that can inject raw audio while keeping the Realtime leg alive.
 - What is the cleanest outbound call flow? Inbound SIP is direct: trunk to
-  OpenAI, webhook to Ouro. Outbound likely means the SIP provider originates a
-  call to the human and bridges/refers it to the OpenAI SIP endpoint, while
-  Ouro creates and monitors the Realtime session.
+  OpenAI, webhook to Ouro. Twilio `<Dial><Sip>` can still make an answered
+  human hear ringback while the second leg connects, so current Twilio outbound
+  calls default to `openai-realtime` Media Streams when inbound is
+  `openai-sip` and `voice.twilioTransportMode=media-stream`. The target SIP
+  shape is a provider or B2BUA that originates the human leg and bridges/refers
+  it to OpenAI without audible post-pickup ringback.
 - Which SIP provider gives the best mix of latency, caller ID control,
   webhook/API quality, number portability, pricing, and operational visibility?
 
@@ -103,17 +113,26 @@ Current implementation:
 - `voice.twilioConversationEngine=openai-sip` makes the existing Twilio Voice
   webhook return `<Dial><Sip>` to OpenAI's project SIP endpoint. This is the
   first reversible SIP path because it keeps the existing number and fallback
-  Twilio webhook in place while moving live media to OpenAI SIP.
+  Twilio webhook in place while moving live media to OpenAI SIP. The TwiML does
+  not use Twilio `answerOnBridge`, but outbound `<Dial><Sip>` may still leak
+  ringback after pickup while Twilio connects the SIP leg. On Media Stream
+  machines, outbound calls default to `openai-realtime`; use
+  `voice.twilioOutboundConversationEngine` only when that default needs to be
+  overridden.
+- Native Realtime calls use Ouro floor-control: Realtime transcribes detected
+  caller turns, but Ouro disables provider auto-response and asks for the next
+  response only after a short caller-floor hold. New caller speech cancels that
+  pending answer, which prevents the agent from jumping on every small pause.
 - OpenAI posts `realtime.call.incoming` to
   `/voice/agents/<agent>/sip/openai`; Ouro verifies the OpenAI webhook
   signature, accepts the call, opens the Realtime control WebSocket, sends the
   first voice turn, records transcripts, runs voice tools, and maps
   `voice_end_call` to OpenAI's call hangup endpoint.
-- Outbound SIP holds the first greeting and disables Realtime auto-response
-  while async AMD is pending. Explicit human AMD releases the greeting; machine
-  or fax hangs up silently. If Twilio returns `unknown`, a short human-like
-  Realtime transcript such as "hello" can release the greeting, while silence
-  still times out without leaving voicemail.
+- Outbound SIP starts the first greeting immediately after answer unless Twilio
+  has already positively identified voicemail or fax. Async AMD can still hang
+  up the call if a later machine/fax result arrives, but `unknown` is treated as
+  a live human path because post-pickup silence is worse than the occasional
+  voicemail false positive.
 - Direct SIP can render short `voice_play_audio source=tone` cues through the
   Realtime model. Arbitrary URL/file clip bytes still need a real mixer or media
   bridge, most likely a Twilio Conference/SIP mixer using conference

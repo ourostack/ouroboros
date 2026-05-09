@@ -9,6 +9,7 @@ import { saveSession, loadSession } from "../../mind/context"
 import { getChannelCapabilities } from "../../mind/friends/channel"
 import { FriendResolver } from "../../mind/friends/resolver"
 import { FileFriendStore } from "../../mind/friends/store-file"
+import type { FriendRecord, IdentityProvider, ResolvedContext } from "../../mind/friends/types"
 import { getAgentRoot, setAgentName } from "../../heart/identity"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
@@ -153,6 +154,7 @@ export interface TwilioPhoneBridgeOptions {
   downloadRecording?: TwilioRecordingDownloader
   playbackMode?: TwilioPhonePlaybackMode
   conversationEngine?: TwilioPhoneConversationEngine
+  outboundConversationEngine?: TwilioPhoneConversationEngine
   openaiRealtime?: OpenAIRealtimeTwilioOptions
   openaiSip?: OpenAISipPhoneOptions
 }
@@ -335,6 +337,18 @@ function usesOpenAISipConversationEngine(options: TwilioPhoneBridgeOptions): boo
   return normalizeTwilioPhoneConversationEngine(options.conversationEngine) === "openai-sip"
 }
 
+function outboundConversationEngine(options: TwilioPhoneBridgeOptions): TwilioPhoneConversationEngine {
+  return normalizeTwilioPhoneConversationEngine(options.outboundConversationEngine ?? options.conversationEngine)
+}
+
+function usesOpenAIRealtimeOutboundConversationEngine(options: TwilioPhoneBridgeOptions): boolean {
+  return outboundConversationEngine(options) === "openai-realtime"
+}
+
+function usesOpenAISipOutboundConversationEngine(options: TwilioPhoneBridgeOptions): boolean {
+  return outboundConversationEngine(options) === "openai-sip"
+}
+
 export function twilioPhoneWebhookUrl(
   publicBaseUrl: string,
   basePath: string | undefined = TWILIO_PHONE_WEBHOOK_BASE_PATH,
@@ -424,8 +438,10 @@ function mediaStreamTwiml(
   params: Record<string, string>,
   greetingJobId?: string,
   customParams: Record<string, string | undefined> = {},
+  streamEngine?: TwilioPhoneConversationEngine,
 ): string {
-  const streamUrl = websocketRouteUrl(options.publicBaseUrl, `${basePath}/media-stream`)
+  const streamRoute = streamEngine ? `${basePath}/media-stream?engine=${encodeURIComponent(streamEngine)}` : `${basePath}/media-stream`
+  const streamUrl = websocketRouteUrl(options.publicBaseUrl, streamRoute)
   const twimlParams: Record<string, string | undefined> = {
     From: params.From,
     To: params.To,
@@ -464,7 +480,7 @@ function openAISipDialTwiml(
   options: TwilioPhoneBridgeOptions,
   customHeaders: Record<string, string | undefined> = {},
 ): string {
-  return `<Dial answerOnBridge="true"><Sip>${escapeXml(openAISipUri(options, customHeaders))}</Sip></Dial>`
+  return `<Dial><Sip>${escapeXml(openAISipUri(options, customHeaders))}</Sip></Dial>`
 }
 /* v8 ignore stop */
 
@@ -522,6 +538,44 @@ function friendIdFromCaller(from: string, callSid: string): string {
 
 function voiceFriendId(options: TwilioPhoneBridgeOptions, from: string, callSid: string): string {
   return options.defaultFriendId?.trim() || friendIdFromCaller(from, callSid)
+}
+
+interface ResolvedVoiceFriendContext {
+  friendId: string
+  friendStore: FileFriendStore
+  resolved: ResolvedContext
+}
+
+async function resolveVoiceFriendContext(options: TwilioPhoneBridgeOptions, input: {
+  friendId?: string
+  remotePhone?: string
+  callSid: string
+}): Promise<ResolvedVoiceFriendContext> {
+  const agentRoot = options.agentRoot ?? getAgentRoot(options.agentName)
+  const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+  const explicitFriendId = input.friendId?.trim()
+  if (explicitFriendId) {
+    const existing = await friendStore.get(explicitFriendId)
+    if (existing) {
+      return {
+        friendId: existing.id,
+        friendStore,
+        resolved: { friend: existing, channel: getChannelCapabilities("voice") },
+      }
+    }
+  }
+
+  const remotePhone = normalizeTwilioE164PhoneNumber(input.remotePhone)
+  const provider: IdentityProvider = remotePhone ? "imessage-handle" : "local"
+  const externalId = remotePhone || explicitFriendId || voiceFriendId(options, input.remotePhone ?? "", input.callSid)
+  const resolver = new FriendResolver(friendStore, {
+    provider,
+    externalId,
+    displayName: remotePhone || externalId,
+    channel: "voice",
+  })
+  const resolved = await resolver.resolve()
+  return { friendId: resolved.friend.id, friendStore, resolved }
 }
 
 function phoneIdentitySegment(input: string): string {
@@ -1359,16 +1413,19 @@ const OPENAI_REALTIME_DEFAULT_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
 const OPENAI_REALTIME_BOOTSTRAP_TIMEOUT_MS = 250
 const OPENAI_REALTIME_PCMS_BYTES_PER_MS = 8
 const OPENAI_REALTIME_DEFAULT_NOISE_REDUCTION: NonNullable<OpenAIRealtimeTwilioOptions["noiseReduction"]> = "near_field"
-const OPENAI_REALTIME_DEFAULT_VAD_THRESHOLD = 0.68
-const OPENAI_REALTIME_DEFAULT_VAD_PREFIX_PADDING_MS = 220
-const OPENAI_REALTIME_DEFAULT_VAD_SILENCE_DURATION_MS = 320
-const OPENAI_REALTIME_DEFAULT_VAD_IDLE_TIMEOUT_MS = 15_000
+const OPENAI_REALTIME_DEFAULT_VAD_THRESHOLD = 0.78
+const OPENAI_REALTIME_DEFAULT_VAD_PREFIX_PADDING_MS = 300
+const OPENAI_REALTIME_DEFAULT_VAD_SILENCE_DURATION_MS = 650
+const OPENAI_REALTIME_DEFAULT_VAD_IDLE_TIMEOUT_MS = 7_000
 const OPENAI_REALTIME_MAX_OUTPUT_TOKENS = 220
-const OPENAI_REALTIME_BARGE_IN_MIN_SPEECH_MS = 160
-const OPENAI_REALTIME_BARGE_IN_RMS_THRESHOLD = 900
+const OPENAI_REALTIME_BARGE_IN_MIN_SPEECH_MS = 260
+const OPENAI_REALTIME_BARGE_IN_RMS_THRESHOLD = 1_300
 const OPENAI_REALTIME_MIN_VOICE_SPEED = 0.25
 const OPENAI_REALTIME_MAX_VOICE_SPEED = 1.5
 const OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS = 50
+const OPENAI_REALTIME_RESPONSE_CREATE_CONFLICT_BACKOFF_MS = 1_000
+const OPENAI_REALTIME_TOOL_PRESENCE_DELAY_MS = 900
+const OPENAI_REALTIME_USER_TURN_RESPONSE_DELAY_MS = 700
 const OPENAI_SIP_OUTBOUND_AMD_GREETING_TIMEOUT_MS = 10_000
 
 interface RealtimePlaybackMark {
@@ -1389,6 +1446,8 @@ interface RealtimeToolResponseState {
   responseDone: boolean
   followupRequested: boolean
   suppressFollowup: boolean
+  presenceRequested: boolean
+  presenceTimer: ReturnType<typeof setTimeout> | null
 }
 
 interface PendingRealtimeResponseRequest {
@@ -1657,6 +1716,17 @@ function realtimeToolsFromChatTools(
     }))
 }
 
+function mediaStreamRequestedConversationEngine(url: string | undefined): TwilioPhoneConversationEngine | undefined {
+  if (!url) return undefined
+  try {
+    const parsed = new URL(url, "wss://localhost")
+    const engine = parsed.searchParams.get("engine") ?? undefined
+    return engine ? normalizeTwilioPhoneConversationEngine(engine) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function parseToolArguments(raw: string): Record<string, string> {
   if (!raw.trim()) return {}
   const parsed = JSON.parse(raw) as unknown
@@ -1713,6 +1783,7 @@ async function readOptionalText(filePath: string, maxChars: number): Promise<str
 async function buildRealtimeVoiceInstructions(options: {
   agentName: string
   agentRoot: string
+  friend?: FriendRecord
   priorTranscript: string
   realtimeVoice?: string
   realtimeVoiceStyle?: string
@@ -1729,12 +1800,14 @@ async function buildRealtimeVoiceInstructions(options: {
   return [
     `You are ${options.agentName} in the live Voice sense.`,
     "This is the same agent identity as every other Ouro surface. Voice is not a reduced or alternate self.",
+    options.friend ? `Resolved voice friend: ${options.friend.name || options.friend.id} (friendId=${options.friend.id}, trust=${options.friend.trustLevel ?? "friend"}, role=${options.friend.role ?? "friend"}). Use this same friend record and trust context for relationship awareness and tool permissions across voice, text, mail, and every other sense.` : "",
     `Current native Realtime provider config for this call: model=${options.realtimeModel?.trim() || OPENAI_REALTIME_DEFAULT_MODEL}, voice=${options.realtimeVoice?.trim() || OPENAI_REALTIME_DEFAULT_VOICE}${options.realtimeVoiceSpeed === undefined ? "" : `, speed=${options.realtimeVoiceSpeed}`}.`,
     options.realtimeVoiceStyle?.trim()
       ? `Phone voice target: ${options.realtimeVoiceStyle.trim()}`
       : "",
     "Speak as yourself through live audio. Follow voice/style preferences from identity notes; do not say you lack identity, preferences, or agency because the provider voice is configured by the transport.",
     "Audio is synchronous. Default to one short sentence. Use two short sentences only when needed. Do not use markdown, lists, or long explanations unless the caller explicitly asks.",
+    "Do not treat every tiny silence as your turn. Let the caller finish the thought, especially if they pause mid-sentence.",
     "If the caller interrupts, stop the older path and answer the newest thing first.",
     "If the caller says they are counting, measuring latency, testing lag, waiting, or wants you quiet, say at most 'got it' and then stay silent until they ask or say something that needs an answer.",
     "Use tools for outside facts or side effects. While a tool is running, give at most one tiny preamble, then summarize the result compactly when it returns.",
@@ -1816,6 +1889,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private pendingAudioPayloads: string[] = []
   private openaiWs: WebSocket | null = null
   private toolContext: ToolContext | undefined
+  private friendStore: FileFriendStore | undefined
+  private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
   private playbackState: RealtimePlaybackState | undefined
   private playbackMarkIndex = 0
@@ -1823,8 +1898,12 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private readonly toolResponses = new Map<string, RealtimeToolResponseState>()
   private readonly completedRealtimeResponseIds = new Set<string>()
   private activeRealtimeResponseId: string | null = null
+  private realtimeResponseCreateInFlight: PendingRealtimeResponseRequest | null = null
+  private untrackedActiveRealtimeResponse = false
+  private untrackedActiveRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRealtimeResponse: PendingRealtimeResponseRequest | null = null
   private pendingRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingUserTurnResponseTimer: ReturnType<typeof setTimeout> | null = null
   private responseCreateHoldUntilMs = 0
   private initialAudio: VoiceCallAudioRequest | undefined
   private initialAudioPlayed = false
@@ -1907,9 +1986,16 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       this.from = customParameter(start, "From")
       this.to = customParameter(start, "To")
     }
-    this.friendId = explicitFriendId || voiceFriendId(this.options, this.from, this.callSid)
+    const voiceContext = await resolveVoiceFriendContext(this.options, {
+      friendId: explicitFriendId,
+      remotePhone: this.from || undefined,
+      callSid: this.callSid,
+    })
+    this.friendId = voiceContext.friendId
+    this.friendStore = voiceContext.friendStore
+    this.resolvedContext = voiceContext.resolved
     this.sessionKey = twilioPhoneVoiceSessionKey({
-      defaultFriendId: explicitFriendId || this.options.defaultFriendId,
+      defaultFriendId: this.friendId,
       from: this.from,
       to: this.to,
       callSid: this.callSid,
@@ -2045,7 +2131,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
             format: { type: "audio/pcmu" },
             noise_reduction: realtimeNoiseReductionConfig(realtime),
             transcription: { model: OPENAI_REALTIME_DEFAULT_TRANSCRIPTION_MODEL },
-            turn_detection: realtimeTurnDetectionConfig(realtime),
+            turn_detection: realtimeTurnDetectionConfig(realtime, { createResponse: false, interruptResponse: false }),
           },
           output: realtimeOutputAudioConfig(realtime, { type: "audio/pcmu" }),
         },
@@ -2069,6 +2155,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     const realtimeSystem = await buildRealtimeVoiceInstructions({
       agentName: this.options.agentName,
       agentRoot,
+      friend: this.resolvedContext?.friend,
       priorTranscript: prior,
       realtimeVoice: this.options.openaiRealtime?.voice,
       realtimeVoiceStyle: this.options.openaiRealtime?.voiceStyle,
@@ -2092,6 +2179,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     if (this.toolContext) return
     this.toolContext = {
       signin: async () => undefined,
+      ...(this.resolvedContext ? { context: this.resolvedContext } : {}),
+      ...(this.friendStore ? { friendStore: this.friendStore } : {}),
       voiceCall: {
         requestEnd: () => this.requestHangupFromTool(),
         playAudio: (request) => this.playPreparedAudio(request),
@@ -2100,16 +2189,18 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private async buildRealtimeTools(): Promise<OpenAI.ChatCompletionFunctionTool[]> {
-    const agentRoot = this.options.agentRoot ?? getAgentRoot(this.options.agentName)
-    const friendsPath = path.join(agentRoot, "friends")
-    const friendStore = new FileFriendStore(friendsPath)
-    const resolver = new FriendResolver(friendStore, {
-      provider: "local",
-      externalId: this.friendId,
-      displayName: this.friendId,
-      channel: "voice",
-    })
-    const resolved = await resolver.resolve()
+    if (!this.resolvedContext || !this.friendStore) {
+      const voiceContext = await resolveVoiceFriendContext(this.options, {
+        friendId: this.friendId,
+        remotePhone: this.from || undefined,
+        callSid: this.callSid,
+      })
+      this.friendId = voiceContext.friendId
+      this.friendStore = voiceContext.friendStore
+      this.resolvedContext = voiceContext.resolved
+    }
+    const resolved = this.resolvedContext
+    const friendStore = this.friendStore
     this.toolContext = {
       signin: async () => undefined,
       context: resolved,
@@ -2236,7 +2327,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       return
     }
     if (type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
-      this.appendTranscript("user", event.transcript)
+      this.handleUserTranscript(event.transcript)
       return
     }
     if (type === "response.output_audio_transcript.done" && typeof event.transcript === "string") {
@@ -2256,6 +2347,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       return
     }
     if (type === "error") {
+      this.handleRealtimeError(event)
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -2264,6 +2356,38 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
         meta: { agentName: this.options.agentName, callSid: safeSegment(this.callSid), event: JSON.stringify(event).slice(0, 500) },
       })
     }
+  }
+
+  private handleRealtimeError(event: Record<string, unknown>): void {
+    const error = event.error
+    if (!error || typeof error !== "object" || Array.isArray(error)) return
+    const code = stringField((error as Record<string, unknown>).code)
+    if (code !== "conversation_already_has_active_response") return
+    this.noteRealtimeResponseConflict()
+  }
+
+  private handleUserTranscript(transcript: string): void {
+    const content = transcript.trim()
+    if (!content) return
+    this.appendTranscript("user", content)
+    this.scheduleUserTurnResponse()
+  }
+
+  private scheduleUserTurnResponse(): void {
+    if (this.closed) return
+    this.clearPendingUserTurnResponse()
+    this.pendingUserTurnResponseTimer = setTimeout(() => {
+      this.pendingUserTurnResponseTimer = null
+      if (this.closed) return
+      this.requestRealtimeResponse()
+    }, OPENAI_REALTIME_USER_TURN_RESPONSE_DELAY_MS)
+    this.pendingUserTurnResponseTimer.unref?.()
+  }
+
+  private clearPendingUserTurnResponse(): void {
+    if (!this.pendingUserTurnResponseTimer) return
+    clearTimeout(this.pendingUserTurnResponseTimer)
+    this.pendingUserTurnResponseTimer = null
   }
 
   private handleOpenAIAudioDelta(event: Record<string, unknown>): void {
@@ -2286,6 +2410,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private handleCallerSpeechStarted(): void {
+    this.clearPendingUserTurnResponse()
     const playback = this.playbackState
     if (!this.hasReliableCallerBargeInSpeech()) {
       emitNervesEvent({
@@ -2330,6 +2455,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       responseDone: this.completedRealtimeResponseIds.has(responseId),
       followupRequested: false,
       suppressFollowup: false,
+      presenceRequested: false,
+      presenceTimer: null,
     }
     state.pendingCallIds.add(callId)
     if (!existing) this.toolResponses.set(responseId, state)
@@ -2341,6 +2468,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     const state = this.toolResponses.get(responseId)
     if (!state) return false
     state.pendingCallIds.delete(callId)
+    if (state.pendingCallIds.size === 0) this.clearRealtimeToolPresenceTimer(state)
     return this.maybeCreateRealtimeToolFollowup(responseId, state)
   }
 
@@ -2358,9 +2486,34 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     if (!state.responseDone || state.pendingCallIds.size > 0 || state.followupRequested) return false
     state.followupRequested = true
     this.toolResponses.delete(responseId)
+    this.clearRealtimeToolPresenceTimer(state)
     if (state.suppressFollowup) return true
     this.requestRealtimeResponse()
     return true
+  }
+
+  private scheduleRealtimeToolPresence(responseId: string, state: RealtimeToolResponseState): void {
+    if (!responseId || state.presenceRequested || state.presenceTimer) return
+    state.presenceTimer = setTimeout(() => {
+      state.presenceTimer = null
+      const current = this.toolResponses.get(responseId)
+      if (this.closed || current !== state || state.pendingCallIds.size === 0 || state.suppressFollowup) return
+      state.presenceRequested = true
+      this.requestRealtimeResponse({
+        instructions: "A tool is taking a moment. Say one very short natural holding phrase under six words, then stop speaking.",
+      })
+    }, OPENAI_REALTIME_TOOL_PRESENCE_DELAY_MS)
+    state.presenceTimer.unref?.()
+  }
+
+  private clearRealtimeToolPresenceTimer(state: RealtimeToolResponseState): void {
+    if (!state.presenceTimer) return
+    clearTimeout(state.presenceTimer)
+    state.presenceTimer = null
+  }
+
+  private clearRealtimeToolPresenceTimers(): void {
+    for (const state of this.toolResponses.values()) this.clearRealtimeToolPresenceTimer(state)
   }
 
   private async runRealtimeTool(event: Record<string, unknown>): Promise<void> {
@@ -2371,6 +2524,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     const toolState = this.registerRealtimeToolResponse(responseId, callId)
     const coordinated = !!toolState
     if (name === "voice_end_call" && toolState) toolState.suppressFollowup = true
+    if (toolState && !toolState.suppressFollowup) this.scheduleRealtimeToolPresence(responseId, toolState)
     let output: string
     try {
       const args = parseToolArguments(typeof event.arguments === "string" ? event.arguments : "")
@@ -2411,14 +2565,18 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = false
+    this.clearUntrackedActiveRealtimeResponseTimer()
     const responseId = realtimeResponseId(event)
     if (responseId) this.activeRealtimeResponseId = responseId
   }
 
-  private noteRealtimeResponseDone(responseId: string): void {
-    if (!responseId || this.activeRealtimeResponseId === responseId) {
-      this.activeRealtimeResponseId = null
-    }
+  private noteRealtimeResponseDone(_responseId: string): void {
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = false
+    this.clearUntrackedActiveRealtimeResponseTimer()
+    this.activeRealtimeResponseId = null
     this.responseCreateHoldUntilMs = Math.max(
       this.responseCreateHoldUntilMs,
       Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
@@ -2429,13 +2587,21 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   private requestRealtimeResponse(response?: Record<string, unknown>): void {
     if (this.closed) return
     const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
-    if (this.activeRealtimeResponseId || waitMs > 0) {
-      const pendingResponse = response ?? this.pendingRealtimeResponse?.response
-      this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
-      if (!this.activeRealtimeResponseId) this.schedulePendingRealtimeResponse(waitMs)
+    if (this.realtimeResponseIsBusy() || waitMs > 0) {
+      this.holdRealtimeResponse(response ? { response } : {})
+      if (!this.realtimeResponseIsBusy()) this.schedulePendingRealtimeResponse(waitMs)
       return
     }
     this.sendRealtimeResponseCreate(response ? { response } : {})
+  }
+
+  private realtimeResponseIsBusy(): boolean {
+    return !!this.activeRealtimeResponseId || !!this.realtimeResponseCreateInFlight || this.untrackedActiveRealtimeResponse
+  }
+
+  private holdRealtimeResponse(request: PendingRealtimeResponseRequest): void {
+    const pendingResponse = request.response ?? this.pendingRealtimeResponse?.response
+    this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
   }
 
   private schedulePendingRealtimeResponse(delayMs: number): void {
@@ -2449,7 +2615,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private flushPendingRealtimeResponse(): void {
-    if (!this.pendingRealtimeResponse || this.closed || this.activeRealtimeResponseId) return
+    if (!this.pendingRealtimeResponse || this.closed || this.realtimeResponseIsBusy()) return
     const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
     if (waitMs > 0) {
       this.schedulePendingRealtimeResponse(waitMs)
@@ -2461,10 +2627,40 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
   }
 
   private sendRealtimeResponseCreate(request: PendingRealtimeResponseRequest): void {
+    this.realtimeResponseCreateInFlight = request
     this.sendOpenAI({
       type: "response.create",
       ...(request.response ? { response: request.response } : {}),
     })
+  }
+
+  private noteRealtimeResponseConflict(): void {
+    const inFlight = this.realtimeResponseCreateInFlight
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = true
+    if (inFlight) this.holdRealtimeResponse(inFlight)
+    this.scheduleUntrackedActiveRealtimeResponseFallback()
+  }
+
+  private scheduleUntrackedActiveRealtimeResponseFallback(): void {
+    this.clearUntrackedActiveRealtimeResponseTimer()
+    this.untrackedActiveRealtimeResponseTimer = setTimeout(() => {
+      this.untrackedActiveRealtimeResponseTimer = null
+      if (this.closed || !this.untrackedActiveRealtimeResponse) return
+      this.untrackedActiveRealtimeResponse = false
+      this.responseCreateHoldUntilMs = Math.max(
+        this.responseCreateHoldUntilMs,
+        Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
+      )
+      this.schedulePendingRealtimeResponse(OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS)
+    }, OPENAI_REALTIME_RESPONSE_CREATE_CONFLICT_BACKOFF_MS)
+    this.untrackedActiveRealtimeResponseTimer.unref?.()
+  }
+
+  private clearUntrackedActiveRealtimeResponseTimer(): void {
+    if (!this.untrackedActiveRealtimeResponseTimer) return
+    clearTimeout(this.untrackedActiveRealtimeResponseTimer)
+    this.untrackedActiveRealtimeResponseTimer = null
   }
 
   private flushPendingAudio(): void {
@@ -2587,6 +2783,9 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       clearTimeout(this.pendingRealtimeResponseTimer)
       this.pendingRealtimeResponseTimer = null
     }
+    this.clearPendingUserTurnResponse()
+    this.clearRealtimeToolPresenceTimers()
+    this.clearUntrackedActiveRealtimeResponseTimer()
     this.lifecycle?.onClose?.(this, { callSid: this.callSid, outboundId: this.outboundId })
     emitNervesEvent({
       component: "senses",
@@ -2613,12 +2812,18 @@ class OpenAISipPhoneSession {
   private autoResponsesSuppressedForAmd = false
   private openaiWs: WebSocket | null = null
   private toolContext: ToolContext | undefined
+  private friendStore: FileFriendStore | undefined
+  private resolvedContext: ResolvedContext | undefined
   private sessionMessages: OpenAI.ChatCompletionMessageParam[] = []
   private readonly toolResponses = new Map<string, RealtimeToolResponseState>()
   private readonly completedRealtimeResponseIds = new Set<string>()
   private activeRealtimeResponseId: string | null = null
+  private realtimeResponseCreateInFlight: PendingRealtimeResponseRequest | null = null
+  private untrackedActiveRealtimeResponse = false
+  private untrackedActiveRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRealtimeResponse: PendingRealtimeResponseRequest | null = null
   private pendingRealtimeResponseTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingUserTurnResponseTimer: ReturnType<typeof setTimeout> | null = null
   private responseCreateHoldUntilMs = 0
 
   constructor(
@@ -2642,11 +2847,16 @@ class OpenAISipPhoneSession {
       if (!realtime?.apiKey?.trim()) throw new Error("OpenAI Realtime API key is not configured")
       if (!sip) throw new Error("OpenAI SIP options are not configured")
 
-      this.friendId = this.metadata.friendId
-        || this.options.defaultFriendId?.trim()
-        || voiceFriendId(this.options, this.metadata.from, this.metadata.callId)
+      const voiceContext = await resolveVoiceFriendContext(this.options, {
+        friendId: this.metadata.friendId || this.options.defaultFriendId?.trim(),
+        remotePhone: this.metadata.from || undefined,
+        callSid: this.metadata.callId,
+      })
+      this.friendId = voiceContext.friendId
+      this.friendStore = voiceContext.friendStore
+      this.resolvedContext = voiceContext.resolved
       this.sessionKey = twilioPhoneVoiceSessionKey({
-        defaultFriendId: this.friendId || this.options.defaultFriendId,
+        defaultFriendId: this.friendId,
         from: this.metadata.from,
         to: this.metadata.to,
         callSid: this.metadata.callId,
@@ -2690,7 +2900,7 @@ class OpenAISipPhoneSession {
       ]
 
       if (this.closed || this.outboundAmdStopped()) return
-      await this.acceptOpenAISipCall(realtime, sip, instructions, tools, this.autoResponsesSuppressedForAmd)
+      await this.acceptOpenAISipCall(realtime, sip, instructions, tools)
       if (this.closed || this.outboundAmdStopped()) return
       this.openControlWebSocket(realtime, sip, fullConfigPromise, usedBootstrap)
     } catch (error) {
@@ -2726,8 +2936,9 @@ class OpenAISipPhoneSession {
     if (!job) return "send"
     const answeredBy = job.answeredBy?.trim()
     if (nonHumanAnsweredStatus(answeredBy) || job.status === "voicemail" || job.status === "fax") return "reject"
-    if (answeredBy?.toLowerCase() === "human") return "send"
-    return "hold"
+    // Silence after pickup feels broken. Start the greeting immediately unless
+    // Twilio has already positively identified a machine/fax answer.
+    return "send"
   }
 
   private outboundAmdStopped(): boolean {
@@ -2739,7 +2950,6 @@ class OpenAISipPhoneSession {
     sip: OpenAISipPhoneOptions,
     instructions: string,
     tools: Array<{ type: "function"; name: string; description?: string; parameters?: unknown }>,
-    suppressAutoResponsesForAmd = false,
   ): Promise<void> {
     const fetchImpl = sip.fetch ?? fetch
     const response = await fetchImpl(openAISipCallActionUrl(sip, this.metadata.callId, "accept"), {
@@ -2758,7 +2968,7 @@ class OpenAISipPhoneSession {
             transcription: { model: OPENAI_REALTIME_DEFAULT_TRANSCRIPTION_MODEL },
             turn_detection: realtimeTurnDetectionConfig(
               realtime,
-              suppressAutoResponsesForAmd ? { createResponse: false } : {},
+              { createResponse: false, interruptResponse: false },
             ),
           },
           output: realtimeOutputAudioConfig(realtime),
@@ -2887,6 +3097,7 @@ class OpenAISipPhoneSession {
     const realtimeSystem = await buildRealtimeVoiceInstructions({
       agentName: this.options.agentName,
       agentRoot,
+      friend: this.resolvedContext?.friend,
       priorTranscript: prior,
       realtimeVoice: this.options.openaiRealtime?.voice,
       realtimeVoiceStyle: this.options.openaiRealtime?.voiceStyle,
@@ -2906,6 +3117,8 @@ class OpenAISipPhoneSession {
     if (this.toolContext) return
     this.toolContext = {
       signin: async () => undefined,
+      ...(this.resolvedContext ? { context: this.resolvedContext } : {}),
+      ...(this.friendStore ? { friendStore: this.friendStore } : {}),
       voiceCall: {
         requestEnd: () => this.requestHangupFromTool(),
         playAudio: (request) => this.playRealtimeAudioCue(request),
@@ -2914,16 +3127,18 @@ class OpenAISipPhoneSession {
   }
 
   private async buildRealtimeTools(): Promise<OpenAI.ChatCompletionFunctionTool[]> {
-    const agentRoot = this.options.agentRoot ?? getAgentRoot(this.options.agentName)
-    const friendsPath = path.join(agentRoot, "friends")
-    const friendStore = new FileFriendStore(friendsPath)
-    const resolver = new FriendResolver(friendStore, {
-      provider: "local",
-      externalId: this.friendId,
-      displayName: this.friendId,
-      channel: "voice",
-    })
-    const resolved = await resolver.resolve()
+    if (!this.resolvedContext || !this.friendStore) {
+      const voiceContext = await resolveVoiceFriendContext(this.options, {
+        friendId: this.friendId,
+        remotePhone: this.metadata.from || undefined,
+        callSid: this.metadata.callId,
+      })
+      this.friendId = voiceContext.friendId
+      this.friendStore = voiceContext.friendStore
+      this.resolvedContext = voiceContext.resolved
+    }
+    const resolved = this.resolvedContext
+    const friendStore = this.friendStore
     this.toolContext = {
       signin: async () => undefined,
       context: resolved,
@@ -3087,7 +3302,7 @@ class OpenAISipPhoneSession {
             type: "realtime",
             audio: {
               input: {
-                turn_detection: realtimeTurnDetectionConfig(realtime),
+                turn_detection: realtimeTurnDetectionConfig(realtime, { createResponse: false, interruptResponse: false }),
               },
             },
           },
@@ -3184,9 +3399,13 @@ class OpenAISipPhoneSession {
       this.noteRealtimeResponseCreated(event)
       return
     }
+    if (type === "input_audio_buffer.speech_started") {
+      this.clearPendingUserTurnResponse()
+      return
+    }
     if (type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
       this.recordOutboundAmdTranscriptCandidate(event.transcript)
-      this.appendTranscript("user", event.transcript)
+      this.handleUserTranscript(event.transcript)
       return
     }
     if (type === "response.output_audio_transcript.done" && typeof event.transcript === "string") {
@@ -3205,6 +3424,7 @@ class OpenAISipPhoneSession {
       return
     }
     if (type === "error") {
+      this.handleRealtimeError(event)
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -3215,6 +3435,38 @@ class OpenAISipPhoneSession {
     }
   }
 
+  private handleRealtimeError(event: Record<string, unknown>): void {
+    const error = event.error
+    if (!error || typeof error !== "object" || Array.isArray(error)) return
+    const code = stringField((error as Record<string, unknown>).code)
+    if (code !== "conversation_already_has_active_response") return
+    this.noteRealtimeResponseConflict()
+  }
+
+  private handleUserTranscript(transcript: string): void {
+    const content = transcript.trim()
+    if (!content) return
+    this.appendTranscript("user", content)
+    this.scheduleUserTurnResponse()
+  }
+
+  private scheduleUserTurnResponse(): void {
+    if (this.closed) return
+    this.clearPendingUserTurnResponse()
+    this.pendingUserTurnResponseTimer = setTimeout(() => {
+      this.pendingUserTurnResponseTimer = null
+      if (this.closed) return
+      this.requestRealtimeResponse()
+    }, OPENAI_REALTIME_USER_TURN_RESPONSE_DELAY_MS)
+    this.pendingUserTurnResponseTimer.unref?.()
+  }
+
+  private clearPendingUserTurnResponse(): void {
+    if (!this.pendingUserTurnResponseTimer) return
+    clearTimeout(this.pendingUserTurnResponseTimer)
+    this.pendingUserTurnResponseTimer = null
+  }
+
   private registerRealtimeToolResponse(responseId: string, callId: string): RealtimeToolResponseState | undefined {
     if (!responseId) return undefined
     const existing = this.toolResponses.get(responseId)
@@ -3223,6 +3475,8 @@ class OpenAISipPhoneSession {
       responseDone: this.completedRealtimeResponseIds.has(responseId),
       followupRequested: false,
       suppressFollowup: false,
+      presenceRequested: false,
+      presenceTimer: null,
     }
     state.pendingCallIds.add(callId)
     if (!existing) this.toolResponses.set(responseId, state)
@@ -3234,6 +3488,7 @@ class OpenAISipPhoneSession {
     const state = this.toolResponses.get(responseId)
     if (!state) return false
     state.pendingCallIds.delete(callId)
+    if (state.pendingCallIds.size === 0) this.clearRealtimeToolPresenceTimer(state)
     return this.maybeCreateRealtimeToolFollowup(responseId, state)
   }
 
@@ -3251,12 +3506,37 @@ class OpenAISipPhoneSession {
     if (!state.responseDone || state.pendingCallIds.size > 0 || state.followupRequested) return false
     state.followupRequested = true
     this.toolResponses.delete(responseId)
+    this.clearRealtimeToolPresenceTimer(state)
     if (state.suppressFollowup) {
       this.completeHangupIfReady("tool_response_done")
       return true
     }
     this.requestRealtimeResponse()
     return true
+  }
+
+  private scheduleRealtimeToolPresence(responseId: string, state: RealtimeToolResponseState): void {
+    if (!responseId || state.presenceRequested || state.presenceTimer) return
+    state.presenceTimer = setTimeout(() => {
+      state.presenceTimer = null
+      const current = this.toolResponses.get(responseId)
+      if (this.closed || current !== state || state.pendingCallIds.size === 0 || state.suppressFollowup) return
+      state.presenceRequested = true
+      this.requestRealtimeResponse({
+        instructions: "A tool is taking a moment. Say one very short natural holding phrase under six words, then stop speaking.",
+      })
+    }, OPENAI_REALTIME_TOOL_PRESENCE_DELAY_MS)
+    state.presenceTimer.unref?.()
+  }
+
+  private clearRealtimeToolPresenceTimer(state: RealtimeToolResponseState): void {
+    if (!state.presenceTimer) return
+    clearTimeout(state.presenceTimer)
+    state.presenceTimer = null
+  }
+
+  private clearRealtimeToolPresenceTimers(): void {
+    for (const state of this.toolResponses.values()) this.clearRealtimeToolPresenceTimer(state)
   }
 
   private async runRealtimeTool(event: Record<string, unknown>): Promise<void> {
@@ -3267,6 +3547,7 @@ class OpenAISipPhoneSession {
     const toolState = this.registerRealtimeToolResponse(responseId, callId)
     const coordinated = !!toolState
     if (name === "voice_end_call" && toolState) toolState.suppressFollowup = true
+    if (toolState && !toolState.suppressFollowup) this.scheduleRealtimeToolPresence(responseId, toolState)
     let output: string
     try {
       const args = parseToolArguments(typeof event.arguments === "string" ? event.arguments : "")
@@ -3307,14 +3588,18 @@ class OpenAISipPhoneSession {
   }
 
   private noteRealtimeResponseCreated(event: Record<string, unknown>): void {
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = false
+    this.clearUntrackedActiveRealtimeResponseTimer()
     const responseId = realtimeResponseId(event)
     if (responseId) this.activeRealtimeResponseId = responseId
   }
 
-  private noteRealtimeResponseDone(responseId: string): void {
-    if (!responseId || this.activeRealtimeResponseId === responseId) {
-      this.activeRealtimeResponseId = null
-    }
+  private noteRealtimeResponseDone(_responseId: string): void {
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = false
+    this.clearUntrackedActiveRealtimeResponseTimer()
+    this.activeRealtimeResponseId = null
     this.responseCreateHoldUntilMs = Math.max(
       this.responseCreateHoldUntilMs,
       Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
@@ -3325,13 +3610,21 @@ class OpenAISipPhoneSession {
   private requestRealtimeResponse(response?: Record<string, unknown>): void {
     if (this.closed) return
     const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
-    if (this.activeRealtimeResponseId || waitMs > 0) {
-      const pendingResponse = response ?? this.pendingRealtimeResponse?.response
-      this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
-      if (!this.activeRealtimeResponseId) this.schedulePendingRealtimeResponse(waitMs)
+    if (this.realtimeResponseIsBusy() || waitMs > 0) {
+      this.holdRealtimeResponse(response ? { response } : {})
+      if (!this.realtimeResponseIsBusy()) this.schedulePendingRealtimeResponse(waitMs)
       return
     }
     this.sendRealtimeResponseCreate(response ? { response } : {})
+  }
+
+  private realtimeResponseIsBusy(): boolean {
+    return !!this.activeRealtimeResponseId || !!this.realtimeResponseCreateInFlight || this.untrackedActiveRealtimeResponse
+  }
+
+  private holdRealtimeResponse(request: PendingRealtimeResponseRequest): void {
+    const pendingResponse = request.response ?? this.pendingRealtimeResponse?.response
+    this.pendingRealtimeResponse = pendingResponse ? { response: pendingResponse } : {}
   }
 
   private schedulePendingRealtimeResponse(delayMs: number): void {
@@ -3345,7 +3638,7 @@ class OpenAISipPhoneSession {
   }
 
   private flushPendingRealtimeResponse(): void {
-    if (!this.pendingRealtimeResponse || this.closed || this.activeRealtimeResponseId) return
+    if (!this.pendingRealtimeResponse || this.closed || this.realtimeResponseIsBusy()) return
     const waitMs = Math.max(0, this.responseCreateHoldUntilMs - Date.now())
     if (waitMs > 0) {
       this.schedulePendingRealtimeResponse(waitMs)
@@ -3357,10 +3650,40 @@ class OpenAISipPhoneSession {
   }
 
   private sendRealtimeResponseCreate(request: PendingRealtimeResponseRequest): void {
+    this.realtimeResponseCreateInFlight = request
     this.sendOpenAI({
       type: "response.create",
       ...(request.response ? { response: request.response } : {}),
     })
+  }
+
+  private noteRealtimeResponseConflict(): void {
+    const inFlight = this.realtimeResponseCreateInFlight
+    this.realtimeResponseCreateInFlight = null
+    this.untrackedActiveRealtimeResponse = true
+    if (inFlight) this.holdRealtimeResponse(inFlight)
+    this.scheduleUntrackedActiveRealtimeResponseFallback()
+  }
+
+  private scheduleUntrackedActiveRealtimeResponseFallback(): void {
+    this.clearUntrackedActiveRealtimeResponseTimer()
+    this.untrackedActiveRealtimeResponseTimer = setTimeout(() => {
+      this.untrackedActiveRealtimeResponseTimer = null
+      if (this.closed || !this.untrackedActiveRealtimeResponse) return
+      this.untrackedActiveRealtimeResponse = false
+      this.responseCreateHoldUntilMs = Math.max(
+        this.responseCreateHoldUntilMs,
+        Date.now() + OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS,
+      )
+      this.schedulePendingRealtimeResponse(OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS)
+    }, OPENAI_REALTIME_RESPONSE_CREATE_CONFLICT_BACKOFF_MS)
+    this.untrackedActiveRealtimeResponseTimer.unref?.()
+  }
+
+  private clearUntrackedActiveRealtimeResponseTimer(): void {
+    if (!this.untrackedActiveRealtimeResponseTimer) return
+    clearTimeout(this.untrackedActiveRealtimeResponseTimer)
+    this.untrackedActiveRealtimeResponseTimer = null
   }
 
   private requestHangupFromTool(): void {
@@ -3434,6 +3757,9 @@ class OpenAISipPhoneSession {
       clearTimeout(this.pendingRealtimeResponseTimer)
       this.pendingRealtimeResponseTimer = null
     }
+    this.clearPendingUserTurnResponse()
+    this.clearRealtimeToolPresenceTimers()
+    this.clearUntrackedActiveRealtimeResponseTimer()
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_openai_sip_call_stop",
@@ -4285,7 +4611,7 @@ async function handleOutgoing(
     InitialAudio: encodeVoiceCallAudioCustomParameter(job.initialAudio),
   }
 
-  if (usesOpenAISipConversationEngine(options)) {
+  if (usesOpenAISipOutboundConversationEngine(options)) {
     emitNervesEvent({
       component: "senses",
       event: "senses.voice_twilio_sip_connect",
@@ -4305,8 +4631,8 @@ async function handleOutgoing(
   }
 
   if (normalizeTwilioPhoneTransportMode(options.transportMode) === "media-stream") {
-    if (usesOpenAIRealtimeConversationEngine(options)) {
-      return xmlResponse(mediaStreamTwiml(options, basePath, { From: from, To: to }, undefined, streamParams))
+    if (usesOpenAIRealtimeOutboundConversationEngine(options)) {
+      return xmlResponse(mediaStreamTwiml(options, basePath, { From: from, To: to }, undefined, streamParams, "openai-realtime"))
     }
 
     try {
@@ -4747,7 +5073,7 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
   }
   const activeSipSessions = new ActiveOpenAISipSessions()
 
-  mediaStreams.on("connection", (ws) => {
+  mediaStreams.on("connection", (ws, request: http.IncomingMessage) => {
     const lifecycle: {
       onIdentityChange: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
       onClose: (session: TwilioMediaStreamLifecycleSession, identity: { callSid: string; outboundId: string }) => void
@@ -4765,7 +5091,8 @@ export function createTwilioPhoneBridge(options: TwilioPhoneBridgeOptions): Twil
         }
       },
     }
-    const session = usesOpenAIRealtimeConversationEngine(options)
+    const streamEngine = mediaStreamRequestedConversationEngine(request.url)
+    const session = streamEngine === "openai-realtime" || (!streamEngine && usesOpenAIRealtimeConversationEngine(options))
       ? new TwilioOpenAIRealtimeMediaStreamSession(ws, options, lifecycle)
       : new TwilioMediaStreamSession(ws, options, jobs, lifecycle)
     session.attach()

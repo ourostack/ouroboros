@@ -76,6 +76,7 @@ export interface TwilioPhoneTransportRuntimeOverrides {
   playbackMode?: TwilioPhonePlaybackMode
   transportMode?: TwilioPhoneTransportMode
   conversationEngine?: TwilioPhoneConversationEngine
+  outboundConversationEngine?: TwilioPhoneConversationEngine
   openaiRealtimeApiKey?: string
   openaiRealtimeModel?: string
   openaiRealtimeVoice?: string
@@ -123,6 +124,7 @@ export interface TwilioPhoneTransportRuntimeSettings {
   playbackMode: TwilioPhonePlaybackMode
   transportMode: TwilioPhoneTransportMode
   conversationEngine: TwilioPhoneConversationEngine
+  outboundConversationEngine: TwilioPhoneConversationEngine
   openaiRealtime?: OpenAIRealtimeTwilioOptions
   openaiSip?: OpenAISipPhoneOptions
   openaiSipWebhookUrl?: string
@@ -310,15 +312,46 @@ function resolveOpenAIRealtimeApiKey(options: {
 function configuredConversationEngine(
   options: ResolveTwilioPhoneTransportRuntimeOptions,
   overrides: TwilioPhoneTransportRuntimeOverrides,
+  transportMode: TwilioPhoneTransportMode,
 ): TwilioPhoneConversationEngine {
-  return overrides.conversationEngine
+  const explicit = overrides.conversationEngine
+    ?? configString(options.machineConfig, "voice.twilioConversationEngine")
+    ?? configString(options.machineConfig, "voice.conversationEngine")
+    ?? configString(options.runtimeConfig, "voice.twilioConversationEngine")
+    ?? configString(options.runtimeConfig, "voice.conversationEngine")
+  const hasSipConfig = !!(
+    configString(options.runtimeConfig, "voice.openaiSipProjectId")
+    || configString(options.machineConfig, "voice.openaiSipProjectId")
+  )
+  const explicitEngine = explicit ? normalizeTwilioPhoneConversationEngine(explicit) : undefined
+  if (hasSipConfig && (!explicitEngine || explicitEngine === "cascade")) return "openai-sip"
+  if (explicitEngine) return explicitEngine
+
+  const hasRealtimeConfig = !!resolveOpenAIRealtimeApiKey({ runtimeConfig: options.runtimeConfig, overrides })
+  if (hasRealtimeConfig && transportMode === "media-stream") return "openai-realtime"
+
+  return "cascade"
+}
+
+function configuredOutboundConversationEngine(
+  options: ResolveTwilioPhoneTransportRuntimeOptions,
+  overrides: TwilioPhoneTransportRuntimeOverrides,
+  conversationEngine: TwilioPhoneConversationEngine,
+  transportMode: TwilioPhoneTransportMode,
+): TwilioPhoneConversationEngine {
+  const defaultOutboundEngine = conversationEngine === "openai-sip" && transportMode === "media-stream"
+    ? "openai-realtime"
+    : conversationEngine
+  const configured = overrides.outboundConversationEngine
     ?? normalizeTwilioPhoneConversationEngine(
-      configString(options.machineConfig, "voice.twilioConversationEngine")
-      ?? configString(options.machineConfig, "voice.conversationEngine")
-      ?? configString(options.runtimeConfig, "voice.twilioConversationEngine")
-      ?? configString(options.runtimeConfig, "voice.conversationEngine")
-      ?? "cascade",
+      configString(options.machineConfig, "voice.twilioOutboundConversationEngine")
+      ?? configString(options.machineConfig, "voice.outboundConversationEngine")
+      ?? configString(options.runtimeConfig, "voice.twilioOutboundConversationEngine")
+      ?? configString(options.runtimeConfig, "voice.outboundConversationEngine")
+      ?? defaultOutboundEngine,
     )
+  if (defaultOutboundEngine === "openai-realtime" && configured === "cascade") return defaultOutboundEngine
+  return configured
 }
 
 function normalizeOpenAIRealtimeReasoningEffort(
@@ -403,7 +436,14 @@ export function resolveTwilioPhoneTransportRuntime(
   )
   const transportMode = overrides.transportMode
     ?? normalizeTwilioPhoneTransportMode(configString(options.machineConfig, "voice.twilioTransportMode") ?? DEFAULT_TWILIO_PHONE_TRANSPORT_MODE)
-  const conversationEngine = configuredConversationEngine(options, overrides)
+  const conversationEngine = configuredConversationEngine(options, overrides, transportMode)
+  const outboundConversationEngine = configuredOutboundConversationEngine(options, overrides, conversationEngine, transportMode)
+  const needsOpenAIRealtime = conversationEngine === "openai-realtime"
+    || conversationEngine === "openai-sip"
+    || outboundConversationEngine === "openai-realtime"
+    || outboundConversationEngine === "openai-sip"
+  const needsOpenAISip = conversationEngine === "openai-sip" || outboundConversationEngine === "openai-sip"
+  const needsCascade = conversationEngine === "cascade" || outboundConversationEngine === "cascade"
 
   let elevenLabsApiKey = configString(options.runtimeConfig, "integrations.elevenLabsApiKey") ?? ""
   let elevenLabsVoiceId = trimOptional(overrides.elevenLabsVoiceId)
@@ -419,9 +459,9 @@ export function resolveTwilioPhoneTransportRuntime(
   let openaiRealtime: OpenAIRealtimeTwilioOptions | undefined
   let openaiSip: OpenAISipPhoneOptions | undefined
 
-  if (conversationEngine === "openai-realtime" || conversationEngine === "openai-sip") {
-    if (conversationEngine === "openai-realtime" && transportMode !== "media-stream") {
-      throw new Error("voice.twilioConversationEngine=openai-realtime requires voice.twilioTransportMode=media-stream")
+  if (needsOpenAIRealtime) {
+    if ((conversationEngine === "openai-realtime" || outboundConversationEngine === "openai-realtime") && transportMode !== "media-stream") {
+      throw new Error("voice.twilioConversationEngine/openai-realtime requires voice.twilioTransportMode=media-stream")
     }
     const key = resolveOpenAIRealtimeApiKey({ runtimeConfig: options.runtimeConfig, overrides })
     if (!key) {
@@ -480,7 +520,7 @@ export function resolveTwilioPhoneTransportRuntime(
       turnDetection,
     }
 
-    if (conversationEngine === "openai-sip") {
+    if (needsOpenAISip) {
       const projectId = trimOptional(overrides.openaiSipProjectId)
         ?? configString(options.runtimeConfig, "voice.openaiSipProjectId")
         ?? configString(options.machineConfig, "voice.openaiSipProjectId")
@@ -515,7 +555,9 @@ export function resolveTwilioPhoneTransportRuntime(
           ?? configString(options.runtimeConfig, "voice.openaiSipWebsocketBaseUrl"),
       }
     }
-  } else {
+  }
+
+  if (needsCascade) {
     elevenLabsApiKey = required(
       elevenLabsApiKey || undefined,
       "missing integrations.elevenLabsApiKey; run 'ouro connect voice --agent <agent>' for setup guidance",
@@ -573,6 +615,7 @@ export function resolveTwilioPhoneTransportRuntime(
       ?? normalizeTwilioPhonePlaybackMode(configString(options.machineConfig, "voice.twilioPlaybackMode") ?? DEFAULT_TWILIO_PHONE_PLAYBACK_MODE),
     transportMode,
     conversationEngine,
+    outboundConversationEngine,
     openaiRealtime,
     openaiSip,
     openaiSipWebhookUrl: openaiSip?.webhookPath ? openAISipWebhookUrl(publicBaseUrl, openaiSip.webhookPath) : undefined,
@@ -695,7 +738,12 @@ export async function startConfiguredTwilioPhoneTransport(
       meta: { agentName: settings.agentName, source: settings.openaiRealtime.apiKeySource },
     })
   }
-  const transcriber = settings.conversationEngine === "openai-realtime" || settings.conversationEngine === "openai-sip"
+  const settingsNeedsOpenAIRealtime = settings.conversationEngine === "openai-realtime"
+    || settings.conversationEngine === "openai-sip"
+    || settings.outboundConversationEngine === "openai-realtime"
+    || settings.outboundConversationEngine === "openai-sip"
+  const settingsNeedsCascade = settings.conversationEngine === "cascade" || settings.outboundConversationEngine === "cascade"
+  const transcriber = settingsNeedsOpenAIRealtime && !settingsNeedsCascade
     ? {
         transcribe: async () => {
           throw new Error("OpenAI Realtime voice sessions do not use the cascade transcriber")
@@ -705,7 +753,7 @@ export async function startConfiguredTwilioPhoneTransport(
         whisperCliPath: settings.whisperCliPath,
         modelPath: settings.whisperModelPath,
       })
-  const tts = settings.conversationEngine === "openai-realtime" || settings.conversationEngine === "openai-sip"
+  const tts = settingsNeedsOpenAIRealtime && !settingsNeedsCascade
     ? {
         synthesize: async () => {
           throw new Error("OpenAI Realtime voice sessions do not use the cascade TTS service")
@@ -735,6 +783,7 @@ export async function startConfiguredTwilioPhoneTransport(
     transportMode: settings.transportMode,
     playbackMode: settings.playbackMode,
     conversationEngine: settings.conversationEngine,
+    outboundConversationEngine: settings.outboundConversationEngine,
     openaiRealtime: settings.openaiRealtime,
     openaiSip: settings.openaiSip,
   })
@@ -752,6 +801,7 @@ export async function startConfiguredTwilioPhoneTransport(
       openaiSipWebhookUrl: settings.openaiSipWebhookUrl ?? "",
       transportMode: settings.transportMode,
       conversationEngine: settings.conversationEngine,
+      outboundConversationEngine: settings.outboundConversationEngine,
       openaiRealtimeModel: settings.openaiRealtime?.model ?? "",
     },
   })
@@ -797,7 +847,7 @@ async function prewarmOutboundGreeting(options: {
 } | undefined> {
   if (options.settings.transportMode !== "media-stream") return undefined
   /* v8 ignore next -- Realtime/SIP outbound tests assert no cascade prewarm is attempted @preserve */
-  if (options.settings.conversationEngine === "openai-realtime" || options.settings.conversationEngine === "openai-sip") return undefined
+  if (options.settings.outboundConversationEngine === "openai-realtime" || options.settings.outboundConversationEngine === "openai-sip") return undefined
   const friendId = options.friendId?.trim() || `twilio-${safeRuntimeSegment(options.to)}`
   const sessionKey = twilioPhoneVoiceSessionKey({
     defaultFriendId: friendId,
@@ -916,7 +966,7 @@ export async function placeConfiguredTwilioPhoneCall(
     reason: options.reason.trim(),
     ...(options.initialAudio ? { initialAudio: options.initialAudio } : {}),
     createdAt,
-    status: settings.transportMode === "media-stream" && settings.conversationEngine !== "openai-realtime" && settings.conversationEngine !== "openai-sip"
+    status: settings.transportMode === "media-stream" && settings.outboundConversationEngine === "cascade"
       ? "prewarming"
       : "requested",
   })

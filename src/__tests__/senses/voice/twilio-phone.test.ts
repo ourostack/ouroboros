@@ -622,7 +622,8 @@ describe("Twilio phone voice bridge", () => {
     })
 
     expect(response.statusCode).toBe(200)
-    expect(String(response.body)).toContain("<Dial answerOnBridge=\"true\"><Sip>")
+    expect(String(response.body)).toContain("<Dial><Sip>")
+    expect(String(response.body)).not.toContain("answerOnBridge")
     expect(String(response.body)).toContain("sip:proj_test@sip.api.openai.com;transport=tls?")
     expect(String(response.body)).toContain("X-Ouro-Agent=slugger")
     expect(String(response.body)).toContain("X-Ouro-Direction=inbound")
@@ -720,6 +721,25 @@ describe("Twilio phone voice bridge", () => {
     const openaiUrl = `ws://127.0.0.1:${address.port}/v1/realtime`
     const webhookSecret = `whsec_${Buffer.from("sip-webhook-secret").toString("base64")}`
     try {
+      await fs.mkdir(path.join(agentRoot, "friends"), { recursive: true })
+      const now = new Date().toISOString()
+      await fs.writeFile(path.join(agentRoot, "friends", "ari.json"), JSON.stringify({
+        id: "ari",
+        name: "Ari",
+        role: "primary",
+        trustLevel: "family",
+        connections: [],
+        externalIds: [{ provider: "imessage-handle", externalId: "+15551234567", linkedAt: now }],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: now,
+        updatedAt: now,
+        schemaVersion: 1,
+        kind: "human",
+      }, null, 2))
+
       openaiServer.on("connection", (ws, request) => {
         openaiSockets.push(ws as WebSocket)
         expect(request.url).toContain("call_id=call_123")
@@ -802,6 +822,7 @@ describe("Twilio phone voice bridge", () => {
         audio: { output: { voice: "cedar", speed: 1.08 } },
       })
       expect(acceptBody.instructions).toContain("Phone voice target: scrappy, upbeat, warm, lightly British")
+      expect(acceptBody.instructions).toContain("Resolved voice friend: Ari (friendId=ari, trust=family")
       expect(acceptBody.instructions).toContain("source=tone")
       expect(acceptBody.tools?.some((tool) => tool.name === "voice_end_call")).toBe(true)
       expect(acceptBody.tools?.some((tool) => tool.name === "voice_play_audio")).toBe(true)
@@ -828,7 +849,28 @@ describe("Twilio phone voice bridge", () => {
       })
 
       const greetingResponseCreateCount = openaiMessages.filter((event) => event.type === "response.create").length
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "tool-before-created",
+        name: "voice_play_audio",
+        arguments: JSON.stringify({ source: "tone", label: "early beep", toneHz: 550, durationMs: 80 }),
+      }))
+      await vi.waitFor(() => expect(openaiMessages.some((event) => {
+        if (event.type !== "conversation.item.create") return false
+        const item = event.item as { type?: string; call_id?: string; output?: string } | undefined
+        return item?.type === "function_call_output"
+          && item.call_id === "tool-before-created"
+          && item.output?.includes("Render the requested audio cue now")
+      })).toBe(true), { timeout: 10_000 })
+      expect(openaiMessages.filter((event) => event.type === "response.create")).toHaveLength(greetingResponseCreateCount)
       openaiSockets[0]?.send(JSON.stringify({ type: "response.created", response: { id: "resp-greeting" } }))
+      openaiSockets[0]?.send(JSON.stringify({ type: "response.done", response: { id: "resp-greeting" } }))
+      await vi.waitFor(() => {
+        expect(openaiMessages.filter((event) => event.type === "response.create").length).toBeGreaterThan(greetingResponseCreateCount)
+      }, { timeout: 10_000 })
+
+      const followupResponseCreateCount = openaiMessages.filter((event) => event.type === "response.create").length
+      openaiSockets[0]?.send(JSON.stringify({ type: "response.created", response: { id: "resp-followup" } }))
       openaiSockets[0]?.send(JSON.stringify({
         type: "response.function_call_arguments.done",
         call_id: "tool-queued-audio",
@@ -842,10 +884,10 @@ describe("Twilio phone voice bridge", () => {
           && item.call_id === "tool-queued-audio"
           && item.output?.includes("Render the requested audio cue now")
       })).toBe(true), { timeout: 10_000 })
-      expect(openaiMessages.filter((event) => event.type === "response.create")).toHaveLength(greetingResponseCreateCount)
-      openaiSockets[0]?.send(JSON.stringify({ type: "response.done", response: { id: "resp-greeting" } }))
+      expect(openaiMessages.filter((event) => event.type === "response.create")).toHaveLength(followupResponseCreateCount)
+      openaiSockets[0]?.send(JSON.stringify({ type: "response.done", response: { id: "resp-followup" } }))
       await vi.waitFor(() => {
-        expect(openaiMessages.filter((event) => event.type === "response.create").length).toBeGreaterThan(greetingResponseCreateCount)
+        expect(openaiMessages.filter((event) => event.type === "response.create").length).toBeGreaterThan(followupResponseCreateCount)
       }, { timeout: 10_000 })
 
       openaiSockets[0]?.send(JSON.stringify({
@@ -888,7 +930,7 @@ describe("Twilio phone voice bridge", () => {
     }
   }, 20_000)
 
-  it("holds outbound SIP greetings until async AMD confirms a human answer", async () => {
+  it("starts outbound SIP greetings immediately while preserving later human AMD status", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-openai-sip-amd-human-"))
     const openai = startOpenAISipMock("call_human")
     try {
@@ -922,7 +964,8 @@ describe("Twilio phone voice bridge", () => {
         headers: {},
         body: formBody({ CallSid: "CATWILIOHUMAN", From: "+15557654321", To: "+15551234567" }),
       })
-      expect(String(outgoing.body)).toContain("<Dial answerOnBridge=\"true\"><Sip>")
+      expect(String(outgoing.body)).toContain("<Dial><Sip>")
+      expect(String(outgoing.body)).not.toContain("answerOnBridge")
 
       const sipResponse = await bridge.handle({
         method: "POST",
@@ -949,8 +992,7 @@ describe("Twilio phone voice bridge", () => {
       const acceptBody = JSON.parse(accept.body) as { audio?: { input?: { turn_detection?: { create_response?: boolean } } } }
       expect(acceptBody.audio?.input?.turn_detection?.create_response).toBe(false)
       await vi.waitFor(() => expect(openai.openaiSockets.length).toBe(1), { timeout: 10_000 })
-      await new Promise((resolve) => setTimeout(resolve, 25))
-      expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(false)
+      await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
 
       const amd = await bridge.handle({
         method: "POST",
@@ -959,15 +1001,7 @@ describe("Twilio phone voice bridge", () => {
         body: formBody({ CallSid: "CATWILIOHUMAN", AnsweredBy: "human" }),
       })
       expect(amd.statusCode).toBe(200)
-      await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
-      const turnDetectionUpdateIndex = openai.openaiMessages.findIndex((event) => {
-        if (event.type !== "session.update") return false
-        const session = event.session as { audio?: { input?: { turn_detection?: { create_response?: boolean } } } } | undefined
-        return session?.audio?.input?.turn_detection?.create_response === true
-      })
-      const greetingIndex = openai.openaiMessages.findIndex((event) => event.type === "response.create")
-      expect(turnDetectionUpdateIndex).toBeGreaterThanOrEqual(0)
-      expect(turnDetectionUpdateIndex).toBeLessThan(greetingIndex)
+      expect(openai.openaiRequests.some((request) => request.input.endsWith("/realtime/calls/call_human/hangup"))).toBe(false)
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-sip-human"), "utf8")) as { status?: string; answeredBy?: string }
       expect(saved.status).toBe("answered")
       expect(saved.answeredBy).toBe("human")
@@ -977,7 +1011,7 @@ describe("Twilio phone voice bridge", () => {
     }
   }, 20_000)
 
-  it("releases outbound SIP greetings on AMD unknown when Realtime heard a short human greeting", async () => {
+  it("keeps outbound SIP greetings alive when AMD returns unknown without waiting for caller audio", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-openai-sip-amd-unknown-human-"))
     const openai = startOpenAISipMock("call_unknown_human")
     try {
@@ -1033,13 +1067,8 @@ describe("Twilio phone voice bridge", () => {
       expect(sipResponse.statusCode).toBe(200)
       await vi.waitFor(() => expect(openai.openaiRequests.some((request) => request.input.endsWith("/realtime/calls/call_unknown_human/accept"))).toBe(true), { timeout: 10_000 })
       await vi.waitFor(() => expect(openai.openaiSockets.length).toBe(1), { timeout: 10_000 })
-      await new Promise((resolve) => setTimeout(resolve, 25))
-      expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(false)
+      await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
 
-      openai.openaiSockets[0]?.send(JSON.stringify({
-        type: "conversation.item.input_audio_transcription.completed",
-        transcript: "hello?",
-      }))
       const amd = await bridge.handle({
         method: "POST",
         path: "/voice/twilio/outgoing/out-sip-unknown-human/amd",
@@ -1047,7 +1076,6 @@ describe("Twilio phone voice bridge", () => {
         body: formBody({ CallSid: "CATWILIOUNKNOWN", AnsweredBy: "unknown" }),
       })
       expect(amd.statusCode).toBe(200)
-      await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
       expect(openai.openaiRequests.some((request) => request.input.endsWith("/realtime/calls/call_unknown_human/hangup"))).toBe(false)
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-sip-unknown-human"), "utf8")) as { status?: string; answeredBy?: string }
       expect(saved.status).toBe("answered")
@@ -1058,7 +1086,7 @@ describe("Twilio phone voice bridge", () => {
     }
   }, 20_000)
 
-  it("hangs up outbound SIP calls silently when async AMD reports voicemail", async () => {
+  it("hangs up outbound SIP calls when async AMD reports voicemail after answer", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-openai-sip-amd-machine-"))
     const openai = startOpenAISipMock("call_machine")
     try {
@@ -1092,7 +1120,8 @@ describe("Twilio phone voice bridge", () => {
         headers: {},
         body: formBody({ CallSid: "CATWILIOMACHINE", From: "+15557654321", To: "+15551234567" }),
       })
-      expect(String(outgoing.body)).toContain("<Dial answerOnBridge=\"true\"><Sip>")
+      expect(String(outgoing.body)).toContain("<Dial><Sip>")
+      expect(String(outgoing.body)).not.toContain("answerOnBridge")
 
       const sipResponse = await bridge.handle({
         method: "POST",
@@ -1119,8 +1148,7 @@ describe("Twilio phone voice bridge", () => {
       const acceptBody = JSON.parse(accept.body) as { audio?: { input?: { turn_detection?: { create_response?: boolean } } } }
       expect(acceptBody.audio?.input?.turn_detection?.create_response).toBe(false)
       await vi.waitFor(() => expect(openai.openaiSockets.length).toBe(1), { timeout: 10_000 })
-      await new Promise((resolve) => setTimeout(resolve, 25))
-      expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(false)
+      await vi.waitFor(() => expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(true), { timeout: 10_000 })
 
       const amd = await bridge.handle({
         method: "POST",
@@ -1130,7 +1158,6 @@ describe("Twilio phone voice bridge", () => {
       })
       expect(amd.statusCode).toBe(200)
       await vi.waitFor(() => expect(openai.openaiRequests.some((request) => request.input.endsWith("/realtime/calls/call_machine/hangup"))).toBe(true), { timeout: 10_000 })
-      expect(openai.openaiMessages.some((event) => event.type === "response.create")).toBe(false)
       const saved = JSON.parse(await fs.readFile(twilioOutboundCallJobPath(outputDir, "out-sip-machine"), "utf8")) as { status?: string; answeredBy?: string; transportCallSid?: string }
       expect(saved.status).toBe("voicemail")
       expect(saved.answeredBy).toBe("machine_start")
@@ -1301,12 +1328,12 @@ describe("Twilio phone voice bridge", () => {
             transcription: { model: "gpt-realtime-whisper" },
             turn_detection: {
               type: "server_vad",
-              create_response: true,
+              create_response: false,
               interrupt_response: false,
-              threshold: 0.68,
-              prefix_padding_ms: 220,
-              silence_duration_ms: 320,
-              idle_timeout_ms: 15_000,
+              threshold: 0.78,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 650,
+              idle_timeout_ms: 7_000,
             },
           },
           output: {
@@ -1337,7 +1364,7 @@ describe("Twilio phone voice bridge", () => {
         mark: { name: playbackMark.mark?.name },
       })
 
-      for (let index = 0; index < 8; index += 1) sendMediaFrame(socket, 0x00)
+      for (let index = 0; index < 14; index += 1) sendMediaFrame(socket, 0x00)
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "input_audio_buffer.append")).toBe(true))
       await vi.waitFor(() => expect(twilioMessages.some((event) => event.event === "clear")).toBe(true))
       await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "conversation.item.truncate")).toBe(true))
@@ -1404,6 +1431,102 @@ describe("Twilio phone voice bridge", () => {
         if (openaiSocket.readyState === WebSocket.OPEN) await closeSocket(openaiSocket)
       }
       if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  it("resolves Realtime media stream callers without phone metadata as local voice identities", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))
+    const agentRoot = path.join(outputDir, "slugger.ouro")
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    const twilioSockets: WebSocket[] = []
+    try {
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+          openaiMessages.push(event)
+          if (event.type === "session.update") {
+            ws.send(JSON.stringify({ type: "session.updated", session: event.session ?? {} }))
+          }
+          if (event.type === "response.create") {
+            ws.send(JSON.stringify({ type: "response.done", response: { id: "resp-local", status: "completed" } }))
+          }
+        })
+      })
+
+      server = await startTwilioPhoneBridgeServer({
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        agentRoot,
+        defaultFriendId: "fallback-local",
+        transportMode: "media-stream" as const,
+        conversationEngine: "openai-realtime" as const,
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          websocketUrl: openaiUrl,
+          model: "gpt-realtime-2",
+        },
+      })
+
+      const startRealtimeSocket = async (
+        callSid: string,
+        customParameters: Record<string, string>,
+        expectedSessionUpdates: number,
+      ): Promise<void> => {
+        const socket = new WebSocket(`${server!.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
+        twilioSockets.push(socket)
+        await waitForSocketOpen(socket)
+        sendSocketJson(socket, {
+          event: "start",
+          start: {
+            streamSid: `MZ${callSid}`,
+            callSid,
+            customParameters,
+          },
+        })
+        await vi.waitFor(() => {
+          expect(openaiMessages.filter((event) => event.type === "session.update")).toHaveLength(expectedSessionUpdates)
+        }, { timeout: 10_000 })
+        await closeSocket(socket)
+      }
+
+      await startRealtimeSocket("CALOCALFRIEND", { FriendId: "local-voice-friend" }, 1)
+      await startRealtimeSocket("CALOCALDEFAULT", {}, 2)
+
+      const sessionUpdates = openaiMessages.filter((event): event is { session: { instructions?: string } } =>
+        event.type === "session.update" && typeof (event as { session?: { instructions?: unknown } }).session?.instructions === "string",
+      )
+      expect(sessionUpdates.some((event) => event.session.instructions?.includes("Resolved voice friend: local-voice-friend"))).toBe(true)
+      expect(sessionUpdates.some((event) => event.session.instructions?.includes("Resolved voice friend: fallback-local"))).toBe(true)
+
+      const friendDir = path.join(agentRoot, "friends")
+      const friendRecords = await Promise.all((await fs.readdir(friendDir)).map(async (entry) => (
+        JSON.parse(await fs.readFile(path.join(friendDir, entry), "utf8")) as {
+          name?: string
+          externalIds?: Array<{ provider?: string; externalId?: string }>
+        }
+      )))
+      const localIds = friendRecords.flatMap((record) =>
+        record.externalIds?.filter((identity) => identity.provider === "local").map((identity) => identity.externalId) ?? [],
+      )
+      expect(localIds).toEqual(expect.arrayContaining(["local-voice-friend", "fallback-local"]))
+    } finally {
+      for (const socket of twilioSockets) {
+        if (socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      }
+      for (const openaiSocket of openaiSockets) {
+        if (openaiSocket.readyState === WebSocket.OPEN) await closeSocket(openaiSocket)
+      }
       if (server) await closeTwilioPhoneBridgeServer(server)
       await closeWebSocketServer(openaiServer)
       await fs.rm(outputDir, { recursive: true, force: true })
@@ -1539,6 +1662,92 @@ describe("Twilio phone voice bridge", () => {
       await fs.rm(outputDir, { recursive: true, force: true })
     }
   })
+
+  it("can route outbound OpenAI calls through Media Streams even when inbound calls use SIP", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    let socket: WebSocket | undefined
+    try {
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          openaiMessages.push(JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>)
+        })
+      })
+      await writeTwilioOutboundCallJob(outputDir, {
+        schemaVersion: 1,
+        outboundId: "out-realtime-override",
+        agentName: "slugger",
+        friendId: "ari",
+        to: "+15551234567",
+        from: "+15557654321",
+        reason: "avoid second-ring SIP bridgeback",
+        createdAt: "2026-05-08T12:00:00.000Z",
+        status: "requested",
+      })
+      const options = {
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        transportMode: "media-stream",
+        conversationEngine: "openai-sip",
+        outboundConversationEngine: "openai-realtime",
+        openaiRealtime: { apiKey: "openai-secret", websocketUrl: openaiUrl, model: "gpt-realtime-2", voice: "cedar" },
+        openaiSip: {
+          projectId: "proj_test",
+          webhookPath: "/voice/agents/slugger/sip/openai",
+          allowUnsignedWebhooks: true,
+        },
+      } as const
+      server = await startTwilioPhoneBridgeServer(options)
+      const response = await server.bridge.handle({
+        method: "POST",
+        path: "/voice/twilio/outgoing/out-realtime-override",
+        headers: {},
+        body: formBody({ CallSid: "CAOUTREALTIME", From: "+15557654321", To: "+15551234567" }),
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(String(response.body)).toContain("<Connect><Stream url=\"wss://voice.example.com/voice/twilio/media-stream?engine=openai-realtime\">")
+      expect(String(response.body)).not.toContain("<Dial><Sip>")
+      expect(String(response.body)).toContain("<Parameter name=\"Direction\" value=\"outbound\" />")
+      expect(String(response.body)).toContain("<Parameter name=\"OutboundId\" value=\"out-realtime-override\" />")
+
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream?engine=openai-realtime`)
+      await waitForSocketOpen(socket)
+      sendSocketJson(socket, {
+        event: "start",
+        start: {
+          streamSid: "MZOUTREALTIME",
+          callSid: "CAOUTREALTIME",
+          customParameters: {
+            Direction: "outbound",
+            Remote: "+15551234567",
+            Line: "+15557654321",
+            FriendId: "ari",
+            OutboundId: "out-realtime-override",
+            Reason: "avoid second-ring SIP bridgeback",
+          },
+        },
+      })
+      await vi.waitFor(() => expect(openaiMessages.some((event) => event.type === "session.update")).toBe(true), { timeout: 10_000 })
+      expect(options.runSenseTurn).not.toHaveBeenCalled()
+    } finally {
+      for (const openaiSocket of openaiSockets) {
+        if (openaiSocket.readyState === WebSocket.OPEN) await closeSocket(openaiSocket)
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 15_000)
 
   it("hangs up outbound calls answered by voicemail before starting an agent voice turn", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-"))

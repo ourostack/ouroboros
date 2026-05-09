@@ -76,6 +76,18 @@ See [Voice Architecture](voice-architecture.md) for the fuller transport model.
   `voice.twilioConversationEngine=openai-sip`: Twilio returns `<Dial><Sip>`,
   OpenAI posts `realtime.call.incoming` to Ouro, and Ouro accepts/controls the
   call.
+- Keep Realtime turn detection separate from permission to speak. Native
+  Realtime voice should transcribe caller turns with `create_response=false`;
+  Ouro should request the next response after its own caller-floor hold and
+  cancel that pending response when new caller speech starts.
+- `voice.twilioOutboundConversationEngine` may differ from inbound
+  `voice.twilioConversationEngine`. When inbound is `openai-sip` and the machine
+  uses `media-stream`, outbound defaults to native Realtime Media Streams to
+  avoid Twilio `<Dial><Sip>` ringback after the human has already answered.
+- Voice friend context must be the same context the agent would get in text or
+  mail. Resolve an existing explicit friend id when present; otherwise resolve a
+  normalized phone number through the canonical `imessage-handle` external id.
+  Do not create a voice-only stranger record when the caller is already known.
 - Voice calls are not mouth-only. The voice tool surface includes call controls
   such as `voice_end_call` and `voice_play_audio`; active phone transports
   should implement those controls through the strongest media path available.
