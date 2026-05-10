@@ -374,7 +374,12 @@ function gradeHangup(events: VoiceRealtimeEvalTimelineEvent[], findings: VoiceRe
 function gradeOverlappingResponses(events: VoiceRealtimeEvalTimelineEvent[], findings: VoiceRealtimeEvalFinding[]): void {
   for (const response of allEvents(events, "response.requested")) {
     const activeAudio = allEvents(events, "assistant.audio.started").find((started) => {
-      const done = events.find((event) => event.type === "assistant.audio.done" && event.atMs >= started.atMs)
+      const done = events.find((event) => {
+        if (event.atMs < started.atMs) return false
+        if (event.type === "response.truncated" || event.type === "call.hangup.requested") return true
+        if (event.type !== "assistant.audio.done" && event.type !== "assistant.transcript.done") return false
+        return !started.correlationId || !event.correlationId || event.correlationId === started.correlationId
+      })
       return response.atMs > started.atMs && (!done || response.atMs < done.atMs)
     })
     if (activeAudio) {
@@ -485,7 +490,7 @@ export function buildVoiceRealtimeEvalHappyPath(): VoiceRealtimeEvalTimelineEven
   ]
 }
 
-function builtInExpectation(): VoiceRealtimeEvalExpectation {
+export function buildVoiceRealtimeEvalDefaultExpectation(): VoiceRealtimeEvalExpectation {
   return {
     maxFirstAssistantAudioMs: 1_200,
     maxUserTurnResponseMs: 900,
@@ -515,7 +520,7 @@ function buildKnownBadLatencyPath(): VoiceRealtimeEvalTimelineEvent[] {
 }
 
 export function runBuiltInVoiceRealtimeEvalSuite(): VoiceRealtimeEvalReport[] {
-  const expectation = builtInExpectation()
+  const expectation = buildVoiceRealtimeEvalDefaultExpectation()
   return [
     gradeVoiceRealtimeEvalTimeline("voice-happy-path", buildVoiceRealtimeEvalHappyPath(), expectation),
     gradeVoiceRealtimeEvalTimeline("voice-known-bad-latency", buildKnownBadLatencyPath(), expectation),

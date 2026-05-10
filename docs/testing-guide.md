@@ -179,6 +179,20 @@ npm run voice:eval
 
 The built-in suite grades deterministic Voice timeline events rather than placing a real call. It currently asserts first-audio latency, response latency after caller transcript, long-tool holding phrases, floor-control settings, barge-in clear/truncate behavior, friend context, transcript continuity, and hangup control. It also keeps a known-bad latency canary, so a successful command means the healthy scenario passed and the evaluator still catches a deliberately slow call. Transport adapters for SIP, Twilio Media Streams, browser meetings, and local/direct voice should emit the same event vocabulary while preserving source metadata so failures remain attributable to the right lane.
 
+To replay captured or fixture transport traces without a live caller:
+
+```bash
+npm run voice:eval -- --trace path/to/voice-trace.json
+```
+
+Trace artifacts must declare their expectation contract and expected outcome.
+Expected-fail traces are canaries; unexpected failures and unexpected passes make
+the command exit nonzero. Use trace replay after deterministic built-ins and
+before provider sandbox audio replay or live audition. This is the right gate for
+checking causal ordering, duplicate/late provider events, redaction behavior,
+tool holding phrases, barge-in clearing/truncation, and friend/session context
+without asking a human to answer the phone.
+
 For a managed phone smoke, attach the transport to this machine and expose the Voice entrypoint through Cloudflare Tunnel:
 
 ```bash

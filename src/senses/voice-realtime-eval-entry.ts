@@ -1,8 +1,5 @@
-import {
-  runBuiltInVoiceRealtimeEvalSuite,
-  summarizeVoiceRealtimeEvalSuite,
-} from "./voice/realtime-eval"
 import { emitNervesEvent } from "../nerves/runtime"
+import { runVoiceRealtimeEvalCommand } from "./voice-realtime-eval-command"
 
 emitNervesEvent({
   component: "senses",
@@ -10,21 +7,16 @@ emitNervesEvent({
   message: "starting Voice realtime eval command",
   meta: { scenarioId: "built-in-suite", events: 0 },
 })
-const reports = runBuiltInVoiceRealtimeEvalSuite()
-const summary = summarizeVoiceRealtimeEvalSuite(reports)
-const expectedKnownBadFailed = summary.failed === 1 && summary.failedScenarioIds[0] === "voice-known-bad-latency"
-const happyPathPassed = reports.some((report) => report.scenarioId === "voice-happy-path" && report.passed)
+const result = runVoiceRealtimeEvalCommand(process.argv.slice(2))
 
 emitNervesEvent({
   component: "senses",
   event: "senses.voice_realtime_eval_end",
   message: "finished Voice realtime eval command",
-  meta: { scenarioId: "built-in-suite", passed: expectedKnownBadFailed && happyPathPassed, findings: summary.failed },
+  meta: { scenarioId: "built-in-suite", passed: result.exitCode === 0, findings: result.payload.traceSummary?.mismatched ?? result.payload.summary?.failed ?? 0 },
 })
 
 // eslint-disable-next-line no-console -- terminal UX: eval command summary
-console.log(JSON.stringify({ summary, expectedKnownBadFailed, happyPathPassed }, null, 2))
+console.log(JSON.stringify(result.payload, null, 2))
 
-if (!expectedKnownBadFailed || !happyPathPassed) {
-  process.exit(1)
-}
+if (result.exitCode !== 0) process.exit(result.exitCode)

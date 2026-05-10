@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "traceId": "tool-holding",
+  "scenarioId": "tool-holding",
+  "expectedOutcome": "pass",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "openai.sip.call.connected", "source": { "transport": "openai-sip", "id": "sip-tool" } },
+    { "atMs": 60, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 100, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 130, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 620, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-tool" } },
+    { "atMs": 850, "event": "openai.realtime.output_audio.done", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-tool" } },
+    { "atMs": 870, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "I am checking the weather now.", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 1200, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Please check the weather and email it.", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 1400, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 1500, "event": "openai.realtime.response.function_call_arguments.done", "correlationId": "tool-weather", "toolName": "weather_lookup", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 1730, "event": "voice.tool_holding.started", "correlationId": "tool-weather", "text": "One sec, checking.", "source": { "transport": "openai-sip", "id": "sip-tool" } },
+    { "atMs": 2100, "event": "openai.realtime.tool.completed", "correlationId": "tool-weather", "toolName": "weather_lookup", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 2600, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-tool" } },
+    { "atMs": 2700, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-tool" } }
+  ]
+}

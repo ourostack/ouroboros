@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "traceId": "hangup-mid-turn",
+  "scenarioId": "hangup-mid-turn",
+  "expectedOutcome": "pass",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "openai.sip.call.connected", "source": { "transport": "openai-sip", "id": "sip-hangup" } },
+    { "atMs": 50, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 90, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 110, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 560, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-hangup" } },
+    { "atMs": 760, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "I am checking the weather, then I can go.", "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 1000, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Weather is enough, hang up after.", "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 1180, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 1240, "event": "openai.realtime.output_audio.delta", "correlationId": "user-1", "source": { "transport": "openai-sip", "id": "sip-hangup" } },
+    { "atMs": 1500, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-hangup" } },
+    { "atMs": 1550, "event": "openai.realtime.output_audio.done", "correlationId": "user-1", "source": { "transport": "openai-sip", "id": "sip-hangup" } },
+    { "atMs": 1600, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-hangup" } }
+  ]
+}

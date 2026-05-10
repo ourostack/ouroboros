@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "traceId": "clean-call",
+  "scenarioId": "clean-call",
+  "expectedOutcome": "pass",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "twilio.media.start", "source": { "transport": "twilio-media-stream", "id": "stream-clean" } },
+    { "atMs": 80, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 100, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 120, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 620, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-clean" } },
+    { "atMs": 1220, "event": "openai.realtime.output_audio.done", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-clean" } },
+    { "atMs": 1240, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "Hey Ari, I am checking the weather now.", "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 1600, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Can you check the weather?", "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 1780, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 1840, "event": "openai.realtime.output_audio.delta", "correlationId": "user-1", "source": { "transport": "openai-sip", "id": "sip-clean" } },
+    { "atMs": 2300, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-clean" } },
+    { "atMs": 2400, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-clean" } }
+  ]
+}

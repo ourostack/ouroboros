@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "traceId": "delayed-audio-transcript-mismatch",
+  "scenarioId": "delayed-audio-transcript-mismatch",
+  "expectedOutcome": "expected-fail",
+  "expectationProfile": "voice-phone-default",
+  "events": [
+    { "atMs": 0, "event": "twilio.media.start", "source": { "transport": "twilio-media-stream", "id": "stream-delayed" } },
+    { "atMs": 80, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 100, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 120, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 1900, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-delayed" } },
+    { "atMs": 1950, "event": "openai.realtime.output_audio_transcript.done", "correlationId": "greeting", "text": "I am checking the weather now.", "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 2200, "event": "openai.realtime.input_audio_transcription.completed", "correlationId": "user-1", "text": "Weather please.", "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 3400, "event": "openai.realtime.response.create.sent", "correlationId": "user-1", "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 4000, "event": "voice.hangup.requested", "source": { "transport": "openai-realtime-control", "id": "ws-delayed" } },
+    { "atMs": 4100, "event": "openai.sip.call.ended", "source": { "transport": "openai-sip", "id": "sip-delayed" } }
+  ]
+}

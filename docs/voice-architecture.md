@@ -191,6 +191,28 @@ The no-human eval ladder is:
 Voice timeline and an expected known-bad latency canary, so the command proves
 both that the happy path passes and that the evaluator still catches slow calls.
 
+Trace replay is the next automated gate:
+
+```bash
+npm run voice:eval -- --trace path/to/voice-trace.json
+```
+
+A trace artifact declares `schemaVersion: 1`, `traceId`, `scenarioId`,
+`expectedOutcome`, either `expectationProfile: "voice-phone-default"` or inline
+latency/assertion budgets, and an ordered `events` array. Events keep raw-ish
+provider names such as `openai.realtime.output_audio.delta` or
+`twilio.media.clear.sent`, plus source transport metadata, and replay maps them
+into the shared Voice eval vocabulary before grading. Unknown unmarked events
+fail fast; explicitly ignored provider-noise events stay visible in summaries
+without entering the grading timeline. Redacted traces are allowed, but replay
+must not use redacted transcript text to satisfy transcript-content assertions.
+
+Use trace replay for captured SIP, Twilio Media Stream, browser meeting, and
+local/direct adapter traces before provider sandbox audio replay or live human
+audition. It is meant to answer "would this call shape have felt synchronous,
+tool-aware, identity-aware, and interruption-safe?" without needing someone to
+pick up the phone.
+
 ## Identity And Providers
 
 The agent should have one coherent spoken identity for a transport family. Do
