@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.583",
+  "version": "0.1.0-alpha.584",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -26,6 +26,7 @@
     "ouro": "tsc && node dist/heart/daemon/ouro-entry.js",
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
+    "voice:eval": "npm run build && node dist/senses/voice-realtime-eval-entry.js",
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",

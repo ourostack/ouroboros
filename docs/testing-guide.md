@@ -171,6 +171,14 @@ Pending voice delivery is intentionally short-lived. Voice pending older than fi
 
 For implementation work, keep the sense/transport boundary in [Sense Development Contract](sense-development.md) in view. In particular, outward sense turns run in tool-required mode: transports that need replayable text must recover `settle.answer` only after `(delivered)` and `speak.message` only after `(spoken)`, not by reading `assistant.content` directly.
 
+Before asking a human to answer a phone, run the no-human voice eval:
+
+```bash
+npm run voice:eval
+```
+
+The built-in suite grades deterministic Voice timeline events rather than placing a real call. It currently asserts first-audio latency, response latency after caller transcript, long-tool holding phrases, floor-control settings, barge-in clear/truncate behavior, friend context, transcript continuity, and hangup control. It also keeps a known-bad latency canary, so a successful command means the healthy scenario passed and the evaluator still catches a deliberately slow call. Transport adapters for SIP, Twilio Media Streams, browser meetings, and local/direct voice should emit the same event vocabulary while preserving source metadata so failures remain attributable to the right lane.
+
 For a managed phone smoke, attach the transport to this machine and expose the Voice entrypoint through Cloudflare Tunnel:
 
 ```bash

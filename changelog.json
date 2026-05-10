@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.584",
+      "changes": [
+        "Voice now has a transport-aware Realtime eval kernel that grades deterministic call timelines for first-audio latency, user-turn response latency, tool holding phrases, barge-in clearing/truncation, friend context, transcript continuity, and hangup control before live phone testing.",
+        "`npm run voice:eval` runs built-in no-human voice scenarios, including a healthy path and an expected known-bad latency canary, and emits the normal nerves events expected of executable sense entrypoints so future Voice transport work can prove synchronous behavior without requiring a human to answer calls."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.583",
       "changes": [
         "Outbound SIP phone calls now start the Realtime greeting immediately after answer unless Twilio has already positively identified voicemail or fax, preventing humans from hearing post-pickup silence when async AMD returns unknown.",

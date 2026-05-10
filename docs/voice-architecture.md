@@ -166,6 +166,31 @@ Local microphone/speaker and future direct agent-to-agent voice should also sit
 under Voice. These lanes may connect to OpenAI Realtime by WebRTC or WebSocket
 without any phone provider at all.
 
+## No-Human Voice Evals
+
+Voice should not rely on Ari answering a phone as the main regression suite.
+Live calls are audition and confidence checks; they are not the first proof.
+
+The no-human eval ladder is:
+
+1. Deterministic timeline replay: fixed events, fixed thresholds, no provider
+   network calls. This catches obvious conversation-shape failures such as
+   silence after pickup, slow first audio, slow response after transcript,
+   missing tool holding phrases, missing friend context, lost transcripts,
+   failed hangup, and bad barge-in clearing/truncation.
+2. Transport adapter replay: Twilio Media Streams, OpenAI SIP control, browser
+   meeting, and local/direct lanes emit the shared Voice eval vocabulary while
+   preserving source metadata. The eval is transport-agnostic but not
+   transport-blind.
+3. Provider sandbox replay: fixed audio bytes and fixed chunking/VAD settings
+   exercise the real provider path without a human in the loop.
+4. Live human audition: only after the automated gates pass, and never as the
+   only evidence for a merge.
+
+`npm run voice:eval` runs the first built-in ladder slice. It includes a healthy
+Voice timeline and an expected known-bad latency canary, so the command proves
+both that the happy path passes and that the evaluator still catches slow calls.
+
 ## Identity And Providers
 
 The agent should have one coherent spoken identity for a transport family. Do
