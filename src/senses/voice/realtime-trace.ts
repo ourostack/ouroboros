@@ -5,12 +5,14 @@ import {
   gradeVoiceRealtimeEvalTimeline,
   type VoiceRealtimeEvalEventType,
   type VoiceRealtimeEvalExpectation,
+  type VoiceRealtimeEvalFloorDiagnostic,
   type VoiceRealtimeEvalReport,
   type VoiceRealtimeEvalSessionConfig,
   type VoiceRealtimeEvalSource,
   type VoiceRealtimeEvalTimelineEvent,
   type VoiceRealtimeEvalTransport,
 } from "./realtime-eval"
+import type { VoiceFloorDecisionAction, VoiceFloorOwner, VoiceFloorPhase } from "./floor-control"
 
 export type VoiceRealtimeEvalTraceExpectedOutcome = "expected-fail" | "fail" | "pass"
 export type VoiceRealtimeEvalTraceExpectationProfile = "voice-phone-default"
@@ -26,6 +28,15 @@ export interface VoiceRealtimeEvalTraceEvent {
   friendId?: string
   sessionKey?: string
   session?: VoiceRealtimeEvalSessionConfig
+  floorOwner?: VoiceFloorOwner
+  floorPhase?: VoiceFloorPhase
+  speechDecision?: VoiceFloorDecisionAction
+  decisionReason?: string
+  pendingSpeechId?: string
+  activeAssistantSpeechId?: string
+  pendingToolCallIds?: string[]
+  staleToolCallIds?: string[]
+  interruptionTurnId?: string
   ignored?: boolean
   ignoreReason?: string
 }
@@ -68,18 +79,23 @@ const normalizedEvents: ReadonlySet<string> = new Set([
   "call.connected",
   "call.ended",
   "call.hangup.requested",
+  "floor.state.changed",
   "response.requested",
   "response.truncated",
   "session.updated",
+  "speech.policy.decision",
   "tool.call.completed",
   "tool.call.started",
   "tool.holding.started",
+  "tool.result.ready",
+  "tool.result.spoken",
   "transport.playback_cleared",
   "user.transcript.done",
   "voice.context.injected",
 ])
 
 const rawEventMap: ReadonlyMap<string, VoiceRealtimeEvalEventType> = new Map([
+  ["voice.floor.state.changed", "floor.state.changed"],
   ["openai.realtime.call.hangup.sent", "call.hangup.requested"],
   ["openai.realtime.conversation.item.truncate.sent", "response.truncated"],
   ["openai.realtime.input_audio_buffer.speech_started", "barge_in.detected"],
@@ -97,11 +113,29 @@ const rawEventMap: ReadonlyMap<string, VoiceRealtimeEvalEventType> = new Map([
   ["twilio.media.clear.sent", "transport.playback_cleared"],
   ["twilio.media.start", "call.connected"],
   ["voice.hangup.requested", "call.hangup.requested"],
+  ["voice.speech.policy.decision", "speech.policy.decision"],
   ["voice.tool_holding.started", "tool.holding.started"],
+  ["voice.tool.result.ready", "tool.result.ready"],
+  ["voice.tool.result.spoken", "tool.result.spoken"],
 ])
 
 const expectedOutcomes: ReadonlySet<string> = new Set(["expected-fail", "fail", "pass"])
 const expectationProfiles: ReadonlySet<string> = new Set(["voice-phone-default"])
+const floorOwners: ReadonlySet<string> = new Set(["assistant", "caller", "none", "terminal"])
+const floorPhases: ReadonlySet<string> = new Set([
+  "caller-speaking",
+  "ended",
+  "hangup",
+  "idle",
+  "interrupted",
+  "listening",
+  "speaking",
+  "suppressing",
+  "thinking",
+  "tool-result-ready",
+  "tool-running",
+])
+const speechDecisions: ReadonlySet<string> = new Set(["allow", "cancel", "delay", "suppress"])
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -120,6 +154,32 @@ function optionalString(value: unknown, name: string, sourceLabel: string): stri
   if (value === undefined) return undefined
   if (typeof value !== "string") throw new Error(label(sourceLabel, `${name} must be a string`))
   return value
+}
+
+function optionalStringArray(value: unknown, name: string, sourceLabel: string): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(label(sourceLabel, `${name} must be an array of strings`))
+  }
+  return [...value]
+}
+
+function optionalFloorOwner(value: unknown, sourceLabel: string): VoiceFloorOwner | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !floorOwners.has(value)) throw new Error(label(sourceLabel, "floorOwner is unsupported"))
+  return value as VoiceFloorOwner
+}
+
+function optionalFloorPhase(value: unknown, sourceLabel: string): VoiceFloorPhase | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !floorPhases.has(value)) throw new Error(label(sourceLabel, "floorPhase is unsupported"))
+  return value as VoiceFloorPhase
+}
+
+function optionalSpeechDecision(value: unknown, sourceLabel: string): VoiceFloorDecisionAction | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !speechDecisions.has(value)) throw new Error(label(sourceLabel, "speechDecision is unsupported"))
+  return value as VoiceFloorDecisionAction
 }
 
 function parseSource(value: unknown, sourceLabel: string): VoiceRealtimeEvalSource | undefined {
@@ -201,6 +261,15 @@ function parseTraceEvent(value: unknown, index: number, sourceLabel: string): Vo
     friendId: optionalString(raw.friendId, "friendId", eventLabel),
     sessionKey: optionalString(raw.sessionKey, "sessionKey", eventLabel),
     session: parseTurnDetection(raw.session, eventLabel),
+    floorOwner: optionalFloorOwner(raw.floorOwner, eventLabel),
+    floorPhase: optionalFloorPhase(raw.floorPhase, eventLabel),
+    speechDecision: optionalSpeechDecision(raw.speechDecision, eventLabel),
+    decisionReason: optionalString(raw.decisionReason, "decisionReason", eventLabel),
+    pendingSpeechId: optionalString(raw.pendingSpeechId, "pendingSpeechId", eventLabel),
+    activeAssistantSpeechId: optionalString(raw.activeAssistantSpeechId, "activeAssistantSpeechId", eventLabel),
+    pendingToolCallIds: optionalStringArray(raw.pendingToolCallIds, "pendingToolCallIds", eventLabel),
+    staleToolCallIds: optionalStringArray(raw.staleToolCallIds, "staleToolCallIds", eventLabel),
+    interruptionTurnId: optionalString(raw.interruptionTurnId, "interruptionTurnId", eventLabel),
     ignored: ignored || undefined,
     ignoreReason: optionalString(raw.ignoreReason, "ignoreReason", eventLabel),
   }
@@ -281,6 +350,15 @@ function toTimelineEvent(event: VoiceRealtimeEvalTraceEvent, redacted: boolean):
     friendId: event.friendId,
     sessionKey: event.sessionKey,
     session: event.session,
+    floorOwner: event.floorOwner,
+    floorPhase: event.floorPhase,
+    speechDecision: event.speechDecision,
+    decisionReason: event.decisionReason,
+    pendingSpeechId: event.pendingSpeechId,
+    activeAssistantSpeechId: event.activeAssistantSpeechId,
+    pendingToolCallIds: event.pendingToolCallIds,
+    staleToolCallIds: event.staleToolCallIds,
+    interruptionTurnId: event.interruptionTurnId,
   }
 }
 
@@ -396,6 +474,57 @@ function sourceForSummary(source: VoiceRealtimeEvalSource | undefined): string {
   return source.id ? ` ${source.transport}/${source.id}` : ` ${source.transport}`
 }
 
+function listForSummary(values: string[] | undefined): string | undefined {
+  return values && values.length > 0 ? values.join(",") : undefined
+}
+
+function floorForSummary(floor: VoiceRealtimeEvalFloorDiagnostic): string {
+  const parts: string[] = []
+  if (floor.phase) parts.push(`phase=${floor.phase}`)
+  if (floor.floorOwner) parts.push(`floor=${floor.floorOwner}`)
+  if (floor.pendingSpeechId) parts.push(`pendingSpeech=${floor.pendingSpeechId}`)
+  const pendingTools = listForSummary(floor.pendingToolCallIds)
+  if (pendingTools) parts.push(`pendingTools=${pendingTools}`)
+  const staleTools = listForSummary(floor.staleToolCallIds)
+  if (staleTools) parts.push(`staleTools=${staleTools}`)
+  if (floor.interruptionTurnId) parts.push(`interruption=${floor.interruptionTurnId}`)
+  if (floor.decisionReason) parts.push(`reason=${floor.decisionReason}`)
+  if (floor.activeAssistantSpeechId) parts.push(`activeSpeech=${floor.activeAssistantSpeechId}`)
+  if (floor.speechDecision) parts.push(`decision=${floor.speechDecision}`)
+  if (floor.responseId) parts.push(`response=${floor.responseId}`)
+  if (floor.toolCallId) parts.push(`tool=${floor.toolCallId}`)
+  return parts.join(" ") || "none"
+}
+
+function floorEventForSummary(event: VoiceRealtimeEvalTimelineEvent): string {
+  if (
+    event.floorPhase === undefined
+    && event.floorOwner === undefined
+    && event.speechDecision === undefined
+    && event.decisionReason === undefined
+    && event.pendingSpeechId === undefined
+    && event.activeAssistantSpeechId === undefined
+    && event.pendingToolCallIds === undefined
+    && event.staleToolCallIds === undefined
+    && event.interruptionTurnId === undefined
+  ) {
+    return ""
+  }
+  return ` floor(${floorForSummary({
+    phase: event.floorPhase,
+    floorOwner: event.floorOwner,
+    speechDecision: event.speechDecision,
+    decisionReason: event.decisionReason,
+    responseId: event.type === "response.requested" || event.type === "speech.policy.decision" ? event.correlationId : undefined,
+    toolCallId: event.type === "tool.result.ready" || event.type === "tool.result.spoken" ? event.correlationId : undefined,
+    pendingSpeechId: event.pendingSpeechId,
+    activeAssistantSpeechId: event.activeAssistantSpeechId,
+    pendingToolCallIds: event.pendingToolCallIds,
+    staleToolCallIds: event.staleToolCallIds,
+    interruptionTurnId: event.interruptionTurnId,
+  })})`
+}
+
 export function formatVoiceRealtimeEvalTraceReport(result: VoiceRealtimeEvalTraceReplayResult): string {
   const lines = [
     `trace ${result.traceId} scenario ${result.scenarioId}`,
@@ -408,11 +537,12 @@ export function formatVoiceRealtimeEvalTraceReport(result: VoiceRealtimeEvalTrac
     for (const finding of result.report.findings) {
       const message = result.artifact.redacted ? "[redacted]" : finding.message
       lines.push(`- ${finding.code}${finding.atMs === undefined ? "" : ` at ${finding.atMs}ms`}: ${message}`)
+      if (finding.floor) lines.push(`  floor: ${floorForSummary(finding.floor)}`)
     }
   }
   lines.push("events:")
   for (const event of result.timeline) {
-    lines.push(`- ${event.atMs}ms ${event.type}${sourceForSummary(event.source)}${textForSummary(result, event)}`)
+    lines.push(`- ${event.atMs}ms ${event.type}${sourceForSummary(event.source)}${textForSummary(result, event)}${floorEventForSummary(event)}`)
   }
   lines.push(`ignored provider events: ${result.ignoredEvents.length}`)
   for (const event of result.ignoredEvents) {

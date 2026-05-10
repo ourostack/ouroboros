@@ -1,4 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
+import type { VoiceFloorDecisionAction, VoiceFloorOwner, VoiceFloorPhase } from "./floor-control"
 
 export type VoiceRealtimeEvalTransport =
   | "browser-meeting"
@@ -15,12 +16,16 @@ export type VoiceRealtimeEvalEventType =
   | "call.connected"
   | "call.ended"
   | "call.hangup.requested"
+  | "floor.state.changed"
   | "response.requested"
   | "response.truncated"
   | "session.updated"
+  | "speech.policy.decision"
   | "tool.call.completed"
   | "tool.call.started"
   | "tool.holding.started"
+  | "tool.result.ready"
+  | "tool.result.spoken"
   | "transport.playback_cleared"
   | "user.transcript.done"
   | "voice.context.injected"
@@ -48,6 +53,29 @@ export interface VoiceRealtimeEvalTimelineEvent {
   friendId?: string
   sessionKey?: string
   session?: VoiceRealtimeEvalSessionConfig
+  floorOwner?: VoiceFloorOwner
+  floorPhase?: VoiceFloorPhase
+  speechDecision?: VoiceFloorDecisionAction
+  decisionReason?: string
+  pendingSpeechId?: string
+  activeAssistantSpeechId?: string
+  pendingToolCallIds?: string[]
+  staleToolCallIds?: string[]
+  interruptionTurnId?: string
+}
+
+export interface VoiceRealtimeEvalFloorDiagnostic {
+  phase?: VoiceFloorPhase
+  floorOwner?: VoiceFloorOwner
+  speechDecision?: VoiceFloorDecisionAction
+  decisionReason?: string
+  responseId?: string
+  toolCallId?: string
+  pendingSpeechId?: string
+  activeAssistantSpeechId?: string
+  pendingToolCallIds?: string[]
+  staleToolCallIds?: string[]
+  interruptionTurnId?: string
 }
 
 export interface VoiceRealtimeEvalTranscriptRequirement {
@@ -81,6 +109,7 @@ export interface VoiceRealtimeEvalFinding {
   message: string
   atMs?: number
   source?: VoiceRealtimeEvalSource
+  floor?: VoiceRealtimeEvalFloorDiagnostic
 }
 
 export interface VoiceRealtimeEvalMetrics {
@@ -141,6 +170,29 @@ function lowerText(value: string | undefined): string {
 
 function pushFinding(findings: VoiceRealtimeEvalFinding[], finding: VoiceRealtimeEvalFinding): void {
   findings.push(finding)
+}
+
+function floorDiagnostic(
+  event: VoiceRealtimeEvalTimelineEvent,
+  floor: VoiceRealtimeEvalTimelineEvent | undefined,
+): VoiceRealtimeEvalFloorDiagnostic {
+  return {
+    phase: event.floorPhase ?? floor?.floorPhase,
+    floorOwner: event.floorOwner ?? floor?.floorOwner,
+    speechDecision: event.speechDecision,
+    decisionReason: event.decisionReason ?? floor?.decisionReason,
+    responseId: event.type === "speech.policy.decision" || event.type === "response.requested"
+      ? event.correlationId
+      : undefined,
+    toolCallId: event.type === "tool.result.ready" || event.type === "tool.result.spoken"
+      ? event.correlationId
+      : undefined,
+    pendingSpeechId: event.pendingSpeechId ?? floor?.pendingSpeechId,
+    activeAssistantSpeechId: event.activeAssistantSpeechId ?? floor?.activeAssistantSpeechId,
+    pendingToolCallIds: event.pendingToolCallIds ?? floor?.pendingToolCallIds,
+    staleToolCallIds: event.staleToolCallIds ?? floor?.staleToolCallIds,
+    interruptionTurnId: event.interruptionTurnId ?? floor?.interruptionTurnId,
+  }
 }
 
 function gradeFirstAudio(
@@ -395,6 +447,88 @@ function gradeOverlappingResponses(events: VoiceRealtimeEvalTimelineEvent[], fin
   }
 }
 
+function floorIsCallerOwned(floor: VoiceRealtimeEvalTimelineEvent | undefined): boolean {
+  return floor?.floorOwner === "caller" || floor?.floorPhase === "caller-speaking" || floor?.floorPhase === "interrupted"
+}
+
+function floorIsTerminal(floor: VoiceRealtimeEvalTimelineEvent | undefined): boolean {
+  return floor?.floorOwner === "terminal" || floor?.floorPhase === "hangup" || floor?.floorPhase === "ended"
+}
+
+function gradeDuplexFloorPolicy(events: VoiceRealtimeEvalTimelineEvent[], findings: VoiceRealtimeEvalFinding[]): void {
+  let floor: VoiceRealtimeEvalTimelineEvent | undefined
+  let hangupAtMs: number | undefined
+  for (const event of events) {
+    if (event.type === "floor.state.changed") {
+      floor = event
+      continue
+    }
+    if (event.type === "call.hangup.requested") hangupAtMs = event.atMs
+    if (event.type === "speech.policy.decision" && event.speechDecision === "allow") {
+      if (floorIsCallerOwned(floor)) {
+        pushFinding(findings, {
+          code: "speech_allowed_while_caller_has_floor",
+          severity: "fail",
+          message: "Voice speech policy allowed assistant speech while the caller owned the floor.",
+          source: event.source,
+          atMs: event.atMs,
+          floor: floorDiagnostic(event, floor),
+        })
+      } else if (floorIsTerminal(floor) || hangupAtMs !== undefined) {
+        pushFinding(findings, {
+          code: "speech_allowed_after_hangup",
+          severity: "fail",
+          message: "Voice speech policy allowed assistant speech after hangup began.",
+          source: event.source,
+          atMs: event.atMs,
+          floor: floorDiagnostic(event, floor),
+        })
+      }
+    }
+    if (event.type === "tool.result.spoken") {
+      const diagnostic = floorDiagnostic(event, floor)
+      if (event.correlationId && floor?.staleToolCallIds?.includes(event.correlationId)) {
+        pushFinding(findings, {
+          code: "stale_tool_result_spoken",
+          severity: "fail",
+          message: "Voice spoke a tool result that the floor model had already marked stale.",
+          source: event.source,
+          atMs: event.atMs,
+          floor: diagnostic,
+        })
+      } else if (floorIsCallerOwned(floor)) {
+        pushFinding(findings, {
+          code: "tool_result_spoken_while_caller_has_floor",
+          severity: "fail",
+          message: "Voice spoke a tool result while the caller owned the floor.",
+          source: event.source,
+          atMs: event.atMs,
+          floor: diagnostic,
+        })
+      } else if (floorIsTerminal(floor) || hangupAtMs !== undefined) {
+        pushFinding(findings, {
+          code: "tool_result_spoken_after_hangup",
+          severity: "fail",
+          message: "Voice spoke a tool result after hangup began.",
+          source: event.source,
+          atMs: event.atMs,
+          floor: diagnostic,
+        })
+      }
+    }
+    if (event.type === "response.requested" && hangupAtMs !== undefined && event.atMs > hangupAtMs) {
+      pushFinding(findings, {
+        code: "response_after_hangup",
+        severity: "fail",
+        message: "Voice requested a new response after hangup had already been requested.",
+        source: event.source,
+        atMs: event.atMs,
+        floor: floorDiagnostic(event, floor),
+      })
+    }
+  }
+}
+
 function collectTransportSources(events: VoiceRealtimeEvalTimelineEvent[]): VoiceRealtimeEvalTransport[] {
   return [...new Set(events.flatMap((event) => event.source ? [event.source.transport] : []))].sort()
 }
@@ -425,6 +559,7 @@ export function gradeVoiceRealtimeEvalTimeline(
   if (expectation.requiredTranscripts) gradeTranscripts(events, expectation.requiredTranscripts, findings)
   if (expectation.requireHangup) gradeHangup(events, findings)
   gradeOverlappingResponses(events, findings)
+  gradeDuplexFloorPolicy(events, findings)
 
   const report: VoiceRealtimeEvalReport = {
     scenarioId: normalizedScenarioId,

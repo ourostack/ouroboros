@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "traceId": "floor-hangup-tool-pending",
+  "scenarioId": "floor-hangup-tool-pending",
+  "expectedOutcome": "pass",
+  "expectation": {
+    "maxFirstAssistantAudioMs": 500,
+    "maxUserTurnResponseMs": 300,
+    "maxToolPresenceMs": 300,
+    "maxBargeInClearMs": 100,
+    "maxBargeInTruncateMs": 120,
+    "requireHangup": true
+  },
+  "events": [
+    { "atMs": 0, "event": "call.connected", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 80, "event": "assistant.audio.started", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 120, "event": "tool.call.started", "correlationId": "weather-1", "toolName": "weather_lookup", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 240, "event": "tool.holding.started", "correlationId": "weather-1", "text": "Checking now.", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 300, "event": "call.hangup.requested", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 310, "event": "floor.state.changed", "floorPhase": "hangup", "floorOwner": "terminal", "pendingToolCallIds": ["weather-1"], "decisionReason": "hangup_terminal", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 360, "event": "tool.result.ready", "correlationId": "weather-1", "toolName": "weather_lookup", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 370, "event": "speech.policy.decision", "speechDecision": "suppress", "decisionReason": "hangup_terminal", "correlationId": "weather-1", "source": { "transport": "voice-eval", "id": "floor-hangup" } },
+    { "atMs": 450, "event": "call.ended", "source": { "transport": "voice-eval", "id": "floor-hangup" } }
+  ]
+}

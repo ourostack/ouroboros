@@ -123,6 +123,10 @@ Current implementation:
   caller turns, but Ouro disables provider auto-response and asks for the next
   response only after a short caller-floor hold. New caller speech cancels that
   pending answer, which prevents the agent from jumping on every small pause.
+  The floor model is now also a replayable contract: traces can record
+  `floor.state.changed`, `speech.policy.decision`, `tool.result.ready`, and
+  `tool.result.spoken` events so turn-taking, stale tool output, and post-hangup
+  speech are evaluated before runtime wiring changes reach a live call.
 - OpenAI posts `realtime.call.incoming` to
   `/voice/agents/<agent>/sip/openai`; Ouro verifies the OpenAI webhook
   signature, accepts the call, opens the Realtime control WebSocket, sends the
@@ -177,7 +181,9 @@ The no-human eval ladder is:
    network calls. This catches obvious conversation-shape failures such as
    silence after pickup, slow first audio, slow response after transcript,
    missing tool holding phrases, missing friend context, lost transcripts,
-   failed hangup, and bad barge-in clearing/truncation.
+   failed hangup, bad barge-in clearing/truncation, speech allowed while the
+   caller owns the floor, stale tool results being spoken, and response requests
+   after hangup begins.
 2. Transport adapter replay: Twilio Media Streams, OpenAI SIP control, browser
    meeting, and local/direct lanes emit the shared Voice eval vocabulary while
    preserving source metadata. The eval is transport-agnostic but not
@@ -206,6 +212,10 @@ into the shared Voice eval vocabulary before grading. Unknown unmarked events
 fail fast; explicitly ignored provider-noise events stay visible in summaries
 without entering the grading timeline. Redacted traces are allowed, but replay
 must not use redacted transcript text to satisfy transcript-content assertions.
+Floor diagnostics in trace reports include the current phase, floor owner,
+pending speech id, pending/stale tool ids, interruption turn, and decision
+reason, which is the debugging surface future runtime adapters should emit
+before anyone asks a human to answer the phone.
 
 Use trace replay for captured SIP, Twilio Media Stream, browser meeting, and
 local/direct adapter traces before provider sandbox audio replay or live human

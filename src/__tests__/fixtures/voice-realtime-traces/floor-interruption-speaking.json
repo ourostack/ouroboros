@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "traceId": "floor-interruption-speaking",
+  "scenarioId": "floor-interruption-speaking",
+  "expectedOutcome": "pass",
+  "expectation": {
+    "maxFirstAssistantAudioMs": 500,
+    "maxUserTurnResponseMs": 300,
+    "maxToolPresenceMs": 300,
+    "maxBargeInClearMs": 100,
+    "maxBargeInTruncateMs": 120
+  },
+  "events": [
+    { "atMs": 0, "event": "call.connected", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 80, "event": "response.requested", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 100, "event": "assistant.audio.started", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 180, "event": "barge_in.detected", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 190, "event": "floor.state.changed", "floorPhase": "interrupted", "floorOwner": "caller", "activeAssistantSpeechId": "greeting", "interruptionTurnId": "turn-1", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 200, "event": "speech.policy.decision", "speechDecision": "cancel", "decisionReason": "caller_barge_in", "correlationId": "greeting", "role": "assistant", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 210, "event": "transport.playback_cleared", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 230, "event": "response.truncated", "correlationId": "greeting", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 360, "event": "user.transcript.done", "correlationId": "turn-1", "text": "Wait, one more thing.", "source": { "transport": "voice-eval", "id": "floor-speaking" } },
+    { "atMs": 500, "event": "response.requested", "correlationId": "turn-1", "source": { "transport": "voice-eval", "id": "floor-speaking" } }
+  ]
+}

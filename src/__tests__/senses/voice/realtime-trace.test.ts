@@ -23,6 +23,12 @@ const fixtureNames = [
   "interruption-barge-in.json",
   "tool-holding.json",
   "hangup-mid-turn.json",
+  "floor-interruption-speaking.json",
+  "floor-interruption-tool-running.json",
+  "floor-tool-result-while-caller-talking.json",
+  "floor-progress-ack-then-silence.json",
+  "floor-stale-tool-result-suppressed.json",
+  "floor-hangup-tool-pending.json",
   "delayed-audio-transcript-mismatch.json",
   "duplicate-late-provider-event.json",
 ]
@@ -66,6 +72,12 @@ describe("voice realtime trace replay", () => {
       "interruption-barge-in",
       "tool-holding",
       "hangup-mid-turn",
+      "floor-interruption-speaking",
+      "floor-interruption-tool-running",
+      "floor-tool-result-while-caller-talking",
+      "floor-progress-ack-then-silence",
+      "floor-stale-tool-result-suppressed",
+      "floor-hangup-tool-pending",
       "delayed-audio-transcript-mismatch",
       "duplicate-late-provider-event",
     ])
@@ -331,6 +343,38 @@ describe("voice realtime trace replay", () => {
       events: [{ atMs: 0, event: "session.updated", session: {} }],
     }, "session-without-turn-detection.json")
     expect(sessionWithoutTurnDetection.events[0]?.session).toEqual({})
+    expect(() => parseVoiceRealtimeEvalTraceArtifact({
+      schemaVersion: 1,
+      traceId: "bad",
+      scenarioId: "bad",
+      expectedOutcome: "pass",
+      expectation: minimalExpectation,
+      events: [{ atMs: 0, event: "floor.state.changed", floorOwner: "host", floorPhase: "listening" }],
+    }, "bad-floor-owner.json")).toThrow("bad-floor-owner.json event[0]: floorOwner is unsupported")
+    expect(() => parseVoiceRealtimeEvalTraceArtifact({
+      schemaVersion: 1,
+      traceId: "bad",
+      scenarioId: "bad",
+      expectedOutcome: "pass",
+      expectation: minimalExpectation,
+      events: [{ atMs: 0, event: "floor.state.changed", floorOwner: "caller", floorPhase: "wide-awake" }],
+    }, "bad-floor-phase.json")).toThrow("bad-floor-phase.json event[0]: floorPhase is unsupported")
+    expect(() => parseVoiceRealtimeEvalTraceArtifact({
+      schemaVersion: 1,
+      traceId: "bad",
+      scenarioId: "bad",
+      expectedOutcome: "pass",
+      expectation: minimalExpectation,
+      events: [{ atMs: 0, event: "speech.policy.decision", speechDecision: "maybe" }],
+    }, "bad-speech-decision.json")).toThrow("bad-speech-decision.json event[0]: speechDecision is unsupported")
+    expect(() => parseVoiceRealtimeEvalTraceArtifact({
+      schemaVersion: 1,
+      traceId: "bad",
+      scenarioId: "bad",
+      expectedOutcome: "pass",
+      expectation: minimalExpectation,
+      events: [{ atMs: 0, event: "floor.state.changed", pendingToolCallIds: ["tool-1", 2] }],
+    }, "bad-pending-tool-ids.json")).toThrow("bad-pending-tool-ids.json event[0]: pendingToolCallIds must be an array of strings")
   })
 
   it("labels file loading, JSON, and defensive contract failures", () => {
@@ -462,6 +506,73 @@ describe("voice realtime trace replay", () => {
     expect(sourceFreeFormatted).toContain("transports: none")
     expect(sourceFreeFormatted).toContain("\"hello\"")
     expect(expectedFailResult.outcomeMatched).toBe(true)
+  })
+
+  it("parses floor-state trace events and formats floor diagnostics in reports", () => {
+    const trace = baseTrace({
+      expectedOutcome: "expected-fail",
+      events: [
+        { atMs: 0, event: "call.connected", source: { transport: "voice-eval", id: "floor" } },
+        { atMs: 40, event: "assistant.audio.started", correlationId: "greeting", source: { transport: "voice-eval", id: "floor" } },
+        {
+          atMs: 80,
+          event: "voice.floor.state.changed",
+          floorPhase: "caller-speaking",
+          floorOwner: "caller",
+          activeAssistantSpeechId: "greeting",
+          pendingSpeechId: "followup",
+          pendingToolCallIds: ["search-1"],
+          staleToolCallIds: [],
+          interruptionTurnId: "turn-2",
+          decisionReason: "caller_has_floor",
+          source: { transport: "voice-eval", id: "floor" },
+        },
+        {
+          atMs: 90,
+          event: "voice.speech.policy.decision",
+          speechDecision: "allow",
+          decisionReason: "assistant_speech_allowed",
+          correlationId: "followup",
+          role: "assistant",
+          source: { transport: "voice-eval", id: "floor" },
+        },
+        {
+          atMs: 95,
+          event: "voice.tool.result.ready",
+          correlationId: "search-1",
+          decisionReason: "tool_result_ready",
+          source: { transport: "voice-eval", id: "floor" },
+        },
+      ],
+    })
+
+    const timeline = traceArtifactToVoiceRealtimeEvalTimeline(trace)
+    const result = gradeVoiceRealtimeEvalTrace(trace)
+    const formatted = formatVoiceRealtimeEvalTraceReport(result)
+
+    expect(timeline[2]).toMatchObject({
+      type: "floor.state.changed",
+      floorPhase: "caller-speaking",
+      floorOwner: "caller",
+      pendingSpeechId: "followup",
+      pendingToolCallIds: ["search-1"],
+      interruptionTurnId: "turn-2",
+    })
+    expect(result.outcomeMatched).toBe(true)
+    expect(formatted).toContain("floor: phase=caller-speaking floor=caller pendingSpeech=followup pendingTools=search-1 interruption=turn-2 reason=assistant_speech_allowed")
+    expect(formatted).toContain("95ms tool.result.ready voice-eval/floor floor(reason=tool_result_ready tool=search-1)")
+    expect(formatVoiceRealtimeEvalTraceReport({
+      ...result,
+      report: {
+        ...result.report,
+        findings: [{
+          code: "empty_floor",
+          severity: "warn",
+          message: "empty floor diagnostic",
+          floor: {},
+        }],
+      },
+    })).toContain("floor: none")
   })
 
   it("redacts transcript-bearing content in reports and cannot satisfy required transcript text from redacted traces", () => {

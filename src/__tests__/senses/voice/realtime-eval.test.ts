@@ -211,6 +211,151 @@ describe("voice realtime eval kernel", () => {
     ]))
   })
 
+  it("flags impossible duplex floor decisions with readable diagnostics", () => {
+    const report = gradeVoiceRealtimeEvalTimeline("floor-violations", [
+      { type: "call.connected", atMs: 0, source: { transport: "voice-eval", id: "floor" } },
+      { type: "assistant.audio.started", atMs: 40, correlationId: "greeting", source: { transport: "voice-eval", id: "floor" } },
+      {
+        type: "floor.state.changed",
+        atMs: 80,
+        floorPhase: "caller-speaking",
+        floorOwner: "caller",
+        activeAssistantSpeechId: "greeting",
+        pendingSpeechId: "followup",
+        pendingToolCallIds: ["weather-1"],
+        interruptionTurnId: "turn-2",
+        decisionReason: "caller_has_floor",
+        source: { transport: "voice-eval", id: "floor" },
+      },
+      {
+        type: "speech.policy.decision",
+        atMs: 90,
+        role: "assistant",
+        correlationId: "followup",
+        speechDecision: "allow",
+        decisionReason: "assistant_speech_allowed",
+        source: { transport: "voice-eval", id: "floor" },
+      },
+      {
+        type: "tool.result.spoken",
+        atMs: 100,
+        correlationId: "weather-1",
+        source: { transport: "voice-eval", id: "floor" },
+      },
+      { type: "call.hangup.requested", atMs: 120, source: { transport: "voice-eval", id: "floor" } },
+      { type: "response.requested", atMs: 150, correlationId: "late-followup", source: { transport: "voice-eval", id: "floor" } },
+    ], minimalExpectation)
+
+    expect(report.passed).toBe(false)
+    expect(report.findings.map((finding) => finding.code)).toEqual(expect.arrayContaining([
+      "speech_allowed_while_caller_has_floor",
+      "tool_result_spoken_while_caller_has_floor",
+      "response_after_hangup",
+    ]))
+    expect(report.findings.find((finding) => finding.code === "speech_allowed_while_caller_has_floor")).toMatchObject({
+      severity: "fail",
+      atMs: 90,
+      floor: {
+        phase: "caller-speaking",
+        floorOwner: "caller",
+        activeAssistantSpeechId: "greeting",
+        pendingSpeechId: "followup",
+        pendingToolCallIds: ["weather-1"],
+        interruptionTurnId: "turn-2",
+        decisionReason: "assistant_speech_allowed",
+      },
+    })
+  })
+
+  it("rejects stale tool result speech while preserving the floor reason", () => {
+    const report = gradeVoiceRealtimeEvalTimeline("stale-tool-floor", [
+      { type: "call.connected", atMs: 0 },
+      { type: "assistant.audio.started", atMs: 40, correlationId: "greeting" },
+      {
+        type: "floor.state.changed",
+        atMs: 100,
+        floorPhase: "suppressing",
+        floorOwner: "none",
+        staleToolCallIds: ["research-1"],
+        pendingToolCallIds: [],
+        decisionReason: "newer_user_turn_started",
+      },
+      { type: "tool.result.ready", atMs: 110, correlationId: "research-1", toolName: "search" },
+      { type: "tool.result.spoken", atMs: 120, correlationId: "research-1", toolName: "search" },
+    ], minimalExpectation)
+
+    expect(report.passed).toBe(false)
+    expect(report.findings.find((finding) => finding.code === "stale_tool_result_spoken")).toMatchObject({
+      severity: "fail",
+      atMs: 120,
+      floor: {
+        phase: "suppressing",
+        floorOwner: "none",
+        staleToolCallIds: ["research-1"],
+        decisionReason: "newer_user_turn_started",
+      },
+    })
+  })
+
+  it("flags speech and tool-result output after terminal floor state", () => {
+    const report = gradeVoiceRealtimeEvalTimeline("terminal-floor", [
+      { type: "call.connected", atMs: 0 },
+      { type: "assistant.audio.started", atMs: 40, correlationId: "greeting" },
+      { type: "call.hangup.requested", atMs: 80 },
+      {
+        type: "floor.state.changed",
+        atMs: 90,
+        floorPhase: "listening",
+        floorOwner: "none",
+        pendingToolCallIds: ["weather-1"],
+        decisionReason: "hangup_terminal",
+      },
+      {
+        type: "speech.policy.decision",
+        atMs: 100,
+        speechDecision: "allow",
+        decisionReason: "assistant_speech_allowed",
+        correlationId: "late-speech",
+      },
+      { type: "tool.result.spoken", atMs: 110, correlationId: "weather-1", toolName: "weather_lookup" },
+    ], minimalExpectation)
+
+    expect(report.passed).toBe(false)
+    expect(report.findings.map((finding) => finding.code)).toEqual(expect.arrayContaining([
+      "speech_allowed_after_hangup",
+      "tool_result_spoken_after_hangup",
+    ]))
+
+    const terminalFloorOnly = gradeVoiceRealtimeEvalTimeline("terminal-floor-only", [
+      { type: "call.connected", atMs: 0 },
+      { type: "assistant.audio.started", atMs: 40, correlationId: "greeting" },
+      {
+        type: "floor.state.changed",
+        atMs: 80,
+        floorPhase: "hangup",
+        floorOwner: "terminal",
+        decisionReason: "hangup_terminal",
+      },
+      { type: "tool.result.spoken", atMs: 90, correlationId: "weather-1", toolName: "weather_lookup" },
+    ], minimalExpectation)
+    expect(terminalFloorOnly.findings.map((finding) => finding.code)).toContain("tool_result_spoken_after_hangup")
+
+    const safeToolSpeech = gradeVoiceRealtimeEvalTimeline("safe-tool-floor", [
+      { type: "call.connected", atMs: 0 },
+      { type: "assistant.audio.started", atMs: 40, correlationId: "greeting" },
+      {
+        type: "floor.state.changed",
+        atMs: 80,
+        floorPhase: "tool-result-ready",
+        floorOwner: "none",
+        pendingToolCallIds: ["weather-1"],
+        decisionReason: "tool_result_ready",
+      },
+      { type: "tool.result.spoken", atMs: 90, correlationId: "weather-1", toolName: "weather_lookup" },
+    ], minimalExpectation)
+    expect(safeToolSpeech.passed).toBe(true)
+  })
+
   it("rejects empty inputs and invalid latency budgets", () => {
     expect(() => gradeVoiceRealtimeEvalTimeline("", buildVoiceRealtimeEvalHappyPath(), baselineExpectation)).toThrow(
       "voice eval scenario id is empty",

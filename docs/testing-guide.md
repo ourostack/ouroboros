@@ -193,6 +193,15 @@ checking causal ordering, duplicate/late provider events, redaction behavior,
 tool holding phrases, barge-in clearing/truncation, and friend/session context
 without asking a human to answer the phone.
 
+Floor-control traces should also emit `floor.state.changed` and
+`speech.policy.decision` events. Use `tool.result.ready` and
+`tool.result.spoken` when testing tool-duplex behavior. Replay must fail traces
+where assistant speech is allowed while the caller owns the floor, a stale tool
+result is spoken after a newer caller turn, or a new response is requested after
+hangup. Reports include floor owner, phase, pending speech, pending/stale tool
+ids, interruption turn, and decision reason so future runtime-wiring work has a
+specific failure surface instead of another vague "voice felt bad" call note.
+
 For a managed phone smoke, attach the transport to this machine and expose the Voice entrypoint through Cloudflare Tunnel:
 
 ```bash
