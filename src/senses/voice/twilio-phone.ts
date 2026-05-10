@@ -2512,23 +2512,8 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     this.toolResponses.delete(responseId)
     this.clearRealtimeToolPresenceTimer(state)
     if (state.suppressFollowup) return true
-    this.releaseCallerFloorForToolFollowup()
     this.requestRealtimeResponse()
     return true
-  }
-
-  private releaseCallerFloorForToolFollowup(): void {
-    // OpenAI emitting a function-call result inside a coordinated response
-    // means the caller's most recent turn has already been parsed by the
-    // realtime server. If we still hold a synthetic caller turn (because the
-    // matching transcript event has not been delivered yet — common in unit
-    // fixtures and during fast-turn races), release it before asking the gate
-    // to flush a follow-up response.create so the gate is not stuck thinking
-    // the caller still owns the floor.
-    if (!this.activeCallerTurnId) return
-    const turnId = this.activeCallerTurnId
-    this.activeCallerTurnId = undefined
-    this.floor.apply({ type: "caller.transcript.final", atMs: Date.now(), turnId })
   }
 
   private scheduleRealtimeToolPresence(responseId: string, state: RealtimeToolResponseState): void {
@@ -2564,6 +2549,24 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     const coordinated = !!toolState
     if (name === "voice_end_call" && toolState) toolState.suppressFollowup = true
     if (toolState && !toolState.suppressFollowup) this.scheduleRealtimeToolPresence(responseId, toolState)
+    // A coordinated tool call (one with a responseId from OpenAI's active
+    // response cycle) is proof that the realtime server has already parsed the
+    // caller's most recent turn into a tool intent. If we still hold a
+    // synthetic caller floor for that turn — because the matching
+    // input_audio_transcription.completed event has not arrived yet, which is
+    // common in unit fixtures and during fast-turn races — dismiss it so the
+    // floor gate is not stuck thinking the caller still owns the floor when
+    // the assistant is mid-response.
+    if (coordinated && this.activeCallerTurnId) {
+      const turnId = this.activeCallerTurnId
+      this.activeCallerTurnId = undefined
+      this.floor.apply({
+        type: "caller.turn.dismissed",
+        atMs: Date.now(),
+        turnId,
+        reason: "coordinated_tool_call",
+      })
+    }
     this.floor.apply({
       type: "tool.call.started",
       atMs: Date.now(),
@@ -3679,6 +3682,24 @@ class OpenAISipPhoneSession {
     const coordinated = !!toolState
     if (name === "voice_end_call" && toolState) toolState.suppressFollowup = true
     if (toolState && !toolState.suppressFollowup) this.scheduleRealtimeToolPresence(responseId, toolState)
+    // A coordinated tool call (one with a responseId from OpenAI's active
+    // response cycle) is proof that the realtime server has already parsed the
+    // caller's most recent turn into a tool intent. If we still hold a
+    // synthetic caller floor for that turn — because the matching
+    // input_audio_transcription.completed event has not arrived yet, which is
+    // common in unit fixtures and during fast-turn races — dismiss it so the
+    // floor gate is not stuck thinking the caller still owns the floor when
+    // the assistant is mid-response.
+    if (coordinated && this.activeCallerTurnId) {
+      const turnId = this.activeCallerTurnId
+      this.activeCallerTurnId = undefined
+      this.floor.apply({
+        type: "caller.turn.dismissed",
+        atMs: Date.now(),
+        turnId,
+        reason: "coordinated_tool_call",
+      })
+    }
     this.floor.apply({
       type: "tool.call.started",
       atMs: Date.now(),

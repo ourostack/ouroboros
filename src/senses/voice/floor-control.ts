@@ -71,6 +71,7 @@ export type VoiceFloorEvent =
   | { type: "caller.speech.started"; atMs: number; turnId: string }
   | { type: "caller.speech.ended"; atMs: number; turnId: string }
   | { type: "caller.transcript.final"; atMs: number; turnId: string; text?: string }
+  | { type: "caller.turn.dismissed"; atMs: number; turnId: string; reason?: string }
   | { type: "assistant.response.requested"; atMs: number; responseId: string; reason?: string }
   | { type: "assistant.speech.started"; atMs: number; responseId: string }
   | { type: "assistant.speech.done"; atMs: number; responseId: string }
@@ -303,6 +304,40 @@ function applyCallerTranscriptFinal(
   return { event, state: next, decision: decision(true, "allow", "caller_turn_ready", { atMs: event.atMs }) }
 }
 
+function applyCallerTurnDismissed(
+  state: VoiceFloorState,
+  event: Extract<VoiceFloorEvent, { type: "caller.turn.dismissed" }>,
+): VoiceFloorTransition {
+  if (state.latestCallerTurnId !== event.turnId) {
+    return {
+      event,
+      state,
+      decision: decision(false, "suppress", "stale_caller_turn", { atMs: event.atMs }),
+    }
+  }
+  if (state.floorOwner !== "caller") {
+    return {
+      event,
+      state,
+      decision: decision(true, "allow", "caller_turn_already_released", { atMs: event.atMs }),
+    }
+  }
+  const next = copyState(state)
+  if (next.activeAssistantSpeechId) {
+    next.floorOwner = "assistant"
+    next.phase = "speaking"
+  } else {
+    next.floorOwner = "none"
+    next.phase = "thinking"
+  }
+  next.interruption = undefined
+  return {
+    event,
+    state: next,
+    decision: decision(true, "allow", "caller_turn_dismissed", { atMs: event.atMs }),
+  }
+}
+
 function applyAssistantResponseRequested(
   state: VoiceFloorState,
   event: Extract<VoiceFloorEvent, { type: "assistant.response.requested" }>,
@@ -471,6 +506,8 @@ export function applyVoiceFloorEvent(state: VoiceFloorState, event: VoiceFloorEv
       return applyCallerSpeechEnded(state, event)
     case "caller.transcript.final":
       return applyCallerTranscriptFinal(state, event)
+    case "caller.turn.dismissed":
+      return applyCallerTurnDismissed(state, event)
     case "assistant.response.requested":
       return applyAssistantResponseRequested(state, event)
     case "assistant.speech.started":

@@ -420,4 +420,113 @@ describe("voice floor control", () => {
       atMs: 10,
     } as unknown as VoiceFloorEvent)).toThrow("unknown voice floor event: assistant.started")
   })
+
+  describe("caller.turn.dismissed", () => {
+    it("releases the floor when the matching caller turn currently owns it", () => {
+      let state = createInitialVoiceFloorState()
+      state = apply(state, { type: "call.connected", atMs: 0, callId: "call-1" })
+      state = apply(state, { type: "caller.speech.started", atMs: 10, turnId: "turn-a" })
+      expect(state).toMatchObject({ phase: "caller-speaking", floorOwner: "caller" })
+
+      const transition = applyVoiceFloorEvent(state, {
+        type: "caller.turn.dismissed",
+        atMs: 20,
+        turnId: "turn-a",
+        reason: "coordinated_tool_start",
+      })
+      expect(transition.decision).toMatchObject({
+        allowed: true,
+        action: "allow",
+        reason: "caller_turn_dismissed",
+        atMs: 20,
+      })
+      expect(transition.state).toMatchObject({
+        phase: "thinking",
+        floorOwner: "none",
+      })
+      // The caller turn id is preserved in callerTurnIds so future stale-tool
+      // checks can still reason about its ordering.
+      expect(transition.state.callerTurnIds).toContain("turn-a")
+    })
+
+    it("is a no-op when the turn id does not match the latest caller turn", () => {
+      let state = createInitialVoiceFloorState()
+      state = apply(state, { type: "call.connected", atMs: 0 })
+      state = apply(state, { type: "caller.speech.started", atMs: 10, turnId: "turn-a" })
+
+      const transition = applyVoiceFloorEvent(state, {
+        type: "caller.turn.dismissed",
+        atMs: 20,
+        turnId: "turn-b",
+      })
+      expect(transition.decision).toMatchObject({
+        allowed: false,
+        action: "suppress",
+        reason: "stale_caller_turn",
+      })
+      expect(transition.state).toMatchObject({ phase: "caller-speaking", floorOwner: "caller" })
+    })
+
+    it("is a no-op when the matching caller turn no longer owns the floor", () => {
+      let state = createInitialVoiceFloorState()
+      state = apply(state, { type: "call.connected", atMs: 0 })
+      state = apply(state, { type: "caller.speech.started", atMs: 10, turnId: "turn-a" })
+      state = apply(state, { type: "caller.transcript.final", atMs: 20, turnId: "turn-a", text: "hi" })
+      expect(state).toMatchObject({ phase: "thinking", floorOwner: "none" })
+
+      const transition = applyVoiceFloorEvent(state, {
+        type: "caller.turn.dismissed",
+        atMs: 30,
+        turnId: "turn-a",
+      })
+      expect(transition.decision).toMatchObject({
+        allowed: true,
+        action: "allow",
+        reason: "caller_turn_already_released",
+      })
+      expect(transition.state).toMatchObject({ phase: "thinking", floorOwner: "none" })
+    })
+
+    it("is suppressed by the hangup short-circuit when the call is already terminal", () => {
+      let state = createInitialVoiceFloorState()
+      state = apply(state, { type: "call.connected", atMs: 0 })
+      state = apply(state, { type: "caller.speech.started", atMs: 10, turnId: "turn-a" })
+      state = apply(state, { type: "hangup.requested", atMs: 15 })
+
+      const transition = applyVoiceFloorEvent(state, {
+        type: "caller.turn.dismissed",
+        atMs: 20,
+        turnId: "turn-a",
+      })
+      expect(transition.decision).toMatchObject({
+        allowed: false,
+        action: "suppress",
+        reason: "hangup_terminal",
+      })
+      expect(transition.state.terminal).toBe(false)
+      expect(transition.state.hangupRequested).toBe(true)
+    })
+
+    it("releases an active interruption back into a normal listening phase", () => {
+      let state = createInitialVoiceFloorState()
+      state = apply(state, { type: "call.connected", atMs: 0 })
+      state = apply(state, { type: "assistant.response.requested", atMs: 1, responseId: "resp-1" })
+      state = apply(state, { type: "assistant.speech.started", atMs: 2, responseId: "resp-1" })
+      state = apply(state, { type: "caller.speech.started", atMs: 3, turnId: "turn-a" })
+      expect(state).toMatchObject({ phase: "interrupted", floorOwner: "caller" })
+
+      const transition = applyVoiceFloorEvent(state, {
+        type: "caller.turn.dismissed",
+        atMs: 4,
+        turnId: "turn-a",
+      })
+      expect(transition.decision).toMatchObject({
+        allowed: true,
+        action: "allow",
+        reason: "caller_turn_dismissed",
+      })
+      // Assistant is still mid-speech, so the floor returns to the assistant.
+      expect(transition.state).toMatchObject({ phase: "speaking", floorOwner: "assistant" })
+    })
+  })
 })
