@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.590",
+      "changes": [
+        "Voice Realtime/SIP runtime now routes every response.create through the deterministic VoiceFloorController gate. The shared controller wraps the pure floor-control reducer, emits senses.voice_floor_transition and senses.voice_floor_decision telemetry, and is the single bottleneck consulted before any wire-level response.create. No live human calls placed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.589",
       "changes": [
         "Release preflight now tells agents to use the coordinated release:bump helper when the CLI version is already published, instead of the root-only npm version command that could leave wrapper metadata stale."

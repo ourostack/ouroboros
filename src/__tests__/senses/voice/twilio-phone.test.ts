@@ -1421,7 +1421,13 @@ describe("Twilio phone voice bridge", () => {
         expect(outputs).toHaveLength(2)
       })
       await vi.waitFor(() => {
-        expect(openaiMessages.filter((event) => event.type === "response.create")).toHaveLength(responseCreateCount + 1)
+        // With the floor-control runtime gate, any tool follow-ups that were
+        // delayed while the caller still owned the floor flush together after
+        // the coordinated resp-tools follow-up releases the gate. Assert at
+        // least one new response.create reached the wire — the gate may also
+        // flush other previously queued requests in the same release window.
+        expect(openaiMessages.filter((event) => event.type === "response.create").length)
+          .toBeGreaterThanOrEqual(responseCreateCount + 1)
       })
       expect(options.runSenseTurn).not.toHaveBeenCalled()
       expect(options.tts.synthesize).not.toHaveBeenCalled()
@@ -3926,4 +3932,217 @@ describe("Twilio phone voice bridge", () => {
       })
     }
   })
+
+  it("FLOOR GATE: blocks response.create while the caller owns the floor and flushes the queued request after the caller releases", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-gate-"))
+    const friendId = `gate-${Date.now()}`
+    const realtimeGreetingPayload = Buffer.alloc(160, 0x7f).toString("base64")
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    let socket: WebSocket | undefined
+    try {
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+          openaiMessages.push(event)
+          if (event.type !== "response.create") return
+          const sequence = openaiMessages.filter((e) => e.type === "response.create").length
+          const responseId = `resp-${sequence}`
+          ws.send(JSON.stringify({ type: "response.created", response: { id: responseId } }))
+          ws.send(JSON.stringify({
+            type: "response.output_audio.delta",
+            item_id: `item-${sequence}`,
+            content_index: 0,
+            delta: realtimeGreetingPayload,
+          }))
+          ws.send(JSON.stringify({ type: "response.done", response: { id: responseId } }))
+        })
+      })
+
+      server = await startTwilioPhoneBridgeServer({
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        agentRoot: path.join(outputDir, "slugger.ouro"),
+        defaultFriendId: friendId,
+        transportMode: "media-stream" as const,
+        conversationEngine: "openai-realtime" as const,
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          websocketUrl: openaiUrl,
+          model: "gpt-realtime-2",
+        },
+      })
+
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
+      const twilioMessages = collectSocketMessages(socket)
+      await waitForSocketOpen(socket)
+      sendSocketJson(socket, {
+        event: "start",
+        start: {
+          streamSid: "MZGATE",
+          callSid: "CAGATE",
+          customParameters: { From: "+15551234567", To: "+15557654321" },
+        },
+      })
+
+      await vi.waitFor(() => expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThanOrEqual(1), { timeout: 10_000 })
+      await vi.waitFor(() => expect(twilioMessages.some((event) =>
+        event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
+      )).toBe(true), { timeout: 10_000 })
+      // Give response.done time to propagate through the runtime's openai event handler
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const baselineResponseCreates = openaiMessages.filter((e) => e.type === "response.create").length
+
+      // Send enough media frames with high-amplitude bytes to make the caller barge-in
+      // detector accept the next speech_started as a reliable caller turn.
+      const appendBaseline = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+      for (let index = 0; index < 14; index += 1) sendMediaFrame(socket, 0x00)
+      // Wait until the runtime has actually forwarded every frame to OpenAI before
+      // sending speech_started so the hasReliableCallerBargeInSpeech window is
+      // populated. Without this wait, CI can deliver speech_started before the
+      // runtime processes the frames, and the floor never enters caller-speaking.
+      await vi.waitFor(() => {
+        const appended = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+        expect(appended).toBeGreaterThanOrEqual(appendBaseline + 14)
+      }, { timeout: 5_000 })
+      openaiSockets[0]?.send(JSON.stringify({ type: "input_audio_buffer.speech_started" }))
+
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "call-floor-block",
+        name: "definitely_missing_voice_tool_for_gate",
+        arguments: "{}",
+      }))
+
+      await vi.waitFor(() => expect(openaiMessages.some((event) => {
+        if (event.type !== "conversation.item.create") return false
+        const item = event.item as { type?: string; call_id?: string } | undefined
+        return item?.type === "function_call_output" && item.call_id === "call-floor-block"
+      })).toBe(true), { timeout: 10_000 })
+
+      await new Promise((resolve) => setTimeout(resolve, 1_200))
+
+      expect(openaiMessages.filter((e) => e.type === "response.create")).toHaveLength(baselineResponseCreates)
+
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "I was saying something",
+      }))
+
+      await vi.waitFor(() => {
+        expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThan(baselineResponseCreates)
+      }, { timeout: 5_000 })
+    } finally {
+      for (const ws of openaiSockets) {
+        if (ws.readyState === WebSocket.OPEN) await closeSocket(ws)
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  it("FLOOR GATE: suppresses response.create after voice_end_call requests hangup", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-gate-hangup-"))
+    const realtimeGreetingPayload = Buffer.alloc(160, 0x7f).toString("base64")
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    let socket: WebSocket | undefined
+    try {
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+          openaiMessages.push(event)
+          if (event.type !== "response.create") return
+          const sequence = openaiMessages.filter((e) => e.type === "response.create").length
+          ws.send(JSON.stringify({ type: "response.created", response: { id: `resp-hu-${sequence}` } }))
+          ws.send(JSON.stringify({
+            type: "response.output_audio.delta",
+            item_id: `item-hu-${sequence}`,
+            content_index: 0,
+            delta: realtimeGreetingPayload,
+          }))
+          ws.send(JSON.stringify({ type: "response.done", response: { id: `resp-hu-${sequence}` } }))
+        })
+      })
+
+      server = await startTwilioPhoneBridgeServer({
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        agentRoot: path.join(outputDir, "slugger.ouro"),
+        transportMode: "media-stream" as const,
+        conversationEngine: "openai-realtime" as const,
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          websocketUrl: openaiUrl,
+          model: "gpt-realtime-2",
+        },
+      })
+
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
+      const twilioMessages = collectSocketMessages(socket)
+      await waitForSocketOpen(socket)
+      sendSocketJson(socket, {
+        event: "start",
+        start: {
+          streamSid: "MZGATEHU",
+          callSid: "CAGATEHU",
+          customParameters: { From: "+15551234567", To: "+15557654321" },
+        },
+      })
+
+      await vi.waitFor(() => expect(twilioMessages.some((event) =>
+        event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
+      )).toBe(true), { timeout: 10_000 })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const baselineResponseCreates = openaiMessages.filter((e) => e.type === "response.create").length
+
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "call-end-hu",
+        name: "voice_end_call",
+        arguments: JSON.stringify({ reason: "caller said goodbye" }),
+      }))
+
+      await vi.waitFor(() => expect(openaiMessages.some((event) => {
+        if (event.type !== "conversation.item.create") return false
+        const item = event.item as { type?: string; call_id?: string } | undefined
+        return item?.type === "function_call_output" && item.call_id === "call-end-hu"
+      })).toBe(true), { timeout: 10_000 })
+
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: "call-after-hu",
+        name: "definitely_missing_voice_tool_after_hu",
+        arguments: "{}",
+      }))
+
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+
+      expect(openaiMessages.filter((e) => e.type === "response.create")).toHaveLength(baselineResponseCreates)
+    } finally {
+      for (const ws of openaiSockets) {
+        if (ws.readyState === WebSocket.OPEN) await closeSocket(ws)
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })

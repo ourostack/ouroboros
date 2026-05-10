@@ -127,6 +127,24 @@ Current implementation:
   `floor.state.changed`, `speech.policy.decision`, `tool.result.ready`, and
   `tool.result.spoken` events so turn-taking, stale tool output, and post-hangup
   speech are evaluated before runtime wiring changes reach a live call.
+- The runtime now consults a `VoiceFloorController` (a thin wrapper around the
+  deterministic floor-control reducer) before sending any `response.create`
+  to OpenAI on both Twilio Media Stream Realtime and direct OpenAI SIP. Every
+  legacy entry point — the post-transcript user-turn timer, the tool-presence
+  holding timer, the post-tool followup, and the conflict-backoff retry —
+  funnels through a single `sendGatedRealtimeResponseCreate` bottleneck. When
+  the gate decision is `delay`, the request is queued and re-checked on the
+  next floor transition; when `suppress` (hangup or terminal state), the
+  request is dropped and `senses.voice_floor_gate_blocked` is emitted. The
+  manual `response.create` contract is preserved: `turn_detection.create_response`
+  and `turn_detection.interrupt_response` stay `false`, VAD stays enabled, and
+  the app is still the one driving the response. Floor events are emitted at
+  call connect, caller speech start, caller transcript final, assistant
+  response request / start / done / cancelled, tool call start / complete /
+  result spoken, hangup request, and call end. Runtime gating tests drive the
+  real `TwilioOpenAIRealtimeMediaStreamSession` through a fixture WebSocket and
+  prove that legacy timers cannot leak a `response.create` while the gate
+  blocks; no live human call is placed.
 - OpenAI posts `realtime.call.incoming` to
   `/voice/agents/<agent>/sip/openai`; Ouro verifies the OpenAI webhook
   signature, accepts the call, opens the Realtime control WebSocket, sends the
