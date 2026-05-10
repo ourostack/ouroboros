@@ -242,7 +242,7 @@ function runReleasePreflight(options = {}, deps = {}) {
       errors.push(
         `@ouro.bot/cli@${packageJson.version} is already published on npm.\n\n` +
           `Bump the version before merging:\n` +
-          `  npm version prerelease --preid=alpha\n` +
+          `  npm run release:bump -- --version <next-version> --change "Describe this release."\n` +
           `  git push`,
       )
     } else {

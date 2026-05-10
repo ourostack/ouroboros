@@ -210,6 +210,8 @@ describe("release-preflight", () => {
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
+    expect(result.errors[0]).toContain("npm run release:bump -- --version <next-version> --change")
+    expect(result.errors[0]).not.toContain("npm version prerelease")
   })
 
   it("fails when package-truth changes reuse an already-published cli version", () => {
