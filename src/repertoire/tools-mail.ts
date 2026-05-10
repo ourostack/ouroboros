@@ -10,9 +10,11 @@ import {
   MAIL_SEARCH_TEXT_PROJECTION_VERSION,
   readMailSearchCoverageRecord,
   searchMailSearchCache,
+  snapshotMailSearchCache,
   upsertMailSearchCacheDocument,
   writeMailSearchCoverageRecord,
   type MailSearchCacheDocument,
+  type MailSearchCacheSnapshot,
   type MailSearchCoverageRecord,
 } from "../mailroom/search-cache"
 import { reconstructThread } from "../mailroom/thread"
@@ -631,19 +633,55 @@ async function renderSourceGrantStatus(config: MailroomRuntimeConfig, agentId: s
   }
 }
 
+/**
+ * When the encrypted mail store is empty but the on-disk search cache holds
+ * decrypted documents from prior imports, the agent has lost access to mail it
+ * previously had — typically because mail keys were rotated, the hosted blob
+ * pointer was dropped from the vault, or the encrypted store was wiped. The
+ * tools used to silently report "0 messages" in that state, which is the same
+ * answer they give for a fresh onboarding — so the agent could not tell a
+ * substrate failure from a clean slate. Surface the divergence loudly so the
+ * agent treats absence answers as suspect until the substrate is repaired.
+ */
+function describeMailSubstrateDivergence(input: {
+  agentId: string
+  storeKind: string
+  storeLabel: string
+  visibleMessageCount: number
+  snapshot?: MailSearchCacheSnapshot
+}): string | null {
+  if (input.visibleMessageCount > 0) return null
+  const snapshot = input.snapshot ?? snapshotMailSearchCache(input.agentId)
+  if (snapshot.totalDocuments === 0) return null
+  return [
+    `mail substrate divergence: encrypted ${input.storeKind} store at ${input.storeLabel} has 0 visible messages, but the on-disk search cache for ${input.agentId} holds ${snapshot.totalDocuments} document(s).`,
+    "interpretation: this is not a fresh onboarding — prior imports populated the cache, then the encrypted store became unreachable (common causes: mail key rotation, hosted-store pointer dropped from vault during repair, encrypted store wiped). Mail absence answers from this runtime are not authoritative until the substrate is repaired.",
+    `agent next move: inspect runtime credentials (mailroom.mode, mailroom.azureAccountUrl, mailroom.storePath) — if the agent was previously hosted, the vault is missing the hosted pointer; coordinate with the human to restore it. If local mode is correct, re-import via 'ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source <source> --discover' so the encrypted store catches up to the cache.`,
+  ].join("\n")
+}
+
 async function renderEmptyMailResult(input: {
   agentId: string
   config: MailroomRuntimeConfig
   store: MailroomStore
+  storeKind: string
+  storeLabel: string
   scope?: "native" | "delegated"
   source?: string
 }): Promise<string> {
   const anyVisible = await input.store.listMessages({ agentId: input.agentId, limit: 1 })
   if (anyVisible.length === 0) {
     const sourceGrantStatus = await renderSourceGrantStatus(input.config, input.agentId)
+    const divergence = describeMailSubstrateDivergence({
+      agentId: input.agentId,
+      storeKind: input.storeKind,
+      storeLabel: input.storeLabel,
+      visibleMessageCount: 0,
+    })
     return [
       "No visible mail yet.",
       `mail onboarding status: Mailroom is provisioned for ${input.config.mailboxAddress}, but this agent's encrypted store has 0 messages.`,
+      ...(divergence ? [divergence] : []),
       ...sourceGrantStatus,
       "interpretation: this is not evidence that the human's HEY inbox is empty; Agent Mail has not yet received or imported mail visible to this agent.",
       `agent next move: guide setup from docs/agent-mail-setup.md. If HEY mail is needed, ensure the delegated hey alias exists, first try ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --discover so Ouro can find a browser-downloaded export in .playwright-mcp or Downloads. Only ask the human for a file path if discovery cannot find a unique MBOX, then run ouro mail import-mbox --agent ${input.agentId} --owner-email <human-email> --source hey --file <mbox-path>. Verify with mail_recent/mail_search/Ouro Mailbox.`,
@@ -1086,8 +1124,14 @@ export async function searchSuccessfulImportArchives(input: {
   return matches.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
 }
 
-async function renderMailStatus(agentId: string, config: MailroomRuntimeConfig, storeLabel: string): Promise<string> {
-  const sourceGrantStatus = await renderSourceGrantStatus(config, agentId)
+async function renderMailStatus(input: {
+  agentId: string
+  config: MailroomRuntimeConfig
+  store: MailroomStore
+  storeKind: string
+  storeLabel: string
+}): Promise<string> {
+  const sourceGrantStatus = await renderSourceGrantStatus(input.config, input.agentId)
   const delegatedLines = sourceGrantStatus
     .flatMap((line) => line.startsWith("delegated source aliases: ")
       ? line
@@ -1103,16 +1147,24 @@ async function renderMailStatus(agentId: string, config: MailroomRuntimeConfig, 
             : `- delegated: ${grant}`
         })
       : [`- ${line}`])
+  const visible = await input.store.listMessages({ agentId: input.agentId, limit: 1 })
+  const divergence = describeMailSubstrateDivergence({
+    agentId: input.agentId,
+    storeKind: input.storeKind,
+    storeLabel: input.storeLabel,
+    visibleMessageCount: visible.length,
+  })
   return [
-    `mailbox: ${config.mailboxAddress}`,
-    `store: ${storeLabel}`,
+    `mailbox: ${input.config.mailboxAddress}`,
+    `store: ${input.storeLabel}`,
+    ...(divergence ? [divergence] : []),
     "lane map:",
-    `- native: ${config.mailboxAddress}`,
+    `- native: ${input.config.mailboxAddress}`,
     ...delegatedLines,
     "recent archives:",
-    ...renderRecentArchiveStatus(agentId),
+    ...renderRecentArchiveStatus(input.agentId),
     "recent imports:",
-    ...renderRecentImportOperations(agentId),
+    ...renderRecentImportOperations(input.agentId),
   ].join("\n")
 }
 
@@ -1137,7 +1189,13 @@ export const mailToolDefinitions: ToolDefinition[] = [
         tool: "mail_status",
         reason: "mail operating model overview",
       })
-      return renderMailStatus(resolved.agentName, resolved.config, resolved.storeLabel)
+      return renderMailStatus({
+        agentId: resolved.agentName,
+        config: resolved.config,
+        store: resolved.store,
+        storeKind: resolved.storeKind,
+        storeLabel: resolved.storeLabel,
+      })
     },
     summaryKeys: [],
   },
@@ -1188,6 +1246,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
           agentId: resolved.agentName,
           config: resolved.config,
           store: resolved.store,
+          storeKind: resolved.storeKind,
+          storeLabel: resolved.storeLabel,
           ...(scope ? { scope } : {}),
           ...(args.source ? { source: args.source } : {}),
         })
@@ -1527,6 +1587,8 @@ export const mailToolDefinitions: ToolDefinition[] = [
             agentId: resolved.agentName,
             config: resolved.config,
             store: resolved.store,
+            storeKind: resolved.storeKind,
+            storeLabel: resolved.storeLabel,
             ...(scope ? { scope } : {}),
             ...(args.source ? { source: args.source } : {}),
           }),
@@ -1623,6 +1685,12 @@ export const mailToolDefinitions: ToolDefinition[] = [
           reason: args.reason || "refresh mail search index",
         })
         const { coverage } = refreshed
+        const divergence = describeMailSubstrateDivergence({
+          agentId: resolved.agentName,
+          storeKind: resolved.storeKind,
+          storeLabel: resolved.storeLabel,
+          visibleMessageCount: coverage.visibleMessageCount,
+        })
         return [
           "mail search index refreshed.",
           `scope: ${scope ?? "all"}${args.source ? `; source: ${args.source}` : ""}${placement ? `; placement: ${placement}` : ""}`,
@@ -1634,6 +1702,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           `indexed at: ${coverage.indexedAt}`,
           ...(coverage.oldestReceivedAt ? [`oldest: ${coverage.oldestReceivedAt}`] : []),
           ...(coverage.newestReceivedAt ? [`newest: ${coverage.newestReceivedAt}`] : []),
+          ...(divergence ? [divergence] : []),
         ].join("\n")
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

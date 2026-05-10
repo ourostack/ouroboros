@@ -237,6 +237,28 @@ export function searchMailSearchCache(filters: MailSearchCacheFilters, options?:
   return typeof filters.limit === "number" ? ordered.slice(0, filters.limit) : ordered
 }
 
+/**
+ * Snapshot of the on-disk mail search cache. Used to detect cache-vs-store
+ * divergence after a substrate event (key rotation, hosted → local migration,
+ * wiped encrypted store) leaves cache documents stranded without their backing
+ * encrypted messages. Counts `.json` entries via `readdir` only — no JSON
+ * parsing — so the diagnostic stays cheap on bundles with tens of thousands
+ * of cached documents.
+ */
+export interface MailSearchCacheSnapshot {
+  totalDocuments: number
+}
+
+export function snapshotMailSearchCache(agentId: string, options?: MailSearchCacheOptions): MailSearchCacheSnapshot {
+  const dir = cacheDir(agentId, options)
+  if (!fs.existsSync(dir)) return { totalDocuments: 0 }
+  let total = 0
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".json")) total += 1
+  }
+  return { totalDocuments: total }
+}
+
 export function readMailSearchCoverageRecord(key: MailSearchCoverageKey, options?: MailSearchCacheOptions): MailSearchCoverageRecord | null {
   const document = readJsonDocument(coveragePath(key, options)) as MailSearchCoverageRecord | null
   if (!document || document.schemaVersion !== 1 || document.agentId !== key.agentId) return null

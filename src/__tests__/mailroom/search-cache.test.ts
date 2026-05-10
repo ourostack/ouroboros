@@ -9,6 +9,7 @@ import {
 	  readMailSearchCoverageRecord,
 	  resetMailSearchCacheForTests,
 	  searchMailSearchCache,
+	  snapshotMailSearchCache,
 	  syncMailSearchCacheMetadata,
 	  upsertMailSearchCacheDocument,
 	  writeMailSearchCoverageRecord,
@@ -356,6 +357,44 @@ describe("mail search cache", () => {
 	      placement: "imbox",
 	      source: "hey",
 	    })).toBeNull()
+	  })
+
+	  describe("snapshotMailSearchCache", () => {
+	    it("returns zero documents when the cache directory does not exist", () => {
+	      process.env.HOME = tempDir()
+	      const snapshot = snapshotMailSearchCache("agent-without-cache")
+	      expect(snapshot.totalDocuments).toBe(0)
+	    })
+
+	    it("counts only top-level json files, ignoring subdirectories and non-json entries", () => {
+	      const fakeHome = tempDir()
+	      process.env.HOME = fakeHome
+	      // upsertMailSearchCacheDocument creates the cache dir and writes a json file
+	      upsertMailSearchCacheDocument(message(), privateEnvelope())
+	      upsertMailSearchCacheDocument(
+	        message({
+	          id: "mail_trip_2",
+	          receivedAt: "2026-04-25T18:00:00.000Z",
+	        }),
+	        privateEnvelope({ subject: "second trip" }),
+	      )
+	      // Coverage subdirectory and a non-json file must not inflate the count
+	      writeMailSearchCoverageRecord({
+	        schemaVersion: 1,
+	        agentId: "slugger",
+	        storeKind: "file",
+	        indexedAt: new Date().toISOString(),
+	        visibleMessageCount: 0,
+	        cachedMessageCount: 0,
+	        decryptableMessageCount: 0,
+	        skippedMessageCount: 0,
+	      })
+	      const cacheDir = path.join(fakeHome, "AgentBundles", "slugger.ouro", "state", "mail-search")
+	      fs.writeFileSync(path.join(cacheDir, "stray.txt"), "not a cache document", "utf-8")
+
+	      const snapshot = snapshotMailSearchCache("slugger")
+	      expect(snapshot.totalDocuments).toBe(2)
+	    })
 	  })
 
 	  describe("booking-aware ranking benchmark", () => {
