@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.587",
+  "version": "0.1.0-alpha.588",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -37,6 +37,7 @@
     "test:coverage": "node scripts/run-coverage-gate.cjs",
     "build": "node scripts/clean-dist.cjs && tsc && (cd packages/mailbox-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cd ../.. && node scripts/copy-mailbox-ui.cjs) || echo 'mailbox-ui build skipped'",
     "lint": "eslint src/",
+    "release:bump": "node scripts/release-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:smoke": "node scripts/release-smoke.cjs",
     "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"

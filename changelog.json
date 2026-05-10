@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.588",
+      "changes": [
+        "Release metadata now has a tested release:bump helper that updates the CLI package, lockfile, ouro.bot wrapper package, and top changelog entry together before long validation starts.",
+        "The release:bump helper requires valid semver and explicit changelog changes, preventing root-only npm version bumps from leaving the wrapper package stale until release preflight."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.587",
       "changes": [
         "Voice now has a pure duplex floor-control model with typed transitions, state summaries, and decision reasons for caller floor ownership, assistant speech, tool-running/tool-result states, stale suppression, and hangup terminal behavior.",
