@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.600",
+      "changes": [
+        "Harness attention hygiene: post-tool-use Claude Code hook no longer wakes the inner loop on every tool — only on session-start and stop. listActiveReturnObligations gains a 14-day age cap so legacy queued items stop cycling indefinitely, and a strict status allow-list so legacy 'fulfilled' values written before the ReturnObligationStatus split (or by any future code path that bypasses the type via 'as any') no longer leak into the held-work-items injection."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.599",
       "changes": [
         "BlueBubbles in-flight marker hardening. The in-memory `bbInFlightMessageGuids` tracker had a leak class: any exit path in `handleBlueBubblesNormalizedEvent` that doesn't call `endBlueBubblesMessageInFlight` strands the marker forever (until BB sense process restart), silently halting forward progress on the recovery queue. Slugger lost BlueBubbles inbound for 12+ hours on 2026-05-11 — six user messages piled up unprocessed because each recovery attempt saw the stale marker, returned `already_processed` without actually processing, and the recovery loop counted progress without making any. The class fix: in-flight markers now carry a claim timestamp and expire after `BB_IN_FLIGHT_MAX_AGE_MS = 15 min` (50% beyond the 10-min recovery-turn timeout, so live owners get full headroom). `isBlueBubblesMessageInFlight` returns false for stale markers; `beginBlueBubblesMessageInFlight` is allowed to replace a stale marker and emits `senses.bluebubbles_in_flight_marker_expired` so the auto-eviction is observable. A leaked marker now self-clears in at most 15 min instead of forever. Defense-in-depth: explicit `endBlueBubblesMessageInFlight` audit still worth doing in a follow-up, but the TTL guarantees the bug class can't wedge the queue indefinitely."

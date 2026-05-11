@@ -7384,7 +7384,19 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     if (require("fs").existsSync(deps.socketPath)) {
       try {
         await deps.sendCommand(deps.socketPath, { kind: "message.send", from: `claude-code:${sessionId}`, to: command.agent, content } as DaemonCommand).catch(() => {})
-        await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+        // Only wake the agent on session lifecycle boundaries, not on every
+        // single tool use. A long Claude Code working session can fire
+        // dozens of post-tool-use hooks per minute; waking the agent
+        // synchronously on each one creates a feedback storm where the
+        // inner loop is re-prompted faster than it can rest, the
+        // "...time passing. anything stirring?" probe fires back-to-back,
+        // and the agent burns its attention budget responding to wakes
+        // instead of doing actual work. The message is still delivered
+        // either way (above); the agent picks it up on its next natural
+        // turn.
+        if (eventType === "session-start" || eventType === "stop") {
+          await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.agent } as DaemonCommand).catch(() => {})
+        }
       } catch { /* daemon not running — silent */ }
     } else {
       emitNervesEvent({
