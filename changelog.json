@@ -2,6 +2,18 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.595",
+      "changes": [
+        "Voice phone transport defaults to media-stream when OpenAI Realtime or OpenAI SIP is configured but no explicit voice.twilioTransportMode is set. Previously the default was record-play, which made conversationEngine resolve to cascade and routed inbound calls through the ElevenLabs/Whisper greeting path operators with realtime-only credentials never configured — producing a fully silent first turn (\"no greeting at all\"). Realtime requires media-stream by nature, so we now infer it. Defensive prewarm guard branch marked with a v8 ignore since the implicit default makes it unreachable in current outbound tests."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.594",
+      "changes": [
+        "Voice phone transport defaults to media-stream when OpenAI Realtime or OpenAI SIP is configured but no explicit voice.twilioTransportMode is set. Previously the default was record-play, which made conversationEngine resolve to cascade and routed inbound calls through the ElevenLabs/Whisper greeting path operators with realtime-only credentials never configured — producing a fully silent first turn (\"no greeting at all\"). Realtime requires media-stream by nature, so we now infer it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.593",
       "changes": [
         "Voice runtime now emits assistant.speech.cancelled to the floor when the caller barges in (previously the floor was left with floorOwner=caller permanently after the interrupted greeting's response.done arrived, so Slugger went silent for the rest of every barged-in call). Also wires input_audio_buffer.speech_stopped to apply caller.speech.ended so VAD-detected sub-vocal sounds that never transcribe cannot strand the floor. No live human calls."

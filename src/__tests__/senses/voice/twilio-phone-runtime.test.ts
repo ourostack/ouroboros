@@ -240,6 +240,78 @@ describe("Twilio phone transport runtime", () => {
     })
   })
 
+  it("infers transportMode=media-stream when only an OpenAI Realtime key is configured so the first greeting reaches the caller", () => {
+    // Symptom this test prevents from regressing: a caller dialed in and heard
+    // FULL silence (not even the greeting). The user's setup had an OpenAI
+    // Realtime API key but no explicit `voice.twilioTransportMode`. The
+    // default was `record-play`, which made `configuredConversationEngine`
+    // resolve to `cascade` (because realtime requires media-stream by nature).
+    // The bridge then routed the call through the cascade greeting path,
+    // which tried to call the ElevenLabs/Whisper stack the user had not
+    // configured — and the greeting never played. Realtime is the user's
+    // implied transport when their only voice provider config is OpenAI
+    // Realtime; this test pins that inference so the implicit happy path
+    // produces a greeting.
+    const resolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          // No twilioTransportMode set — this is the implicit case.
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+
+    expect(resolution).toMatchObject({
+      status: "configured",
+      settings: {
+        transportMode: "media-stream",
+        conversationEngine: "openai-realtime",
+        outboundConversationEngine: "openai-realtime",
+      },
+    })
+  })
+
+  it("infers transportMode=media-stream when an OpenAI SIP project is configured without an explicit transport setting", () => {
+    const resolution = resolveTwilioPhoneTransportRuntime({
+      agentName: "slugger",
+      runtimeConfig: {
+        voice: {
+          twilioAccountSid: "AC123",
+          twilioAuthToken: "twilio-secret",
+          twilioFromNumber: "+15557654321",
+          openaiRealtimeApiKey: "openai-secret",
+          openaiSipProjectId: "proj_test",
+          openaiSipWebhookSecret: "whsec_test",
+        },
+      },
+      machineConfig: {
+        voice: {
+          twilioPublicUrl: "https://voice.example.test",
+          // No twilioTransportMode set.
+        },
+      },
+      defaultBasePath: "/voice/agents/ignored/twilio",
+    })
+
+    expect(resolution).toMatchObject({
+      status: "configured",
+      settings: {
+        transportMode: "media-stream",
+        conversationEngine: "openai-sip",
+      },
+    })
+  })
+
   it("infers OpenAI Realtime phone voice from a key on Media Stream transports", () => {
     const resolution = resolveTwilioPhoneTransportRuntime({
       agentName: "slugger",

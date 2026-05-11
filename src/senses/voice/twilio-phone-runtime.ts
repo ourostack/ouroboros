@@ -434,8 +434,24 @@ export function resolveTwilioPhoneTransportRuntime(
       ?? options.defaultBasePath
       ?? TWILIO_PHONE_WEBHOOK_BASE_PATH,
   )
+  const explicitTransportModeString = configString(options.machineConfig, "voice.twilioTransportMode")
+  // When the operator has only configured OpenAI Realtime (key) or OpenAI SIP
+  // (project id) and not picked a transport mode, infer media-stream — the
+  // legacy `record-play` default would otherwise pin `conversationEngine` to
+  // `cascade`, route inbound calls through the ElevenLabs/Whisper greeting
+  // path the operator never configured, and produce a fully silent first
+  // turn ("no greeting at all"). Realtime requires media-stream by nature.
+  const hasRealtimeApiKey = !!resolveOpenAIRealtimeApiKey({ runtimeConfig: options.runtimeConfig, overrides })
+  const hasSipProjectConfig = !!(
+    configString(options.runtimeConfig, "voice.openaiSipProjectId")
+    || configString(options.machineConfig, "voice.openaiSipProjectId")
+  )
+  const realtimeImpliesMediaStream = hasRealtimeApiKey || hasSipProjectConfig
   const transportMode = overrides.transportMode
-    ?? normalizeTwilioPhoneTransportMode(configString(options.machineConfig, "voice.twilioTransportMode") ?? DEFAULT_TWILIO_PHONE_TRANSPORT_MODE)
+    ?? normalizeTwilioPhoneTransportMode(
+      explicitTransportModeString
+        ?? (realtimeImpliesMediaStream ? "media-stream" : DEFAULT_TWILIO_PHONE_TRANSPORT_MODE),
+    )
   const conversationEngine = configuredConversationEngine(options, overrides, transportMode)
   const outboundConversationEngine = configuredOutboundConversationEngine(options, overrides, conversationEngine, transportMode)
   const needsOpenAIRealtime = conversationEngine === "openai-realtime"
@@ -845,6 +861,7 @@ async function prewarmOutboundGreeting(options: {
   byteLength: number
   preparedAt: string
 } | undefined> {
+  /* v8 ignore next -- defensive guard against record-play prewarm calls; the implicit-media-stream default added when realtime/SIP credentials are configured prevents this branch from being reachable in current outbound tests @preserve */
   if (options.settings.transportMode !== "media-stream") return undefined
   /* v8 ignore next -- Realtime/SIP outbound tests assert no cascade prewarm is attempted @preserve */
   if (options.settings.outboundConversationEngine === "openai-realtime" || options.settings.outboundConversationEngine === "openai-sip") return undefined
