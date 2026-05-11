@@ -399,6 +399,7 @@ export interface DaemonRouterLike {
 export type DaemonCommand =
   | { kind: "daemon.start" }
   | { kind: "daemon.stop" }
+  | { kind: "daemon.restart"; reason?: string; requestedBy?: string }
   | { kind: "daemon.status" }
   | { kind: "daemon.health" }
   | { kind: "daemon.logs" }
@@ -1280,6 +1281,27 @@ export class OuroDaemon {
         await this.stop()
         this.onStopCommandComplete?.()
         return { ok: true, message: "daemon stopped" }
+      case "daemon.restart": {
+        // Restart is "stop + let launchctl respawn." Under launchctl's KeepAlive
+        // policy the process is auto-restarted on exit, so daemon.restart and
+        // daemon.stop differ only in intent + audit trail. In dev (no launchctl),
+        // the process simply exits — same observable behavior as daemon.stop.
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.restart_requested",
+          message: "daemon restart requested",
+          meta: {
+            reason: command.reason ?? null,
+            requestedBy: command.requestedBy ?? null,
+          },
+        })
+        await this.stop()
+        this.onStopCommandComplete?.()
+        return {
+          ok: true,
+          message: "daemon restarting — launchctl will respawn",
+        }
+      }
       case "daemon.status": {
         const data = this.buildStatusPayload()
         return {

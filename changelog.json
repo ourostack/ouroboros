@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.598",
+      "changes": [
+        "New `restart_runtime({ reason })` tool. Agent self-maintenance: asking Ari to restart the daemon over BlueBubbles is now a thing of the past. Sends `daemon.restart` over the existing socket — daemon logs the reason as `daemon.restart_requested`, runs its normal stop pathway, and exits. launchctl's KeepAlive policy auto-respawns the daemon, so the agent comes back fresh on the other side. The agent will not see this tool's return value — its process exits with the daemon and a clean boot replaces it. In dev mode (no launchctl) the daemon just exits; same observable behavior as `daemon.stop`, with the restart-requested audit event distinguishing intent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.597",
       "changes": [
         "New `let_go({ id, reason? })` tool. Closes a gap surfaced live by Slugger after #720 (await_condition): when a held work item is resolved externally (e.g. an obligation whose underlying issue was merged in a separate PR), the agent had no way to dismiss it. The existing path to terminal state — fulfilling via `surface` — requires delivering a response, which doesn't fit externally-resolved work. The agent kept seeing the same stale items in its prompt every turn for a month with nothing to act on. `let_go` is dismissal WITHOUT delivery: tries `arc/obligations/inner/<id>.json` (ReturnObligation → `returned` with returnTarget=`surface`), falls through to `arc/obligations/<id>.json` (Obligation → `fulfilled` with `latestNote=reason`). Idempotent — calling on an already-terminal item returns the existing status, not an error. Emits `repertoire.obligation_let_go` nerves event recording the reason for future-me. id is the bracketed value in the prompt's 'held work items' section."

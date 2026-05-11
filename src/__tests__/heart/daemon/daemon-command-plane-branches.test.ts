@@ -107,6 +107,38 @@ describe("daemon command plane branches", () => {
     expect(fs.existsSync(socketPath)).toBe(false)
   })
 
+  it("daemon.restart runs the stop pathway with a restart-requested audit log; launchctl respawn implied", async () => {
+    const socketPath = tmpSocketPath("daemon-restart")
+    const onStopCommandComplete = vi.fn()
+    const { daemon, processManager, senseManager } = make(socketPath, undefined, { onStopCommandComplete })
+
+    await daemon.handleCommand({ kind: "daemon.start" })
+    const restarted = await daemon.handleCommand({
+      kind: "daemon.restart",
+      reason: "bluebubbles recovery queue wedged",
+      requestedBy: "slugger",
+    })
+
+    expect(restarted).toEqual({
+      ok: true,
+      message: "daemon restarting — launchctl will respawn",
+    })
+    // Stop pathway exercised — same shutdown semantics as daemon.stop.
+    expect(processManager.stopAll).toHaveBeenCalled()
+    expect(senseManager.stopAll).toHaveBeenCalled()
+    expect(onStopCommandComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it("daemon.restart tolerates missing reason + requestedBy (both optional in audit log)", async () => {
+    const socketPath = tmpSocketPath("daemon-restart-no-reason")
+    const { daemon } = make(socketPath, undefined, { onStopCommandComplete: vi.fn() })
+    await daemon.handleCommand({ kind: "daemon.start" })
+
+    const restarted = await daemon.handleCommand({ kind: "daemon.restart" })
+    expect(restarted.ok).toBe(true)
+    expect(restarted.message).toContain("daemon restarting")
+  })
+
   it("opens the command socket even when autostart workers are still blocked", async () => {
     const socketPath = tmpSocketPath("daemon-start-before-autostart")
     const { daemon, processManager, senseManager } = make(socketPath)
