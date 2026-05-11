@@ -136,7 +136,7 @@ function createMailroomStore(config: MailroomRuntimeConfig, agentName: string): 
 
   const storePath = config.storePath ?? getAgentMailroomRoot(agentName)
   return {
-    store: new FileMailroomStore({ rootDir: storePath }),
+    store: new FileMailroomStore({ rootDir: storePath, migrateAgentId: agentName }),
     storeKind: "file",
     storeLabel: storePath,
   }

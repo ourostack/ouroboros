@@ -2,10 +2,10 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
-  buildStoredMailMessage,
-  decryptStoredMailMessage,
+  buildPlaintextStoredMailMessage,
+  readDecryptedMailMessage,
+  readPrivateEnvelope,
   type DecryptedMailMessage,
-  type EncryptedPayload,
   type MailClassification,
   type MailCompartmentKind,
   type MailDecisionRecord,
@@ -21,6 +21,7 @@ import {
   type StoredMailMessage,
 } from "./core"
 import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument, type MailSearchCacheOptions } from "./search-cache"
+import { migrateLocalMailroomToPlaintext } from "./migration"
 
 export interface MailAccessLogEntry {
   id: string
@@ -78,7 +79,12 @@ export interface MailroomStore {
   listMessageIndexRecords?(filters: MailListFilters): Promise<MailMessageIndexRecord[] | null>
   getIndexedMessageById?(id: string): Promise<StoredMailMessage | null>
   updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null>
-  readRawPayload(objectName: string): Promise<EncryptedPayload | null>
+  /**
+   * Returns the original RFC822 bytes for a stored message. For plaintext-form
+   * messages this reads `.eml` directly; for encrypted-form messages this
+   * decrypts using `privateKeys`. Returns `null` when the raw artifact is missing.
+   */
+  readRawMime(message: StoredMailMessage, privateKeys: Record<string, string>): Promise<Buffer | null>
   putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate>
   updateScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate>
   listScreenerCandidates(filters: MailScreenerCandidateFilters): Promise<MailScreenerCandidate[]>
@@ -94,6 +100,12 @@ export interface MailroomStore {
 export interface FileMailroomStoreOptions {
   rootDir: string
   mailSearchCache?: MailSearchCacheOptions
+  /**
+   * When provided, the store runs the plaintext-migration cleanup once at
+   * construction. The migration is idempotent — on a fresh or already-migrated
+   * bundle it is a near-zero-cost no-op.
+   */
+  migrateAgentId?: string
 }
 
 function ensureDir(dir: string): void {
@@ -146,11 +158,20 @@ export class FileMailroomStore implements MailroomStore {
     ensureDir(this.candidatesDir)
     ensureDir(this.decisionsDir)
     ensureDir(this.outboundDir)
+    if (options.migrateAgentId) {
+      const searchCacheRoot = this.mailSearchCache.cacheDirForAgent?.(options.migrateAgentId)
+        ?? path.resolve(this.rootDir, "..", "mail-search")
+      migrateLocalMailroomToPlaintext({
+        agentId: options.migrateAgentId,
+        mailroomRoot: this.rootDir,
+        searchCacheRoot,
+      })
+    }
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_file_store_init",
       message: "file mailroom store initialized",
-      meta: { rootDir: this.rootDir },
+      meta: { rootDir: this.rootDir, migrated: options.migrateAgentId !== undefined },
     })
   }
 
@@ -207,9 +228,10 @@ export class FileMailroomStore implements MailroomStore {
     envelope: MailEnvelopeInput
     rawMime: Buffer
     receivedAt?: Date
+    ingest?: MailIngestProvenance
     classification?: MailClassification
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
-    const { message, rawPayload, privateEnvelope, candidate } = await buildStoredMailMessage(input)
+    const { message, rawMime, privateEnvelope, candidate } = await buildPlaintextStoredMailMessage(input)
     const existing = readJson<StoredMailMessage>(this.messagePath(message.id))
     if (existing) {
       upsertMailSearchCacheDocument(existing, privateEnvelope, this.mailSearchCache)
@@ -221,7 +243,8 @@ export class FileMailroomStore implements MailroomStore {
       })
       return { created: false, message: existing }
     }
-    writeJson(this.rawPath(message.rawObject), rawPayload)
+    ensureDir(path.dirname(this.rawPath(message.rawObject)))
+    fs.writeFileSync(this.rawPath(message.rawObject), rawMime)
     writeJson(this.messagePath(message.id), message)
     upsertMailSearchCacheDocument(message, privateEnvelope, this.mailSearchCache)
     if (candidate) {
@@ -229,8 +252,8 @@ export class FileMailroomStore implements MailroomStore {
     }
     emitNervesEvent({
       component: "senses",
-      event: "senses.mail_store_message_written",
-      message: "mailroom store wrote message",
+      event: "senses.mail_file_store_plaintext_written",
+      message: "mailroom store wrote plaintext message",
       meta: { id: message.id, agentId: message.agentId, candidate: candidate !== undefined },
     })
     return { created: true, message }
@@ -290,15 +313,21 @@ export class FileMailroomStore implements MailroomStore {
     return updated
   }
 
-  async readRawPayload(objectName: string): Promise<EncryptedPayload | null> {
-    const payload = readJson<EncryptedPayload>(this.rawPath(objectName))
+  async readRawMime(message: StoredMailMessage, _privateKeys: Record<string, string>): Promise<Buffer | null> {
+    const filePath = this.rawPath(message.rawObject)
+    let buffer: Buffer | null
+    try {
+      buffer = fs.readFileSync(filePath)
+    } catch {
+      buffer = null
+    }
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_store_raw_read",
-      message: "mailroom store read raw payload",
-      meta: { objectName, found: payload !== null },
+      message: "mailroom store read raw plaintext mime",
+      meta: { id: message.id, found: buffer !== null },
     })
-    return payload
+    return buffer
   }
 
   async putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate> {
@@ -519,13 +548,23 @@ export async function ingestRawMailToStore(input: {
   return { accepted, rejectedRecipients }
 }
 
+/**
+ * Reader-side convenience: produce a `DecryptedMailMessage[]` from any mix of
+ * stored variants. Plaintext-form messages pass through without touching
+ * `privateKeys`; encrypted-form messages decrypt with the matching key.
+ * Throws `MissingPrivateMailKeyError` on the first encrypted message whose key
+ * is absent — callers that want per-message resilience should call
+ * `readPrivateEnvelope` in their own loop.
+ */
 export function decryptMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): DecryptedMailMessage[] {
-  const decrypted = messages.map((message) => decryptStoredMailMessage(message, privateKeys))
+  const decrypted = messages.map((message) => readDecryptedMailMessage(message, privateKeys))
   emitNervesEvent({
     component: "senses",
     event: "senses.mail_messages_decrypted",
-    message: "mail messages decrypted",
+    message: "mail messages projected to decrypted view",
     meta: { count: decrypted.length },
   })
   return decrypted
 }
+
+export { readPrivateEnvelope }

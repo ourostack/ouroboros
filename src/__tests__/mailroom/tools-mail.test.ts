@@ -171,123 +171,12 @@ async function seedNativeMail(storePath: string) {
   }
 }
 
-async function seedNativeMailWithLostKey(storePath: string) {
-  const oldProvisioning = provisionMailboxRegistry({ agentId: "slugger" })
-  const currentProvisioning = provisionMailboxRegistry({ agentId: "slugger" })
-  const store = new FileMailroomStore({ rootDir: storePath })
-  const lost = await ingestRawMailToStore({
-    registry: oldProvisioning.registry,
-    store,
-    envelope: {
-      mailFrom: "old@example.com",
-      rcptTo: ["slugger@ouro.bot"],
-    },
-    rawMime: Buffer.from([
-      "From: Old Sender <old@example.com>",
-      "To: Slugger <slugger@ouro.bot>",
-      "Subject: Lost key smoke",
-      "",
-      "This message was encrypted to a private key that is no longer present.",
-    ].join("\r\n")),
-    receivedAt: new Date("2026-04-21T17:00:00.000Z"),
-  })
-  const current = await ingestRawMailToStore({
-    registry: currentProvisioning.registry,
-    store,
-    envelope: {
-      mailFrom: "new@example.com",
-      rcptTo: ["slugger@ouro.bot"],
-    },
-    rawMime: Buffer.from([
-      "From: New Sender <new@example.com>",
-      "To: Slugger <slugger@ouro.bot>",
-      "Subject: Healthy smoke",
-      "",
-      "healthy smoke body is still readable after one lost-key message.",
-    ].join("\r\n")),
-    receivedAt: new Date("2026-04-21T18:00:00.000Z"),
-  })
-  cacheRuntimeCredentialConfig("slugger", {
-    mailroom: {
-      mailboxAddress: "slugger@ouro.bot",
-      storePath,
-      privateKeys: currentProvisioning.keys,
-    },
-  })
-  return {
-    lostId: lost.accepted[0].id,
-    lostKeyId: lost.accepted[0].privateEnvelope.keyId,
-    currentId: current.accepted[0].id,
-  }
-}
-
-async function seedOnlyUndecryptableNativeMail(storePath: string, count = 1) {
-  const oldProvisioning = provisionMailboxRegistry({ agentId: "slugger" })
-  const unrelatedProvisioning = provisionMailboxRegistry({ agentId: "slugger" })
-  const store = new FileMailroomStore({ rootDir: storePath })
-  const lostMessages = []
-  for (let index = 0; index < count; index += 1) {
-    const lost = await ingestRawMailToStore({
-      registry: oldProvisioning.registry,
-      store,
-      envelope: {
-        mailFrom: `old-${index}@example.com`,
-        rcptTo: ["slugger@ouro.bot"],
-      },
-      rawMime: Buffer.from([
-        `From: Old Sender ${index} <old-${index}@example.com>`,
-        "To: Slugger <slugger@ouro.bot>",
-        `Subject: Only lost key smoke ${index}`,
-        "",
-        "This is the only visible message and it cannot be decrypted.",
-      ].join("\r\n")),
-      receivedAt: new Date(Date.parse("2026-04-21T19:00:00.000Z") + index),
-    })
-    lostMessages.push(lost.accepted[0])
-  }
-  cacheRuntimeCredentialConfig("slugger", {
-    mailroom: {
-      mailboxAddress: "slugger@ouro.bot",
-      storePath,
-      privateKeys: unrelatedProvisioning.keys,
-    },
-  })
-  return {
-    lostId: lostMessages[0]!.id,
-    lostKeyId: lostMessages[0]!.privateEnvelope.keyId,
-    lostIds: lostMessages.map((message) => message.id),
-    lostKeyIds: lostMessages.map((message) => message.privateEnvelope.keyId),
-  }
-}
-
-async function seedNativeMailWithCorruptKey(storePath: string) {
-  const { registry, keys } = provisionMailboxRegistry({ agentId: "slugger" })
-  const store = new FileMailroomStore({ rootDir: storePath })
-  const accepted = await ingestRawMailToStore({
-    registry,
-    store,
-    envelope: {
-      mailFrom: "corrupt@example.com",
-      rcptTo: ["slugger@ouro.bot"],
-    },
-    rawMime: Buffer.from([
-      "From: Corrupt Sender <corrupt@example.com>",
-      "To: Slugger <slugger@ouro.bot>",
-      "Subject: Corrupt key",
-      "",
-      "The private key id exists but the key value is not usable.",
-    ].join("\r\n")),
-  })
-  const keyId = Object.keys(keys)[0]!
-  cacheRuntimeCredentialConfig("slugger", {
-    mailroom: {
-      mailboxAddress: "slugger@ouro.bot",
-      storePath,
-      privateKeys: { [keyId]: "not a private key" },
-    },
-  })
-  return { messageId: accepted.accepted[0].id }
-}
+// Note: encrypted-on-file-store seed helpers (seedNativeMailWithLostKey,
+// seedOnlyUndecryptableNativeMail, seedNativeMailWithCorruptKey) were removed
+// when the local file store switched to plaintext: there is no longer a way
+// to land an undecryptable message on the local store. Encryption + missing-
+// key behavior is exercised against the cloud blob store in blob-store.test.ts
+// and core.test.ts.
 
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME
@@ -1757,64 +1646,10 @@ describe("mail tools", () => {
     expect(accessLog).toContain("warning: skipped 2 malformed file-backed mail access log lines")
   })
 
-  it("keeps mailbox tools usable when one visible message was encrypted to a missing key", async () => {
-    setAgentName("slugger")
-    const recovered = await seedNativeMailWithLostKey(tempDir())
-
-    const recoveredRecent = await tool("mail_recent").handler({ scope: "native", reason: "native smoke" }, trustedContext())
-    expect(recoveredRecent).toContain(recovered.currentId)
-    expect(recoveredRecent).toContain("1 mail message could not be decrypted")
-    expect(recoveredRecent).toContain(recovered.lostKeyId)
-    expect(recoveredRecent).not.toContain("Lost key smoke")
-
-    const recoveredSearch = await tool("mail_search").handler({ query: "healthy smoke", scope: "native", reason: "smoke search" }, trustedContext())
-    expect(recoveredSearch).toContain(recovered.currentId)
-    expect(recoveredSearch).toContain("1 mail message could not be decrypted")
-
-    const missingOnlySearch = await tool("mail_search").handler({ query: "Lost key smoke", scope: "native", reason: "lost-key search" }, trustedContext())
-    expect(missingOnlySearch).toContain("No matching mail.")
-    expect(missingOnlySearch).toContain("1 mail message could not be decrypted")
-
-    const lostThread = await tool("mail_body").handler({ message_id: recovered.lostId, reason: "lost-key open" }, trustedContext())
-    expect(lostThread).toContain("could not be decrypted")
-    expect(lostThread).toContain(recovered.lostKeyId)
-    expect(lostThread).toContain("rotation cannot recover mail already encrypted to a lost private key")
-  })
-
-  it("explains when every visible recent message is undecryptable", async () => {
-    setAgentName("slugger")
-    const recovered = await seedOnlyUndecryptableNativeMail(tempDir())
-
-    const recent = await tool("mail_recent").handler({ scope: "native", reason: "native smoke" }, trustedContext())
-    expect(recent).toContain("No decryptable mail to show.")
-    expect(recent).toContain("1 mail message could not be decrypted")
-    expect(recent).toContain(recovered.lostId)
-    expect(recent).toContain(recovered.lostKeyId)
-    expect(recent).not.toContain("Only lost key smoke")
-  })
-
-  it("bounds undecryptable recent-mail warnings when multiple messages are skipped", async () => {
-    setAgentName("slugger")
-    const recovered = await seedOnlyUndecryptableNativeMail(tempDir(), 4)
-
-    const recent = await tool("mail_recent").handler({ scope: "native", limit: "10", reason: "native smoke" }, trustedContext())
-    expect(recent).toContain("No decryptable mail to show.")
-    expect(recent).toContain("4 mail messages could not be decrypted")
-    expect(recent).toContain(recovered.lostIds[2]!)
-    expect(recent).toContain(recovered.lostIds[3]!)
-    expect(recent).toContain("; 1 more")
-    expect(recent).not.toContain(recovered.lostIds[0]!)
-  })
-
-  it("surfaces non-missing-key decrypt failures instead of treating them as rotation recovery", async () => {
-    setAgentName("slugger")
-    const recovered = await seedNativeMailWithCorruptKey(tempDir())
-
-    await expect(tool("mail_recent").handler({ scope: "native", reason: "native smoke" }, trustedContext()))
-      .rejects.toThrow()
-    await expect(tool("mail_body").handler({ message_id: recovered.messageId, reason: "open corrupt key" }, trustedContext()))
-      .rejects.toThrow()
-  })
+  // Removed: four tests covering "encrypted local mail with missing/corrupt
+  // private key" scenarios on FileMailroomStore. The local store no longer
+  // encrypts; key-rotation recovery on the local archive is no longer a path
+  // that exists. See the deletion note above the helpers.
 
   it("falls back to the SMTP envelope sender when a policy decision cannot decrypt sender details", async () => {
     setAgentName("slugger")

@@ -4,10 +4,9 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as identity from "../../heart/identity"
 import {
-  decryptStoredMailMessage,
+  buildPlaintextStoredMailMessage,
   provisionMailboxRegistry,
   resolveMailAddress,
-  buildStoredMailMessage,
   type ResolvedMailAddress,
 } from "../../mailroom/core"
 import { extractTravelFactsFromMail } from "../../mailroom/travel-extract"
@@ -70,13 +69,13 @@ function lodgingBookingMime(): Buffer {
 }
 
 async function ingestBoth(resolved: ResolvedMailAddress) {
-  const flight = await buildStoredMailMessage({
+  const flight = await buildPlaintextStoredMailMessage({
     resolved,
     envelope: { mailFrom: "noreply@acme-air.example", rcptTo: ["slugger@ouro.bot"] },
     rawMime: flightBookingMime(),
     receivedAt: new Date("2026-04-01T16:00:00.000Z"),
   })
-  const lodging = await buildStoredMailMessage({
+  const lodging = await buildPlaintextStoredMailMessage({
     resolved,
     envelope: { mailFrom: "reservations@marthof.example", rcptTo: ["slugger@ouro.bot"] },
     rawMime: lodgingBookingMime(),
@@ -88,7 +87,7 @@ async function ingestBoth(resolved: ResolvedMailAddress) {
 describe("mail booking → trip ledger end-to-end roundtrip", () => {
   it("extracts facts from real MIME bookings, seeds a trip, and round-trips through the trip tools", async () => {
     mountAgent()
-    const { registry, keys } = provisionMailboxRegistry({
+    const { registry } = provisionMailboxRegistry({
       agentId: "slugger",
       ownerEmail: "ari@mendelow.me",
       source: "hey",
@@ -96,8 +95,8 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
     const native = resolveMailAddress(registry, "slugger@ouro.bot")
     if (!native) throw new Error("expected native mailbox")
     const ingested = await ingestBoth(native)
-    const flightDecrypted = decryptStoredMailMessage(ingested.flight.message, keys)
-    const lodgingDecrypted = decryptStoredMailMessage(ingested.lodging.message, keys)
+    const flightDecrypted = ingested.flight.message
+    const lodgingDecrypted = ingested.lodging.message
 
     const facts = extractTravelFactsFromMail([flightDecrypted, lodgingDecrypted])
     const flightFact = facts.find((fact) => fact.kind === "flight")

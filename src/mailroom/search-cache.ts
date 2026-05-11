@@ -2,7 +2,15 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { MailCompartmentKind, MailPlacement, PrivateMailEnvelope, StoredMailMessage } from "./core"
+import type { MailCompartmentKind, MailPlacement, PrivateMailEnvelope, StoredMailMessageBase } from "./core"
+
+/**
+ * The search cache only needs metadata + a parsed `PrivateMailEnvelope`; it
+ * does not care whether the underlying stored message is in plaintext or
+ * encrypted form. Typed against the shared base so plaintext stored messages
+ * and decrypted reader views both flow through naturally.
+ */
+type SearchCacheMessageView = Pick<StoredMailMessageBase, "id" | "agentId" | "receivedAt" | "placement" | "compartmentKind" | "ownerEmail" | "source">
 import { privateMailEnvelopeReadableText } from "./core"
 import { compareByRelevanceThenRecency, scoreMailSearchDocument } from "./search-relevance"
 
@@ -146,7 +154,7 @@ function loadCache(agentId: string, options?: MailSearchCacheOptions): Map<strin
   return state.docs
 }
 
-export function buildMailSearchCacheDocument(message: StoredMailMessage, privateEnvelope: PrivateMailEnvelope): MailSearchCacheDocument {
+export function buildMailSearchCacheDocument(message: SearchCacheMessageView, privateEnvelope: PrivateMailEnvelope): MailSearchCacheDocument {
   const readableText = privateMailEnvelopeReadableText(privateEnvelope)
   return {
     schemaVersion: 1,
@@ -169,7 +177,7 @@ export function buildMailSearchCacheDocument(message: StoredMailMessage, private
 }
 
 export function upsertMailSearchCacheDocument(
-  message: StoredMailMessage,
+  message: SearchCacheMessageView,
   privateEnvelope: PrivateMailEnvelope,
   options?: MailSearchCacheOptions,
 ): MailSearchCacheDocument {
@@ -193,7 +201,7 @@ export function upsertMailSearchCacheDocument(
   return document
 }
 
-export function syncMailSearchCacheMetadata(message: StoredMailMessage, options?: MailSearchCacheOptions): void {
+export function syncMailSearchCacheMetadata(message: SearchCacheMessageView, options?: MailSearchCacheOptions): void {
   const existing = readJsonDocument(cachePath(message.agentId, message.id, options))
   if (!existing) return
   const updated: MailSearchCacheDocument = {

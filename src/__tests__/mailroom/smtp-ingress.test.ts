@@ -137,7 +137,7 @@ describe("mailroom smtp ingress", () => {
     expect(nullSender).toContain("250")
     const stored = await store.listMessages({ agentId: "slugger" })
     expect(stored).toHaveLength(2)
-    expect(stored.find((message) => message.privateEnvelope && message.envelope.mailFrom === "")).toBeTruthy()
+    expect(stored.find((message) => message.bodyForm === "plaintext" && message.envelope.mailFrom === "")).toBeTruthy()
     await close(server)
   })
 
@@ -197,7 +197,7 @@ describe("mailroom smtp ingress", () => {
       async listMessages() {
         return []
       },
-      async readRawPayload() {
+      async readRawMime() {
         return null
       },
       async recordAccess(entry) {

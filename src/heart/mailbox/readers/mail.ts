@@ -109,8 +109,12 @@ function mailSummary(message: DecryptedMailMessage): MailboxMailMessageSummary {
 }
 
 function missingPrivateMailKeyId(error: unknown): string | null {
-  const match = /^(?:Error: )?Missing private mail key ([^\s]+)$/.exec(String(error))
-  return match?.[1] ?? null
+  /* v8 ignore next -- non-Error throw branch: decryptMessages only ever throws Error subclasses (MissingPrivateMailKeyError or crypto errors); this guard is defensive. @preserve */
+  if (!(error instanceof Error)) return null
+  const errorWithKeyId = error as Error & { keyId?: unknown }
+  return typeof errorWithKeyId.keyId === "string" && errorWithKeyId.keyId.length > 0
+    ? errorWithKeyId.keyId
+    : null
 }
 
 function decryptVisibleMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): VisibleMailDecryptResult {

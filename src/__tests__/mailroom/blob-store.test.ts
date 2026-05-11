@@ -279,10 +279,17 @@ describe("AzureBlobMailroomStore", () => {
     }))
     expect((await store.listMessages({ agentId: "slugger", placement: "imbox" })).map((message) => message.id)).toContain(created.message.id)
     expect((await store.listMessages({ agentId: "slugger", placement: "screener" })).map((message) => message.id)).not.toContain(created.message.id)
-    expect(await store.readRawPayload(created.message.rawObject)).toEqual(expect.objectContaining({
+    if (created.message.bodyForm !== "encrypted") throw new Error("expected encrypted blob-store message")
+    expect(await store.readEncryptedRawPayload(created.message)).toEqual(expect.objectContaining({
       algorithm: "RSA-OAEP-SHA256+A256GCM",
     }))
-    expect(await store.readRawPayload("raw/missing.json")).toBeNull()
+    // Encrypted round-trip: readRawMime decrypts with the private key.
+    const recoveredMime = await store.readRawMime(created.message, keys)
+    expect(recoveredMime).not.toBeNull()
+    expect(recoveredMime!.toString("utf-8")).toContain("Blob proof")
+    // Missing raw blob → readRawMime returns null.
+    const phantomMessage = { ...created.message, rawObject: "raw/missing.json" }
+    expect(await store.readRawMime(phantomMessage, keys)).toBeNull()
     expect(await store.listAccessLog("nobody")).toEqual([])
 
     serviceClient.container.blobs.set("access-log/slugger.jsonl", {

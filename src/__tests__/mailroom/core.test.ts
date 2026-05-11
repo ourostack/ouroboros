@@ -4,17 +4,21 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import * as mailroomCore from "../../mailroom/core"
 import {
-  buildStoredMailMessage,
+  MissingPrivateMailKeyError,
+  buildEncryptedStoredMailMessage,
+  buildPlaintextStoredMailMessage,
+  buildStoredMailMessageMetadata,
   decryptMailPayload,
-  decryptStoredMailMessage,
   encryptForMailKey,
   ensureMailboxRegistry,
   generateMailKeyPair,
   normalizeMailAddress,
   provisionMailboxRegistry,
+  readPrivateEnvelope,
   resolveMailAddress,
   reverseEmailRoute,
   sourceAliasForOwner,
+  type StoredMailMessage,
 } from "../../mailroom/core"
 import { decryptMessages, FileMailroomStore, ingestRawMailToStore } from "../../mailroom/file-store"
 import { buildSenderPolicy } from "../../mailroom/policy"
@@ -83,7 +87,7 @@ describe("mailroom core", () => {
     expect(generateMailKeyPair("!!!").keyId).toMatch(/^mail_key_[a-f0-9]{16}$/)
   })
 
-  it("provisions native and delegated compartments and stores mail encrypted", async () => {
+  it("provisions native and delegated compartments and stores mail as readable plaintext on the local file store", async () => {
     const rootDir = tempDir()
     const { registry, keys } = provisionMailboxRegistry({
       agentId: "slugger",
@@ -100,7 +104,8 @@ describe("mailroom core", () => {
     expect(delegated?.compartmentKind).toBe("delegated")
     expect(missing).toBeNull()
 
-    const store = new FileMailroomStore({ rootDir })
+    const storePath = rootDir
+    const store = new FileMailroomStore({ rootDir: storePath })
     const envelope = {
       mailFrom: "ari@mendelow.me",
       rcptTo: ["me.mendelow.ari.slugger@ouro.bot", "unknown@ouro.bot"],
@@ -155,16 +160,29 @@ describe("mailroom core", () => {
     expect(duplicate.accepted[0].id).toBe(result.accepted[0].id)
 
     const listed = await store.listMessages({ agentId: "slugger", placement: "imbox" })
+    expect(listed[0].bodyForm).toBe("plaintext")
     const decrypted = decryptMessages(listed, keys)
     expect(decrypted[0].private.subject).toBe("Launch notes")
     expect(decrypted[0].private.untrustedContentWarning).toContain("untrusted external data")
 
     const byId = await store.getMessage(result.accepted[0].id)
     expect(byId).not.toBeNull()
-    expect(decryptStoredMailMessage(byId!, keys).private.from).toEqual(["ari@mendelow.me"])
+    expect(byId!.bodyForm).toBe("plaintext")
+    // Local store survives wiping privateKeys -- the canary for the
+    // key-rotation-survives property.
+    expect(readPrivateEnvelope(byId!, {}).from).toEqual(["ari@mendelow.me"])
 
-    const rawPayload = await store.readRawPayload(result.accepted[0].rawObject)
-    expect(rawPayload?.ciphertext).not.toContain("launch checklist")
+    // On-disk shape: plaintext envelope inline; raw is human-readable RFC822 .eml.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(storePath, "messages", `${result.accepted[0].id}.json`), "utf-8")) as StoredMailMessage
+    expect(onDisk.bodyForm).toBe("plaintext")
+    expect(onDisk).toHaveProperty("private")
+    expect(onDisk).not.toHaveProperty("privateEnvelope")
+    expect(onDisk.rawObject).toMatch(/^raw\/mail_[a-f0-9]+\.eml$/)
+    const rawMime = fs.readFileSync(path.join(storePath, onDisk.rawObject)).toString("utf-8")
+    expect(rawMime).toContain("launch checklist")
+    expect(await store.readRawMime(byId!, keys)).not.toBeNull()
+    // readRawMime returns null when the referenced raw file is absent.
+    expect(await store.readRawMime({ ...byId!, rawObject: "raw/missing.eml" }, keys)).toBeNull()
 
     await store.recordAccess({
       agentId: "slugger",
@@ -192,12 +210,12 @@ describe("mailroom core", () => {
     })
     const native = resolveMailAddress(registry, "slugger@ouro.bot")!
     const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")!
-    const nativeMessage = (await buildStoredMailMessage({
+    const nativeMessage = (await buildPlaintextStoredMailMessage({
       resolved: native,
       envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
       rawMime: Buffer.from("From: Friend <friend@example.com>\r\nTo: slugger@ouro.bot\r\nSubject: Native\r\n\r\nbody"),
     })).message
-    const delegatedMessage = (await buildStoredMailMessage({
+    const delegatedMessage = (await buildPlaintextStoredMailMessage({
       resolved: delegated,
       envelope: { mailFrom: "ari@mendelow.me", rcptTo: ["me.mendelow.ari.slugger@ouro.bot"] },
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: me.mendelow.ari.slugger@ouro.bot\r\nSubject: Delegated\r\n\r\nbody"),
@@ -266,7 +284,7 @@ describe("mailroom core", () => {
       "--abc--",
       "",
     ].join("\r\n"))
-    const { message } = await buildStoredMailMessage({
+    const { message } = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -275,14 +293,14 @@ describe("mailroom core", () => {
       rawMime: withAttachment,
       receivedAt: new Date("2026-04-21T15:00:00.000Z"),
     })
-    const decrypted = decryptStoredMailMessage(message, keys)
-    expect(decrypted.trustReason).toBe("screened-in native agent mailbox")
-    expect(decrypted.private.attachments[0]).toEqual(expect.objectContaining({
+    expect(message.bodyForm).toBe("plaintext")
+    expect(message.trustReason).toBe("screened-in native agent mailbox")
+    expect(message.private.attachments[0]).toEqual(expect.objectContaining({
       filename: "(unnamed attachment)",
       contentType: "text/plain",
     }))
 
-    const grouped = await buildStoredMailMessage({
+    const grouped = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -299,13 +317,13 @@ describe("mailroom core", () => {
         "<p>Hello from HTML.</p>",
       ].join("\r\n")),
     })
-    const groupedPrivate = decryptStoredMailMessage(grouped.message, keys).private
+    const groupedPrivate = grouped.message.private
     expect(groupedPrivate.to).toEqual(["one@example.com", "two@example.com"])
     expect(groupedPrivate.cc).toEqual(["three@example.com", "four@example.com"])
     expect(groupedPrivate.html).toContain("Hello from HTML")
     expect(groupedPrivate.text).toBe("Hello from HTML.")
 
-    const htmlOnlyBooking = await buildStoredMailMessage({
+    const htmlOnlyBooking = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "booking@example.test",
@@ -323,7 +341,7 @@ describe("mailroom core", () => {
         "</body></html>",
       ].join("\r\n")),
     })
-    const bookingPrivate = decryptStoredMailMessage(htmlOnlyBooking.message, keys).private
+    const bookingPrivate = htmlOnlyBooking.message.private
     expect(bookingPrivate.text).toMatch(/booking overview/i)
     expect(bookingPrivate.text.replace(/\u00a0/g, " ")).toContain("Seattle to Zurich & Lugano.")
     expect(bookingPrivate.text).toContain("Confirmation #5313227")
@@ -343,7 +361,7 @@ describe("mailroom core", () => {
 	    expect(mailroomCore.htmlMailBodyToText("Decimal overflow &#99999999999999999999; stays literal."))
 	      .toContain("&#99999999999999999999;")
 
-	    const emptyMime = await buildStoredMailMessage({
+	    const emptyMime = await buildPlaintextStoredMailMessage({
 	      resolved: imboxNative,
 	      envelope: {
 	        mailFrom: "empty@example.test",
@@ -356,10 +374,10 @@ describe("mailroom core", () => {
 	        "",
 	      ].join("\r\n")),
 	    })
-	    expect(decryptStoredMailMessage(emptyMime.message, keys).private.text).toBe("")
+	    expect(emptyMime.message.private.text).toBe("")
 
     const longBody = "launch ".repeat(80)
-    const longMessage = await buildStoredMailMessage({
+    const longMessage = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -372,9 +390,9 @@ describe("mailroom core", () => {
         longBody,
       ].join("\r\n")),
     })
-    expect(decryptStoredMailMessage(longMessage.message, keys).private.snippet).toHaveLength(240)
+    expect(longMessage.message.private.snippet).toHaveLength(240)
 
-    const subjectOnly = await buildStoredMailMessage({
+    const subjectOnly = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -382,9 +400,9 @@ describe("mailroom core", () => {
       },
       rawMime: Buffer.from("From: Ari <ari@mendelow.me>\r\nTo: Slugger <slugger@ouro.bot>\r\nSubject: Subject only\r\n\r\n"),
     })
-    expect(decryptStoredMailMessage(subjectOnly.message, keys).private.snippet).toBe("Subject only")
+    expect(subjectOnly.message.private.snippet).toBe("Subject only")
 
-    const empty = await buildStoredMailMessage({
+    const empty = await buildPlaintextStoredMailMessage({
       resolved: imboxNative,
       envelope: {
         mailFrom: "",
@@ -392,12 +410,12 @@ describe("mailroom core", () => {
       },
       rawMime: Buffer.from("\r\n"),
     })
-    const emptyPrivate = decryptStoredMailMessage(empty.message, keys).private
+    const emptyPrivate = empty.message.private
     expect(emptyPrivate.subject).toBe("")
     expect(emptyPrivate.from).toEqual([])
     expect(emptyPrivate.snippet).toBe("(no text body)")
 
-    const malformedSender = await buildStoredMailMessage({
+    const malformedSender = await buildPlaintextStoredMailMessage({
       resolved: native,
       envelope: {
         mailFrom: "not-an-email",
@@ -412,7 +430,7 @@ describe("mailroom core", () => {
 
     const delegated = resolveMailAddress(registry, "me.mendelow.ari.slugger@ouro.bot")
     if (!delegated) throw new Error("expected delegated mailbox")
-    const fallbackTrust = await buildStoredMailMessage({
+    const fallbackTrust = await buildPlaintextStoredMailMessage({
       resolved: { ...delegated, source: undefined },
       envelope: {
         mailFrom: "ari@mendelow.me",
@@ -422,7 +440,7 @@ describe("mailroom core", () => {
     })
     expect(fallbackTrust.message.trustReason).toBe(`delegated source grant ${delegated.compartmentId}`)
 
-    const delegatedCandidate = await buildStoredMailMessage({
+    const delegatedCandidate = await buildPlaintextStoredMailMessage({
       resolved: delegated,
       envelope: {
         mailFrom: "sender@example.com",
@@ -442,7 +460,16 @@ describe("mailroom core", () => {
       ownerEmail: "ari@mendelow.me",
     }))
 
-    expect(() => decryptStoredMailMessage(message, {})).toThrow("Missing private mail key")
+    // Encrypted builder path still throws when the matching key is absent.
+    const encryptedForKeyTest = await buildEncryptedStoredMailMessage({
+      resolved: native,
+      envelope: { mailFrom: "ari@mendelow.me", rcptTo: ["slugger@ouro.bot"] },
+      rawMime: sampleRawMail("Key test"),
+    })
+    expect(encryptedForKeyTest.message.bodyForm).toBe("encrypted")
+    expect(() => readPrivateEnvelope(encryptedForKeyTest.message, {})).toThrow(MissingPrivateMailKeyError)
+    expect(() => readPrivateEnvelope(encryptedForKeyTest.message, {})).toThrow("Missing private mail key")
+    expect(readPrivateEnvelope(encryptedForKeyTest.message, keys).subject).toBe("Key test")
   })
 
   it("captures In-Reply-To and References headers on ingest", async () => {
@@ -464,12 +491,12 @@ describe("mailroom core", () => {
       "",
       "yes please",
     ].join("\r\n"))
-    const reply = await buildStoredMailMessage({
+    const reply = await buildPlaintextStoredMailMessage({
       resolved: native,
       envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
       rawMime: replyMime,
     })
-    const replyPrivate = decryptStoredMailMessage(reply.message, keys).private
+    const replyPrivate = reply.message.private
     expect(replyPrivate.inReplyTo).toBe("<root-1@example.com>")
     expect(replyPrivate.references).toEqual(["<root-1@example.com>", "<reply-0@example.com>"])
 
@@ -480,12 +507,12 @@ describe("mailroom core", () => {
       "",
       "single message",
     ].join("\r\n"))
-    const standalone = await buildStoredMailMessage({
+    const standalone = await buildPlaintextStoredMailMessage({
       resolved: native,
       envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
       rawMime: noHeadersMime,
     })
-    const standalonePrivate = decryptStoredMailMessage(standalone.message, keys).private
+    const standalonePrivate = standalone.message.private
     expect(standalonePrivate.inReplyTo).toBeUndefined()
     expect(standalonePrivate.references).toBeUndefined()
   })

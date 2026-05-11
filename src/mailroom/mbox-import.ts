@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
-  buildStoredMailMessage,
+  buildStoredMailMessageMetadata,
   type MailClassification,
   normalizeMailAddress,
   resolveMailAddress,
@@ -397,7 +397,7 @@ export async function cacheMatchingMailSearchDocumentsFromMboxFile(input: Search
   const matches: MailSearchCacheDocument[] = []
   for await (const rawMessage of streamMboxMessagesFromFile(input.filePath)) {
     const parsedMessage = parseMboxMessage(rawMessage, target.sourceGrant)
-    const { message, privateEnvelope } = await buildStoredMailMessage({
+    const { privateEnvelope, metadata } = await buildStoredMailMessageMetadata({
       resolved: target.resolved,
       envelope: parsedMessage.envelope,
       rawMime: parsedMessage.rawMessage,
@@ -409,6 +409,16 @@ export async function cacheMatchingMailSearchDocumentsFromMboxFile(input: Search
       },
       classification: historicalImportClassification(target.resolved.defaultPlacement, target.sourceGrant),
     })
+    // Projection-only: we need a `StoredMailMessage` shape for buildMailSearchCacheDocument
+    // but never persist this view; the live import (via store.putRawMessage) is
+    // what writes the durable record.
+    const { rawObjectStem, ...rest } = metadata
+    const message = {
+      ...rest,
+      rawObject: `${rawObjectStem}.eml`,
+      bodyForm: "plaintext" as const,
+      private: privateEnvelope,
+    }
     const document = buildMailSearchCacheDocument(message, privateEnvelope)
     if (!queryTerms.some((term) => document.searchText.includes(term))) continue
     upsertMailSearchCacheDocument(message, privateEnvelope)

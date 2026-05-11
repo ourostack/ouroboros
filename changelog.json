@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.592",
+      "changes": [
+        "Local mail store (`FileMailroomStore`) now writes messages and raw RFC822 bodies in plaintext on disk. The agent bundle becomes the durable archive surface for mail — a vault key rotation or lost private key can no longer render the local archive unreadable, and `ouro mail import-mbox` remains the canonical recovery mechanism.",
+        "Cloud-blob mail store (`AzureBlobMailroomStore`) continues to encrypt every message on the wire and at rest. The trust boundary it crosses is real; nothing about the hosted path changes.",
+        "`StoredMailMessage` is now a discriminated union on `bodyForm`: plaintext messages carry `private` inline, encrypted messages carry `privateEnvelope`. All reader code paths converge on a single `readPrivateEnvelope` accessor that branches on `bodyForm` so callers no longer reach into decrypt internals.",
+        "One-shot migration helper runs on `FileMailroomStore` init: wipes pre-change encrypted-shape residue in `messages/` and `raw/`, deletes stale `azure-blob` coverage records, and prunes orphan search-cache documents that no longer reference a present local message. Idempotent — subsequent runs are no-ops."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.591",
       "changes": [
         "Voice floor-control gains a principled caller.turn.dismissed event. The realtime runtime now emits this event when OpenAI starts a coordinated tool call inside an active response cycle (proof the realtime server has parsed the caller's most recent turn), replacing the tactical synthetic caller.transcript.final hack that previously did the same job from outside the reducer. No live human calls."

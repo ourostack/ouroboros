@@ -21,10 +21,10 @@ function fakeMessage(input: {
     envelope: { mailFrom: "friend@example.com", rcptTo: ["slugger@ouro.bot"] },
     placement: "imbox",
     trustReason: "test",
-    rawObject: `raw/${input.id}.json`,
+    rawObject: `raw/${input.id}.eml`,
     rawSha256: "0".repeat(64),
     rawSize: 0,
-    privateEnvelope: { algorithm: "RSA-OAEP-SHA256+A256GCM", keyId: "k", wrappedKey: "", iv: "", authTag: "", ciphertext: "" },
+    bodyForm: "plaintext",
     ingest: { schemaVersion: 1, kind: "smtp" },
     receivedAt: input.receivedAt,
     private: {

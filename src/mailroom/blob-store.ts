@@ -1,19 +1,22 @@
 import { BlobServiceClient } from "@azure/storage-blob"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
-  buildStoredMailMessage,
-  decryptStoredMailMessage,
+  buildEncryptedStoredMailMessage,
+  decryptMailPayload,
+  readDecryptedMailMessage,
   type DecryptedMailMessage,
   type EncryptedPayload,
   type MailClassification,
   type MailDecisionRecord,
   type MailEnvelopeInput,
+  type MailIngestProvenance,
   type MailOutboundRecord,
   type MailPlacement,
   type PrivateMailEnvelope,
   type ResolvedMailAddress,
   type MailScreenerCandidate,
   type StoredMailMessage,
+  type StoredMailMessageEncrypted,
 } from "./core"
 import type { MailAccessLogEntry, MailAccessLogListing, MailListFilters, MailMessageIndexRecord, MailroomStore, MailScreenerCandidateFilters } from "./file-store"
 import { syncMailSearchCacheMetadata, upsertMailSearchCacheDocument, type MailSearchCacheOptions } from "./search-cache"
@@ -465,10 +468,11 @@ export class AzureBlobMailroomStore implements MailroomStore {
     envelope: MailEnvelopeInput
     rawMime: Buffer
     receivedAt?: Date
+    ingest?: MailIngestProvenance
     classification?: MailClassification
   }): Promise<{ created: boolean; message: StoredMailMessage }> {
     await this.ensureContainer()
-    const { message, rawPayload, privateEnvelope, candidate } = await buildStoredMailMessage(input)
+    const { message, rawPayload, privateEnvelope, candidate } = await buildEncryptedStoredMailMessage(input)
     const messageBlob = this.messageBlob(message.id)
     let existing: StoredMailMessage | null = null
     try {
@@ -585,16 +589,43 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return updated
   }
 
-  async readRawPayload(objectName: string): Promise<EncryptedPayload | null> {
+  async readRawMime(message: StoredMailMessage, privateKeys: Record<string, string>): Promise<Buffer | null> {
     await this.ensureContainer()
-    const payload = await downloadJson<EncryptedPayload>(this.rawBlob(objectName), this.blobOperationTimeoutMs)
+    /* v8 ignore start -- defensive: AzureBlobMailroomStore only writes encrypted messages, but the interface accepts the union @preserve */
+    if (message.bodyForm !== "encrypted") {
+      throw new Error(`AzureBlobMailroomStore stores encrypted messages, got bodyForm=${message.bodyForm} for ${message.id}`)
+    }
+    /* v8 ignore stop */
+    const payload = await downloadJson<EncryptedPayload>(this.rawBlob(message.rawObject), this.blobOperationTimeoutMs)
+    if (!payload) {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_blob_store_raw_read",
+        message: "azure blob mailroom store read raw payload",
+        meta: { id: message.id, found: false },
+      })
+      return null
+    }
+    const privateKey = privateKeys[payload.keyId]
+    /* v8 ignore start -- runtime config refuses to load without private keys; defensive check for partial vault state @preserve */
+    if (!privateKey) {
+      throw new Error(`Missing private mail key ${payload.keyId}`)
+    }
+    /* v8 ignore stop */
+    const plaintext = decryptMailPayload(payload, privateKey)
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_store_raw_read",
       message: "azure blob mailroom store read raw payload",
-      meta: { objectName, found: payload !== null },
+      meta: { id: message.id, found: true },
     })
-    return payload
+    return plaintext
+  }
+
+  /** Test helper: read the encrypted raw payload without decrypting. */
+  async readEncryptedRawPayload(message: StoredMailMessageEncrypted): Promise<EncryptedPayload | null> {
+    await this.ensureContainer()
+    return downloadJson<EncryptedPayload>(this.rawBlob(message.rawObject), this.blobOperationTimeoutMs)
   }
 
   async putScreenerCandidate(candidate: MailScreenerCandidate): Promise<MailScreenerCandidate> {
@@ -749,5 +780,5 @@ export class AzureBlobMailroomStore implements MailroomStore {
 }
 
 export function decryptBlobMessages(messages: StoredMailMessage[], privateKeys: Record<string, string>): DecryptedMailMessage[] {
-  return messages.map((message) => decryptStoredMailMessage(message, privateKeys))
+  return messages.map((message) => readDecryptedMailMessage(message, privateKeys))
 }
