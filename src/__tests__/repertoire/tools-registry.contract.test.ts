@@ -209,7 +209,11 @@ describe("tool registry contract", () => {
     expect(names).toContain("await_condition");
     expect(names).toContain("resolve_await");
     expect(names).toContain("cancel_await");
-    // Exact count: 83 tools (80 prior + await_condition + resolve_await + cancel_await)
-    expect(names).toHaveLength(83);
+
+    // Added in let_go primitive: 1 obligation-release tool
+    expect(names).toContain("let_go");
+
+    // Exact count: 84 tools (83 prior + let_go)
+    expect(names).toHaveLength(84);
   });
 });

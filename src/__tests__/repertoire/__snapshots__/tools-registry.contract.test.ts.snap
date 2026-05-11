@@ -32,6 +32,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "grep",
   "intention_capture",
   "intention_manage",
+  "let_go",
   "list_recent_attachments",
   "list_skills",
   "load_skill",
