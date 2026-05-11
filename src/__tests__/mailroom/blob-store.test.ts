@@ -410,6 +410,12 @@ describe("AzureBlobMailroomStore", () => {
       expect.objectContaining({ id: "draft_blob_later", subject: "Later blob draft" }),
       expect.objectContaining({ id: "draft_blob", subject: "Blob draft" }),
     ])
+    // Caps the result count when a limit is passed — the Mailbox tab pulls
+    // a bounded recent-outbound slice rather than the whole history, which is
+    // what fixed the loading-spinner hang for large mailboxes.
+    expect(await store.listMailOutbound("slugger", { limit: 1 })).toEqual([
+      expect.objectContaining({ id: "draft_blob_later", subject: "Later blob draft" }),
+    ])
   })
 
   it("treats unreadable existing message blobs as duplicates during import reruns", async () => {

@@ -725,23 +725,36 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return record
   }
 
-  async listMailOutbound(agentId: string): Promise<MailOutboundRecord[]> {
+  async listMailOutbound(agentId: string, options: { limit?: number } = {}): Promise<MailOutboundRecord[]> {
     await this.ensureContainer()
-    const records: MailOutboundRecord[] = []
+    // Stream blob NAMES first (no JSON downloads yet), then fan out the
+    // downloads with bounded concurrency. The previous loop awaited each
+    // download sequentially inside the iterator, which made every Mailbox
+    // tab open scale linearly with the total number of outbound records in
+    // the container — for an agent with many drafts/sent/failed entries,
+    // the UI sat on a loading spinner for minutes (or never finished) while
+    // the daemon ground through O(N) sequential network round-trips.
+    const outboundBlobNames: string[] = []
     for await (const item of this.container.listBlobsFlat({ prefix: "outbound/" })) {
-      const record = await downloadJson<MailOutboundRecord>(this.container.getBlockBlobClient(item.name), this.blobOperationTimeoutMs)
-      if (record) records.push(record)
+      outboundBlobNames.push(item.name)
     }
-    const filtered = records
+    const downloaded = await mapWithConcurrency(outboundBlobNames, MESSAGE_LIST_SCAN_CONCURRENCY, async (name) => {
+      return downloadJson<MailOutboundRecord>(this.container.getBlockBlobClient(name), this.blobOperationTimeoutMs)
+    })
+    const filtered = downloaded
+      .filter((record): record is MailOutboundRecord => record !== null)
       .filter((record) => record.agentId === agentId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    const limited = typeof options.limit === "number" && options.limit > 0
+      ? filtered.slice(0, options.limit)
+      : filtered
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_blob_outbound_records_listed",
       message: "azure blob mail outbound records listed",
-      meta: { agentId, count: filtered.length },
+      meta: { agentId, count: limited.length, scanned: outboundBlobNames.length },
     })
-    return filtered
+    return limited
   }
 
   async recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry> {

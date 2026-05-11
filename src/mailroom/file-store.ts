@@ -92,7 +92,7 @@ export interface MailroomStore {
   listMailDecisions(agentId: string): Promise<MailDecisionRecord[]>
   upsertMailOutbound(record: MailOutboundRecord): Promise<MailOutboundRecord>
   getMailOutbound(id: string): Promise<MailOutboundRecord | null>
-  listMailOutbound(agentId: string): Promise<MailOutboundRecord[]>
+  listMailOutbound(agentId: string, options?: { limit?: number }): Promise<MailOutboundRecord[]>
   recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry>
   listAccessLog(agentId: string): Promise<MailAccessLogListing>
 }
@@ -428,20 +428,23 @@ export class FileMailroomStore implements MailroomStore {
     return record
   }
 
-  async listMailOutbound(agentId: string): Promise<MailOutboundRecord[]> {
+  async listMailOutbound(agentId: string, options: { limit?: number } = {}): Promise<MailOutboundRecord[]> {
     const records = fs.readdirSync(this.outboundDir)
       .filter((name) => name.endsWith(".json"))
       .map((name) => readJson<MailOutboundRecord>(path.join(this.outboundDir, name)))
       .filter((record): record is MailOutboundRecord => record !== null)
       .filter((record) => record.agentId === agentId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    const limited = typeof options.limit === "number" && options.limit > 0
+      ? records.slice(0, options.limit)
+      : records
     emitNervesEvent({
       component: "senses",
       event: "senses.mail_outbound_records_listed",
       message: "mail outbound records listed",
-      meta: { agentId, count: records.length },
+      meta: { agentId, count: limited.length, scanned: records.length },
     })
-    return records
+    return limited
   }
 
   async recordAccess(entry: Omit<MailAccessLogEntry, "id" | "accessedAt">): Promise<MailAccessLogEntry> {

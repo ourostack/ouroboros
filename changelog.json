@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.601",
+      "changes": [
+        "Mailbox tab loading hang: listMailOutbound now downloads blobs in parallel (MESSAGE_LIST_SCAN_CONCURRENCY=32) instead of sequentially, and accepts an optional limit. The Mailbox tab passes limit=50 so the UI no longer blocks on a full-history scan for agents with many outbound records."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.600",
       "changes": [
         "Harness attention hygiene: post-tool-use Claude Code hook no longer wakes the inner loop on every tool — only on session-start and stop. listActiveReturnObligations gains a 14-day age cap so legacy queued items stop cycling indefinitely, and a strict status allow-list so legacy 'fulfilled' values written before the ReturnObligationStatus split (or by any future code path that bypasses the type via 'as any') no longer leak into the held-work-items injection."

@@ -19,6 +19,10 @@ import type {
 
 const MAILBOX_MAIL_LIST_LIMIT = 50
 const MAILBOX_MAIL_SUMMARY_LIMIT = MAILBOX_MAIL_LIST_LIMIT
+// Cap the outbound list returned to the UI. The Mailbox tab renders a
+// bounded recent-outbound view; surfacing the entire outbound history is
+// what makes the tab hang on a loading spinner for large mailboxes.
+const MAILBOX_MAIL_OUTBOUND_LIMIT = 50
 const MAILBOX_MAIL_BODY_LIMIT = 12_000
 
 interface MailDecryptSkip {
@@ -306,7 +310,11 @@ export async function readMailView(agentName: string): Promise<MailboxMailView> 
     const summaries = result.decrypted.map(mailSummary)
     const screener = (await resolved.store.listScreenerCandidates({ agentId: agentName, status: "pending", limit: 100 }))
       .map(screenerCandidate)
-    const outbound = (await resolved.store.listMailOutbound(agentName)).map(outboundRecord)
+    // Cap outbound records returned to the UI. The mailbox tab shows a
+    // bounded recent-outbound view; pulling the entire history blocks the
+    // Mailbox tab on a loading spinner while the blob/file store grinds
+    // through every outbound record the agent has ever written.
+    const outbound = (await resolved.store.listMailOutbound(agentName, { limit: MAILBOX_MAIL_OUTBOUND_LIMIT })).map(outboundRecord)
     await resolved.store.recordAccess({
       agentId: agentName,
       tool: "mailbox_mail_list",
