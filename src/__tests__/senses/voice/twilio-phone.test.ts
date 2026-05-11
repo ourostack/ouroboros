@@ -4145,4 +4145,237 @@ describe("Twilio phone voice bridge", () => {
       await fs.rm(outputDir, { recursive: true, force: true })
     }
   }, 20_000)
+
+  it("FLOOR GATE: caller barge-in mid-greeting still lets Slugger speak on the next caller turn", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-gate-barge-"))
+    const realtimeGreetingPayload = Buffer.alloc(160, 0x7f).toString("base64")
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    let socket: WebSocket | undefined
+    try {
+      // Mock OpenAI side: every wire response.create produces audio. The
+      // greeting response.done is HELD by the mock so we can simulate the
+      // realistic timing where caller transcript-completed arrives BEFORE
+      // OpenAI emits response.done for the in-flight greeting. The test
+      // releases the held response.done after sending the transcript so we
+      // exercise the post-barge-in cleanup path that previously left the floor
+      // stuck with floorOwner=caller for the rest of the call.
+      let greetingResponseCreateSeen = false
+      let releaseGreetingDone: (() => void) | null = null
+      const greetingDoneGate = new Promise<void>((resolve) => {
+        releaseGreetingDone = resolve
+      })
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+          openaiMessages.push(event)
+          if (event.type !== "response.create") return
+          const sequence = openaiMessages.filter((e) => e.type === "response.create").length
+          const isGreeting = !greetingResponseCreateSeen
+          if (isGreeting) greetingResponseCreateSeen = true
+          const responseId = isGreeting ? "resp-greeting" : `resp-${sequence}`
+          ws.send(JSON.stringify({ type: "response.created", response: { id: responseId } }))
+          ws.send(JSON.stringify({
+            type: "response.output_audio.delta",
+            item_id: `item-${sequence}`,
+            content_index: 0,
+            delta: realtimeGreetingPayload,
+          }))
+          if (isGreeting) {
+            // Hold the greeting's response.done until the test signals.
+            void greetingDoneGate.then(() => {
+              ws.send(JSON.stringify({ type: "response.done", response: { id: responseId } }))
+            })
+          } else {
+            ws.send(JSON.stringify({ type: "response.done", response: { id: responseId } }))
+          }
+        })
+      })
+
+      server = await startTwilioPhoneBridgeServer({
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        agentRoot: path.join(outputDir, "slugger.ouro"),
+        transportMode: "media-stream" as const,
+        conversationEngine: "openai-realtime" as const,
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          websocketUrl: openaiUrl,
+          model: "gpt-realtime-2",
+        },
+      })
+
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
+      const twilioMessages = collectSocketMessages(socket)
+      await waitForSocketOpen(socket)
+      sendSocketJson(socket, {
+        event: "start",
+        start: {
+          streamSid: "MZBARGE",
+          callSid: "CABARGE",
+          customParameters: { From: "+15551234567", To: "+15557654321" },
+        },
+      })
+
+      // Wait until the greeting response.create has been sent and at least one
+      // audio frame has been forwarded to Twilio.
+      await vi.waitFor(() => expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThanOrEqual(1), { timeout: 10_000 })
+      await vi.waitFor(() => expect(twilioMessages.some((event) =>
+        event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
+      )).toBe(true), { timeout: 10_000 })
+
+      // Caller barges in mid-greeting. Send enough media frames to make the
+      // barge-in detector accept the speech_started as a real caller turn.
+      const appendBaseline = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+      for (let index = 0; index < 14; index += 1) sendMediaFrame(socket, 0x00)
+      await vi.waitFor(() => {
+        const appended = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+        expect(appended).toBeGreaterThanOrEqual(appendBaseline + 14)
+      }, { timeout: 5_000 })
+      openaiSockets[0]?.send(JSON.stringify({ type: "input_audio_buffer.speech_started" }))
+      // Small pause so the runtime applies caller.speech.started before the
+      // subsequent caller events arrive.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const baselineResponseCreates = openaiMessages.filter((e) => e.type === "response.create").length
+
+      // Caller's barge-in utterance finishes and OpenAI delivers its transcript
+      // FIRST — the greeting's response.done is still held by the mock, so this
+      // is the realistic case the legacy code raced through but the gate now
+      // gets to observe in order.
+      openaiSockets[0]?.send(JSON.stringify({ type: "input_audio_buffer.speech_stopped" }))
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "wait actually I have a different question",
+      }))
+      // Now release the held greeting response.done.
+      releaseGreetingDone?.()
+
+      // Slugger MUST speak on this next caller turn. If the floor stayed stuck
+      // in caller-speaking from the unresolved barge-in, the gate would block
+      // the user-turn-final timer's response.create and Slugger would be silent
+      // for the rest of the call.
+      await vi.waitFor(() => {
+        expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThan(baselineResponseCreates)
+      }, { timeout: 5_000 })
+    } finally {
+      for (const ws of openaiSockets) {
+        if (ws.readyState === WebSocket.OPEN) await closeSocket(ws)
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 25_000)
+
+  it("FLOOR GATE: caller utterance that never transcribes still releases the floor on input_audio_buffer.speech_stopped", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-twilio-phone-gate-stopped-"))
+    const realtimeGreetingPayload = Buffer.alloc(160, 0x7f).toString("base64")
+    const openaiMessages: Record<string, unknown>[] = []
+    const openaiSockets: WebSocket[] = []
+    const openaiServer = new WebSocketServer({ port: 0 })
+    const address = openaiServer.address()
+    if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
+    const openaiUrl = `ws://127.0.0.1:${address.port}`
+    let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
+    let socket: WebSocket | undefined
+    try {
+      openaiServer.on("connection", (ws) => {
+        openaiSockets.push(ws as WebSocket)
+        ws.on("message", (raw) => {
+          const event = JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>
+          openaiMessages.push(event)
+          if (event.type !== "response.create") return
+          const sequence = openaiMessages.filter((e) => e.type === "response.create").length
+          const responseId = `resp-stopped-${sequence}`
+          ws.send(JSON.stringify({ type: "response.created", response: { id: responseId } }))
+          ws.send(JSON.stringify({
+            type: "response.output_audio.delta",
+            item_id: `item-${sequence}`,
+            content_index: 0,
+            delta: realtimeGreetingPayload,
+          }))
+          ws.send(JSON.stringify({ type: "response.done", response: { id: responseId } }))
+        })
+      })
+
+      server = await startTwilioPhoneBridgeServer({
+        ...baseBridgeOptions(outputDir),
+        publicBaseUrl: "https://voice.example.com",
+        port: 0,
+        agentRoot: path.join(outputDir, "slugger.ouro"),
+        transportMode: "media-stream" as const,
+        conversationEngine: "openai-realtime" as const,
+        openaiRealtime: {
+          apiKey: "openai-secret",
+          websocketUrl: openaiUrl,
+          model: "gpt-realtime-2",
+        },
+      })
+
+      socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream`)
+      const twilioMessages = collectSocketMessages(socket)
+      await waitForSocketOpen(socket)
+      sendSocketJson(socket, {
+        event: "start",
+        start: {
+          streamSid: "MZSTOPPED",
+          callSid: "CASTOPPED",
+          customParameters: { From: "+15551234567", To: "+15557654321" },
+        },
+      })
+
+      // Greeting completes.
+      await vi.waitFor(() => expect(twilioMessages.some((event) =>
+        event.event === "media" && (event as { media?: { payload?: string } }).media?.payload === realtimeGreetingPayload,
+      )).toBe(true), { timeout: 10_000 })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const baselineResponseCreates = openaiMessages.filter((e) => e.type === "response.create").length
+
+      // Caller makes a brief sub-vocal sound: VAD detects speech_started + frames,
+      // but transcription never completes (no `conversation.item.input_audio_transcription.completed`).
+      // OpenAI eventually emits speech_stopped. Without that event being wired
+      // into the floor model, the floor stays stuck in caller-speaking and any
+      // future legitimate response request is blocked.
+      const appendBaseline = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+      for (let index = 0; index < 14; index += 1) sendMediaFrame(socket, 0x00)
+      await vi.waitFor(() => {
+        const appended = openaiMessages.filter((e) => e.type === "input_audio_buffer.append").length
+        expect(appended).toBeGreaterThanOrEqual(appendBaseline + 14)
+      }, { timeout: 5_000 })
+      openaiSockets[0]?.send(JSON.stringify({ type: "input_audio_buffer.speech_started" }))
+      // Brief pause to let the runtime apply caller.speech.started.
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      openaiSockets[0]?.send(JSON.stringify({ type: "input_audio_buffer.speech_stopped" }))
+
+      // Now a real caller turn arrives with a transcript. The floor must have
+      // released on speech_stopped so the gate allows the user-turn-final
+      // response.create. Without speech_stopped wiring, the floor is stuck and
+      // Slugger never speaks.
+      openaiSockets[0]?.send(JSON.stringify({
+        type: "conversation.item.input_audio_transcription.completed",
+        transcript: "hey can you help me with something",
+      }))
+
+      await vi.waitFor(() => {
+        expect(openaiMessages.filter((e) => e.type === "response.create").length).toBeGreaterThan(baselineResponseCreates)
+      }, { timeout: 5_000 })
+    } finally {
+      for (const ws of openaiSockets) {
+        if (ws.readyState === WebSocket.OPEN) await closeSocket(ws)
+      }
+      if (socket && socket.readyState === WebSocket.OPEN) await closeSocket(socket)
+      if (server) await closeTwilioPhoneBridgeServer(server)
+      await closeWebSocketServer(openaiServer)
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  }, 25_000)
 })

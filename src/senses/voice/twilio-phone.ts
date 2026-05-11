@@ -2344,6 +2344,10 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       this.handleCallerSpeechStarted()
       return
     }
+    if (type === "input_audio_buffer.speech_stopped") {
+      this.handleCallerSpeechStopped()
+      return
+    }
     if (type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
       this.handleUserTranscript(event.transcript)
       return
@@ -2411,6 +2415,22 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     this.pendingUserTurnResponseTimer = null
   }
 
+  private handleCallerSpeechStopped(): void {
+    // VAD signaled the caller stopped speaking. Release the floor immediately
+    // even if transcription has not yet completed (and may never complete for
+    // sub-vocal sounds), so the gate cannot stay stuck thinking the caller
+    // still owns the floor. If a transcript-completed event eventually
+    // arrives, applyCallerTranscriptFinal will run next on an already-released
+    // floor and simply remember the caller turn id.
+    if (!this.activeCallerTurnId) return
+    if (this.floor.state.floorOwner !== "caller" && this.floor.state.phase !== "caller-speaking") return
+    this.floor.apply({
+      type: "caller.speech.ended",
+      atMs: Date.now(),
+      turnId: this.activeCallerTurnId,
+    })
+  }
+
   private handleOpenAIAudioDelta(event: Record<string, unknown>): void {
     const payload = stringField(event.delta)
     if (!payload) return
@@ -2448,7 +2468,26 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
     const playback = this.playbackState
     const turnId = `caller-turn-${++this.callerTurnSequence}`
     this.activeCallerTurnId = turnId
+    const interruptedResponseId = this.floor.state.activeAssistantSpeechId
     this.floor.apply({ type: "caller.speech.started", atMs: Date.now(), turnId })
+    if (interruptedResponseId) {
+      // The caller barged in while the floor model still considered an
+      // assistant response active. Without an explicit cancellation, the
+      // assistant.speech.done that eventually arrives leaves floorOwner=caller
+      // permanently set (the reducer only flips owner away from "assistant"
+      // when applying speech.done) and every subsequent caller turn hits the
+      // gate's caller_has_floor block. That is the "Slugger goes silent for
+      // the rest of the call" symptom. Emit a typed cancellation so the floor
+      // model takes the interruption branch and the transcript that follows
+      // can cleanly release the floor.
+      this.floor.apply({
+        type: "assistant.speech.cancelled",
+        atMs: Date.now(),
+        responseId: interruptedResponseId,
+        reason: "caller_barge_in",
+      })
+      this.pendingGatedResponseId = null
+    }
     this.playbackMarks.clear()
     this.sendTwilioClear()
     if (!playback?.itemId) return
@@ -3534,6 +3573,10 @@ class OpenAISipPhoneSession {
       this.clearPendingUserTurnResponse()
       return
     }
+    if (type === "input_audio_buffer.speech_stopped") {
+      this.handleCallerSpeechStopped()
+      return
+    }
     if (type === "conversation.item.input_audio_transcription.completed" && typeof event.transcript === "string") {
       this.recordOutboundAmdTranscriptCandidate(event.transcript)
       this.handleUserTranscript(event.transcript)
@@ -3599,6 +3642,22 @@ class OpenAISipPhoneSession {
     if (!this.pendingUserTurnResponseTimer) return
     clearTimeout(this.pendingUserTurnResponseTimer)
     this.pendingUserTurnResponseTimer = null
+  }
+
+  private handleCallerSpeechStopped(): void {
+    // VAD signaled the caller stopped speaking. Release the floor immediately
+    // even if transcription has not yet completed (and may never complete for
+    // sub-vocal sounds), so the gate cannot stay stuck thinking the caller
+    // still owns the floor. If a transcript-completed event eventually
+    // arrives, applyCallerTranscriptFinal will run next on an already-released
+    // floor and simply remember the caller turn id.
+    if (!this.activeCallerTurnId) return
+    if (this.floor.state.floorOwner !== "caller" && this.floor.state.phase !== "caller-speaking") return
+    this.floor.apply({
+      type: "caller.speech.ended",
+      atMs: Date.now(),
+      turnId: this.activeCallerTurnId,
+    })
   }
 
   private registerRealtimeToolResponse(responseId: string, callId: string): RealtimeToolResponseState | undefined {
