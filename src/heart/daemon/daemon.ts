@@ -424,6 +424,7 @@ export type DaemonCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string }
+  | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list" }
@@ -1403,6 +1404,13 @@ export class OuroDaemon {
         return {
           ok: true,
           message: `poked habit ${command.habitName} for ${command.agent}`,
+        }
+      }
+      case "await.poke": {
+        this.processManager.sendToAgent?.(command.agent, { type: "await", awaitName: command.awaitName })
+        return {
+          ok: true,
+          message: `poked await ${command.awaitName} for ${command.agent}`,
         }
       }
       case "mcp.list": {

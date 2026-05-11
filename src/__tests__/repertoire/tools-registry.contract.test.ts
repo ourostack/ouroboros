@@ -206,7 +206,10 @@ describe("tool registry contract", () => {
 
     expect(names).toContain("mail_outbox");
     expect(names).toContain("friend_list");
-    // Exact count: 80 tools (78 prior + mail_index_refresh + trip_calendar)
-    expect(names).toHaveLength(80);
+    expect(names).toContain("await_condition");
+    expect(names).toContain("resolve_await");
+    expect(names).toContain("cancel_await");
+    // Exact count: 83 tools (80 prior + await_condition + resolve_await + cancel_await)
+    expect(names).toHaveLength(83);
   });
 });

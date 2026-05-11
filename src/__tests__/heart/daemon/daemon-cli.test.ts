@@ -8821,6 +8821,22 @@ describe("ouro habit CLI parsing", () => {
       habitName: "heartbeat",
     })
   })
+
+  it("parses poke --await <name> as await poke", () => {
+    expect(parseOuroCommand(["poke", "slugger", "--await", "hey_export"])).toEqual({
+      kind: "await.poke",
+      agent: "slugger",
+      awaitName: "hey_export",
+    })
+  })
+
+  it("poke --await takes priority over --habit and --task", () => {
+    expect(parseOuroCommand(["poke", "slugger", "--await", "hey_export", "--habit", "heartbeat", "--task", "x"])).toEqual({
+      kind: "await.poke",
+      agent: "slugger",
+      awaitName: "hey_export",
+    })
+  })
 })
 
 describe("ouro habit CLI execution", () => {

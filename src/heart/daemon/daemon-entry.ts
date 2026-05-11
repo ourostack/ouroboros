@@ -23,6 +23,8 @@ import { getRepoRoot, getAgentBundlesRoot } from "../identity"
 import { detectRuntimeMode } from "./runtime-mode"
 import { HabitScheduler } from "../habits/habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
+import { AwaitScheduler } from "../awaiting/await-scheduler"
+import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { writeDaemonTombstone } from "./daemon-tombstone"
@@ -150,6 +152,7 @@ const healthMonitor = new HealthMonitor({
 })
 
 const habitSchedulers: HabitScheduler[] = []
+const awaitSchedulers: AwaitScheduler[] = []
 let entryRuntimeStopping = false
 let stopCommandExitScheduled = false
 
@@ -157,6 +160,7 @@ function stopEntryRuntime(): void {
   if (entryRuntimeStopping) return
   entryRuntimeStopping = true
   for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+  for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
   healthMonitor.stopPeriodicChecks()
 }
 
@@ -303,6 +307,17 @@ function emitHabitSetupError(agent: string, error: unknown): void {
   })
 }
 
+function emitAwaitSetupError(agent: string, error: unknown): void {
+  const normalized = error instanceof Error ? error : new Error(String(error))
+  emitNervesEvent({
+    level: "error",
+    component: "daemon",
+    event: "daemon.await_setup_error",
+    message: `await setup failed for agent ${agent}`,
+    meta: { agent, error: normalized.message },
+  })
+}
+
 /* v8 ignore start — daemon health writer wiring, tested via daemon-health.test.ts @preserve */
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
@@ -385,6 +400,85 @@ void daemon.start().then(() => {
         habitsDir,
         error,
         guidance: `fix ${agent} habits or cron setup and rerun ouro up to restore habit automation`,
+      })
+    }
+
+    // Parallel await-condition scheduler. Uses its own OS cron manager so
+    // habits and awaits don't share label namespace and stale removals can't
+    // collide.
+    const awaitsDir = path.join(bundleRoot, "awaiting")
+    const awaitDegradedComponent = `awaits:${agent}`
+    try {
+      const awaitOsCronManager = new LaunchdCronManager(osCronDeps)
+      const awaitScheduler = new AwaitScheduler({
+        agent,
+        awaitsDir,
+        osCronManager: awaitOsCronManager,
+        onAwaitFire: (awaitName) => {
+          processManager.sendToAgent(agent, { type: "await", awaitName })
+        },
+        onAwaitExpire: (awaitName) => {
+          void archiveAndAlertExpiredAwait({
+            agentRoot: bundleRoot,
+            agentName: agent,
+            awaitName,
+            deliveryDeps: {
+              agentName: agent,
+              queuePending: () => {
+                // Best-effort: queue inner-dialog wake so the agent processes the alert path
+                sendDaemonCommand(socketPath, { kind: "inner.wake", agent }).catch(() => {})
+              },
+            },
+          }).catch((err) => {
+            emitNervesEvent({
+              level: "error",
+              component: "daemon",
+              event: "daemon.await_expire_error",
+              message: "await expiry handler threw",
+              meta: { agent, awaitName, error: err instanceof Error ? err.message : String(err) },
+            })
+          })
+        },
+        deps: {
+          readdir: (dir) => fs.readdirSync(dir),
+          readFile: (p, enc) => fs.readFileSync(p, enc as BufferEncoding),
+          existsSync: (p) => fs.existsSync(p),
+          mkdir: (dir) => { fs.mkdirSync(dir, { recursive: true }) },
+          now: () => Date.now(),
+          ouroPath,
+          watch: (dir, cb) => fs.watch(dir, cb),
+        },
+      })
+      try {
+        awaitScheduler.start()
+        awaitScheduler.startPeriodicReconciliation()
+        awaitScheduler.watchForChanges()
+        awaitSchedulers.push(awaitScheduler)
+      } catch (error) {
+        try {
+          awaitScheduler.stopWatching()
+          awaitScheduler.stop()
+        } catch {
+          // best-effort cleanup
+        }
+        emitAwaitSetupError(agent, error)
+        recordRecoverableBootstrapFailure({
+          agent,
+          component: awaitDegradedComponent,
+          habitsDir: awaitsDir,
+          error,
+          guidance: `fix ${agent} awaits or cron setup and rerun ouro up to restore await automation`,
+        })
+      }
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err))
+      emitAwaitSetupError(agent, error)
+      recordRecoverableBootstrapFailure({
+        agent,
+        component: awaitDegradedComponent,
+        habitsDir: awaitsDir,
+        error,
+        guidance: `fix ${agent} awaits or cron setup and rerun ouro up to restore await automation`,
       })
     }
   }

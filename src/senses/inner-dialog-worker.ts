@@ -5,22 +5,24 @@ import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
 import { recordHabitRun } from "../heart/habits/habit-runtime-state"
 
-export type InnerDialogWorkerReason = "boot" | "habit" | "instinct"
+export type InnerDialogWorkerReason = "boot" | "habit" | "instinct" | "await"
 
 export interface InnerDialogWorkerMessage {
-  type: "heartbeat" | "habit" | "shutdown" | "poke" | "chat" | "message" | string
+  type: "heartbeat" | "habit" | "await" | "shutdown" | "poke" | "chat" | "message" | string
   taskId?: string
   habitName?: string
+  awaitName?: string
 }
 
 export interface InnerDialogWorkerRunOptions {
   reason: InnerDialogWorkerReason
   taskId?: string
   habitName?: string
+  awaitName?: string
 }
 
 export interface InnerDialogWorkerController {
-  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void>
+  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
 
@@ -28,6 +30,7 @@ interface QueueEntry {
   reason: InnerDialogWorkerReason
   taskId?: string
   habitName?: string
+  awaitName?: string
 }
 
 /**
@@ -115,9 +118,9 @@ export function createInnerDialogWorker(
     }
   }
 
-  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string): Promise<void> {
+  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName })
+      queue.push({ reason, taskId, habitName, awaitName })
       return
     }
 
@@ -126,11 +129,12 @@ export function createInnerDialogWorker(
       let nextReason = reason
       let nextTaskId = taskId
       let nextHabitName = habitName
+      let nextAwaitName = awaitName
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       do {
         try {
-          await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName })
+          await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
         } catch (error) {
           emitNervesEvent({
             level: "error",
@@ -163,6 +167,7 @@ export function createInnerDialogWorker(
           nextReason = next.reason
           nextTaskId = next.taskId
           nextHabitName = next.habitName
+          nextAwaitName = next.awaitName
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue
         }
@@ -190,6 +195,7 @@ export function createInnerDialogWorker(
           nextReason = "instinct"
           nextTaskId = undefined
           nextHabitName = undefined
+          nextAwaitName = undefined
           continue
         }
 
@@ -208,6 +214,13 @@ export function createInnerDialogWorker(
       const habitName = maybeMessage.habitName ?? "(unnamed)"
       recordHabitFireForRecursion(habitName)
       await run("habit", undefined, maybeMessage.habitName)
+      return
+    }
+    if (maybeMessage.type === "await") {
+      /* v8 ignore next -- defensive fallback: live await dispatch always sets awaitName @preserve */
+      const awaitName = maybeMessage.awaitName ?? "(unnamed)"
+      recordHabitFireForRecursion(`await:${awaitName}`)
+      await run("await", undefined, undefined, maybeMessage.awaitName)
       return
     }
     if (maybeMessage.type === "heartbeat") {

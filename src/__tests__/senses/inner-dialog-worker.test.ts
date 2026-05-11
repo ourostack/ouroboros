@@ -96,7 +96,23 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined })
+  })
+
+  it("handles await messages with awaitName", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    await worker.handleMessage({ type: "await", awaitName: "hey_export" })
+    expect(runTurn).toHaveBeenCalledWith({ reason: "await", taskId: undefined, habitName: undefined, awaitName: "hey_export" })
+  })
+
+  it("await message with no awaitName defaults to (unnamed) but still runs", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createInnerDialogWorker(runTurn)
+
+    await worker.handleMessage({ type: "await" })
+    expect(runTurn).toHaveBeenCalledWith({ reason: "await", taskId: undefined, habitName: undefined, awaitName: undefined })
   })
 
   it("handles habit messages with custom habitName", async () => {

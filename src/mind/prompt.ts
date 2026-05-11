@@ -21,7 +21,8 @@ import { getTaskModule } from "../repertoire/tasks";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
 import { formatActiveWorkFrame, formatLiveWorldStateCheckpoint, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
-import { deriveCommitments, formatCommitments } from "../heart/commitments";
+import { deriveCommitments, formatCommitments, type AwaitingCommitment } from "../heart/commitments";
+import { loadPendingAwaitsForCommitments } from "../heart/awaiting/await-loader";
 import { findActivePersistentObligation, findStatusObligation, renderActiveObligationSteering, renderConcreteStatusGuidance, renderLiveThreadStatusShape } from "./obligation-steering";
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health";
 import { preImplementationScrutinySection } from "./scrutiny";
@@ -789,6 +790,8 @@ export interface BuildSystemOptions {
   daemonHealth?: import("../heart/daemon/daemon-health").DaemonHealthState | null;
   /** Pre-read journal file entries. When provided, skips the journal dir read. */
   journalFiles?: JournalFileEntry[];
+  /** Pre-loaded pending awaits for the commitments section. When omitted, loads from <bundle>/awaiting/. */
+  pendingAwaits?: AwaitingCommitment[];
 }
 
 function bridgeContextSection(options?: BuildSystemOptions): string {
@@ -1078,8 +1081,17 @@ export function commitmentsSection(options?: BuildSystemOptions): string {
   if (!options?.activeWorkFrame) return ""
   const job = options.activeWorkFrame.inner?.job
   if (!job) return ""
-  const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations)
-  if (commitments.committedTo.length === 0) return ""
+  let awaits: AwaitingCommitment[] = options.pendingAwaits ?? []
+  if (!options.pendingAwaits) {
+    try {
+      awaits = loadPendingAwaitsForCommitments(getAgentRoot())
+    } catch {
+      // Identity not configured (test/eager-call contexts) — proceed without awaits
+      awaits = []
+    }
+  }
+  const commitments = deriveCommitments(options.activeWorkFrame, job, options.activeWorkFrame.pendingObligations, awaits)
+  if (commitments.committedTo.length === 0 && awaits.length === 0) return ""
   return `## my commitments\n\n${formatCommitments(commitments)}`
 }
 

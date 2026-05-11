@@ -195,6 +195,7 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
 
   let taskId: string | undefined
   let habitName: string | undefined
+  let awaitName: string | undefined
   for (let i = 1; i < args.length; i += 1) {
     if (args[i] === "--task") {
       taskId = args[i + 1]
@@ -204,9 +205,14 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
       habitName = args[i + 1]
       i += 1
     }
+    if (args[i] === "--await") {
+      awaitName = args[i + 1]
+      i += 1
+    }
   }
 
-  // --habit takes priority over --task
+  // Priority order: --await > --habit > --task
+  if (awaitName) return { kind: "await.poke", agent, awaitName }
   if (habitName) return { kind: "habit.poke", agent, habitName }
   if (!taskId) throw new Error(`Usage\n${usage()}`)
   return { kind: "task.poke", agent, taskId }

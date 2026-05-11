@@ -131,4 +131,32 @@ describe("commitmentsSection", () => {
   it("emits nerves event reference", () => {
     expect(emitNervesEvent).toBeDefined()
   })
+
+  it("renders 'what i'm waiting on' when pendingAwaits is provided", () => {
+    const nowMs = new Date("2026-05-10T20:30:00.000Z").getTime()
+    const _ = nowMs
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame(),
+      pendingAwaits: [
+        {
+          name: "hey_export",
+          condition: "HEY export download visible",
+          checkedCount: 2,
+          lastCheckedAt: null,
+          lastObservation: null,
+        },
+      ],
+    })
+    expect(result).toContain("## my commitments")
+    expect(result).toContain("## what i'm waiting on")
+    expect(result).toContain("- hey_export: HEY export download visible")
+  })
+
+  it("returns empty string when no commitments and pendingAwaits is empty array", () => {
+    const result = commitmentsSection({
+      activeWorkFrame: makeFrame(),
+      pendingAwaits: [],
+    })
+    expect(result).toBe("")
+  })
 })

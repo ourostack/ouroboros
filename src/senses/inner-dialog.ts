@@ -33,6 +33,9 @@ import { createBridgeManager } from "../heart/bridges/manager"
 import { listSessionActivity, type SessionActivityRecord } from "../heart/session-activity"
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage } from "./habit-turn-message"
+import { buildAwaitTurnMessage } from "./await-turn-message"
+import { parseAwaitFile } from "../heart/awaiting/await-parser"
+import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
 import { indexJournalFiles } from "../mind/journal-index"
 import { parseHabitFile } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
@@ -58,9 +61,10 @@ export interface HabitParseErrorInfo {
 }
 
 export interface RunInnerDialogTurnOptions {
-  reason?: "boot" | "heartbeat" | "habit" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   taskId?: string
   habitName?: string
+  awaitName?: string
   parseErrors?: HabitParseErrorInfo[]
   instincts?: InnerDialogInstinct[]
   now?: () => Date
@@ -76,7 +80,7 @@ export interface InnerDialogTurnResult {
 
 interface InnerDialogRuntimeState {
   status: "idle" | "running"
-  reason?: "boot" | "heartbeat" | "habit" | "instinct"
+  reason?: "boot" | "heartbeat" | "habit" | "instinct" | "await"
   startedAt?: string
   lastCompletedAt?: string
 }
@@ -136,7 +140,7 @@ function displayCheckpoint(checkpoint?: string): string | undefined {
 
 export function buildInstinctUserMessage(
   instincts: InnerDialogInstinct[],
-  _reason: "boot" | "heartbeat" | "habit" | "instinct",
+  _reason: "boot" | "heartbeat" | "habit" | "instinct" | "await",
   state: InnerDialogState,
 ): string {
   const active = instincts.find((instinct) => instinct.enabled !== false) ?? DEFAULT_INNER_DIALOG_INSTINCTS[0]
@@ -682,6 +686,43 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           // swallowed: indexing failure must never block habit turn
         })
         /* v8 ignore stop */
+      }
+    } else if (reason === "await" && options?.awaitName) {
+      const agentRoot = getAgentRoot()
+      const awaitName = options.awaitName
+      const awaitFilePath = path.join(agentRoot, "awaiting", `${awaitName}.md`)
+      let awaitBody: string | undefined
+      let condition: string | null = null
+      let lastCheckedAt: string | null = null
+      let lastObservation: string | null = null
+      let checkedCount = 0
+      let awaitFound = false
+      try {
+        const awaitContent = fs.readFileSync(awaitFilePath, "utf-8")
+        const parsed = applyAwaitRuntimeState(agentRoot, parseAwaitFile(awaitContent, awaitFilePath)) as ReturnType<typeof parseAwaitFile> & Partial<AwaitRuntimeState>
+        awaitFound = true
+        awaitBody = parsed.body || undefined
+        condition = parsed.condition
+        lastCheckedAt = parsed.last_checked ?? null
+        lastObservation = parsed.last_observation ?? null
+        checkedCount = parsed.checked_count ?? 0
+      } catch {
+        // file missing — fall through to error message
+      }
+
+      if (!awaitFound || !condition) {
+        userContent = `await "${awaitName}" could not be read (file not found or no condition). check awaiting/${awaitName}.md.`
+      } else {
+        userContent = buildAwaitTurnMessage({
+          awaitName,
+          condition,
+          body: awaitBody,
+          lastCheckedAt,
+          lastObservation,
+          checkedCount,
+          checkpoint: displayCheckpoint(state.checkpoint),
+          now,
+        })
       }
     } else {
       userContent = buildInstinctUserMessage(instincts, reason, state)
