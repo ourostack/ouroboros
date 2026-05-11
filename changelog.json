@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.599",
+      "changes": [
+        "BlueBubbles in-flight marker hardening. The in-memory `bbInFlightMessageGuids` tracker had a leak class: any exit path in `handleBlueBubblesNormalizedEvent` that doesn't call `endBlueBubblesMessageInFlight` strands the marker forever (until BB sense process restart), silently halting forward progress on the recovery queue. Slugger lost BlueBubbles inbound for 12+ hours on 2026-05-11 — six user messages piled up unprocessed because each recovery attempt saw the stale marker, returned `already_processed` without actually processing, and the recovery loop counted progress without making any. The class fix: in-flight markers now carry a claim timestamp and expire after `BB_IN_FLIGHT_MAX_AGE_MS = 15 min` (50% beyond the 10-min recovery-turn timeout, so live owners get full headroom). `isBlueBubblesMessageInFlight` returns false for stale markers; `beginBlueBubblesMessageInFlight` is allowed to replace a stale marker and emits `senses.bluebubbles_in_flight_marker_expired` so the auto-eviction is observable. A leaked marker now self-clears in at most 15 min instead of forever. Defense-in-depth: explicit `endBlueBubblesMessageInFlight` audit still worth doing in a follow-up, but the TTL guarantees the bug class can't wedge the queue indefinitely."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.598",
       "changes": [
         "New `restart_runtime({ reason })` tool. Agent self-maintenance: asking Ari to restart the daemon over BlueBubbles is now a thing of the past. Sends `daemon.restart` over the existing socket — daemon logs the reason as `daemon.restart_requested`, runs its normal stop pathway, and exits. launchctl's KeepAlive policy auto-respawns the daemon, so the agent comes back fresh on the other side. The agent will not see this tool's return value — its process exits with the daemon and a clean boot replaces it. In dev mode (no launchctl) the daemon just exits; same observable behavior as `daemon.stop`, with the restart-requested audit event distinguishing intent."

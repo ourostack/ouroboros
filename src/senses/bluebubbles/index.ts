@@ -52,7 +52,34 @@ import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
 
 const bbFailoverStates = new Map<string, FailoverState>()
-const bbInFlightMessageGuids = new Set<string>()
+
+/**
+ * In-flight message tracker.
+ *
+ * Stores the timestamp (ms) when each (sessionKey, messageGuid) was claimed.
+ * Stale entries (older than BB_IN_FLIGHT_MAX_AGE_MS) are treated as expired:
+ * `isBlueBubblesMessageInFlight` returns false, and `beginBlueBubblesMessageInFlight`
+ * is allowed to replace the stale marker.
+ *
+ * Rationale: `handleBlueBubblesNormalizedEvent` has many exit paths and a leak
+ * on any one of them strands the marker forever (until BB sense process restart),
+ * which silently halts forward progress on the recovery queue. Slugger lost
+ * BlueBubbles inbound for 12+ hours on 2026-05-11 because of exactly this.
+ *
+ * The TTL bounds the worst case: a leaked marker self-clears after
+ * BB_IN_FLIGHT_MAX_AGE_MS, and the next recovery pass can retry. This is
+ * defense-in-depth alongside auditing the explicit `endBlueBubblesMessageInFlight`
+ * exit-path calls — the audit is still worthwhile, but the TTL guarantees the
+ * class of bug can't wedge the queue indefinitely.
+ */
+const bbInFlightMessageClaims = new Map<string, number>()
+
+/**
+ * In-flight markers expire 50% beyond the longest expected turn (recovery turn
+ * timeout = 10 min). 15 min gives normal turns full headroom while preventing
+ * a leaked marker from blocking forward progress for hours.
+ */
+export const BB_IN_FLIGHT_MAX_AGE_MS = 15 * 60_000
 
 type BlueBubblesCallbacks = ChannelCallbacks & {
   flush(): Promise<void>
@@ -150,21 +177,53 @@ function blueBubblesMessageKey(sessionKey: string, messageGuid: string): string 
   return `${sessionKey}:${messageGuid.trim()}`
 }
 
-function isBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
-  if (!messageGuid.trim()) return false
-  return bbInFlightMessageGuids.has(blueBubblesMessageKey(sessionKey, messageGuid))
+function isClaimStale(claimedAtMs: number, nowMs: number = Date.now()): boolean {
+  return nowMs - claimedAtMs >= BB_IN_FLIGHT_MAX_AGE_MS
 }
 
-function beginBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+/** Internal — exported only so unit tests can exercise the TTL semantics. */
+export function isBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
+  if (!messageGuid.trim()) return false
+  const claimedAtMs = bbInFlightMessageClaims.get(blueBubblesMessageKey(sessionKey, messageGuid))
+  if (claimedAtMs === undefined) return false
+  return !isClaimStale(claimedAtMs)
+}
+
+/** Internal — exported only so unit tests can exercise the TTL semantics. */
+export function beginBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): boolean {
   if (!messageGuid.trim()) return true
   const key = blueBubblesMessageKey(sessionKey, messageGuid)
-  if (bbInFlightMessageGuids.has(key)) return false
-  bbInFlightMessageGuids.add(key)
+  const existing = bbInFlightMessageClaims.get(key)
+  if (existing !== undefined && !isClaimStale(existing)) return false
+  if (existing !== undefined && isClaimStale(existing)) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.bluebubbles_in_flight_marker_expired",
+      message: "in-flight marker expired by TTL; allowing re-claim",
+      meta: {
+        sessionKey,
+        messageGuid,
+        claimAgeMs: Date.now() - existing,
+        ttlMs: BB_IN_FLIGHT_MAX_AGE_MS,
+      },
+    })
+  }
+  bbInFlightMessageClaims.set(key, Date.now())
   return true
 }
 
-function endBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): void {
-  bbInFlightMessageGuids.delete(blueBubblesMessageKey(sessionKey, messageGuid))
+/** Internal — exported only so unit tests can exercise the TTL semantics. */
+export function endBlueBubblesMessageInFlight(sessionKey: string, messageGuid: string): void {
+  bbInFlightMessageClaims.delete(blueBubblesMessageKey(sessionKey, messageGuid))
+}
+
+/**
+ * Test-only: clear all in-flight markers. Production code must use begin/end pairs.
+ * Exported so unit tests can reset cross-test state without resetting modules.
+ */
+export function __resetBlueBubblesInFlightForTests(): void {
+  bbInFlightMessageClaims.clear()
 }
 
 interface RuntimeDeps {
