@@ -197,11 +197,9 @@ function contentToText(content: unknown): string {
   return text.trim()
 }
 
-export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessageParam[]): string {
-  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant")
-  if (!lastAssistant) return "no prior checkpoint recorded"
-  const assistantText = contentToText(lastAssistant.content)
-  if (!assistantText) return "no prior checkpoint recorded"
+function checkpointTextFromAssistantContent(content: unknown): string | null {
+  const assistantText = contentToText(content)
+  if (!assistantText) return null
 
   const cleanedLines = assistantText
     .split("\n")
@@ -212,13 +210,101 @@ export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessagePar
     .find((line) => /^checkpoint\s*:/i.test(line))
   if (explicitCheckpoint) {
     const parsed = explicitCheckpoint.replace(/^checkpoint\s*:\s*/i, "").trim()
-    return parsed || "no prior checkpoint recorded"
+    return parsed || null
   }
 
   const firstLine = cleanedLines[0]
-  if (!firstLine) return "no prior checkpoint recorded"
-  if (firstLine.length <= 220) return firstLine
-  return `${firstLine.slice(0, 217)}...`
+  return firstLine ?? null
+}
+
+function truncateCheckpointText(text: string): string {
+  if (text.length <= 220) return text
+  return `${text.slice(0, 217)}...`
+}
+
+function parseToolArguments(argumentsValue: string | undefined): Record<string, unknown> {
+  if (!argumentsValue) return {}
+  try {
+    const parsed = JSON.parse(argumentsValue) as unknown
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function toolArgumentText(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key]
+    if (typeof value === "string" && value.trim()) {
+      return value.trim()
+    }
+  }
+  return ""
+}
+
+function summarizeToolAction(name: string | undefined, argumentsValue: string | undefined): string | null {
+  if (!name) return null
+  const args = parseToolArguments(argumentsValue)
+  if (name === "surface") {
+    const message = toolArgumentText(args, ["message", "text", "content"])
+    return message ? `surfaced: ${message}` : null
+  }
+  if (name === "ponder") {
+    const thought = toolArgumentText(args, ["summary", "question", "topic", "prompt"])
+    return thought ? `pondered: ${thought}` : null
+  }
+  if (name === "diary_write") {
+    const note = toolArgumentText(args, ["text", "content", "note", "entry"])
+    return note ? `diary: ${note}` : null
+  }
+  if (name === "let_go") {
+    const reason = toolArgumentText(args, ["reason", "note", "status"])
+    return reason ? `let go: ${reason}` : null
+  }
+  if (name === "rest") {
+    const note = toolArgumentText(args, ["note", "status"])
+    return note ? `rested: ${note}` : null
+  }
+  return null
+}
+
+function extractToolFunction(toolCall: unknown): { name?: string; arguments?: string } | null {
+  if (!toolCall || typeof toolCall !== "object" || !("function" in toolCall)) return null
+  const maybeFunction = (toolCall as { function?: unknown }).function
+  if (!maybeFunction || typeof maybeFunction !== "object") return null
+
+  const name = "name" in maybeFunction && typeof maybeFunction.name === "string"
+    ? maybeFunction.name
+    : undefined
+  const argumentsValue = "arguments" in maybeFunction && typeof maybeFunction.arguments === "string"
+    ? maybeFunction.arguments
+    : undefined
+
+  return { name, arguments: argumentsValue }
+}
+
+function checkpointTextFromAssistantToolCalls(message: OpenAI.ChatCompletionMessageParam): string | null {
+  if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) return null
+  for (let i = message.tool_calls.length - 1; i >= 0; i--) {
+    const toolFunction = extractToolFunction(message.tool_calls[i])
+    const summary = summarizeToolAction(toolFunction?.name, toolFunction?.arguments)
+    if (summary) return summary
+  }
+  return null
+}
+
+export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== "assistant") continue
+    const textCheckpoint = checkpointTextFromAssistantContent(message.content)
+    if (textCheckpoint) return truncateCheckpointText(textCheckpoint)
+    const toolCheckpoint = checkpointTextFromAssistantToolCalls(message)
+    if (toolCheckpoint) return truncateCheckpointText(toolCheckpoint)
+  }
+  return "no prior checkpoint recorded"
 }
 
 function extractAssistantPreview(messages: OpenAI.ChatCompletionMessageParam[], maxLength = 120): string {

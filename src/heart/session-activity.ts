@@ -44,7 +44,7 @@ function resolveFriendName(friendId: string, friendsDir: string, agentName: stri
   }
 }
 
-function parseFriendActivity(sessionPath: string): {
+function parseFriendActivity(sessionPath: string, activeThresholdMs: number, nowMs: number): {
   lastActivityMs: number
   lastActivityAt: string
   activitySource: "friend-facing" | "mtime-fallback"
@@ -56,6 +56,10 @@ function parseFriendActivity(sessionPath: string): {
   try {
     mtimeMs = fs.statSync(sessionPath).mtimeMs
   } catch {
+    return null
+  }
+
+  if (Number.isFinite(activeThresholdMs) && nowMs - mtimeMs > activeThresholdMs) {
     return null
   }
 
@@ -161,7 +165,7 @@ export function listSessionActivity(query: SessionActivityQuery): SessionActivit
         }
 
         const sessionPath = path.join(channelPath, keyFile)
-        const activity = parseFriendActivity(sessionPath)
+        const activity = parseFriendActivity(sessionPath, activeThresholdMs, nowMs)
         if (!activity) continue
         if (nowMs - activity.lastActivityMs > activeThresholdMs) continue
 

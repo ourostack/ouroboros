@@ -16,7 +16,13 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "../../../heart/daemon/thoughts"
+import {
+  parseInnerDialogSession,
+  formatThoughtTurns,
+  getInnerDialogSessionPath,
+  followThoughts,
+  extractThoughtResponseFromMessages,
+} from "../../../heart/daemon/thoughts"
 
 describe("thoughts", () => {
   function tmpSessionFile(messages: unknown[]): string {
@@ -447,6 +453,46 @@ describe("thoughts", () => {
       expect(turns[0].tools).toEqual(["real_tool"])
     })
 
+    it("shows meaningful tool-only turns instead of a blank response", () => {
+      const sessionPath = tmpSessionFile([
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "...time passing. anything stirring?\n\nlast checkpoint: older visible checkpoint" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_surface",
+              type: "function",
+              function: {
+                name: "surface",
+                arguments: JSON.stringify({ message: "HEY — something is WRONG." }),
+              },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_surface", content: "delivered — via iMessage" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_rest",
+              type: "function",
+              function: { name: "rest", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_rest", content: "(resting)" },
+      ])
+
+      const turns = parseInnerDialogSession(sessionPath)
+
+      expect(turns).toHaveLength(1)
+      expect(turns[0].tools).toEqual(["surface", "rest"])
+      expect(turns[0].response).toBe("surfaced: HEY — something is WRONG.")
+    })
+
     it("handles turn with no assistant response", () => {
       const sessionPath = tmpSessionFile([
         { role: "system", content: "system prompt" },
@@ -518,6 +564,129 @@ describe("thoughts", () => {
       ], 10)
 
       expect(output).toContain("(no response)")
+    })
+  })
+
+  describe("extractThoughtResponseFromMessages", () => {
+    it("summarizes meaningful tool-only actions when there is no assistant text", () => {
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_diary",
+              type: "function",
+              function: { name: "diary_write", arguments: JSON.stringify({ text: "logged the incident" }) },
+            },
+          ],
+        },
+      ])).toBe("diary: logged the incident")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_ponder",
+              type: "function",
+              function: { name: "ponder", arguments: JSON.stringify({ topic: "why the rest loop happened" }) },
+            },
+          ],
+        },
+      ])).toBe("pondered: why the rest loop happened")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_let_go",
+              type: "function",
+              function: { name: "let_go", arguments: JSON.stringify({ reason: "no longer relevant" }) },
+            },
+          ],
+        },
+      ])).toBe("let go: no longer relevant")
+
+      expect(extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_rest_note",
+              type: "function",
+              function: { name: "rest", arguments: JSON.stringify({ status: "waiting on the next tick" }) },
+            },
+          ],
+        },
+      ])).toBe("rested: waiting on the next tick")
+    })
+
+    it("ignores unrecognized or malformed tool-only actions", () => {
+      const response = extractThoughtResponseFromMessages([
+        { role: "tool", content: "orphaned" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_shell",
+              type: "function",
+              function: { name: "shell", arguments: JSON.stringify({ cmd: "pwd" }) },
+            },
+            { id: "call_custom", type: "custom" },
+          ],
+        },
+      ])
+
+      expect(response).toBe("")
+    })
+
+    it("ignores recognized tool-only actions when their arguments have no summary text", () => {
+      for (const toolCall of [
+        { name: "surface", arguments: JSON.stringify({ message: "" }) },
+        { name: "ponder", arguments: JSON.stringify({ summary: "" }) },
+        { name: "diary_write", arguments: JSON.stringify({ text: "" }) },
+        { name: "let_go", arguments: JSON.stringify({ reason: "" }) },
+        { name: "rest", arguments: "[]" },
+      ]) {
+        expect(extractThoughtResponseFromMessages([
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${toolCall.name}`,
+                type: "function",
+                function: toolCall,
+              },
+            ],
+          },
+        ])).toBe("")
+      }
+    })
+
+    it("truncates long tool-only summaries for display", () => {
+      const response = extractThoughtResponseFromMessages([
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_surface_long",
+              type: "function",
+              function: { name: "surface", arguments: JSON.stringify({ message: "A".repeat(250) }) },
+            },
+          ],
+        },
+      ])
+
+      expect(response.endsWith("...")).toBe(true)
+      expect(response.length).toBe(220)
     })
   })
 

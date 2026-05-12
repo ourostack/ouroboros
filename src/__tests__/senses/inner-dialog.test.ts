@@ -490,6 +490,160 @@ describe("inner dialog runtime", () => {
     expect(checkpoint).toBe("no prior checkpoint recorded")
   })
 
+  it("uses the latest meaningful tool-only assistant action when empty rest follows it", () => {
+    const checkpoint = deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: "older visible checkpoint",
+      },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_surface",
+            type: "function",
+            function: {
+              name: "surface",
+              arguments: JSON.stringify({
+                message: "HEY — something is WRONG. I just called rest hundreds of times.",
+              }),
+            },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_surface", content: "delivered — via iMessage" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_rest",
+            type: "function",
+            function: { name: "rest", arguments: "{}" },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_rest", content: "(resting)" },
+    ] as OpenAI.ChatCompletionMessageParam[])
+
+    expect(checkpoint).toBe("surfaced: HEY — something is WRONG. I just called rest hundreds of times.")
+  })
+
+  it("derives checkpoints from other meaningful tool-only assistant actions", () => {
+    expect(deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_ponder",
+            type: "function",
+            function: { name: "ponder", arguments: JSON.stringify({ question: "what just happened?" }) },
+          },
+        ],
+      },
+    ] as OpenAI.ChatCompletionMessageParam[])).toBe("pondered: what just happened?")
+
+    expect(deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_diary",
+            type: "function",
+            function: { name: "diary_write", arguments: JSON.stringify({ text: "logged the incident" }) },
+          },
+        ],
+      },
+    ] as OpenAI.ChatCompletionMessageParam[])).toBe("diary: logged the incident")
+
+    expect(deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_let_go",
+            type: "function",
+            function: { name: "let_go", arguments: JSON.stringify({ reason: "no longer relevant" }) },
+          },
+        ],
+      },
+    ] as OpenAI.ChatCompletionMessageParam[])).toBe("let go: no longer relevant")
+
+    expect(deriveResumeCheckpoint([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_rest_note",
+            type: "function",
+            function: { name: "rest", arguments: JSON.stringify({ note: "waiting on the next tick" }) },
+          },
+        ],
+      },
+    ] as OpenAI.ChatCompletionMessageParam[])).toBe("rested: waiting on the next tick")
+  })
+
+  it("skips unrecognized or malformed tool-only assistant actions when deriving checkpoints", () => {
+    const checkpoint = deriveResumeCheckpoint([
+      { role: "assistant", content: "previous meaningful checkpoint" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_shell",
+            type: "function",
+            function: { name: "shell", arguments: JSON.stringify({ cmd: "pwd" }) },
+          },
+          {
+            id: "call_diary_empty",
+            type: "function",
+            function: { name: "diary_write", arguments: "{}" },
+          },
+          {
+            id: "call_let_go_empty",
+            type: "function",
+            function: { name: "let_go", arguments: "{}" },
+          },
+          {
+            id: "call_ponder_empty",
+            type: "function",
+            function: { name: "ponder", arguments: "{}" },
+          },
+          {
+            id: "call_surface_array",
+            type: "function",
+            function: { name: "surface", arguments: "[]" },
+          },
+          {
+            id: "call_malformed",
+            type: "function",
+            function: { name: "surface", arguments: "{" },
+          },
+          { id: "call_bad_function", type: "function", function: "not an object" } as any,
+          {
+            id: "call_missing_function_fields",
+            type: "function",
+            function: { name: 7, arguments: 12 },
+          } as any,
+          {
+            id: "call_rest_without_arguments",
+            type: "function",
+            function: { name: "rest" },
+          } as any,
+          { id: "call_custom", type: "custom" },
+        ],
+      },
+    ] as OpenAI.ChatCompletionMessageParam[])
+
+    expect(checkpoint).toBe("previous meaningful checkpoint")
+  })
+
   // ── Pipeline integration tests ──────────────────────────────────
 
   it("calls handleInboundTurn instead of inline lifecycle", async () => {
