@@ -4161,6 +4161,254 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.runAgent).not.toHaveBeenCalled()
   })
 
+  it("marks old captured inbound sidecars superseded when the chat session already advanced", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const staleCaptured = makeCatchUpMessage({
+      messageGuid: "captured-superseded-guid",
+      timestamp: Date.parse("2026-04-24T23:20:14.289Z"),
+      textForAgent: "captured message from a stale recovery window",
+    })
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    recordBlueBubblesInbound("testagent", staleCaptured, "webhook")
+    const { sanitizeKey } = await import("../../../heart/config")
+
+    const sessionFilePath = path.join(
+      tempAgentRoot,
+      "state",
+      "sessions",
+      "friend-uuid",
+      "bluebubbles",
+      `${sanitizeKey(staleCaptured.chat.sessionKey)}.json`,
+    )
+    fs.mkdirSync(path.dirname(sessionFilePath), { recursive: true })
+    fs.writeFileSync(sessionFilePath, "{}\n", "utf-8")
+    mocks.loadSession.mockImplementation((filePath: string) => {
+      if (filePath !== sessionFilePath) return null
+      return {
+        messages: [],
+        events: [
+          {
+            role: "assistant",
+            time: { recordedAt: "2026-04-24T23:30:14.289Z" },
+          },
+        ],
+      } as any
+    })
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail === "upstream reachable")
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable",
+        pendingRecoveryCount: 0,
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+    const { hasProcessedBlueBubblesMessage, getBlueBubblesProcessedLogPath } = await import("../../../senses/bluebubbles/processed-log")
+    expect(hasProcessedBlueBubblesMessage("testagent", staleCaptured.chat.sessionKey, staleCaptured.messageGuid)).toBe(true)
+    const processedLog = fs.readFileSync(getBlueBubblesProcessedLogPath("testagent", staleCaptured.chat.sessionKey), "utf-8")
+    expect(processedLog).toContain("\"outcome\":\"recovery-superseded\"")
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_recovery_skip",
+        meta: expect.objectContaining({
+          messageGuid: "captured-superseded-guid",
+          dedupeReason: "session_superseded",
+        }),
+      }),
+    )
+  })
+
+  it("keeps old captured inbound sidecars pending when the matching session file vanishes during scan", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const pendingCaptured = makeCatchUpMessage({
+      messageGuid: "captured-vanished-session-guid",
+      timestamp: Date.parse("2026-04-24T23:20:14.289Z"),
+      textForAgent: "captured message with a racy session scan",
+    })
+    const { recordBlueBubblesInbound } = await import("../../../senses/bluebubbles/inbound-log")
+    recordBlueBubblesInbound("testagent", pendingCaptured, "webhook")
+    const { sanitizeKey } = await import("../../../heart/config")
+
+    const sessionFilePath = path.join(
+      tempAgentRoot,
+      "state",
+      "sessions",
+      "friend-uuid",
+      "bluebubbles",
+      `${sanitizeKey(pendingCaptured.chat.sessionKey)}.json`,
+    )
+    fs.mkdirSync(path.dirname(sessionFilePath), { recursive: true })
+    fs.symlinkSync(path.join(tempAgentRoot, "missing-session.json"), sessionFilePath)
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("recovery item"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable but iMessage is not caught up; 1 recovery item(s) queued",
+        pendingRecoveryCount: 1,
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("keeps captured inbound sidecars pending when session activity cannot prove they were superseded", async () => {
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+
+    const baseMessage = makeCatchUpMessage({
+      messageGuid: "captured-unproven-base-guid",
+      timestamp: Date.parse("2026-04-24T23:20:14.289Z"),
+      textForAgent: "captured message without superseding proof",
+    })
+    const { getBlueBubblesInboundLogPath } = await import("../../../senses/bluebubbles/inbound-log")
+    const logPath = getBlueBubblesInboundLogPath("testagent", baseMessage.chat.sessionKey)
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.writeFileSync(
+      logPath,
+      [
+        {
+          recordedAt: "2026-04-24T23:20:14.289Z",
+          messageGuid: "",
+          chatGuid: baseMessage.chat.chatGuid,
+          chatIdentifier: baseMessage.chat.chatIdentifier,
+          sessionKey: baseMessage.chat.sessionKey,
+          textForAgent: "blank guid should remain pending",
+          source: "webhook",
+        },
+        {
+          recordedAt: "not-a-date",
+          messageGuid: "captured-invalid-recorded-at-guid",
+          chatGuid: baseMessage.chat.chatGuid,
+          chatIdentifier: baseMessage.chat.chatIdentifier,
+          sessionKey: baseMessage.chat.sessionKey,
+          textForAgent: "invalid recordedAt should remain pending",
+          source: "webhook",
+        },
+        {
+          recordedAt: "2026-04-24T23:20:14.289Z",
+          messageGuid: "captured-null-session-guid",
+          chatGuid: baseMessage.chat.chatGuid,
+          chatIdentifier: baseMessage.chat.chatIdentifier,
+          sessionKey: baseMessage.chat.sessionKey,
+          textForAgent: "missing session payload should remain pending",
+          source: "webhook",
+        },
+        {
+          recordedAt: "2026-04-24T23:20:14.289Z",
+          messageGuid: "captured-old-session-activity-guid",
+          chatGuid: baseMessage.chat.chatGuid,
+          chatIdentifier: baseMessage.chat.chatIdentifier,
+          sessionKey: baseMessage.chat.sessionKey,
+          textForAgent: "old session activity should remain pending",
+          source: "webhook",
+        },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+      "utf-8",
+    )
+    const { sanitizeKey } = await import("../../../heart/config")
+    const nullSessionPath = path.join(
+      tempAgentRoot,
+      "state",
+      "sessions",
+      "friend-null",
+      "bluebubbles",
+      `${sanitizeKey(baseMessage.chat.sessionKey)}.json`,
+    )
+    const oldActivitySessionPath = path.join(
+      tempAgentRoot,
+      "state",
+      "sessions",
+      "friend-old-activity",
+      "bluebubbles",
+      `${sanitizeKey(baseMessage.chat.sessionKey)}.json`,
+    )
+    fs.mkdirSync(path.dirname(nullSessionPath), { recursive: true })
+    fs.mkdirSync(path.dirname(oldActivitySessionPath), { recursive: true })
+    fs.writeFileSync(nullSessionPath, "{}\n", "utf-8")
+    fs.writeFileSync(oldActivitySessionPath, "{}\n", "utf-8")
+    mocks.loadSession.mockImplementation((filePath: string) => {
+      if (filePath === nullSessionPath) return null
+      if (filePath !== oldActivitySessionPath) return null
+      return {
+        messages: [],
+        events: [
+          {
+            role: "system",
+            time: { recordedAt: "2026-04-24T23:30:14.289Z" },
+          },
+          {
+            role: "assistant",
+          },
+          {
+            role: "assistant",
+            time: { recordedAt: "not-a-date" },
+          },
+          {
+            role: "assistant",
+            time: { recordedAt: "2026-04-24T23:10:14.289Z" },
+          },
+        ],
+      } as any
+    })
+
+    const closableServer = createClosableServer()
+    mocks.createServer.mockReturnValue(closableServer.server as any)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    bluebubbles.startBlueBubblesApp()
+    await flushAsyncWork()
+    closableServer.close()
+
+    const runtimePath = path.join(tempAgentRoot, "state", "senses", "bluebubbles", "runtime.json")
+    await waitFor(() => fs.existsSync(runtimePath)
+      && JSON.parse(fs.readFileSync(runtimePath, "utf-8")).detail.includes("4 recovery item"))
+    expect(JSON.parse(fs.readFileSync(runtimePath, "utf-8"))).toEqual(
+      expect.objectContaining({
+        upstreamStatus: "ok",
+        detail: "upstream reachable but iMessage is not caught up; 4 recovery item(s) queued",
+        pendingRecoveryCount: 4,
+      }),
+    )
+    expect(mocks.emitNervesEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_recovery_skip",
+        meta: expect.objectContaining({ dedupeReason: "session_superseded" }),
+      }),
+    )
+    expect(mocks.repairEvent).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
   it("counts captured and mutation sidecars for the same GUID as one pending recovery item", async () => {
     const tempAgentRoot = makeTempDir()
     const { getAgentRoot } = await import("../../../heart/identity")

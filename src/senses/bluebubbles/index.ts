@@ -3,7 +3,7 @@ import * as http from "node:http"
 import * as path from "node:path"
 import OpenAI from "openai"
 import { runAgent, type ChannelCallbacks, createSummarize } from "../../heart/core"
-import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sessionPath } from "../../heart/config"
+import { getBlueBubblesChannelConfig, getBlueBubblesConfig, sanitizeKey, sessionPath } from "../../heart/config"
 import { getAgentName, getAgentRoot } from "../../heart/identity"
 import { recoverRuntimeCwd } from "../../heart/runtime-cwd"
 import { withSharedTurnLock } from "../../heart/turn-coordinator"
@@ -1684,7 +1684,10 @@ function listPendingCapturedInboundMessages(agentName: string): ReturnType<typeo
       seenMessageGuids.add(entry.messageGuid)
       return true
     })
-    .filter((entry) => !hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid))
+    .filter((entry) => {
+      if (hasProcessedBlueBubblesMessageGuid(agentName, entry.messageGuid)) return false
+      return !markCapturedInboundSuperseded(agentName, entry)
+    })
 }
 
 function listPendingRecoveryEntries(agentName: string): BlueBubblesPendingRecoveryEntry[] {
@@ -1719,6 +1722,72 @@ function parseTimestampMs(value: string | undefined): number | null {
   if (!value) return null
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function eventRecordedAtMs(event: { time?: { recordedAt?: string | null } }): number | null {
+  return parseTimestampMs(event.time?.recordedAt ?? undefined)
+}
+
+function blueBubblesSessionPathsForKey(agentName: string, sessionKey: string): string[] {
+  const sessionsRoot = path.join(getAgentRoot(agentName), "state", "sessions")
+  const fileName = `${sanitizeKey(sessionKey)}.json`
+  let friendDirs: fs.Dirent[]
+  try {
+    friendDirs = fs.readdirSync(sessionsRoot, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  return friendDirs
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(sessionsRoot, entry.name, "bluebubbles", fileName))
+    .filter((filePath) => {
+      try {
+        return fs.statSync(filePath).isFile()
+      } catch {
+        return false
+      }
+    })
+}
+
+function hasNewerBlueBubblesSessionActivity(agentName: string, sessionKey: string, recordedAt: string): boolean {
+  const recordedAtMs = parseTimestampMs(recordedAt)
+  if (recordedAtMs === null) return false
+
+  for (const sessionFilePath of blueBubblesSessionPathsForKey(agentName, sessionKey)) {
+    const session = loadSession(sessionFilePath)
+    for (const event of session?.events ?? []) {
+      if (event.role === "system") continue
+      const nextRecordedAtMs = eventRecordedAtMs(event)
+      if (nextRecordedAtMs !== null && nextRecordedAtMs > recordedAtMs) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function markCapturedInboundSuperseded(
+  agentName: string,
+  entry: ReturnType<typeof listRecordedBlueBubblesInbound>[number],
+): boolean {
+  if (!entry.messageGuid.trim()) return false
+  if (!hasNewerBlueBubblesSessionActivity(agentName, entry.sessionKey, entry.recordedAt)) return false
+
+  recordProcessedBlueBubblesMessage(agentName, inboundEntryToRecoveryEvent(entry), entry.source, "recovery-superseded")
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.bluebubbles_recovery_skip",
+    message: "skipped stale captured bluebubbles recovery because the session already advanced",
+    meta: {
+      messageGuid: entry.messageGuid,
+      sessionKey: entry.sessionKey,
+      source: entry.source,
+      dedupeReason: "session_superseded",
+    },
+  })
+  return true
 }
 
 function resolveBlueBubblesCatchUpSince(previousState: BlueBubblesRuntimeState, nowMs = Date.now()): number {

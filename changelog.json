@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.611",
+      "changes": [
+        "BlueBubbles recovery: stale captured inbound sidecars are now marked superseded when the chat session has already advanced, preventing old iMessage recovery entries from keeping runtime health in warn or replaying obsolete chat turns."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.610",
       "changes": [
         "Fix the inner-dialog rest loop incident: skip empty rest-only assistant turns when deriving checkpoints, surface meaningful tool-only actions in thoughts/status output, compact idle heartbeat rest triplets, and avoid stale session repair churn during active-session scans."

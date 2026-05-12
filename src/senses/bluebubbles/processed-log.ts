@@ -10,6 +10,7 @@ export type BlueBubblesProcessedOutcome =
   | "turn-complete"
   | "trust-gated"
   | "session-bootstrap"
+  | "recovery-superseded"
   | "recovery-timeout"
 
 type BlueBubblesProcessedLogEntry = {
