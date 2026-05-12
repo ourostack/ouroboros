@@ -15,7 +15,8 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
-import { createHttpHealthProbe } from "./http-health-probe"
+// HTTP health probe import intentionally removed — see the comment in
+// listHealthProbes() for the 2026-05-11 incident context.
 import type { SenseProbe } from "./health-monitor"
 
 export interface DaemonSenseRow {
@@ -752,13 +753,33 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         continue
       }
 
-      const machinePayload = machineRuntimeConfig.config
-      const bluebubblesChannel = machinePayload.bluebubblesChannel as Record<string, unknown> | undefined
-      const port = numberField(bluebubblesChannel, "port", DEFAULT_BLUEBUBBLES_PORT)
-      probes.push({
-        ...createHttpHealthProbe(`bluebubbles:${agent}`, port),
-        managedName: `${agent}:bluebubbles`,
-      })
+      // DELIBERATELY no HTTP health probe for BlueBubbles.
+      //
+      // We used to register `createHttpHealthProbe(...)` here, which GETs the
+      // sense's /health endpoint every ~60s with a 5s timeout. On 2026-05-11
+      // that caused a death spiral:
+      //   1. Sense gets busy with real work (e.g. VLM image describe → 20+s)
+      //   2. /health probe times out at 5s
+      //   3. Daemon declares the sense "critical" → SIGTERMs it mid-work
+      //   4. Sense respawns, recovery loop replays the same inbound message
+      //      into the agent's BB session (visible side-effect — slugger saw
+      //      the same user text injected 76 times)
+      //   5. New sense hits the same VLM call, gets killed at 5s, repeat
+      //
+      // The probe was redundant supervision: dead processes are already
+      // recaptured by `processManager`'s child-process exit handler. The
+      // probe specifically caught "alive but hung" cases — but the cost
+      // (killing genuinely-busy processes and replaying messages) far
+      // outweighed the benefit. For "alive but hung" detection we now
+      // rely on the agent's own awareness: BB sense's runtime.json carries
+      // pendingRecoveryCount + lastRecoveredAt, surfaced in the agent
+      // prompt. If recovery has been wedged for too long, the agent can
+      // call `restart_runtime` itself (see alpha.598 / PR #723).
+      //
+      // The respawn-loop guard in processManager is the backstop: even if
+      // something else triggers a tight respawn cycle for any reason, the
+      // guard fires and refuses further restarts after N attempts in M
+      // minutes, so we can never re-enter the 2026-05-11 spiral.
     }
     return probes
   }

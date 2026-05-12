@@ -1423,4 +1423,174 @@ describe("daemon process manager", () => {
     expect(snapshot?.lastExitCode).toBeNull()
     expect(snapshot?.lastSignal).toBeNull()
   })
+
+  /**
+   * Respawn-loop guard — regression coverage for the 2026-05-11 incident.
+   *
+   * The HTTP health probe was misfiring during BB sense's legitimate long
+   * operations (VLM image describe). Every minute it triggered
+   * `restartAgent` via `senseManager.restartSense`. Slugger's BB sense was
+   * SIGTERM'd mid-work ~60 times per hour. The recovery loop re-injected
+   * the same user message into the BB session every cycle — Ari saw his
+   * messages echoed back to Slugger 76+ times.
+   *
+   * The aggressive HTTP probe is gone (see sense-manager.ts), but the
+   * guard remains as defense-in-depth: any future cause of a tight
+   * restart loop is bounded at MAX restarts in WINDOW.
+   */
+  describe("respawn-loop guard", () => {
+    it("allows normal restart cadence (under the threshold)", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      const child = new MockChild()
+      spawn.mockReturnValue(child)
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // 4 restarts in quick succession — under the 5/window threshold.
+      for (let i = 0; i < 4; i++) {
+        spawn.mockReturnValue(new MockChild())
+        await manager.restartAgent("slugger")
+      }
+
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.errorReason).toBeNull()
+      // 1 initial start + 4 restarts = 5 spawn calls
+      expect(spawn.mock.calls.length).toBeGreaterThanOrEqual(4)
+    })
+
+    it("trips after MAX restarts in WINDOW and refuses further restarts", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // 5 restarts → fills the window; 6th must trip the guard.
+      for (let i = 0; i < 5; i++) {
+        await manager.restartAgent("slugger")
+      }
+      const spawnsBeforeTrip = spawn.mock.calls.length
+
+      // 6th call: guard trips, no further spawns.
+      await manager.restartAgent("slugger")
+      // The guard refuses to spawn — count must not increase.
+      expect(spawn.mock.calls.length).toBe(spawnsBeforeTrip)
+
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.errorReason).toMatch(/respawn loop/i)
+      expect(snapshot?.fixHint).toMatch(/ouro up/i)
+    })
+
+    it("after tripping, subsequent restartAgent calls are no-ops", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      for (let i = 0; i < 6; i++) {
+        await manager.restartAgent("slugger")
+      }
+      const spawnsAfterTrip = spawn.mock.calls.length
+
+      // Repeated restart attempts after trip don't spawn anything more.
+      for (let i = 0; i < 5; i++) {
+        await manager.restartAgent("slugger")
+      }
+      // Count is unchanged — the guard rejects every call.
+      expect(spawn.mock.calls.length).toBe(spawnsAfterTrip)
+    })
+
+    it("startAgent bypasses the guard — operator can resume after a trip via ouro down + ouro up", async () => {
+      let t = 1_000
+      now.mockImplementation(() => (t += 1_000))
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      await manager.startAutoStartAgents()
+
+      // Trip the guard.
+      for (let i = 0; i < 6; i++) {
+        await manager.restartAgent("slugger")
+      }
+
+      // Operator flow: `ouro down` then `ouro up`. Neither call is gated by
+      // the respawn-loop guard; the guard only blocks restartAgent.
+      await manager.stopAgent("slugger")
+      const spawnsBeforeUp = spawn.mock.calls.length
+      await manager.startAgent("slugger")
+
+      expect(spawn.mock.calls.length).toBeGreaterThan(spawnsBeforeUp)
+      const snapshot = manager.getAgentSnapshot("slugger")
+      expect(snapshot?.status).toBe("running")
+    })
+
+    it("trip clears automatically once all timestamps age out of the window", async () => {
+      let t = 0
+      now.mockImplementation(() => t)
+      spawn.mockImplementation(() => new MockChild())
+
+      const manager = new DaemonProcessManager({
+        agents,
+        spawn,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+      })
+      t = 1_000
+      await manager.startAutoStartAgents()
+
+      // 6 quick restarts — trips the guard.
+      for (let i = 0; i < 6; i++) {
+        t += 1_000
+        await manager.restartAgent("slugger")
+      }
+      const trippedSnap = manager.getAgentSnapshot("slugger")
+      expect(trippedSnap?.errorReason).toMatch(/respawn loop/i)
+
+      // Jump forward past the window — old timestamps age out, trip self-clears.
+      t += 12 * 60_000
+
+      // First restartAgent call after the window detects the empty array and
+      // clears the trip. Without something else to spawn, expect status update.
+      await manager.restartAgent("slugger")
+      const clearedSnap = manager.getAgentSnapshot("slugger")
+      expect(clearedSnap?.errorReason).toBeNull()
+
+      // Subsequent restarts work normally again, up to the threshold.
+      for (let i = 0; i < 3; i++) {
+        t += 1_000
+        await manager.restartAgent("slugger")
+      }
+      expect(manager.getAgentSnapshot("slugger")?.errorReason).toBeNull()
+    })
+  })
 })

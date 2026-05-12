@@ -209,7 +209,13 @@ describe("daemon sense manager", () => {
     ])
   })
 
-  it("builds BlueBubbles health probes from the machine-local listener config", async () => {
+  it("does NOT register a BlueBubbles HTTP health probe (regression: 2026-05-11 wedge)", async () => {
+    // Background: the BB sense used to be probed via GET /health every 60s with
+    // a 5s timeout. The probe interfered with legitimate long operations like
+    // VLM image describe (20+ s), triggering a death spiral of mid-work
+    // SIGTERMs. Probe registration was removed; this test pins that decision
+    // so a future refactor doesn't silently re-introduce it. See
+    // src/heart/daemon/sense-manager.ts `listHealthProbes()`.
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     writeAgentJson(bundlesRoot, "slugger", {
       version: 1,
@@ -231,11 +237,6 @@ describe("daemon sense manager", () => {
         webhookPath: "/bb-hook",
       },
     })
-    const createHttpHealthProbe = vi.fn((name: string, port: number) => ({
-      name,
-      check: async () => ({ ok: true, detail: String(port) }),
-    }))
-    vi.doMock("../../../heart/daemon/http-health-probe", () => ({ createHttpHealthProbe }))
 
     const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
     const manager = new DaemonSenseManager({
@@ -249,9 +250,10 @@ describe("daemon sense manager", () => {
     })
 
     const probes = manager.listHealthProbes()
-    expect(createHttpHealthProbe).toHaveBeenCalledWith("bluebubbles:slugger", 18888)
-    expect(probes).toHaveLength(1)
-    await expect(probes[0]!.check()).resolves.toEqual({ ok: true, detail: "18888" })
+    // No probes registered for BB sense — process supervision catches dead
+    // processes, and `pendingRecoveryCount` / `lastRecoveredAt` in the BB
+    // sense runtime state surface "alive but hung" to the agent's prompt.
+    expect(probes).toHaveLength(0)
   })
 
   it("skips BlueBubbles health probes when this machine is not attached", async () => {

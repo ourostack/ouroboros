@@ -81,6 +81,24 @@ interface AgentRuntimeState {
   startAttemptId: number
   restartTimer: unknown | null
   crashTimestamps: number[]
+  /**
+   * Timestamps of daemon-orchestrated `restartAgent` calls (NOT the same as
+   * `crashTimestamps`, which records actual process exits). Used by the
+   * respawn-loop guard: if anything triggers `restartAgent` too often in a
+   * short window, refuse further restarts and emit a loud event.
+   *
+   * On 2026-05-11, the health-monitor's HTTP probe declared BB sense
+   * "critical" every minute because the probe's 5s timeout fired during
+   * legitimate VLM work. That triggered `restartAgent` ~60x/hr. The probe
+   * itself was the root cause and has since been removed; this guard is
+   * the defense-in-depth backstop ensuring no other future cause (a new
+   * probe, an over-eager human-triggered restart loop, etc.) can re-enter
+   * the same death spiral.
+   */
+  orchestratedRestartTimestamps: number[]
+  /** Set when the respawn-loop guard has tripped. Manual intervention
+   *  needed to clear via `stopAgent` + `startAgent` (or daemon restart). */
+  respawnLoopTripped: boolean
   stopRequested: boolean
   cooldownTimer: unknown | null
   cooldownRetryCount: number
@@ -90,6 +108,19 @@ interface AgentRuntimeState {
 function startOfHour(ms: number): number {
   return ms - 60 * 60 * 1000
 }
+
+/**
+ * Respawn-loop guard: refuse `restartAgent` if we've already orchestrated
+ * RESPAWN_GUARD_MAX_RESTARTS in the past RESPAWN_GUARD_WINDOW_MS.
+ *
+ * Calibrated for the 2026-05-11 BB sense incident: a misconfigured probe
+ * was triggering `restartAgent` every ~60s for hours. Five restarts in
+ * 10 minutes is well above the rate of legitimate operational restarts
+ * (a single human-initiated `ouro down && ouro up` produces one) and well
+ * below the rate of a death spiral (60/hr ⇒ 10/10min).
+ */
+export const RESPAWN_GUARD_MAX_RESTARTS = 5
+export const RESPAWN_GUARD_WINDOW_MS = 10 * 60_000
 
 export class DaemonProcessManager {
   private readonly agents = new Map<string, AgentRuntimeState>()
@@ -209,6 +240,8 @@ export class DaemonProcessManager {
         startAttemptId: 0,
         restartTimer: null,
         crashTimestamps: [],
+        orchestratedRestartTimestamps: [],
+        respawnLoopTripped: false,
         stopRequested: false,
         cooldownTimer: null,
         cooldownRetryCount: 0,
@@ -444,6 +477,11 @@ export class DaemonProcessManager {
     this.clearRestartTimer(state)
     this.clearCooldownTimer(state)
     state.stopRequested = true
+    // NOTE: do not touch state.respawnLoopTripped / orchestratedRestartTimestamps
+    // here. restartAgent calls stopAgent internally; clearing the guard here
+    // would reset the window every cycle and defeat the loop-detection. The
+    // guard self-clears when timestamps age out of the window (handled inside
+    // restartAgent at the prune step).
 
     if (!state.process) {
       state.snapshot.status = "stopped"
@@ -473,6 +511,69 @@ export class DaemonProcessManager {
 
   async restartAgent(agent: string): Promise<void> {
     const state = this.requireAgent(agent)
+
+    // Respawn-loop guard: prune timestamps outside the window, then check
+    // whether we've already restarted this agent too many times in it.
+    const now = this.now()
+    const windowStart = now - RESPAWN_GUARD_WINDOW_MS
+    state.orchestratedRestartTimestamps = state.orchestratedRestartTimestamps.filter(
+      (ts) => ts >= windowStart,
+    )
+
+    // If the window is now empty, the trip naturally self-clears. That means
+    // after RESPAWN_GUARD_WINDOW_MS of no restart attempts, the daemon is
+    // willing to try again (e.g. for a fresh health probe failure that has
+    // nothing to do with the original loop).
+    if (state.respawnLoopTripped && state.orchestratedRestartTimestamps.length === 0) {
+      state.respawnLoopTripped = false
+      state.snapshot.errorReason = null
+      state.snapshot.fixHint = null
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.agent_respawn_loop_cleared",
+        message: "respawn-loop guard cleared by window-aging",
+        meta: { agent, windowMs: RESPAWN_GUARD_WINDOW_MS },
+      })
+      this.notifySnapshotChange(state.snapshot)
+    }
+
+    if (state.respawnLoopTripped) {
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_respawn_loop_blocked",
+        message: "refused agent restart — respawn-loop guard tripped; manual intervention required",
+        meta: {
+          agent,
+          recentRestartCount: state.orchestratedRestartTimestamps.length,
+          windowMs: RESPAWN_GUARD_WINDOW_MS,
+        },
+      })
+      return
+    }
+
+    if (state.orchestratedRestartTimestamps.length >= RESPAWN_GUARD_MAX_RESTARTS) {
+      state.respawnLoopTripped = true
+      state.snapshot.errorReason = `respawn loop detected: ${RESPAWN_GUARD_MAX_RESTARTS}+ restarts in ${Math.round(RESPAWN_GUARD_WINDOW_MS / 60_000)}min — refusing further restarts`
+      state.snapshot.fixHint = "investigate the root cause then run `ouro up` to resume"
+      emitNervesEvent({
+        level: "error",
+        component: "daemon",
+        event: "daemon.agent_respawn_loop_tripped",
+        message: "respawn-loop guard tripped; further restarts blocked",
+        meta: {
+          agent,
+          restartCount: state.orchestratedRestartTimestamps.length,
+          windowMs: RESPAWN_GUARD_WINDOW_MS,
+          maxRestarts: RESPAWN_GUARD_MAX_RESTARTS,
+        },
+      })
+      this.notifySnapshotChange(state.snapshot)
+      return
+    }
+
+    state.orchestratedRestartTimestamps.push(now)
+
     if (state.startInFlight && !state.process) {
       const startedAt = state.startAttemptedAtMs
       /* v8 ignore next -- defensive: startInFlight always records a start timestamp @preserve */
