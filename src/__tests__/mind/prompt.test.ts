@@ -5262,7 +5262,7 @@ describe("pre-implementation scrutiny", () => {
       expect(result).toContain("trip_status")
       expect(result).toContain("trip_get")
       expect(result).toContain("trip_calendar")
-      expect(result).toContain("friend notes, old handoffs, and memory")
+      expect(result).toContain("friend notes, old handoffs, and prior conversation context")
       expect(result).toContain("trip_summer-2026-europe-trip_82bdea2a9d088cbe")
       expect(result).toContain("Summer 2026 Europe Trip")
       expect(result).toContain("legs: 1")

@@ -7873,7 +7873,7 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("loading this machine's settings")
     expect(prompt).toContain("Providers")
     expect(prompt).toContain("Perplexity search")
-    expect(prompt).toContain("Memory embeddings")
+    expect(prompt).toContain("Embeddings")
     expect(prompt).toContain("Teams")
     expect(prompt).toContain("BlueBubbles iMessage")
     expect(result).toContain("Perplexity connected for Slugger")
@@ -9010,14 +9010,14 @@ describe("provider CLI command execution", () => {
     const output = ((deps as OuroCliDeps & { _output: string[] })._output).join("")
 
     expect(result).toContain("Embeddings connected for Slugger")
-    expect(result).toContain("memory embeddings")
+    expect(result).toContain("embeddings")
     expect(result).toContain("running agent: daemon is not running; next `ouro up` will load the change")
     expect(result).not.toContain("emb-secret")
     expect(output).toContain("Connect embeddings for Slugger")
-    expect(output).toContain("... saving memory embeddings")
-    expect(output).toContain("... verifying memory embeddings")
+    expect(output).toContain("... saving embeddings")
+    expect(output).toContain("... verifying embeddings")
     expect(output).toContain("storing integrations.openaiEmbeddingsApiKey")
-    expect(output).toContain("✓ verifying memory embeddings")
+    expect(output).toContain("✓ verifying embeddings")
     expect(output).toContain("... applying change to running Slugger")
     expect(output).not.toContain("emb-secret")
 
@@ -9106,7 +9106,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("stored: vault:Slugger:runtime/config")
     expect(result).toContain("live check:")
     expect(result).not.toContain("Embeddings connected for Slugger")
-    expect(output).toContain("✗ verifying memory embeddings")
+    expect(output).toContain("✗ verifying embeddings")
   })
 
   it("verifies saved portable capabilities when the root connect bay opens", async () => {
@@ -9134,7 +9134,7 @@ describe("provider CLI command execution", () => {
     const prompt = joinedPrompt(prompts)
     expect(prompt).toContain("verified live just now")
     expectConnectStatus(prompt, 2, "Perplexity search", "ready")
-    expectConnectStatus(prompt, 3, "Memory embeddings", "ready")
+    expectConnectStatus(prompt, 3, "Embeddings", "ready")
   })
 
   it("marks saved portable capabilities as needing attention when their live checks fail", async () => {
@@ -9176,7 +9176,7 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
     expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
-    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expectConnectStatus(prompt, 3, "Embeddings", "needs attention")
     expect(prompt).toContain("live check failed: 401 bad perplexity key")
     expect(prompt).toContain("live check failed: 401 bad embeddings key")
   })
@@ -9934,7 +9934,7 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
     expectConnectStatus(prompt, 2, "Perplexity search", "needs attention")
-    expectConnectStatus(prompt, 3, "Memory embeddings", "needs attention")
+    expectConnectStatus(prompt, 3, "Embeddings", "needs attention")
     expectConnectStatus(prompt, 4, "Teams", "needs attention")
   })
 
@@ -9964,7 +9964,7 @@ describe("provider CLI command execution", () => {
       expect(result).toBe("connect cancelled.")
       const prompt = joinedPrompt(prompts)
       expectConnectStatus(prompt, 2, "Perplexity search", "locked")
-      expectConnectStatus(prompt, 3, "Memory embeddings", "locked")
+      expectConnectStatus(prompt, 3, "Embeddings", "locked")
       expectConnectStatus(prompt, 4, "Teams", "locked")
     } finally {
       mockVaultDeps.rawSecrets.get = originalGet as typeof mockVaultDeps.rawSecrets.get
@@ -9993,7 +9993,7 @@ describe("provider CLI command execution", () => {
     expect(result).toBe("connect cancelled.")
     const prompt = joinedPrompt(prompts)
     expectConnectStatus(prompt, 2, "Perplexity search", "ready")
-    expectConnectStatus(prompt, 3, "Memory embeddings", "missing")
+    expectConnectStatus(prompt, 3, "Embeddings", "missing")
     expectConnectStatus(prompt, 4, "Teams", "missing")
   })
 

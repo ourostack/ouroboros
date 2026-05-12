@@ -71,10 +71,10 @@ function connectEntries(overrides: Partial<Record<"provider" | "perplexity" | "e
     },
     {
       option: "3",
-      name: "Memory embeddings",
+      name: "Embeddings",
       section: "Portable",
       status: "missing",
-      description: "Memory retrieval and note search.",
+      description: "Note search and diary consultation.",
       ...overrides.embeddings,
     },
     {
@@ -158,7 +158,7 @@ describe("connect bay", () => {
     })
 
     expect(output).toContain("2. Perplexity search")
-    expect(output).toContain("3. Memory embeddings")
+    expect(output).toContain("3. Embeddings")
   })
 
   it("keeps ready provider summaries quiet when no repair hint is needed", () => {

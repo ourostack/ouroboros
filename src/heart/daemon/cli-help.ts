@@ -321,7 +321,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro connect providers",
   },
   "connect embeddings": {
-    description: "Connect portable memory embeddings that travel with this agent",
+    description: "Connect portable embeddings for note search and diary consultation; travels with this agent",
     usage: "ouro connect embeddings [--agent <name>]",
     example: "ouro connect embeddings",
   },
@@ -356,7 +356,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro mail backfill-indexes --agent slugger",
   },
   "provider refresh": {
-    description: "Reload this agent's provider credentials from its vault into daemon memory",
+    description: "Reload this agent's provider credentials from its vault into the running daemon",
     usage: "ouro provider refresh [--agent <name>]",
     example: "ouro provider refresh",
   },

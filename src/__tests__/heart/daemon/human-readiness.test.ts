@@ -93,9 +93,9 @@ describe("human readiness", () => {
         },
         {
           key: "embeddings",
-          title: "Memory embeddings",
+          title: "Embeddings",
           status: "ready",
-          summary: "Memory retrieval and note search.",
+          summary: "Note search and diary consultation.",
           detailLines: [
             "Portable embeddings key is present.",
           ],

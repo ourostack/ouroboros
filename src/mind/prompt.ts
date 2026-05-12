@@ -857,8 +857,8 @@ export function tripLedgerTruthSection(channel: Channel, context?: ResolvedConte
 
   const lines = [
     "## trip ledger truth",
-    "The trip ledger is the canonical structured source for travel plans. It outranks friend notes, old handoffs, and memory when those disagree.",
-    "When asked about travel plans, bookings, itinerary gaps, or what changed, I check `trip_status`, `trip_get`, or `trip_calendar` before answering from memory. I use `mail_search`/`mail_body` when the ledger is missing a needed fact or when verifying a claimed absence.",
+    "The trip ledger is the canonical structured source for travel plans. It outranks friend notes, old handoffs, and prior conversation context when those disagree.",
+    "When asked about travel plans, bookings, itinerary gaps, or what changed, I check `trip_status`, `trip_get`, or `trip_calendar` before answering from prior conversation context. I use `mail_search`/`mail_body` when the ledger is missing a needed fact or when verifying a claimed absence.",
     "If a leg is `tentative`, I say it is tentative/inferred. I do not call it a booking or a gap unless the mail evidence supports that.",
     "known trips:",
   ]

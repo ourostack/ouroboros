@@ -3196,7 +3196,7 @@ async function buildConnectMenu(
   let perplexityVerification: Awaited<ReturnType<typeof verifyPerplexityCapability>> | undefined
   let embeddingsVerification: Awaited<ReturnType<typeof verifyEmbeddingsCapability>> | undefined
   if (shouldVerifyPerplexity && shouldVerifyEmbeddings) {
-    onProgress?.("verifying Perplexity search and memory embeddings")
+    onProgress?.("verifying Perplexity search and embeddings")
     ;[perplexityVerification, embeddingsVerification] = await Promise.all([
       verifyPerplexityCapability(perplexityApiKey!),
       verifyEmbeddingsCapability(embeddingsApiKey!),
@@ -3205,7 +3205,7 @@ async function buildConnectMenu(
     onProgress?.("verifying Perplexity search")
     perplexityVerification = await verifyPerplexityCapability(perplexityApiKey!)
   } else if (shouldVerifyEmbeddings) {
-    onProgress?.("verifying memory embeddings")
+    onProgress?.("verifying embeddings")
     embeddingsVerification = await verifyEmbeddingsCapability(embeddingsApiKey!)
   }
 
@@ -3322,14 +3322,14 @@ async function buildConnectMenu(
     },
     {
       option: "3",
-      name: "Memory embeddings",
+      name: "Embeddings",
       section: "Portable",
       status: embeddingsStatus,
-      description: "Memory retrieval and note search.",
+      description: "Note search and diary consultation.",
       detailLines: embeddingsDetailLines,
       nextAction: connectEntryNeedsAttention({
         option: "3",
-        name: "Memory embeddings",
+        name: "Embeddings",
         section: "Portable",
         status: embeddingsStatus,
       }) ? `ouro connect embeddings --agent ${agent}` : undefined,
@@ -3548,13 +3548,13 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
   const promptSecret = requirePromptSecret(deps, "OpenAI embeddings API key entry")
   writeConnectorIntro(deps, {
     title: "Connect Embeddings",
-    subtitle: `${agent} gets portable note and memory search.`,
-    summary: "Add one hidden API key, verify it live, and let semantic memory travel with this agent.",
+    subtitle: `${agent} gets portable note search and diary consultation.`,
+    summary: "Add one hidden API key, verify it live, and let semantic note search travel with this agent.",
     sections: [
       {
         title: "Unlocks",
         lines: [
-          "Portable note search and memory retrieval.",
+          "Portable note search and diary consultation.",
         ],
       },
       {
@@ -3587,7 +3587,7 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
   try {
     stored = await runCommandProgressPhase(
       progress,
-      "saving memory embeddings",
+      "saving embeddings",
       () => storeRuntimeConfigKey({
         agent,
         key: "integrations.openaiEmbeddingsApiKey",
@@ -3599,14 +3599,14 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
       () => "secret stored",
     )
 
-    progress.startPhase("verifying memory embeddings")
+    progress.startPhase("verifying embeddings")
     verification = await verifyEmbeddingsCapability(key)
     if (!verification.ok) {
-      progress.failPhase("verifying memory embeddings", verification.summary)
+      progress.failPhase("verifying embeddings", verification.summary)
       progress.end()
       return writeCapabilityAttention(deps, {
-        subtitle: `${agent}'s memory key needs another pass.`,
-        summary: "Memory embeddings were saved, but the live check failed.",
+        subtitle: `${agent}'s embeddings key needs another pass.`,
+        summary: "Embeddings were saved, but the live check failed.",
         whatChanged: [
           `Stored: ${stored.itemPath}`,
           `Live check: ${verification.summary}`,
@@ -3626,7 +3626,7 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
         ],
       })
     }
-    progress.completePhase("verifying memory embeddings", verification.summary)
+    progress.completePhase("verifying embeddings", verification.summary)
 
     reload = await runCommandProgressPhase(
       progress,
@@ -3638,26 +3638,26 @@ async function executeConnectEmbeddings(agent: string, deps: OuroCliDeps): Promi
     progress.end()
   }
   return writeCapabilityOutcome(deps, {
-    subtitle: `${agent}'s memory index is online.`,
-    summary: `Memory embeddings are ready to travel with ${agent}.`,
+    subtitle: `${agent}'s embeddings index is online.`,
+    summary: `Embeddings are ready to travel with ${agent}.`,
     whatChanged: [
-      "Capability: memory embeddings",
+      "Capability: embeddings",
       `Stored: ${stored.itemPath}`,
       `Running agent: ${reload}`,
       "secret was not printed",
     ],
     nextMoves: [
-      "Ask the agent to search notes or memory.",
+      "Ask the agent to search notes or consult the diary.",
       `Reopen the connections screen with ouro connect --agent ${agent} whenever you want to review capabilities.`,
     ],
     fallbackLines: [
       `Embeddings connected for ${agent}`,
-      "capability: memory embeddings",
+      "capability: embeddings",
       `stored: ${stored.itemPath}`,
       `running agent: ${reload}`,
       "secret was not printed",
       "",
-      "Next: ask the agent to search notes or memory.",
+      "Next: ask the agent to search notes or consult the diary.",
     ],
   })
 }

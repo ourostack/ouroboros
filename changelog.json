@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.609",
+      "changes": [
+        "Vocabulary sweep: drop 'memory' from agent-facing prompt content (trip-ledger truth section) and operator-facing connect-flow strings (cli-exec/cli-help). The agent doesn't have memory; it has a diary it consults, embeddings it can search, and prior conversation context. Renaming the strings makes the surface honest. Internal capability identifier 'memory-embeddings' and CLI input alias 'memory' both stay for back-compat. RAM-sense uses ('in-memory cache', 'process memory') stay. Test snapshots updated. Bumped from .607 → .609 to leapfrog the parallel-merged .608."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.608",
       "changes": [
         "Carry agent context through MCP CLI commands."

@@ -118,7 +118,7 @@ async function runRealSmokeSuite(input, deps = defaultDeps()) {
   return [
     await runProviderSmoke(input.providerCheck, deps, knownSecrets),
     await runCapabilitySmoke("Perplexity search", deps.verifyPerplexityCapability, input.portableChecks.perplexityApiKey, knownSecrets),
-    await runCapabilitySmoke("memory embeddings", deps.verifyEmbeddingsCapability, input.portableChecks.openaiEmbeddingsApiKey, knownSecrets),
+    await runCapabilitySmoke("embeddings", deps.verifyEmbeddingsCapability, input.portableChecks.openaiEmbeddingsApiKey, knownSecrets),
   ]
 }
 

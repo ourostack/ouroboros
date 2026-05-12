@@ -113,7 +113,7 @@ describe("nightly-real-smoke", () => {
     expect(results).toEqual([
       { ok: true, label: "provider minimax / MiniMax-M2.5", message: "live check passed" },
       { ok: true, label: "Perplexity search", message: "live check passed" },
-      { ok: false, label: "memory embeddings", message: "401 bad key" },
+      { ok: false, label: "embeddings", message: "401 bad key" },
     ])
     expect(deps.pingProvider).toHaveBeenCalledWith("minimax", { apiKey: "mini-secret" }, { model: "MiniMax-M2.5" })
     expect(deps.verifyPerplexityCapability).toHaveBeenCalledWith("pplx-secret")
