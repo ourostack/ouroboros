@@ -545,8 +545,14 @@ describe("daemon command plane branches", () => {
       sessionId: "session-1",
       taskRef: "task-7",
     }))
-    expect(processManager.startAgent).toHaveBeenCalledWith("ouroboros")
-    expect(processManager.sendToAgent).toHaveBeenCalledWith("ouroboros", { type: "message" })
+    // Regression guard (2026-05-11 wake-storm fix): message.send is now
+    // queue-only. The handler MUST NOT auto-start or auto-wake the recipient.
+    // Callers that want immediate processing must send `inner.wake`
+    // separately. The previous behavior — calling startAgent + sendToAgent
+    // here — defeated the post-tool-use hook's intentional "queue-only,
+    // don't wake on every tool call" design and burned ~$50 in API cost.
+    expect(processManager.startAgent).not.toHaveBeenCalledWith("ouroboros")
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("ouroboros", { type: "message" })
 
     const polled = await daemon.handleCommand({ kind: "message.poll", agent: "ouroboros" })
     expect(polled.summary).toBe("1 messages")

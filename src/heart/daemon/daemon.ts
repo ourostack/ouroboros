@@ -1372,6 +1372,20 @@ export class OuroDaemon {
         return { ok: result.ok, message: result.message }
       }
       case "message.send": {
+        // Pure queue-only delivery. We DO NOT wake the recipient — that was
+        // the 2026-05-11 $50 bleed. The Claude Code post-tool-use hook
+        // (cli-exec.ts) intentionally sends only message.send for tool-use
+        // events to avoid waking the agent on every tool call. The hook's
+        // intent was completely defeated by this handler calling
+        // `sendToAgent({type: "message"})`, which woke the inner-dialog
+        // worker on EVERY message.send anyway. ~30 message.send/min × the
+        // 3-turn instinct-loop cap = ~90 turns/min sustained for hours.
+        //
+        // Callers that want immediate processing must send `inner.wake`
+        // explicitly after message.send. The CLI `ouro msg` does so
+        // (lifecycle-boundary delivery should wake); the hook does so
+        // only on session-start / stop, not per tool-use; the API does
+        // not (notifications go to the queue).
         const receipt = await this.router.send({
           from: command.from,
           to: command.to,
@@ -1380,8 +1394,6 @@ export class OuroDaemon {
           sessionId: command.sessionId,
           taskRef: command.taskRef,
         })
-        await this.processManager.startAgent(command.to)
-        this.processManager.sendToAgent?.(command.to, { type: "message" })
         return { ok: true, message: `queued message ${receipt.id}`, data: receipt }
       }
       case "message.poll": {

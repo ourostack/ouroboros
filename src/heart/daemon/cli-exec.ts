@@ -8590,6 +8590,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   let response: DaemonResponse
   try {
     response = await deps.sendCommand(deps.socketPath, daemonCommand)
+    // `ouro msg` is operator-driven and expects the recipient to process the
+    // message now (vs. on next natural turn). message.send is queue-only as
+    // of the 2026-05-11 fix; we explicitly fire inner.wake to preserve the
+    // historical CLI UX. Background callers (hooks, API) deliberately omit
+    // this and let the agent pick up notifications on its next turn.
+    if (command.kind === "message.send" && command.from === "ouro-cli") {
+      await deps.sendCommand(deps.socketPath, { kind: "inner.wake", agent: command.to } as DaemonCommand).catch(() => {})
+    }
   } catch (error) {
     if (command.kind === "message.send") {
       const pendingPath = deps.fallbackPendingMessage(command)
