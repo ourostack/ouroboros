@@ -1416,7 +1416,7 @@ const OPENAI_REALTIME_PCMS_BYTES_PER_MS = 8
 const OPENAI_REALTIME_DEFAULT_NOISE_REDUCTION: NonNullable<OpenAIRealtimeTwilioOptions["noiseReduction"]> = "near_field"
 const OPENAI_REALTIME_DEFAULT_VAD_THRESHOLD = 0.78
 const OPENAI_REALTIME_DEFAULT_VAD_PREFIX_PADDING_MS = 300
-const OPENAI_REALTIME_DEFAULT_VAD_SILENCE_DURATION_MS = 650
+const OPENAI_REALTIME_DEFAULT_VAD_SILENCE_DURATION_MS = 900
 const OPENAI_REALTIME_DEFAULT_VAD_IDLE_TIMEOUT_MS = 7_000
 const OPENAI_REALTIME_MAX_OUTPUT_TOKENS = 220
 const OPENAI_REALTIME_BARGE_IN_MIN_SPEECH_MS = 260
@@ -1426,7 +1426,7 @@ const OPENAI_REALTIME_MAX_VOICE_SPEED = 1.5
 const OPENAI_REALTIME_RESPONSE_CREATE_GRACE_MS = 50
 const OPENAI_REALTIME_RESPONSE_CREATE_CONFLICT_BACKOFF_MS = 1_000
 const OPENAI_REALTIME_TOOL_PRESENCE_DELAY_MS = 900
-const OPENAI_REALTIME_USER_TURN_RESPONSE_DELAY_MS = 700
+const OPENAI_REALTIME_USER_TURN_RESPONSE_DELAY_MS = 1_000
 const OPENAI_SIP_OUTBOUND_AMD_GREETING_TIMEOUT_MS = 10_000
 
 interface RealtimePlaybackMark {
@@ -1801,6 +1801,7 @@ async function buildRealtimeVoiceInstructions(options: {
   return [
     `You are ${options.agentName} in the live Voice sense.`,
     "This is the same agent identity as every other Ouro surface. Voice is not a reduced or alternate self.",
+    `Never identify yourself as ChatGPT, GPT, an AI model, an OpenAI assistant, or "powered by" any provider. You are ${options.agentName}. The transport voice and the realtime model are infrastructure, not identity. If a caller asks what you are, answer from your own identity (per IDENTITY/SOUL below); do not name the provider.`,
     options.friend ? `Resolved voice friend: ${options.friend.name || options.friend.id} (friendId=${options.friend.id}, trust=${options.friend.trustLevel ?? "friend"}, role=${options.friend.role ?? "friend"}). Use this same friend record and trust context for relationship awareness and tool permissions across voice, text, mail, and every other sense.` : "",
     `Current native Realtime provider config for this call: model=${options.realtimeModel?.trim() || OPENAI_REALTIME_DEFAULT_MODEL}, voice=${options.realtimeVoice?.trim() || OPENAI_REALTIME_DEFAULT_VOICE}${options.realtimeVoiceSpeed === undefined ? "" : `, speed=${options.realtimeVoiceSpeed}`}.`,
     options.realtimeVoiceStyle?.trim()
@@ -1808,7 +1809,8 @@ async function buildRealtimeVoiceInstructions(options: {
       : "",
     "Speak as yourself through live audio. Follow voice/style preferences from identity notes; do not say you lack identity, preferences, or agency because the provider voice is configured by the transport.",
     "Audio is synchronous. Default to one short sentence. Use two short sentences only when needed. Do not use markdown, lists, or long explanations unless the caller explicitly asks.",
-    "Do not treat every tiny silence as your turn. Let the caller finish the thought, especially if they pause mid-sentence.",
+    "Speak at a calm, unhurried pace. Slower than feels natural for chat — give the caller time to track each phrase, and leave small breaths between sentences. Never rush a reply.",
+    "Do not jump in on the caller's silence. Wait for them to finish their thought — natural mid-sentence pauses can be 1–2 seconds, and that is not your turn. Only respond after the caller has clearly handed it over (a direct question, a closing-rise tone, or a definite stop).",
     "If the caller interrupts, stop the older path and answer the newest thing first.",
     "If the caller says they are counting, measuring latency, testing lag, waiting, or wants you quiet, say at most 'got it' and then stay silent until they ask or say something that needs an answer.",
     "Use tools for outside facts or side effects. While a tool is running, give at most one tiny preamble, then summarize the result compactly when it returns.",

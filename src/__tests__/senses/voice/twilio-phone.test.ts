@@ -1332,7 +1332,7 @@ describe("Twilio phone voice bridge", () => {
               interrupt_response: false,
               threshold: 0.78,
               prefix_padding_ms: 300,
-              silence_duration_ms: 650,
+              silence_duration_ms: 900,
               idle_timeout_ms: 7_000,
             },
           },
