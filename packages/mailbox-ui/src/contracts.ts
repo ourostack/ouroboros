@@ -33,6 +33,7 @@ export type {
   MailboxMailOutboundDeliveryEvent,
   MailboxMailOutboundPolicyDecision,
   MailboxMailOutboundRecord,
+  MailboxReturnObligationQueueSummary,
   MailboxMailProvenance,
   MailboxMailRecoverySummary,
   MailboxMailScreenerCandidate,

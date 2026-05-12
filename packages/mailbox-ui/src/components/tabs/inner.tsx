@@ -101,6 +101,17 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
           <p className="mt-2 text-sm text-ouro-shadow">
             {inner.hasPending ? "Pending inner work queued." : "No pending inner work."}
           </p>
+          {(inner.returnObligationQueue.queuedCount > 0 || inner.returnObligationQueue.runningCount > 0) && (
+            <p className="mt-1 text-sm text-ouro-mist">
+              Held work items:{" "}
+              <span className="font-medium text-ouro-bone">{inner.returnObligationQueue.queuedCount + inner.returnObligationQueue.runningCount}</span>
+              {" "}({inner.returnObligationQueue.queuedCount} queued
+              {inner.returnObligationQueue.runningCount > 0 ? `, ${inner.returnObligationQueue.runningCount} running` : ""})
+              {inner.returnObligationQueue.oldestActiveAt !== null && (
+                <span className="text-ouro-shadow"> · oldest {relTime(new Date(inner.returnObligationQueue.oldestActiveAt).toISOString())}</span>
+              )}
+            </p>
+          )}
           {innerOrigin && (
             <div className="mt-3">
               <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Triggered from</p>

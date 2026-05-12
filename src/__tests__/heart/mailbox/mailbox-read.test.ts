@@ -450,6 +450,71 @@ describe("mailbox direct reads", () => {
     expect(second.tasks.byStatus.done).toBe(1)
   })
 
+  it("surfaces the held-work-items queue from arc/obligations/inner/", async () => {
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "queueagent.ouro")
+    writeAgentConfig(agentRoot)
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
+    const innerDir = path.join(agentRoot, "arc", "obligations", "inner")
+    // Two queued, one running, one returned (excluded), one with garbage status (excluded), one unparseable (skipped).
+    writeJson(path.join(innerDir, "q1.json"), { id: "q1", status: "queued", createdAt: 1_000_000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "x" })
+    writeJson(path.join(innerDir, "q2.json"), { id: "q2", status: "queued", createdAt: 2_000_000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "y" })
+    writeJson(path.join(innerDir, "r1.json"), { id: "r1", status: "running", createdAt: 3_000_000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "z" })
+    writeJson(path.join(innerDir, "done.json"), { id: "done", status: "returned", createdAt: 500_000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "old" })
+    writeJson(path.join(innerDir, "weird.json"), { id: "weird", status: "fulfilled", createdAt: 250_000, origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "legacy" })
+    fs.writeFileSync(path.join(innerDir, "broken.json"), "{not-json", "utf-8")
+    // Skip non-JSON files entirely (e.g. accidental Finder droppings).
+    fs.writeFileSync(path.join(innerDir, ".DS_Store"), "x", "utf-8")
+    // A literal "null" body parses to JS null without throwing — exercise the
+    // null-parse skip branch alongside the unparseable-content skip.
+    fs.writeFileSync(path.join(innerDir, "null.json"), "null\n", "utf-8")
+
+    const { readMailboxAgentState } = await import("../../../heart/mailbox/mailbox-read")
+    const state = readMailboxAgentState("queueagent", { bundlesRoot, now: () => new Date("2026-03-29T12:00:00.000Z") })
+    expect(state.inner.returnObligationQueue).toEqual({
+      queuedCount: 2,
+      runningCount: 1,
+      oldestActiveAt: 1_000_000,
+    })
+  })
+
+  it("returns an empty held-work-items queue when arc/obligations/inner does not exist", async () => {
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "emptyagent.ouro")
+    writeAgentConfig(agentRoot)
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
+
+    const { readMailboxAgentState } = await import("../../../heart/mailbox/mailbox-read")
+    const state = readMailboxAgentState("emptyagent", { bundlesRoot, now: () => new Date("2026-03-29T12:00:00.000Z") })
+    expect(state.inner.returnObligationQueue).toEqual({
+      queuedCount: 0,
+      runningCount: 0,
+      oldestActiveAt: null,
+    })
+  })
+
+  it("counts queued items without createdAt without breaking the oldestActiveAt accounting", async () => {
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "nocreated.ouro")
+    writeAgentConfig(agentRoot)
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json"), { version: 1, messages: [] })
+    writeJson(path.join(agentRoot, "state", "sessions", "self", "inner", "runtime.json"), { status: "idle" })
+    const innerDir = path.join(agentRoot, "arc", "obligations", "inner")
+    // Queued item with no createdAt should still count toward queuedCount but
+    // not corrupt oldestActiveAt (which stays null in this case).
+    writeJson(path.join(innerDir, "q.json"), { id: "q", status: "queued", origin: { friendId: "f", channel: "c", key: "k" }, delegatedContent: "x" })
+
+    const { readMailboxAgentState } = await import("../../../heart/mailbox/mailbox-read")
+    const state = readMailboxAgentState("nocreated", { bundlesRoot, now: () => new Date("2026-03-29T12:00:00.000Z") })
+    expect(state.inner.returnObligationQueue).toEqual({
+      queuedCount: 1,
+      runningCount: 0,
+      oldestActiveAt: null,
+    })
+  })
+
   it("handles sparse or malformed direct-read inputs without inventing state", async () => {
     const bundlesRoot = makeBundleRoot()
     const gammaRoot = path.join(bundlesRoot, "gamma.ouro")

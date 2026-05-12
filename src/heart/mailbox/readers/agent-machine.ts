@@ -27,6 +27,7 @@ import {
   type MailboxIssue,
   type MailboxMachineState,
   type MailboxObligationItem,
+  type MailboxReturnObligationQueueSummary,
   type MailboxSessionItem,
   type MailboxTaskSummary,
 } from "../mailbox-types"
@@ -211,6 +212,13 @@ function readInnerSummary(agentRoot: string): {
     ?? runtimeState?.lastCompletedAt
     ?? null
 
+  // Read the return-obligation queue so the Inner tab can show what the
+  // agent is actually holding right now. Before this, the "Inner work"
+  // panel only consulted the pending-messages dir (inbox-style); it
+  // reported "No pending inner work" even when dozens of held items were
+  // sitting in arc/obligations/inner/ waiting to be reinjected next turn.
+  const returnObligationQueue = readReturnObligationQueueSummary(agentRoot)
+
   return {
     summary: {
       visibility: MAILBOX_DEFAULT_INNER_VISIBILITY,
@@ -220,10 +228,42 @@ function readInnerSummary(agentRoot: string): {
       origin: job.origin,
       obligationStatus: job.obligationStatus,
       latestActivityAt,
+      returnObligationQueue,
     },
     issues: [],
     latestActivityAt,
   }
+}
+
+function readReturnObligationQueueSummary(agentRoot: string): MailboxReturnObligationQueueSummary {
+  const dir = path.join(agentRoot, "arc", "obligations", "inner")
+  let names: string[] = []
+  try {
+    names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"))
+  } catch {
+    return { queuedCount: 0, runningCount: 0, oldestActiveAt: null }
+  }
+  let queuedCount = 0
+  let runningCount = 0
+  let oldestActiveAt: number | null = null
+  for (const name of names) {
+    let parsed: { status?: unknown; createdAt?: unknown } | null = null
+    try {
+      parsed = JSON.parse(fs.readFileSync(path.join(dir, name), "utf-8"))
+    } catch {
+      continue
+    }
+    if (!parsed) continue
+    const status = parsed.status
+    if (status === "queued") queuedCount += 1
+    else if (status === "running") runningCount += 1
+    else continue
+    const createdAt = typeof parsed.createdAt === "number" ? parsed.createdAt : null
+    if (createdAt !== null && (oldestActiveAt === null || createdAt < oldestActiveAt)) {
+      oldestActiveAt = createdAt
+    }
+  }
+  return { queuedCount, runningCount, oldestActiveAt }
 }
 
 function readCodingSummary(agentRoot: string): {

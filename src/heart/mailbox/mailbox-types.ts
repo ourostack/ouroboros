@@ -102,6 +102,15 @@ export interface MailboxSessionSummary {
   items: MailboxSessionItem[]
 }
 
+export interface MailboxReturnObligationQueueSummary {
+  /** Count of return obligations currently in `queued` status (created but not yet drained into a turn). */
+  queuedCount: number
+  /** Count of return obligations currently in `running` status (drained into the active turn). */
+  runningCount: number
+  /** Createdat (ms) of the oldest queued/running item, or null if the queue is empty. */
+  oldestActiveAt: number | null
+}
+
 export interface MailboxInnerSummary {
   visibility: typeof MAILBOX_DEFAULT_INNER_VISIBILITY
   status: InnerJobStatus
@@ -110,6 +119,14 @@ export interface MailboxInnerSummary {
   origin: { friendId: string; channel: string; key: string; friendName?: string } | null
   obligationStatus: "pending" | "fulfilled" | null
   latestActivityAt: string | null
+  /**
+   * Held-work-items snapshot: the count and oldest-age of return obligations
+   * the inner loop will re-inject into the next turn's prompt. Separate from
+   * `hasPending` (which is about pending inbound messages waiting to wake the
+   * loop). Empty queue is represented with zero counts and a null age, so
+   * the UI can render "nothing held" without consulting two fields.
+   */
+  returnObligationQueue: MailboxReturnObligationQueueSummary
 }
 
 /** Coding summary item — subset of CodingSession for list views */
@@ -268,6 +285,7 @@ export type MailboxAgentInnerView =
       status: InnerJobStatus
       summary: string | null
       hasPending: boolean
+      returnObligationQueue: MailboxReturnObligationQueueSummary
     }
   | {
       mode: "deep"
@@ -276,6 +294,7 @@ export type MailboxAgentInnerView =
       hasPending: boolean
       origin: MailboxInnerSummary["origin"]
       obligationStatus: MailboxInnerSummary["obligationStatus"]
+      returnObligationQueue: MailboxReturnObligationQueueSummary
     }
 
 export interface MailboxAgentView {

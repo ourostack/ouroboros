@@ -145,6 +145,7 @@ function buildInnerView(inner: MailboxInnerSummary, viewer: MailboxAgentView["vi
       hasPending: inner.hasPending,
       origin: inner.origin,
       obligationStatus: inner.obligationStatus,
+      returnObligationQueue: inner.returnObligationQueue,
     }
   }
 
@@ -153,6 +154,7 @@ function buildInnerView(inner: MailboxInnerSummary, viewer: MailboxAgentView["vi
     status: inner.status,
     summary: inner.surfacedSummary,
     hasPending: inner.hasPending,
+    returnObligationQueue: inner.returnObligationQueue,
   }
 }
 

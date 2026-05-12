@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.604",
+      "changes": [
+        "Inner tab in mailbox UI surfaces the return-obligation queue (queuedCount/runningCount/oldestActiveAt) so the panel stops claiming 'No pending inner work' when dozens of held items are actively being re-injected."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.602",
       "changes": [
         "Two-part fix for the 2026-05-11 BlueBubbles wedge that drove the user (Ari) up the wall: Slugger's BB session showed the same user message replayed 76 times, because each death-spiral cycle re-injected the inbound. Root cause was the daemon's HTTP health probe (`createHttpHealthProbe(\"bluebubbles:<agent>\", port)`) GETting the sense's /health endpoint every ~60 s with a 5 s timeout — busy BB sense (e.g. VLM image-describe at 20+ s) timed out, daemon declared 'critical', SIGTERM'd the sense mid-work, respawned, hit the same image, killed again, forever. Part 1: removed the HTTP probe entirely from `listHealthProbes()`. Process supervision (`processManager` child-process exit handler) already catches dead processes; for 'alive but hung' we now rely on the agent's own awareness via `pendingRecoveryCount` / `lastRecoveredAt` in the BB runtime state surfaced into the prompt, plus the agent's new `restart_runtime` tool (from alpha.598 / #723). Part 2: defense-in-depth respawn-loop guard in `processManager.restartAgent` — if anything triggers more than `RESPAWN_GUARD_MAX_RESTARTS = 5` orchestrated restarts in `RESPAWN_GUARD_WINDOW_MS = 10 min`, refuse further restarts (`daemon.agent_respawn_loop_tripped` nerves event, errorReason + fixHint set on the snapshot). Trip self-clears once timestamps age out of the window, and `startAgent` (= `ouro up`) bypasses the guard so the operator can always recover. Even if some other future cause re-introduces a tight respawn loop, the guard bounds it. The 2026-05-11 spiral was ~60 restarts/hr — well above 5/10min, so this would have caught it."

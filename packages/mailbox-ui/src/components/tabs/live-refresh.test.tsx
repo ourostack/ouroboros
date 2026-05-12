@@ -78,7 +78,7 @@ function makeAgentView(overrides: AgentViewOverrides = {}): MailboxAgentView {
       coding: { totalCount: 0, activeCount: 0, blockedCount: 0, items: [] },
       bridges: [],
     },
-    inner: { mode: "summary", status: "idle", summary: null, hasPending: false },
+    inner: { mode: "summary", status: "idle", summary: null, hasPending: false, returnObligationQueue: { queuedCount: 0, runningCount: 0, oldestActiveAt: null } },
     activity: { freshness: { status: "fresh", latestActivityAt: null, ageMs: null }, recent: [] },
   }
 
