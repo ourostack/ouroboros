@@ -78,8 +78,8 @@ export type OuroCliCommand =
   | { kind: "friend.link"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
   | { kind: "changelog"; from?: string; agent?: string }
-  | { kind: "mcp.list" }
-  | { kind: "mcp.call"; server: string; tool: string; args?: string }
+  | { kind: "mcp.list"; agent?: string }
+  | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "mcp.canary"; agent: string; socketOverride?: string; requiredSenses?: string[]; json?: boolean }
   | { kind: "config.model"; agent?: string; modelName: string; facing?: Facing }
   | { kind: "config.models"; agent?: string }

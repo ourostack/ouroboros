@@ -1277,7 +1277,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
   const [sub, ...rest] = cleaned
   if (!sub) throw new Error(`Usage\n${usage()}`)
 
-  if (sub === "list") return { kind: "mcp.list" }
+  if (sub === "list") return { kind: "mcp.list", ...(agent ? { agent } : {}) }
 
   if (sub === "call") {
     const server = rest[0]
@@ -1287,7 +1287,7 @@ function parseMcpCommand(args: string[]): OuroCliCommand {
     const argsIdx = rest.indexOf("--args")
     const mcpArgs = argsIdx !== -1 && rest[argsIdx + 1] ? rest[argsIdx + 1] : undefined
 
-    return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}) }
+    return { kind: "mcp.call", server, tool, ...(mcpArgs ? { args: mcpArgs } : {}), ...(agent ? { agent } : {}) }
   }
 
   if (sub === "canary") {

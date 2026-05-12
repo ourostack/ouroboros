@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getRepoRoot } from "../identity"
+import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
 import { listAllBundleAgents, listBundleSyncRows, type BundleAgentRow, type BundleSyncRow } from "./agent-discovery"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { DaemonSenseManagerLike, DaemonSenseRow } from "./sense-manager"
@@ -428,8 +428,8 @@ export type DaemonCommand =
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
-  | { kind: "mcp.list" }
-  | { kind: "mcp.call"; server: string; tool: string; args?: string }
+  | { kind: "mcp.list"; agent?: string }
+  | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "hatch.start" }
   | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string }
 
@@ -1448,6 +1448,7 @@ export class OuroDaemon {
         }
       }
       case "mcp.list": {
+        setAgentName(command.agent ?? "slugger")
         const mcpManager = await getSharedMcpManager()
         if (!mcpManager) {
           return { ok: true, data: [], message: "no MCP servers configured" }
@@ -1455,6 +1456,7 @@ export class OuroDaemon {
         return { ok: true, data: mcpManager.listAllTools() }
       }
       case "mcp.call": {
+        setAgentName(command.agent ?? "slugger")
         const mcpCallManager = await getSharedMcpManager()
         if (!mcpCallManager) {
           return { ok: false, error: "no MCP servers configured" }

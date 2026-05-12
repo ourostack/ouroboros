@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.608",
+      "changes": [
+        "Carry agent context through MCP CLI commands."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.606",
       "changes": [
         "Root-cause fix for the 2026-05-11 inner-dialog wake storm that cost ~$50 in minimax inference. PR #725 removed `inner.wake` from the Claude Code post-tool-use hook with the stated intent that the notification message stay in the queue and be picked up on the agent's next natural turn — but the daemon's `message.send` HANDLER (daemon.ts case `message.send`) was unconditionally calling `processManager.sendToAgent(to, { type: \"message\" })` after queueing, which woke the inner-dialog worker on every message.send anyway. ~30 message.send/min × the 3-turn instinct-loop cap = ~90 turns/min sustained for hours. PR #725 fixed the hook side; the daemon side defeated it.\n\nFix: the `message.send` handler is now pure queue-only delivery. No `startAgent`, no `sendToAgent` — just `router.send`. Callers that want immediate processing must send `inner.wake` explicitly after `message.send`. The Claude Code hook (cli-exec.ts) was already correctly discriminating (only firing inner.wake on session-start/stop, never per-tool-use), so it works as originally intended now. The CLI `ouro msg` was updated to chain `inner.wake` after `message.send` (operator-driven delivery wants immediate response, preserving historical CLI UX). Other callers (API, programmatic) default to queue-only.\n\nTest pinned: `daemon-command-plane-branches.test.ts` now asserts `processManager.startAgent` and `processManager.sendToAgent` are NOT called from `message.send`. The regression cannot be silently reintroduced."
