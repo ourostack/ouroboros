@@ -2418,8 +2418,8 @@ describe("session events", () => {
     })
   })
 
-  describe("integration: full session lifecycle with pruning and archive", () => {
-    it("builds envelope, changes system prompt, prunes, archives, and reconstructs full history", async () => {
+  describe("integration: full session lifecycle with pruning and disabled archive", () => {
+    it("builds envelope, changes system prompt, prunes, and replays the envelope projection only", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
@@ -2487,15 +2487,16 @@ describe("session events", () => {
       expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
       expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
 
-      // Phase 3: Archive evicted events
+      // Phase 3: Archive append is now disabled but remains callable from the persist path.
       appendEvictedToArchive(sessPath, result2.evictedEvents)
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
+      expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 
-      // Phase 4: Reconstruct full history
+      // Phase 4: Replay now reads only the bounded envelope projection.
       const fullHistory = loadFullEventHistory(sessPath)
 
-      // Full history should have all unique events from both archive and envelope
-      expect(fullHistory.length).toBeGreaterThan(3) // more than just the projected events
+      expect(fullHistory).toHaveLength(result2.envelope.events.length)
+      expect(fullHistory.map((event) => event.id)).toEqual(result2.envelope.events.map((event) => event.id))
       // Events should be sorted by sequence
       for (let i = 1; i < fullHistory.length; i++) {
         expect(fullHistory[i]!.sequence).toBeGreaterThanOrEqual(fullHistory[i - 1]!.sequence)
