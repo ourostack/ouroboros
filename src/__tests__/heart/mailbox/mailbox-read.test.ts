@@ -74,6 +74,42 @@ function writeAgentConfig(agentRoot: string, overrides: Record<string, unknown> 
   })
 }
 
+function sessionEvent(sequence: number, role: "user" | "assistant", content: string): Record<string, unknown> {
+  const id = `evt-${String(sequence).padStart(6, "0")}`
+  const recordedAt = `2026-04-09T17:${String(sequence).padStart(2, "0")}:00.000Z`
+  return {
+    id,
+    sequence,
+    role,
+    content,
+    name: null,
+    toolCallId: null,
+    toolCalls: [],
+    attachments: [],
+    time: {
+      authoredAt: null,
+      authoredAtSource: "unknown",
+      observedAt: recordedAt,
+      observedAtSource: "ingest",
+      recordedAt,
+      recordedAtSource: "save",
+    },
+    relations: {
+      replyToEventId: null,
+      threadRootEventId: null,
+      references: [],
+      toolCallId: null,
+      supersedesEventId: null,
+      redactsEventId: null,
+    },
+    provenance: {
+      captureKind: "live",
+      legacyVersion: null,
+      sourceMessageIndex: null,
+    },
+  }
+}
+
 function writeCodingState(agentRoot: string, records: unknown[]): void {
   writeJson(path.join(agentRoot, "state", "coding", "sessions.json"), {
     sequence: records.length,
@@ -1161,6 +1197,117 @@ describe("mailbox deep readers", () => {
           observedAt: "2026-04-09T17:40:00.000Z",
           recordedAt: "2026-04-09T17:40:00.000Z",
         },
+      })
+    })
+
+    it("marks the transcript history as truncated when the envelope projection was trimmed", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+        version: 2,
+        events: [sessionEvent(1, "user", "recent visible context")],
+        projection: {
+          eventIds: ["evt-000001"],
+          trimmed: true,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: 79500,
+          projectedAt: "2026-04-09T17:40:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
+      })
+
+      const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
+
+      expect(transcript).not.toBeNull()
+      expect(transcript!.truncatedHistory).toBe(true)
+    })
+
+    it("marks the transcript history as complete when the envelope projection was not trimmed", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+        version: 2,
+        events: [sessionEvent(1, "user", "complete visible context")],
+        projection: {
+          eventIds: ["evt-000001"],
+          trimmed: false,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: 1200,
+          projectedAt: "2026-04-09T17:40:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
+      })
+
+      const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
+
+      expect(transcript).not.toBeNull()
+      expect(transcript!.truncatedHistory).toBe(false)
+    })
+
+    it("preserves the transcript return shape aside from the truncated history flag", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+        version: 2,
+        events: [sessionEvent(1, "user", "shape check")],
+        projection: {
+          eventIds: ["evt-000001"],
+          trimmed: false,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: 1200,
+          projectedAt: "2026-04-09T17:40:00.000Z",
+        },
+        lastUsage: { input_tokens: 100, output_tokens: 25, reasoning_tokens: 0, total_tokens: 125 },
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
+      })
+
+      const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
+
+      expect(transcript).not.toBeNull()
+      expect(Object.keys(transcript!).sort()).toEqual([
+        "channel",
+        "continuity",
+        "friendId",
+        "friendName",
+        "key",
+        "lastUsage",
+        "messageCount",
+        "messages",
+        "sessionPath",
+        "truncatedHistory",
+      ].sort())
+      expect(transcript).toMatchObject({
+        friendId: "friend-1",
+        friendName: "Ari",
+        channel: "cli",
+        key: "session",
+        sessionPath: path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"),
+        messageCount: 1,
+        truncatedHistory: false,
+        lastUsage: { input_tokens: 100, output_tokens: 25, reasoning_tokens: 0, total_tokens: 125 },
+        continuity: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
+        messages: [
+          {
+            id: "evt-000001",
+            sequence: 1,
+            role: "user",
+            content: "shape check",
+          },
+        ],
       })
     })
 

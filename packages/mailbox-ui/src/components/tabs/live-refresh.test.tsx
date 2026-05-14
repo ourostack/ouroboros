@@ -140,7 +140,7 @@ function transcriptMessage(sequence: number, role: "user" | "assistant", content
   }
 }
 
-function transcriptPayload(messages: MailboxTranscriptMessage[], channel = "bluebubbles") {
+function transcriptPayload(messages: MailboxTranscriptMessage[], channel = "bluebubbles", truncatedHistory = false) {
   return {
     friendId: "ari",
     friendName: "Ari",
@@ -148,6 +148,7 @@ function transcriptPayload(messages: MailboxTranscriptMessage[], channel = "blue
     key: "main",
     sessionPath: "/tmp/session.json",
     messageCount: messages.length,
+    truncatedHistory,
     lastUsage: null,
     continuity: null,
     messages,
@@ -360,6 +361,58 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.container.textContent).toContain("Voice")
     expect(ui.container.textContent).toContain("can you hear me?")
     expect(ui.container.textContent).toContain("yes, loud and clear.")
+  })
+
+  it("shows a footnote when a session transcript has truncated history", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/sessions")) {
+        return jsonResponse({
+          totalCount: 1,
+          activeCount: 1,
+          staleCount: 0,
+          items: [{
+            friendId: "ari",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "main",
+            sessionPath: "/tmp/session.json",
+            lastActivityAt: "2026-04-09T17:00:00.000Z",
+            activitySource: "event-timeline",
+            replyState: "monitoring",
+            messageCount: 1,
+            lastUsage: null,
+            continuity: null,
+            latestUserExcerpt: "still here",
+            latestAssistantExcerpt: null,
+            latestToolCallNames: [],
+            estimatedTokens: 12,
+          }],
+        })
+      }
+      if (url.endsWith("/sessions/ari/bluebubbles/main")) {
+        return jsonResponse(transcriptPayload([
+          transcriptMessage(1, "user", "still here"),
+        ], "bluebubbles", true))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <SessionsTab
+          agentName="slugger"
+          focus="ari/bluebubbles/main"
+          onFocusConsumed={() => {}}
+          deskPrefs={null}
+          refreshGeneration={0}
+        />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.getByText("older context not available; the agent's curated record is in diary/journal/notes")).toBeTruthy()
   })
 
   it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {
