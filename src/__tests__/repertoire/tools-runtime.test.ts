@@ -19,11 +19,30 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 import { runtimeToolDefinitions } from "../../repertoire/tools-runtime"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 function findTool(name: string) {
   const def = runtimeToolDefinitions.find((d) => d.tool.function.name === name)
   if (!def) throw new Error(`Tool "${name}" not found`)
   return def
+}
+
+function familyCtx(): ToolContext {
+  return {
+    signin: vi.fn(),
+    context: {
+      friend: { id: "friend-ari", name: "Ari", trustLevel: "family" },
+    } as any,
+  }
+}
+
+function friendCtx(): ToolContext {
+  return {
+    signin: vi.fn(),
+    context: {
+      friend: { id: "friend-not-family", name: "Helpful Friend", trustLevel: "friend" },
+    } as any,
+  }
 }
 
 describe("restart_runtime tool", () => {
@@ -160,6 +179,125 @@ describe("restart_runtime tool", () => {
       const t = findTool("restart_runtime")
       await t.handler({})
       expect(nervesEvents.find((e) => e.event === "repertoire.runtime_restart_requested")).toBeUndefined()
+    })
+  })
+})
+
+describe("revive_sense tool", () => {
+  const revivedBlueBubblesSnapshot = {
+    name: "slugger:bluebubbles",
+    channel: "bluebubbles",
+    status: "running",
+    pid: 18790,
+    restartCount: 0,
+    startedAt: "2026-05-14T10:00:00.000Z",
+    lastCrashAt: null,
+    backoffMs: 1000,
+    lastExitCode: null,
+    lastSignal: null,
+    errorReason: null,
+    fixHint: null,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    nervesEvents.length = 0
+    mockGetAgentName.mockReturnValue("slugger")
+    mockSendDaemonCommand.mockResolvedValue({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: revivedBlueBubblesSnapshot,
+    })
+  })
+
+  describe("schema", () => {
+    it("is registered with sense and reason only", () => {
+      const t = findTool("revive_sense")
+      expect(t.tool.function.name).toBe("revive_sense")
+
+      const params = t.tool.function.parameters as { properties: Record<string, unknown>; required: string[] }
+      expect(Object.keys(params.properties)).toEqual(["sense", "reason"])
+      expect(params.required).toEqual(["sense", "reason"])
+      expect(params.properties).not.toHaveProperty("agent")
+    })
+  })
+
+  describe("daemon command dispatch", () => {
+    it("sends daemon.sense_revive with the current agent, sense, and reason", async () => {
+      const t = findTool("revive_sense")
+      await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, familyCtx())
+
+      expect(mockSendDaemonCommand).toHaveBeenCalledTimes(1)
+      const [socketPath, cmd] = mockSendDaemonCommand.mock.calls[0]
+      expect(socketPath).toBe("/tmp/ouroboros-daemon.sock")
+      expect(cmd).toEqual({
+        kind: "daemon.sense_revive",
+        agent: "slugger",
+        sense: "bluebubbles",
+        reason: "OOM recovery test",
+      })
+    })
+
+    it("returns the fresh managed-agent snapshot from the daemon response", async () => {
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, familyCtx()))
+
+      expect(result.revived).toBe(true)
+      expect(result.agent).toBe("slugger")
+      expect(result.sense).toBe("bluebubbles")
+      expect(result.snapshot).toEqual(revivedBlueBubblesSnapshot)
+      expect(result.detail).toBe("revived slugger/bluebubbles")
+    })
+  })
+
+  describe("guardrails", () => {
+    it("rejects callers below family trust with a friendly error", async () => {
+      const t = findTool("revive_sense")
+      const result = await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, friendCtx())
+
+      expect(result).toContain("family trust")
+      expect(result).toContain("revive")
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+    })
+
+    it("rejects supplied agent arguments as unsupported cross-agent revive attempts", async () => {
+      const t = findTool("revive_sense")
+      const result = await t.handler({
+        agent: "ouroboros",
+        sense: "bluebubbles",
+        reason: "try to revive another agent's sense",
+      }, familyCtx())
+
+      expect(result).toContain("cross-agent")
+      expect(result).toContain("unsupported")
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("daemon errors", () => {
+    it("surfaces an unknown sense daemon response cleanly", async () => {
+      mockSendDaemonCommand.mockResolvedValue({
+        ok: false,
+        error: "No managed sense 'bluebubbles' is registered for agent 'slugger'.",
+      })
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "missing sense test" }, familyCtx()))
+
+      expect(result.error).toBe("No managed sense 'bluebubbles' is registered for agent 'slugger'.")
+      expect(result.sense).toBe("bluebubbles")
+      expect(result.agent).toBe("slugger")
+    })
+
+    it("explains older daemons that do not support daemon.sense_revive", async () => {
+      mockSendDaemonCommand.mockResolvedValue({
+        ok: false,
+        error: "Unknown daemon command kind 'daemon.sense_revive'.",
+      })
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "old daemon test" }, familyCtx()))
+
+      expect(result.error).toBe("daemon does not support this command; try restart_runtime")
+      expect(result.detail).toBe("Unknown daemon command kind 'daemon.sense_revive'.")
     })
   })
 })
