@@ -29,6 +29,8 @@ describe("large payload postTurnPersist integration", () => {
       const fillerLength = LARGE_PAYLOAD_CHARS - HEAD_MARKER.length - TAIL_MARKER.length
       const largePayload = `${HEAD_MARKER}${"x".repeat(fillerLength)}${TAIL_MARKER}`
       expect(largePayload).toHaveLength(LARGE_PAYLOAD_CHARS)
+      const materializationChecksum = largePayload.charCodeAt(0) + largePayload.charCodeAt(largePayload.length - 1)
+      expect(materializationChecksum).toBe(HEAD_MARKER.charCodeAt(0) + TAIL_MARKER.charCodeAt(TAIL_MARKER.length - 1))
 
       const rssAfterBuild = process.memoryUsage().rss
       const toolMessage = {

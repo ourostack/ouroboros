@@ -1196,14 +1196,22 @@ function selectProjectedEventIds(
   trimmedMessages: OpenAI.ChatCompletionMessageParam[],
 ): string[] {
   if (trimmedMessages.length === 0) return []
-  const trimmedFingerprints = trimmedMessages.map(messageFingerprint)
   const result: string[] = []
   let needle = 0
+  let trimmedFingerprint: string | null = null
 
-  for (let i = 0; i < currentMessages.length && needle < trimmedFingerprints.length; i++) {
-    if (messageFingerprint(currentMessages[i]!) !== trimmedFingerprints[needle]) continue
+  for (let i = 0; i < currentMessages.length && needle < trimmedMessages.length; i++) {
+    const currentMessage = currentMessages[i]!
+    const trimmedMessage = trimmedMessages[needle]!
+
+    if (currentMessage !== trimmedMessage) {
+      trimmedFingerprint ??= messageFingerprint(trimmedMessage)
+      if (messageFingerprint(currentMessage) !== trimmedFingerprint) continue
+    }
+
     result.push(currentEventIds[i]!)
     needle++
+    trimmedFingerprint = null
   }
 
   return result
