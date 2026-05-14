@@ -7,7 +7,6 @@ import type OpenAI from "openai"
 import { EVENT_CONTENT_MAX_CHARS } from "../../heart/session-events"
 import { postTurnPersist, type PostTurnPrepared } from "../../mind/context"
 
-const ARTIFACT_PATH = "/Users/arimendelow/AgentBundles/slugger.ouro/tasks/2026-05-12-1042-doing-drop-the-archive/large-payload-rss.txt"
 const LARGE_PAYLOAD_CHARS = 300 * 1024 * 1024
 const PERSIST_RSS_BUDGET_BYTES = 200 * 1024 * 1024
 const MARKER_PREFIX = `[truncated — event content exceeded ${EVENT_CONTENT_MAX_CHARS} chars; original length ${LARGE_PAYLOAD_CHARS} chars]`
@@ -22,6 +21,7 @@ describe("large payload postTurnPersist integration", () => {
   it("postTurnPersist caps a 300 MB tool result", { timeout: 30_000 }, () => {
     const tmpRoot = mkdtempSync(join(tmpdir(), "ouro-large-payload-"))
     const sessPath = join(tmpRoot, "session.json")
+    const artifactPath = join(tmpRoot, "large-payload-rss.txt")
     const start = performance.now()
     const rssBeforeBuild = process.memoryUsage().rss
 
@@ -57,7 +57,7 @@ describe("large payload postTurnPersist integration", () => {
       const persistedContent = persisted.events.find((event) => event.role === "tool")?.content
 
       writeFileSync(
-        ARTIFACT_PATH,
+        artifactPath,
         [
           "Unit 1d large-payload RSS smoke",
           `payloadChars=${LARGE_PAYLOAD_CHARS}`,
