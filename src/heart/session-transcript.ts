@@ -116,12 +116,10 @@ function clip(text: string, limit = 160): string {
 
 function buildSnapshot(summary: string, tailMessages: Array<{ id: string; role: string; content: string; timestamp: string }>): string {
   const lines = [`recent focus: ${clip(summary, 240)}`]
-  const latestUser = [...tailMessages].reverse().find((message) => message.role === "user")?.content
+  const latestUser = [...tailMessages].reverse().find((message) => message.role === "user")!.content
   const latestAssistant = [...tailMessages].reverse().find((message) => message.role === "assistant")?.content
 
-  if (latestUser) {
-    lines.push(`latest user: ${clip(latestUser)}`)
-  }
+  lines.push(`latest user: ${clip(latestUser)}`)
   if (latestAssistant) {
     lines.push(`latest assistant: ${clip(latestAssistant)}`)
   }
@@ -139,7 +137,7 @@ function selectSessionTailMessages(
 
   const latestUser = [...messages].reverse().find((message) => message.role === "user")
   const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant")
-  if (latestUser) selectedIds.add(latestUser.id)
+  selectedIds.add(latestUser!.id)
   if (latestAssistant) selectedIds.add(latestAssistant.id)
 
   return messages.filter((message) => selectedIds.has(message.id))
@@ -173,10 +171,6 @@ export async function summarizeSessionTail(options: SessionTailOptions): Promise
   }
 
   const tailMessages = selectSessionTailMessages(visibleMessages, options.messageCount)
-
-  if (tailMessages.length === 0) {
-    return { kind: "empty", reason: "envelope_trimmed" }
-  }
 
   const transcript = tailMessages
     .map((message) => `[${message.timestamp} | ${message.role} | ${message.id}] ${message.content}`)

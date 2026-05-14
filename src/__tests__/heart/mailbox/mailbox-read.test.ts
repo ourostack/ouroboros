@@ -1164,6 +1164,37 @@ describe("mailbox deep readers", () => {
       })
     })
 
+    it("returns an empty envelope-only transcript when the projected envelope has no events", async () => {
+      const bundlesRoot = makeBundleRoot()
+      const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+      writeAgentConfig(alphaRoot)
+      writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
+      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+        version: 2,
+        events: [],
+        projection: {
+          eventIds: [],
+          trimmed: true,
+          maxTokens: 80000,
+          contextMargin: 20,
+          inputTokens: null,
+          projectedAt: "2026-04-09T17:40:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      })
+
+      const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
+
+      expect(transcript).not.toBeNull()
+      expect(transcript!.friendName).toBe("Ari")
+      expect(transcript!.messageCount).toBe(0)
+      expect(transcript!.messages).toEqual([])
+      expect(transcript!.lastUsage).toBeNull()
+      expect(transcript!.continuity).toBeNull()
+    })
+
     it("returns null for nonexistent sessions", async () => {
       const bundlesRoot = makeBundleRoot()
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
