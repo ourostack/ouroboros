@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type OpenAI from "openai"
 
 describe("session events", () => {
@@ -2086,35 +2086,35 @@ describe("session events", () => {
   })
 
   describe("appendEvictedToArchive", () => {
-    it("writes evicted events as NDJSON lines to archive file", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-
-      const evictedEvents = [
-        { id: "evt-000001", sequence: 1, role: "user" as const, content: "hello", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
-        { id: "evt-000002", sequence: 2, role: "assistant" as const, content: "hi", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: "2026-04-13T10:01:00.000Z", authoredAtSource: "local" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "local" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } },
-      ]
-
-      appendEvictedToArchive(sessPath, evictedEvents)
-
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-      const content = fs.readFileSync(archivePath, "utf-8")
-      const lines = content.trim().split("\n")
-      expect(lines).toHaveLength(2)
-      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
-      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
-
-      // Cleanup
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+    const mkEvent = (id: string, sequence: number, content: string) => ({
+      id,
+      sequence,
+      role: "user" as const,
+      content,
+      name: null,
+      toolCallId: null,
+      toolCalls: [],
+      attachments: [],
+      time: {
+        authoredAt: null,
+        authoredAtSource: "unknown" as const,
+        observedAt: "2026-04-13T10:00:00.000Z",
+        observedAtSource: "ingest" as const,
+        recordedAt: "2026-04-13T10:00:00.000Z",
+        recordedAtSource: "save" as const,
+      },
+      relations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: [] as string[],
+        toolCallId: null,
+        supersedesEventId: null,
+        redactsEventId: null,
+      },
+      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
     })
 
-    it("appends to existing archive file without overwriting", async () => {
+    it("does not create or modify an archive file for evicted events", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
@@ -2123,22 +2123,40 @@ describe("session events", () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
       const sessPath = path.join(tmpDir, "dialog.json")
       const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const sessionContent = "{\"version\":2}\n"
+      fs.writeFileSync(sessPath, sessionContent)
 
-      const event1 = { id: "evt-000001", sequence: 1, role: "user" as const, content: "first", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
-      const event2 = { id: "evt-000002", sequence: 2, role: "user" as const, content: "second", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:01:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:01:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+      const result = appendEvictedToArchive(sessPath, [
+        mkEvent("evt-000001", 1, "hello"),
+        mkEvent("evt-000002", 2, "hi"),
+      ])
 
-      appendEvictedToArchive(sessPath, [event1])
-      appendEvictedToArchive(sessPath, [event2])
+      expect(result).toBeUndefined()
+      expect(fs.existsSync(archivePath)).toBe(false)
+      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
 
-      const content = fs.readFileSync(archivePath, "utf-8")
-      const lines = content.trim().split("\n")
-      expect(lines).toHaveLength(2)
-      expect(JSON.parse(lines[0]!).id).toBe("evt-000001")
-      expect(JSON.parse(lines[1]!).id).toBe("evt-000002")
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
 
-      // Cleanup
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+    it("is idempotent across different evictions and preserves the session file", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { appendEvictedToArchive } = await import("../../heart/session-events")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const sessionContent = JSON.stringify({ version: 2, events: [] })
+      fs.writeFileSync(sessPath, sessionContent)
+
+      appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
+      appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
+
+      expect(fs.existsSync(archivePath)).toBe(false)
+      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
     it("does not write when evictedEvents is empty", async () => {
@@ -2155,22 +2173,75 @@ describe("session events", () => {
 
       expect(fs.existsSync(archivePath)).toBe(false)
 
-      // Cleanup
-      fs.rmdirSync(tmpDir)
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     })
 
-    it("does not crash when archive write fails", async () => {
+    it("emits the archive-disabled nerves event exactly once per process", async () => {
       const fs = await import("fs")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
+      const os = await import("os")
+      const path = await import("path")
+      const emitNervesEvent = vi.fn()
 
-      // Use an invalid path that will cause appendFileSync to fail
-      const badPath = "/nonexistent/deeply/nested/dialog.json"
-      const event = { id: "evt-000001", sequence: 1, role: "user" as const, content: "test", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const }, relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null } }
+      vi.resetModules()
+      vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+      try {
+        const { appendEvictedToArchive } = await import("../../heart/session-events")
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+        const sessPath = path.join(tmpDir, "AgentBundles", "slugger.ouro", "state", "sessions", "dialog.json")
+        fs.mkdirSync(path.dirname(sessPath), { recursive: true })
 
-      // Should not throw
-      expect(() => appendEvictedToArchive(badPath, [event])).not.toThrow()
+        appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
+        appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
+
+        expect(emitNervesEvent).toHaveBeenCalledTimes(1)
+        expect(emitNervesEvent).toHaveBeenCalledWith({
+          type: "session_archive_disabled",
+          agent: "slugger",
+          sessionPath: sessPath,
+          evictedCount: 1,
+          ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+        })
+
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      } finally {
+        vi.doUnmock("../../nerves/runtime")
+        vi.resetModules()
+      }
     })
 
+    it("lets postTurnPersist complete without producing an archive sidecar", async () => {
+      const fs = await import("fs")
+      const os = await import("os")
+      const path = await import("path")
+      const { postTurnPersist } = await import("../../mind/context")
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
+      const sessPath = path.join(tmpDir, "dialog.json")
+      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
+      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "old question" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: "latest question" },
+      ]
+      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "latest question" },
+      ]
+
+      expect(() => postTurnPersist(sessPath, {
+        currentMessages,
+        trimmedMessages,
+        currentIngressTimes: currentMessages.map(() => null),
+        maxTokens: 1024,
+        contextMargin: 128,
+      })).not.toThrow()
+
+      expect(fs.existsSync(sessPath)).toBe(true)
+      expect(fs.existsSync(archivePath)).toBe(false)
+
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    })
   })
 
   describe("loadFullEventHistory", () => {
