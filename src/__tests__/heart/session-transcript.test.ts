@@ -240,7 +240,7 @@ describe("session transcript", () => {
     }
   })
 
-  it("can fall back to archived events when the projected tail has no visible user text", async () => {
+  it("returns envelope-trimmed empty when the projected tail has no visible user text", async () => {
     const { summarizeSessionTail } = await import("../../heart/session-transcript")
     const staleHighSequence = sessionEvent(1000, "assistant", "old high-sequence answer", [], "2026-04-22T17:15:00.000Z")
     const archivedUser = sessionEvent(1, "user", "latest archived user text", [], "2026-04-28T23:01:00.000Z")
@@ -268,16 +268,12 @@ describe("session transcript", () => {
       channel: "bluebubbles",
       key: "chat",
       messageCount: 2,
-      archiveFallback: true,
     })
 
-    expect(result.kind).toBe("ok")
-    if (result.kind === "ok") {
-      expect(stripTranscriptMetadata(result.transcript)).toBe("[user] latest archived user text\n[assistant] latest delivered answer")
-    }
+    expect(result).toEqual({ kind: "empty", reason: "envelope_trimmed" })
   })
 
-  it("keeps the latest visible user in small transcript tails after assistant-heavy turns", async () => {
+  it("ignores archive sidecars when assistant-heavy projected tails have no visible user", async () => {
     const { summarizeSessionTail } = await import("../../heart/session-transcript")
     const archivedUser = sessionEvent(10, "user", "latest inbound text", [], "2026-04-28T23:20:00.000Z")
     const projectedAssistants = [11, 12, 13].map((sequence) => sessionEvent(sequence, "assistant", null, [{
@@ -304,19 +300,9 @@ describe("session transcript", () => {
       channel: "bluebubbles",
       key: "chat",
       messageCount: 2,
-      archiveFallback: true,
     })
 
-    expect(result.kind).toBe("ok")
-    if (result.kind === "ok") {
-      expect(stripTranscriptMetadata(result.transcript)).toBe([
-        "[user] latest inbound text",
-        "[assistant] assistant visible update 12",
-        "[assistant] assistant visible update 13",
-      ].join("\n"))
-      expect(result.snapshot).toContain("latest user: latest inbound text")
-      expect(result.snapshot).toContain("latest assistant: assistant visible update 13")
-    }
+    expect(result).toEqual({ kind: "empty", reason: "envelope_trimmed" })
   })
 
   it("keeps tool-result chatter for self inner transcript tails", async () => {
@@ -556,7 +542,7 @@ describe("session transcript", () => {
     expect(snapshot).toContain("…")
   })
 
-  it("builds snapshots without a latest-user line when the visible transcript is assistant-only", async () => {
+  it("returns envelope-trimmed empty when the visible transcript is assistant-only", async () => {
     const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
@@ -573,230 +559,13 @@ describe("session transcript", () => {
       messageCount: 20,
     })
 
-    expect(result.kind).toBe("ok")
-    const snapshot = result.kind === "ok" ? result.snapshot : ""
-    expect(snapshot).toContain("latest assistant: i surfaced this note from inner dialog")
-    expect(snapshot).not.toContain("latest user:")
+    expect(result).toEqual({ kind: "empty", reason: "envelope_trimmed" })
   })
 
-  it("returns missing when a history search cannot read the session file", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockImplementation(() => {
-      throw new Error("ENOENT")
-    })
+  it("does not export searchSessionTranscript from the transcript module surface", async () => {
+    const moduleExports = await import("../../heart/session-transcript") as Record<string, unknown>
 
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result).toEqual({ kind: "missing" })
-  })
-
-  it("searches the full session history and returns matched excerpts", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "can you check billing history?" },
-        { role: "assistant", content: "yes, looking now" },
-        { role: "user", content: "the billing fix looked shaky earlier" },
-        { role: "assistant", content: "the billing fix is merged and stable now" },
-        { role: "user", content: "great, thanks" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result.kind).toBe("ok")
-    const ok = result.kind === "ok" ? result : null
-    expect(ok?.snapshot).toContain('history query: "billing"')
-    expect(ok?.matches).toHaveLength(2)
-    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] yes, looking now")
-    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[user] the billing fix looked shaky earlier")
-    expect(stripTranscriptMetadata(ok?.matches[0] ?? "")).toContain("[assistant] the billing fix is merged and stable now")
-  })
-
-  it("does not search external tool-result chatter as conversation text", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "can you check the release?" },
-        { role: "assistant", content: "looking now" },
-        { role: "tool", tool_call_id: "call_1", content: "billing-only shell output" },
-        { role: "assistant", content: "release is clean" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/bluebubbles/chat.json",
-      friendId: "friend-1",
-      channel: "bluebubbles",
-      key: "chat",
-      query: "billing-only",
-    })
-
-    expect(result.kind).toBe("no_match")
-    const snapshot = result.kind === "no_match" ? result.snapshot : ""
-    expect(snapshot).toContain("latest user: can you check the release?")
-    expect(snapshot).toContain("latest assistant: release is clean")
-    expect(snapshot).not.toContain("shell output")
-  })
-
-  it("returns a no-match search result with the latest turn context", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello there" },
-        { role: "assistant", content: "hi, still on the release thread" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result).toMatchObject({
-      kind: "no_match",
-      query: "billing",
-      snapshot: expect.stringContaining('history query: "billing"'),
-    })
-    expect(result.kind === "no_match" ? result.snapshot : "").toContain("latest assistant: hi, still on the release thread")
-  })
-
-  it("builds no-match snapshots without assistant lines when that context is absent", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello there" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result.kind).toBe("no_match")
-    const snapshot = result.kind === "no_match" ? result.snapshot : ""
-    expect(snapshot).toContain('history query: "billing"')
-    expect(snapshot).toContain("latest user: hello there")
-    expect(snapshot).not.toContain("latest assistant:")
-  })
-
-  it("returns empty for search when v2 envelope exists but has zero events", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    const emptyV2Envelope = {
-      version: 2,
-      events: [],
-      projection: { eventIds: [] },
-      state: { lastFriendActivityAt: null, mustResolveBeforeHandoff: false },
-    }
-    vi.mocked(fs.readFileSync).mockImplementation((path: any) => {
-      if (String(path).endsWith(".ndjson")) throw new Error("ENOENT")
-      return JSON.stringify(emptyV2Envelope)
-    })
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result).toEqual({ kind: "empty" })
-  })
-
-  it("returns empty for search when the session has no non-system messages", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "system", content: "sys" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result).toEqual({ kind: "empty" })
-  })
-
-  it("treats a blank search query as no match while still surfacing the query snapshot", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello there" },
-        { role: "assistant", content: "still on the release thread" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "   ",
-    })
-
-    expect(result).toMatchObject({
-      kind: "no_match",
-      query: "",
-      snapshot: expect.stringContaining('history query: ""'),
-    })
-  })
-
-  it("collapses duplicate history excerpts when repeated matches would produce the same snippet", async () => {
-    const { searchSessionTranscript } = await import("../../heart/session-transcript")
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello there" },
-        { role: "assistant", content: "billing is green now" },
-        { role: "user", content: "hello there" },
-        { role: "assistant", content: "billing is green now" },
-        { role: "user", content: "hello there" },
-      ],
-    }))
-
-    const result = await searchSessionTranscript({
-      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
-      friendId: "friend-1",
-      channel: "cli",
-      key: "session",
-      query: "billing",
-    })
-
-    expect(result.kind).toBe("ok")
-    expect((result.kind === "ok" ? result.matches : []).map(stripTranscriptMetadata)).toEqual([
-      "[user] hello there\n[assistant] billing is green now\n[user] hello there",
-    ])
+    expect(moduleExports).not.toHaveProperty("searchSessionTranscript")
   })
 
   it("returns empty when the session has no non-system messages", async () => {
@@ -816,7 +585,7 @@ describe("session transcript", () => {
       messageCount: 20,
     })
 
-    expect(result).toEqual({ kind: "empty" })
+    expect(result).toEqual({ kind: "empty", reason: "envelope_trimmed" })
   })
 
   it("returns missing when the session file cannot be read", async () => {

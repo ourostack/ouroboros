@@ -1063,12 +1063,13 @@ describe("mailbox deep readers", () => {
       expect(transcript!.continuity!.mustResolveBeforeHandoff).toBe(false)
     })
 
-    it("surfaces visible per-message timing from canonical session events", async () => {
+    it("surfaces visible per-message timing from canonical session events without reading archive sidecars", async () => {
       const bundlesRoot = makeBundleRoot()
       const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
       writeAgentConfig(alphaRoot)
       writeJson(path.join(alphaRoot, "friends", "friend-1.json"), { name: "Ari" })
-      writeJson(path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json"), {
+      const sessionPath = path.join(alphaRoot, "state", "sessions", "friend-1", "cli", "session.json")
+      writeJson(sessionPath, {
         version: 2,
         events: [
           {
@@ -1114,11 +1115,46 @@ describe("mailbox deep readers", () => {
         lastUsage: null,
         state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: "2026-04-09T17:40:00.000Z" },
       })
+      fs.writeFileSync(sessionPath.replace(/\.json$/, ".archive.ndjson"), `${JSON.stringify({
+        id: "evt-archive-only",
+        sequence: 0,
+        role: "user",
+        content: "archive-only message",
+        name: null,
+        toolCallId: null,
+        toolCalls: [],
+        attachments: [],
+        time: {
+          authoredAt: null,
+          authoredAtSource: "unknown",
+          observedAt: "2026-04-09T17:35:00.000Z",
+          observedAtSource: "ingest",
+          recordedAt: "2026-04-09T17:35:00.000Z",
+          recordedAtSource: "save",
+        },
+        relations: {
+          replyToEventId: null,
+          threadRootEventId: null,
+          references: [],
+          toolCallId: null,
+          supersedesEventId: null,
+          redactsEventId: null,
+        },
+        provenance: {
+          captureKind: "live",
+          legacyVersion: null,
+          sourceMessageIndex: null,
+        },
+      })}\n`, "utf-8")
 
       const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
       const transcript = readSessionTranscript("alpha", "friend-1", "cli", "session", { bundlesRoot })
 
       expect(transcript).not.toBeNull()
+      expect(transcript!.messageCount).toBe(1)
+      expect(transcript!.messages).toHaveLength(1)
+      expect(transcript!.messages.map((message) => message.id)).not.toContain("evt-archive-only")
+      expect(transcript!.messages.map((message) => message.content)).not.toContain("archive-only message")
       expect(transcript!.messages[0]).toMatchObject({
         id: "evt-000001",
         time: {

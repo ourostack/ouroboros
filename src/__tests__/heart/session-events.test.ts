@@ -2249,177 +2249,11 @@ describe("session events", () => {
     })
   })
 
-  describe("loadFullEventHistory", () => {
-    const mkEvent = (id: string, seq: number, role: "system" | "user" | "assistant", content: string) => ({
-      id, sequence: seq, role, content, name: null, toolCallId: null, toolCalls: [] as any[], attachments: [] as string[],
-      time: { authoredAt: null, authoredAtSource: "unknown" as const, observedAt: "2026-04-13T10:00:00.000Z", observedAtSource: "ingest" as const, recordedAt: "2026-04-13T10:00:00.000Z", recordedAtSource: "save" as const },
-      relations: { replyToEventId: null, threadRootEventId: null, references: [] as string[], toolCallId: null, supersedesEventId: null, redactsEventId: null },
-      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
-    })
+  describe("module surface", () => {
+    it("does not export loadFullEventHistory", async () => {
+      const moduleExports = await import("../../heart/session-events") as Record<string, unknown>
 
-    it("returns only envelope events when no archive file exists", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000003", 3, "user", "current")],
-        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(1)
-      expect(events[0]!.id).toBe("evt-000003")
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.rmdirSync(tmpDir)
-    })
-
-    it("merges envelope events with archive events sorted by sequence", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      // Envelope with current events
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000003", 3, "user", "current")],
-        projection: { eventIds: ["evt-000003"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      // Archive with older events
-      const archiveEvents = [
-        mkEvent("evt-000001", 1, "user", "first"),
-        mkEvent("evt-000002", 2, "assistant", "second"),
-      ]
-      fs.writeFileSync(archivePath, archiveEvents.map((e) => JSON.stringify(e)).join("\n") + "\n")
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(3)
-      expect(events[0]!.id).toBe("evt-000001")
-      expect(events[1]!.id).toBe("evt-000002")
-      expect(events[2]!.id).toBe("evt-000003")
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
-    })
-
-    it("deduplicates events by id", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      const sharedEvent = mkEvent("evt-000001", 1, "user", "shared")
-      const envelope = {
-        version: 2 as const,
-        events: [sharedEvent],
-        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-      fs.writeFileSync(archivePath, JSON.stringify(sharedEvent) + "\n")
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(1) // deduplicated
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
-    })
-
-    it("keeps the live envelope event when an archived event id collides", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory, extractEventText } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      const envelopeEvent = mkEvent("evt-000001", 1, "user", "current envelope copy")
-      const archivedEvent = mkEvent("evt-000001", 1, "user", "stale archived copy")
-      const envelope = {
-        version: 2 as const,
-        events: [envelopeEvent],
-        projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-      fs.writeFileSync(archivePath, JSON.stringify(archivedEvent) + "\n")
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(1)
-      expect(extractEventText(events[0]!)).toBe("current envelope copy")
-
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
-    })
-
-    it("skips corrupted NDJSON lines gracefully", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { loadFullEventHistory } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      const envelope = {
-        version: 2 as const,
-        events: [mkEvent("evt-000002", 2, "user", "current")],
-        projection: { eventIds: ["evt-000002"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
-        lastUsage: null,
-        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
-      }
-      fs.writeFileSync(sessPath, JSON.stringify(envelope))
-
-      // Archive with one valid line, one corrupted, and blank lines
-      const validEvent = mkEvent("evt-000001", 1, "user", "archived")
-      fs.writeFileSync(archivePath, [
-        JSON.stringify(validEvent),
-        "this is not valid json{{{",
-        "",
-        "",
-      ].join("\n"))
-
-      const events = loadFullEventHistory(sessPath)
-      expect(events).toHaveLength(2) // valid archived + envelope event
-      expect(events[0]!.id).toBe("evt-000001")
-      expect(events[1]!.id).toBe("evt-000002")
-
-      // Cleanup
-      fs.unlinkSync(sessPath)
-      fs.unlinkSync(archivePath)
-      fs.rmdirSync(tmpDir)
+      expect(moduleExports).not.toHaveProperty("loadFullEventHistory")
     })
   })
 
@@ -2431,7 +2265,6 @@ describe("session events", () => {
       const {
         buildCanonicalSessionEnvelope,
         appendEvictedToArchive,
-        loadFullEventHistory,
         projectProviderMessages,
       } = await import("../../heart/session-events")
 
@@ -2498,13 +2331,13 @@ describe("session events", () => {
       expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 
       // Phase 4: Replay now reads only the bounded envelope projection.
-      const fullHistory = loadFullEventHistory(sessPath)
+      const envelopeHistory = result2.envelope.events
 
-      expect(fullHistory).toHaveLength(result2.envelope.events.length)
-      expect(fullHistory.map((event) => event.id)).toEqual(result2.envelope.events.map((event) => event.id))
+      expect(envelopeHistory).toHaveLength(result2.envelope.events.length)
+      expect(envelopeHistory.map((event) => event.id)).toEqual(result2.envelope.events.map((event) => event.id))
       // Events should be sorted by sequence
-      for (let i = 1; i < fullHistory.length; i++) {
-        expect(fullHistory[i]!.sequence).toBeGreaterThanOrEqual(fullHistory[i - 1]!.sequence)
+      for (let i = 1; i < envelopeHistory.length; i++) {
+        expect(envelopeHistory[i]!.sequence).toBeGreaterThanOrEqual(envelopeHistory[i - 1]!.sequence)
       }
 
       // Phase 5: Verify projection works correctly

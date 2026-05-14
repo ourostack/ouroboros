@@ -398,6 +398,7 @@ describe("query_session tool", () => {
       channel: "cli",
       key: "session",
     }))
+    expect(mockSummarizeSessionTail.mock.calls[0]?.[0]).not.toHaveProperty("archiveFallback")
     expect(result).toBe("Summary: hello")
   })
 
@@ -675,48 +676,13 @@ describe("query_session tool", () => {
     expect(result).toBe("status mode is only available for self/inner dialog.")
   })
 
-  it("requires a non-empty query in search mode", async () => {
+  it("returns a deprecation stub in search mode without reading session history", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 
-    const result = await tool.handler({
-      friendId: "friend-1",
-      channel: "cli",
-      mode: "search",
-      query: "   ",
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("search mode should not read session files")
     })
-
-    expect(result).toBe("search mode requires a non-empty query.")
-  })
-
-  it("rejects search mode when the query field is omitted entirely", async () => {
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
-
-    const result = await tool.handler({
-      friendId: "friend-1",
-      channel: "cli",
-      mode: "search",
-    })
-
-    expect(result).toBe("search mode requires a non-empty query.")
-  })
-
-  it("searches full session history for older context without relying on transcript tail only", async () => {
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
-
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "hi there" },
-        { role: "user", content: "billing was failing in staging earlier" },
-        { role: "assistant", content: "billing is green now after the fix" },
-        { role: "user", content: "latest unrelated question" },
-        { role: "assistant", content: "latest unrelated answer" },
-      ],
-    }))
 
     const result = await tool.handler({
       friendId: "friend-1",
@@ -724,72 +690,10 @@ describe("query_session tool", () => {
       mode: "search",
       query: "billing",
     })
+    const rendered = typeof result === "string" ? result : JSON.stringify(result)
 
-    expect(result).toContain('history search: "billing"')
-    expect(result).toContain("billing was failing in staging earlier")
-    expect(result).toContain("billing is green now after the fix")
-    expect(result).not.toContain("latest unrelated answer")
-  })
-
-  it("reports when a history search has no matches while still surfacing the latest turn context", async () => {
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
-
-    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
-      version: 1,
-      messages: [
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "still working the release thread" },
-      ],
-    }))
-
-    const result = await tool.handler({
-      friendId: "friend-1",
-      channel: "cli",
-      mode: "search",
-      query: "billing",
-    })
-
-    expect(result).toContain('no matches for "billing" in that session.')
-    expect(result).toContain("latest assistant: still working the release thread")
-  })
-
-  it("returns the missing-session message when history search fails unexpectedly", async () => {
-    vi.doMock("../../heart/session-transcript", () => ({
-      summarizeSessionTail: vi.fn(),
-      searchSessionTranscript: vi.fn().mockRejectedValue(new Error("search failed")),
-    }))
-
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
-
-    const result = await tool.handler({
-      friendId: "friend-1",
-      channel: "cli",
-      mode: "search",
-      query: "billing",
-    })
-
-    expect(result).toBe("no session found for that friend/channel/key combination.")
-  })
-
-  it("returns the empty-session message when history search finds no non-system content", async () => {
-    vi.doMock("../../heart/session-transcript", () => ({
-      summarizeSessionTail: vi.fn(),
-      searchSessionTranscript: vi.fn().mockResolvedValue({ kind: "empty" }),
-    }))
-
-    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
-
-    const result = await tool.handler({
-      friendId: "friend-1",
-      channel: "cli",
-      mode: "search",
-      query: "billing",
-    })
-
-    expect(result).toBe("session exists but has no non-system messages.")
+    expect(rendered).toContain("deprecated")
+    expect(rendered).toMatch(/search_notes|consult_notes/)
   })
 
   it("resolves friend name to UUID via ctx.friendStore.listAll", async () => {
