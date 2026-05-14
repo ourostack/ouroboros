@@ -112,7 +112,6 @@ export const bridgeToolDefinitions: ToolDefinition[] = [
           messageCount: 20,
           trustLevel: ctx?.context?.friend?.trustLevel,
           summarize: ctx?.summarize,
-          archiveFallback: true,
         })
         if (sessionTail.kind === "missing") {
           return NO_SESSION_FOUND_MESSAGE

@@ -4,7 +4,6 @@ import { getAgentBundlesRoot } from "../../identity"
 import {
   deriveSessionChronology,
   extractEventText,
-  loadFullEventHistory,
   type SessionEvent,
 } from "../../session-events"
 import {
@@ -213,8 +212,7 @@ export function readSessionTranscript(
   const envelope = readSessionEnvelope(sessionPath)
   if (!envelope) return null
 
-  // Use full event history (envelope + archive) for complete transcript
-  const rawMessages = loadFullEventHistory(sessionPath)
+  const rawMessages = envelope.events
   const friendsDir = path.join(agentRoot, "friends")
   const friendName = resolveFriendName(friendsDir, friendId)
 

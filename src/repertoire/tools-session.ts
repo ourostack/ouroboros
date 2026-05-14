@@ -17,11 +17,8 @@ import {
 import { createBridgeManager } from "../heart/bridges/manager";
 import {
   summarizeSessionTail,
-  searchSessionTranscript,
   type SessionTailOptions,
   type SessionTailResult,
-  type SessionSearchOptions,
-  type SessionSearchResult,
 } from "../heart/session-transcript";
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
@@ -71,14 +68,6 @@ async function summarizeSessionTailSafely(options: SessionTailOptions): Promise<
       }
       /* v8 ignore stop */
     }
-    return { kind: "missing" }
-  }
-}
-
-async function searchSessionSafely(options: SessionSearchOptions): Promise<SessionSearchResult | { kind: "missing" }> {
-  try {
-    return await searchSessionTranscript(options)
-  } catch {
     return { kind: "missing" }
   }
 }
@@ -453,34 +442,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
 
       if (mode === "search") {
-        const query = (args.query || "").trim()
-        if (!query) {
-          return "search mode requires a non-empty query."
-        }
-
-        const search = await searchSessionSafely({
-          sessionPath: resolveSessionPath(friendId, channel, key),
-          friendId,
-          channel,
-          key,
-          query,
-        })
-
-        if (search.kind === "missing") {
-          return NO_SESSION_FOUND_MESSAGE
-        }
-        if (search.kind === "empty") {
-          return EMPTY_SESSION_MESSAGE
-        }
-        if (search.kind === "no_match") {
-          return `no matches for "${search.query}" in that session.\n\n${search.snapshot}`
-        }
-
-        return [
-          `history search: "${search.query}"`,
-          search.snapshot,
-          ...search.matches.map((match, index) => `match ${index + 1}\n${match}`),
-        ].join("\n\n")
+        return "deprecated: query_session mode=search is no longer available; use search_notes or consult_notes instead."
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)
@@ -492,7 +454,6 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         messageCount: count,
         trustLevel: ctx?.context?.friend?.trustLevel,
         summarize: ctx?.summarize,
-        archiveFallback: true,
       })
 
       if (sessionTail.kind === "missing") {

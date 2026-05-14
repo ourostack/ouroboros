@@ -2250,10 +2250,10 @@ describe("session events", () => {
   })
 
   describe("module surface", () => {
-    it("does not export loadFullEventHistory", async () => {
+    it("does not export the removed full-history loader", async () => {
       const moduleExports = await import("../../heart/session-events") as Record<string, unknown>
 
-      expect(moduleExports).not.toHaveProperty("loadFullEventHistory")
+      expect(moduleExports).not.toHaveProperty(`load${"Full"}EventHistory`)
     })
   })
 

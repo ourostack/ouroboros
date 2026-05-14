@@ -1341,48 +1341,6 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   }
 }
 
-/**
- * Load full event history from both the pruned envelope and the NDJSON archive.
- * Returns all events deduplicated by id and sorted by sequence.
- * Corrupted archive lines are silently skipped.
- */
-export function loadFullEventHistory(sessPath: string): SessionEvent[] {
-  const envelope = loadSessionEnvelopeFile(sessPath)
-  if (!envelope) return []
-
-  const envelopeEvents = envelope.events
-  const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-  let archiveEvents: SessionEvent[] = []
-
-  try {
-    const raw = fs.readFileSync(archivePath, "utf-8")
-    const lines = raw.split("\n")
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed.length === 0) continue
-      try {
-        const event = JSON.parse(trimmed) as SessionEvent
-        if (event && typeof event.id === "string" && typeof event.sequence === "number") {
-          archiveEvents.push(event)
-        }
-      } catch {
-        // Skip corrupted lines
-      }
-    }
-  } catch {
-    // Archive file doesn't exist or can't be read -- that's fine
-  }
-
-  // Merge, deduplicate by id, sort by sequence. The live envelope is the
-  // current projection, so it wins if an older archive line has a colliding id.
-  const mergedById = new Map<string, SessionEvent>()
-  for (const event of archiveEvents) mergedById.set(event.id, event)
-  for (const event of envelopeEvents) mergedById.set(event.id, event)
-  const merged = [...mergedById.values()]
-  merged.sort((a, b) => a.sequence - b.sequence)
-  return merged
-}
-
 function agentFromSessionPath(sessPath: string): string {
   const match = sessPath.match(/(?:^|[/\\])AgentBundles[/\\]([^/\\]+)\.ouro(?:[/\\]|$)/)
   return match?.[1] ?? "unknown"
