@@ -2195,11 +2195,16 @@ describe("session events", () => {
 
         expect(emitNervesEvent).toHaveBeenCalledTimes(1)
         expect(emitNervesEvent).toHaveBeenCalledWith({
-          type: "session_archive_disabled",
-          agent: "slugger",
-          sessionPath: sessPath,
-          evictedCount: 1,
-          ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+          component: "heart",
+          event: "heart.session_archive_disabled",
+          message: "session archive append disabled",
+          meta: {
+            type: "session_archive_disabled",
+            agent: "slugger",
+            sessionPath: sessPath,
+            evictedCount: 1,
+            ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+          },
         })
 
         fs.rmSync(tmpDir, { recursive: true, force: true })

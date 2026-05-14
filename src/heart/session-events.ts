@@ -1397,18 +1397,17 @@ export function appendEvictedToArchive(sessPath: string, evictedEvents: SessionE
   if (evictedEvents.length === 0) return
   if (!archiveDisabledEmitted) {
     archiveDisabledEmitted = true
-    ;(emitNervesEvent as unknown as (event: {
-      type: "session_archive_disabled"
-      agent: string
-      sessionPath: string
-      evictedCount: number
-      ts: string
-    }) => void)({
-      type: "session_archive_disabled",
-      agent: agentFromSessionPath(sessPath),
-      sessionPath: sessPath,
-      evictedCount: evictedEvents.length,
-      ts: new Date().toISOString(),
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.session_archive_disabled",
+      message: "session archive append disabled",
+      meta: {
+        type: "session_archive_disabled",
+        agent: agentFromSessionPath(sessPath),
+        sessionPath: sessPath,
+        evictedCount: evictedEvents.length,
+        ts: new Date().toISOString(),
+      },
     })
   }
 }
