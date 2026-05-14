@@ -83,6 +83,7 @@ vi.mock("../../arc/obligations", async (importOriginal) => ({
 }))
 
 import * as fs from "fs"
+import { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } from "../helpers/content-cap"
 
 beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
@@ -753,6 +754,26 @@ describe("send_message tool", () => {
       expect(written.friendId).toBe("self")
       expect(written.channel).toBe("teams")
       expect(written.content).toBe("note to self")
+    })
+
+    it("caps oversized self-routed pending message content before writing the envelope", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+      const oversized = makeOversizedAgentContent("self-routed pending ")
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: oversized,
+      })
+
+      const written = JSON.parse(vi.mocked(fs.writeFileSync).mock.calls[0][1] as string)
+      const expected = expectedCappedContent(oversized)
+      const marker = expectedTruncationMarker(oversized)
+      expect({
+        equalsExpected: written.content === expected,
+        includesMarker: written.content.includes(marker),
+      }).toEqual({ equalsExpected: true, includesMarker: true })
     })
 
     it("tags outward delegated self-messages with the originating friend session and bridge", async () => {

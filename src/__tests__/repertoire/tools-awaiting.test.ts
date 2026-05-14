@@ -407,6 +407,44 @@ describe("tools-awaiting", () => {
       expect(files.length).toBeGreaterThan(0)
     })
 
+    it("default writer caps oversized pending message content before queueing", async () => {
+      resetAwaitToolDeps()
+      await fileAwaitDef.handler(
+        { name: "hey_export", condition: "c", cadence: "5m", alert: "bluebubbles" },
+        { currentSession: { friendId: "ari", channel: "bluebubbles", key: "x", sessionPath: "" } } as any,
+      )
+      const { getInnerDialogPendingDir } = await import("../../mind/pending")
+      const pendingDir = getInnerDialogPendingDir("slugger")
+      cleanup.push(path.dirname(path.dirname(pendingDir)))
+      const oversized = makeOversizedAgentContent("await fallback pending ")
+
+      mockDeliverAwaitAlert.mockImplementationOnce(async ({ deliveryDeps }) => {
+        deliveryDeps.queuePending({
+          from: "slugger",
+          friendId: "ari",
+          channel: "bluebubbles",
+          key: "x",
+          content: oversized,
+          timestamp: 123,
+        })
+        return { attempted: true, delivery: { status: "queued_for_later", detail: "queued" } }
+      })
+
+      await resolveAwaitDef.handler(
+        { name: "hey_export", verdict: "yes", observation: "ok" },
+        undefined,
+      )
+
+      const [queuedFile] = fs.readdirSync(pendingDir)
+      const queued = JSON.parse(fs.readFileSync(path.join(pendingDir, queuedFile), "utf-8")) as { content: string }
+      const expected = expectedCappedContent(oversized)
+      const marker = expectedTruncationMarker(oversized)
+      expect({
+        equalsExpected: queued.content === expected,
+        includesMarker: queued.content.includes(marker),
+      }).toEqual({ equalsExpected: true, includesMarker: true })
+    })
+
     it("setAwaitToolDeps overrides delivery deps factory", async () => {
       const customQueue = vi.fn()
       setAwaitToolDeps({
