@@ -382,6 +382,7 @@ export interface MailboxSessionTranscript {
   key: string
   sessionPath: string
   messageCount: number
+  truncatedHistory: boolean
   lastUsage: MailboxSessionUsage | null
   continuity: MailboxSessionContinuity | null
   messages: MailboxTranscriptMessage[]

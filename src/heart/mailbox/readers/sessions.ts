@@ -225,6 +225,7 @@ export function readSessionTranscript(
     key,
     sessionPath,
     messageCount: messages.length,
+    truncatedHistory: envelope.projection.trimmed,
     lastUsage: parseSessionUsage(envelope.lastUsage),
     continuity: parseSessionContinuity(envelope.state),
     messages,

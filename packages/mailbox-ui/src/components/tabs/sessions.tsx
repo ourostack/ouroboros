@@ -310,6 +310,11 @@ function TranscriptView({ transcript }: { transcript: Transcript }) {
             {usage.input_tokens.toLocaleString()} in · {usage.output_tokens.toLocaleString()} out · {usage.total_tokens.toLocaleString()} total
           </p>
         )}
+        {transcript.truncatedHistory && (
+          <p className={surface === "terminal" ? "pb-2 font-mono text-[10px] text-[#facc15]" : "pb-2 font-mono text-[10px] text-ouro-gold/80"}>
+            older context not available; the agent&apos;s curated record is in diary/journal/notes
+          </p>
+        )}
         {system.length > 0 && (
           <div className="pb-2 mb-2 border-b border-current/10">
             <button
