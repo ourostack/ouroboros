@@ -55,6 +55,25 @@ function writeTask(
   fs.writeFileSync(path.join(tasksRoot, collection, `${stem}.md`), lines.join("\n"), "utf-8")
 }
 
+function writeCanonicalNote(
+  agentRoot: string,
+  filename: string,
+  frontmatter: { created_at: string; tags?: string[] },
+  body: string,
+): void {
+  const notesRoot = path.join(agentRoot, "notes")
+  fs.mkdirSync(notesRoot, { recursive: true })
+  const lines = ["---", `created_at: ${frontmatter.created_at}`]
+  if (frontmatter.tags) {
+    lines.push("tags:")
+    for (const tag of frontmatter.tags) {
+      lines.push(`- ${tag}`)
+    }
+  }
+  lines.push("---", "", body)
+  fs.writeFileSync(path.join(notesRoot, filename), lines.join("\n"), "utf-8")
+}
+
 function writeAgentConfig(agentRoot: string, overrides: Record<string, unknown> = {}): void {
   writeJson(path.join(agentRoot, "agent.json"), {
     version: 1,
@@ -1592,6 +1611,19 @@ describe("mailbox deep readers", () => {
   })
 
   describe("readNotesView", () => {
+    type CanonicalNoteItem = {
+      filename: string
+      title: string
+      tags: string[]
+      preview: string
+      writtenAt: string
+    }
+
+    type NotesViewWithCanonicalNotes = ReturnType<typeof readNotesView> & {
+      canonicalNoteCount: number
+      recentCanonicalNotes: CanonicalNoteItem[]
+    }
+
     it("reads diary facts and journal index", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
@@ -1619,10 +1651,87 @@ describe("mailbox deep readers", () => {
       expect(notes.recentJournalEntries[0]!.filename).toBe("2026-03-30.md")
     })
 
+    it("reads recent canonical markdown notes bounded to the notes view limit", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+
+      for (let i = 0; i < 22; i += 1) {
+        const day = String(i + 1).padStart(2, "0")
+        const filename = `2026-05-${day}-mailbox-canonical-${day}.md`
+        const longBody = `Canonical note ${day} body. ${"x".repeat(230)}`
+        writeCanonicalNote(agentRoot, filename, {
+          created_at: `2026-05-${day}T10:00:00.000Z`,
+          tags: ["mailbox", `tag-${day}`],
+        }, longBody)
+      }
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.canonicalNoteCount).toBe(22)
+      expect(notes.recentCanonicalNotes).toHaveLength(20)
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-22-mailbox-canonical-22.md",
+        title: "mailbox canonical 22",
+        tags: ["mailbox", "tag-22"],
+        preview: `Canonical note 22 body. ${"x".repeat(230)}`.slice(0, 200),
+        writtenAt: "2026-05-22T10:00:00.000Z",
+      })
+      expect(notes.recentCanonicalNotes.at(-1)!.filename).toBe("2026-05-03-mailbox-canonical-03.md")
+    })
+
+    it("derives canonical note title from the first markdown heading when present", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+
+      writeCanonicalNote(agentRoot, "2026-05-14-slug-fallback-title.md", {
+        created_at: "2026-05-14T17:42:13.000Z",
+        tags: ["archive-removal"],
+      }, "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.")
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.recentCanonicalNotes).toEqual([
+        {
+          filename: "2026-05-14-slug-fallback-title.md",
+          title: "Notes surface contract",
+          tags: ["archive-removal"],
+          preview: "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.",
+          writtenAt: "2026-05-14T17:42:13.000Z",
+        },
+      ])
+    })
+
+    it("exposes canonical notes without removing diary or journal data", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+
+      fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
+      fs.writeFileSync(path.join(agentRoot, "diary", "facts.jsonl"), `${JSON.stringify({ id: "f1", text: "Keep diary.", source: "session", createdAt: "2026-05-14T10:00:00.000Z" })}\n`, "utf-8")
+      fs.mkdirSync(path.join(agentRoot, "journal"), { recursive: true })
+      writeJson(path.join(agentRoot, "journal", ".index.json"), [
+        { filename: "2026-05-14.md", preview: "Keep journal.", mtime: 1778762400000 },
+      ])
+      writeCanonicalNote(agentRoot, "2026-05-14-keep-notes.md", {
+        created_at: "2026-05-14T12:00:00.000Z",
+        tags: ["mailbox"],
+      }, "Keep canonical notes.")
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.diaryEntryCount).toBe(1)
+      expect(notes.recentDiaryEntries).toHaveLength(1)
+      expect(notes.journalEntryCount).toBe(1)
+      expect(notes.recentJournalEntries).toHaveLength(1)
+      expect(notes.canonicalNoteCount).toBe(1)
+      expect(notes.recentCanonicalNotes).toHaveLength(1)
+    })
+
     it("handles missing diary and journal directories", async () => {
       const notes = readNotesView("/tmp/nonexistent-agent.ouro")
       expect(notes.diaryEntryCount).toBe(0)
       expect(notes.journalEntryCount).toBe(0)
+      expect((notes as NotesViewWithCanonicalNotes).canonicalNoteCount).toBe(0)
+      expect((notes as NotesViewWithCanonicalNotes).recentCanonicalNotes).toEqual([])
     })
 
     it("does NOT read from legacy psyche/notes path -- only diary/", async () => {

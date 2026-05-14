@@ -1110,7 +1110,7 @@ describe("Mailbox deep-tab live refresh", () => {
   it("re-fetches notes data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith("/notes")) return jsonResponse({ diaryEntryCount: 0, journalEntryCount: 0, recentDiaryEntries: [], recentJournalEntries: [] })
+      if (url.endsWith("/notes")) return jsonResponse({ diaryEntryCount: 0, journalEntryCount: 0, canonicalNoteCount: 0, recentDiaryEntries: [], recentJournalEntries: [], recentCanonicalNotes: [] })
       if (url.endsWith("/note-decisions")) return jsonResponse({ totalCount: 0, items: [] })
       throw new Error(`unexpected url: ${url}`)
     })
@@ -1121,6 +1121,99 @@ describe("Mailbox deep-tab live refresh", () => {
 
     ui.rerender(<NotesTab agentName="slugger" refreshGeneration={1} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("renders canonical notes in the existing notes tab without removing diary, journal, or decisions", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/notes")) {
+        return jsonResponse({
+          diaryEntryCount: 1,
+          journalEntryCount: 1,
+          canonicalNoteCount: 2,
+          recentDiaryEntries: [
+            { id: "fact-1", text: "Diary fact still renders.", source: "session", createdAt: "2026-05-14T10:00:00.000Z" },
+          ],
+          recentJournalEntries: [
+            { filename: "2026-05-14.md", preview: "Journal still renders.", mtime: 1778762400000 },
+          ],
+          recentCanonicalNotes: [
+            {
+              filename: "2026-05-14-notes-surface-contract.md",
+              title: "Notes surface contract",
+              tags: ["mailbox", "archive-removal"],
+              preview: "Canonical note preview shown from markdown body.",
+              writtenAt: "2026-05-14T17:42:13.000Z",
+            },
+            {
+              filename: "2026-05-13-second-note.md",
+              title: "second note",
+              tags: [],
+              preview: "Older note preview.",
+              writtenAt: "2026-05-13T17:42:13.000Z",
+            },
+          ],
+        })
+      }
+      if (url.endsWith("/note-decisions")) {
+        return jsonResponse({
+          totalCount: 1,
+          items: [
+            { timestamp: "2026-05-14T17:00:00.000Z", kind: "note_saved", decision: "saved", reason: "Kept as canonical note.", excerpt: "Canonical note preview" },
+          ],
+        })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(<NotesTab agentName="slugger" refreshGeneration={0} />)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    expect(ui.getByRole("button", { name: /Diary \(1\)/ })).toBeTruthy()
+    expect(ui.getByRole("button", { name: /Journal \(1\)/ })).toBeTruthy()
+    expect(ui.getByRole("button", { name: /Notes \(2\)/ })).toBeTruthy()
+    expect(ui.getByRole("button", { name: /Decisions \(1\)/ })).toBeTruthy()
+
+    fireEvent.click(ui.getByRole("button", { name: /Notes \(2\)/ }))
+
+    expect(ui.getByText("Notes surface contract")).toBeTruthy()
+    expect(ui.getByText("Canonical note preview shown from markdown body.")).toBeTruthy()
+    expect(ui.getByText("mailbox")).toBeTruthy()
+    expect(ui.getByText("archive-removal")).toBeTruthy()
+
+    fireEvent.click(ui.getByRole("button", { name: /Diary \(1\)/ }))
+    expect(ui.getByText("Diary fact still renders.")).toBeTruthy()
+    fireEvent.click(ui.getByRole("button", { name: /Journal \(1\)/ }))
+    expect(ui.getByText("Journal still renders.")).toBeTruthy()
+    fireEvent.click(ui.getByRole("button", { name: /Decisions \(1\)/ }))
+    expect(ui.getByText("Kept as canonical note.")).toBeTruthy()
+  })
+
+  it("renders a clean canonical notes empty state for an empty bundle", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/notes")) {
+        return jsonResponse({
+          diaryEntryCount: 0,
+          journalEntryCount: 0,
+          canonicalNoteCount: 0,
+          recentDiaryEntries: [],
+          recentJournalEntries: [],
+          recentCanonicalNotes: [],
+        })
+      }
+      if (url.endsWith("/note-decisions")) return jsonResponse({ totalCount: 0, items: [] })
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const ui = render(<NotesTab agentName="slugger" refreshGeneration={0} />)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(ui.getByRole("button", { name: /Notes \(0\)/ }))
+
+    expect(ui.getByText(/No canonical notes yet/i)).toBeTruthy()
   })
 
   it("re-fetches runtime data when refreshGeneration advances", async () => {
