@@ -37,6 +37,7 @@ describe("daemon command plane branches", () => {
       startAutoStartAgents: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       startAgent: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
       sendToAgent: vi.fn(),
     }
 
@@ -570,6 +571,97 @@ describe("daemon command plane branches", () => {
     const hatch = await daemon.handleCommand({ kind: "hatch.start" })
     expect(hatch.ok).toBe(true)
     expect(hatch.message).toContain("Gate 6")
+  })
+
+  it("revives a managed sense by resetting failure state, starting it, and returning its fresh snapshot", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive")
+    const { daemon, processManager } = make(socketPath)
+    const revivedSnapshot = {
+      name: "slugger:bluebubbles",
+      channel: "bluebubbles",
+      status: "running",
+      pid: 18790,
+      restartCount: 0,
+      startedAt: "2026-05-14T10:00:00.000Z",
+      lastCrashAt: null,
+      backoffMs: 1000,
+      lastExitCode: null,
+      lastSignal: null,
+      errorReason: null,
+      fixHint: null,
+    }
+    processManager.listAgentSnapshots
+      .mockReturnValueOnce([
+        {
+          ...revivedSnapshot,
+          status: "crashed",
+          pid: null,
+          startedAt: null,
+          errorReason: "respawn loop detected",
+          fixHint: "investigate the root cause then run `ouro up` to resume",
+        },
+      ])
+      .mockReturnValueOnce([revivedSnapshot])
+    processManager.resetAgentFailureState = vi.fn()
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "manual recovery after fixing BlueBubbles credentials",
+    } as never)
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: revivedSnapshot,
+    })
+  })
+
+  it("returns a friendly error for unknown sense revive targets without throwing or starting anything", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-unknown")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([
+      {
+        name: "slugger:mail",
+        channel: "mail",
+        status: "running",
+        pid: 4321,
+        restartCount: 0,
+        startedAt: "2026-05-14T10:00:00.000Z",
+        lastCrashAt: null,
+        backoffMs: 1000,
+        lastExitCode: null,
+        lastSignal: null,
+        errorReason: null,
+        fixHint: null,
+      },
+    ])
+    processManager.resetAgentFailureState = vi.fn()
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "try missing sense",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "No managed sense 'bluebubbles' is registered for agent 'slugger'.",
+    })
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "ghost",
+      sense: "bluebubbles",
+      reason: "try missing agent",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "No managed agent 'ghost' is registered with daemon-managed senses.",
+    })
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
   })
 
   it("starts the managed agent and wakes inner dialog via direct IPC", async () => {

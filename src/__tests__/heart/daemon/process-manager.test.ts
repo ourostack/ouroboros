@@ -17,6 +17,15 @@ class MockChild extends EventEmitter {
   send = vi.fn((_message: unknown, _callback?: (error: Error | null) => void) => true)
 }
 
+type AgentRuntimeStateForTest = {
+  crashTimestamps: number[]
+  orchestratedRestartTimestamps: number[]
+  respawnLoopTripped: boolean
+  cooldownTimer: unknown | null
+  cooldownRetryCount: number
+  fastCrashCount: number
+}
+
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void } {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((res) => {
@@ -922,6 +931,40 @@ describe("daemon process manager", () => {
     })
 
     await expect(manager.startAgent("ghost")).rejects.toThrow("Unknown managed agent 'ghost'.")
+  })
+
+  it("resets cooldown, crash, and respawn-loop state for operator sense revive", () => {
+    const cooldownTimer = { kind: "cooldown" }
+    const senseAgents: DaemonManagedAgent[] = [
+      { name: "slugger", entry: "heart/agent-entry.js", channel: "cli", autoStart: false },
+      { name: "slugger:bluebubbles", entry: "heart/sense-entry.js", channel: "bluebubbles", autoStart: false },
+    ]
+    const manager = new DaemonProcessManager({
+      agents: senseAgents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+    const states = (manager as unknown as { agents: Map<string, AgentRuntimeStateForTest> }).agents
+    const state = states.get("slugger:bluebubbles")
+    if (!state) throw new Error("missing bluebubbles state")
+    state.cooldownRetryCount = 3
+    state.crashTimestamps = [1_000, 2_000]
+    state.fastCrashCount = 2
+    state.respawnLoopTripped = true
+    state.cooldownTimer = cooldownTimer
+    state.orchestratedRestartTimestamps = [3_000, 4_000]
+
+    manager.resetAgentFailureState("slugger:bluebubbles")
+
+    expect(clearTimeoutFn).toHaveBeenCalledWith(cooldownTimer)
+    expect(state.cooldownRetryCount).toBe(0)
+    expect(state.crashTimestamps).toEqual([])
+    expect(state.fastCrashCount).toBe(0)
+    expect(state.respawnLoopTripped).toBe(false)
+    expect(state.cooldownTimer).toBeNull()
+    expect(state.orchestratedRestartTimestamps).toEqual([])
   })
 
   it("does not spawn again when startAgent is called while already running", async () => {
