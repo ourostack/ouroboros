@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.611",
       "changes": [
         "BlueBubbles recovery: stale captured inbound sidecars are now marked superseded when the chat session has already advanced, preventing old iMessage recovery entries from keeping runtime health in warn or replaying obsolete chat turns.",
-        "`query_session` keeps `mode=search` parseable during the deprecation cycle, but now returns a structured deprecation stub pointing agents to `search_notes` or `consult_notes`; the search mode is targeted for removal in alpha.616."
+        "`query_session` keeps `mode=search` parseable during the deprecation cycle, but now returns a structured deprecation stub pointing agents to `search_notes` or `consult_notes`; the search mode is targeted for removal in alpha.616.",
+        "Session `.archive.ndjson` files are no longer written or read. Existing files under `~/AgentBundles/<agent>.ouro/state/sessions/**/*.archive.ndjson` are operationally inert and safe to delete with `rm`; the harness deliberately does not provide a built-in delete command now that archive pressure is gone and pruning is unnecessary, though an optional `ouro session archive prune` follow-up may land later if user demand emerges."
       ]
     },
     {
