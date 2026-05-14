@@ -50,6 +50,7 @@ export interface DaemonSenseManagerLike {
   listHealthProbes?(): SenseProbe[]
   listManagedPids?(): number[]
   restartSense?(managedName: string): Promise<void>
+  reviveSense?(agent: string, sense: string): Promise<DaemonSenseRow | null>
 }
 
 export interface DaemonSenseManagerOptions {
@@ -60,6 +61,7 @@ export interface DaemonSenseManagerOptions {
     triggerAutoStartAgents?(): void
     startAgent?(agent: string): Promise<void>
     restartAgent?(agent: string): Promise<void>
+    resetAgentFailureState?(agent: string): void
     stopAll(): Promise<void>
     listAgentSnapshots(): Array<{ name: string; status: string; pid?: number | null }>
   }
@@ -790,6 +792,18 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       return
     }
     await this.processManager.startAgent?.(managedName)
+  }
+
+  async reviveSense(agent: string, sense: string): Promise<DaemonSenseRow | null> {
+    const parsed = parseSenseSnapshotName(`${agent}:${sense}`)
+    if (!parsed) return null
+    const context = this.contexts.get(parsed.agent)
+    if (!context || !context.senses[parsed.sense].enabled) return null
+
+    const managedName = `${parsed.agent}:${parsed.sense}`
+    this.processManager.resetAgentFailureState?.(managedName)
+    await this.processManager.startAgent?.(managedName)
+    return this.listSenseRows().find((row) => row.agent === parsed.agent && row.sense === parsed.sense) ?? null
   }
 
   listSenseRows(): DaemonSenseRow[] {

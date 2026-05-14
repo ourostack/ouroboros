@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.612",
       "changes": [
-        "Drop the session archive and route durable history lookup through notes."
+        "Drop the session archive and route durable history lookup through notes.",
+        "Wire `daemon.sense_revive` through the live sense manager so `revive_sense({ sense: \"bluebubbles\" })` can recover BlueBubbles in the actual daemon topology."
       ]
     },
     {

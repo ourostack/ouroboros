@@ -63,6 +63,7 @@ describe("daemon command plane branches", () => {
       startAutoStartSenses: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       listSenseRows: vi.fn(() => []),
+      reviveSense: vi.fn(),
     }
 
     const daemon = new OuroDaemon({
@@ -617,6 +618,37 @@ describe("daemon command plane branches", () => {
       ok: true,
       message: "revived slugger/bluebubbles",
       data: revivedSnapshot,
+    })
+  })
+
+  it("revives live sense-manager senses when worker snapshots do not contain sense processes", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-sense-manager")
+    const { daemon, processManager, senseManager } = make(socketPath)
+    const revivedRow = {
+      agent: "slugger",
+      sense: "bluebubbles",
+      label: "BlueBubbles",
+      enabled: true,
+      status: "running",
+      detail: ":18789 /bluebubbles-webhook",
+    }
+    processManager.listAgentSnapshots.mockReturnValue([])
+    senseManager.reviveSense.mockResolvedValue(revivedRow)
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "final-validation",
+    } as never)
+
+    expect(senseManager.reviveSense).toHaveBeenCalledWith("slugger", "bluebubbles")
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: revivedRow,
     })
   })
 

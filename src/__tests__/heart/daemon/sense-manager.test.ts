@@ -136,6 +136,157 @@ describe("daemon sense manager", () => {
     expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
   })
 
+  it("revives an enabled managed sense through the sense process manager", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
+      bluebubblesChannel: { port: 18789, webhookPath: "/bluebubbles-webhook" },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => [{ name: "slugger:bluebubbles", status: "running" }]),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    const row = await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(row).toEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "bluebubbles",
+      status: "running",
+      detail: ":18789 /bluebubbles-webhook",
+    }))
+  })
+
+  it("returns null for sense revive requests outside an enabled sense context", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        bluebubbles: { enabled: false },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => [{ name: "slugger:bluebubbles", status: "running" }]),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    await expect(manager.reviveSense("slugger", "unknown" as never)).resolves.toBeNull()
+    await expect(manager.reviveSense("missing", "bluebubbles")).resolves.toBeNull()
+    await expect(manager.reviveSense("slugger", "bluebubbles")).resolves.toBeNull()
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+  })
+
+  it("reviveSense tolerates minimal injected process managers", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
+      bluebubblesChannel: { port: 18790, webhookPath: "/custom-webhook" },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => [{ name: "slugger:bluebubbles", status: "running" }]),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    const row = await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(row).toEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "bluebubbles",
+      status: "running",
+      detail: ":18790 /custom-webhook",
+    }))
+  })
+
+  it("returns null when a revived enabled sense has no matching process snapshot yet", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        bluebubbles: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      bluebubbles: { serverUrl: "http://127.0.0.1:1234", password: "pw" },
+      bluebubblesChannel: { port: 18791, webhookPath: "/bluebubbles-webhook" },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      resetAgentFailureState: vi.fn(),
+      startAgent: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+    vi.spyOn(manager, "listSenseRows").mockReturnValue([])
+
+    const row = await manager.reviveSense("slugger", "bluebubbles")
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(row).toBeNull()
+  })
+
   it("contains fallback sense autostart errors", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const firstProcessManager = {

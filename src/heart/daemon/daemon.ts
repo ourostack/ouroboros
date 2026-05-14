@@ -1337,6 +1337,15 @@ export class OuroDaemon {
             error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
           }
         }
+        const revivedSenseRow = await this.senseManager?.reviveSense?.(command.agent, command.sense)
+        if (revivedSenseRow) {
+          return {
+            ok: true,
+            message: `revived ${command.agent}/${command.sense}`,
+            data: revivedSenseRow,
+          }
+        }
+
         const managedSenseSnapshots = this.processManager.listAgentSnapshots()
           .filter((snapshot) => snapshot.name.startsWith(`${command.agent}:`))
         if (managedSenseSnapshots.length === 0) {
