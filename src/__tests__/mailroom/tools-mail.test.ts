@@ -507,6 +507,149 @@ describe("mail tools", () => {
     expect(legacyAccessLog).toContain("delegated human mailbox: unknown owner / unknown source")
   })
 
+  it("does not run unbounded local store scans for mail_search", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    await seedMail(storePath)
+    const originalListMessages = FileMailroomStore.prototype.listMessages
+    const listSpy = vi.spyOn(FileMailroomStore.prototype, "listMessages").mockImplementation(function (filters) {
+      if (filters.limit === undefined) throw new Error("mail_search must not request an unbounded local message scan")
+      return originalListMessages.call(this, filters)
+    })
+
+    const search = await tool("mail_search").handler({
+      query: "pancakes",
+      scope: "delegated",
+      source: "hey",
+      reason: "find breakfast without full mailbox scan",
+    }, trustedContext())
+
+    expect(search).toContain("Breakfast logistics")
+    expect(search).toContain("search coverage:")
+    expect(search).toContain("file search cache complete")
+    expect(listSpy).not.toHaveBeenCalled()
+  })
+
+  it("uses bounded index reads for limited file-backed mail listings", async () => {
+    const { registry } = provisionMailboxRegistry({
+      agentId: "slugger",
+      ownerEmail: "ari@mendelow.me",
+      source: "hey",
+    })
+    const storePath = tempDir()
+    const store = new FileMailroomStore({ rootDir: storePath })
+    const [delegatedAlias] = registry.sourceGrants.map((grant) => grant.aliasAddress)
+    await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "bulk@example.com", rcptTo: [delegatedAlias!] },
+      rawMime: Buffer.from([
+        "From: Bulk <bulk@example.com>",
+        `To: ${delegatedAlias}`,
+        "Subject: Huge old message",
+        "",
+        "body ".repeat(20_000),
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-20T10:00:00.000Z"),
+    })
+    const recent = await ingestRawMailToStore({
+      registry,
+      store,
+      envelope: { mailFrom: "ari@mendelow.me", rcptTo: [delegatedAlias!] },
+      rawMime: Buffer.from([
+        "From: Ari <ari@mendelow.me>",
+        `To: ${delegatedAlias}`,
+        "Subject: Recent small message",
+        "",
+        "newest bounded result",
+      ].join("\r\n")),
+      receivedAt: new Date("2026-04-21T10:00:00.000Z"),
+    })
+    const records = await store.listMessageIndexRecords?.({ agentId: "slugger", limit: 1 })
+    expect(records?.map((record) => record.id)).toEqual([recent.accepted[0]!.id])
+
+    const listed = await store.listMessages({ agentId: "slugger", limit: 1 })
+
+    expect(listed.map((message) => message.id)).toEqual([recent.accepted[0]!.id])
+  })
+
+  it("skips malformed file-backed message indexes during bounded listings", async () => {
+    const storePath = tempDir()
+    const store = new FileMailroomStore({ rootDir: storePath })
+    const messagesDir = path.join(storePath, "messages")
+    const placements = ["imbox", "screener", "discarded", "quarantine", "draft", "sent"] as const
+    for (const [index, placement] of placements.entries()) {
+      fs.writeFileSync(path.join(messagesDir, `valid-${placement}.json`), `${JSON.stringify({
+        id: `mail_${placement}`,
+        agentId: "slugger",
+        compartmentKind: index === 0 ? "native" : "delegated",
+        placement,
+        source: "hey",
+        receivedAt: `2026-04-21T10:0${index}:00.000Z`,
+      })}\n`, "utf-8")
+    }
+    fs.writeFileSync(path.join(messagesDir, "bad-escape.json"), [
+      '{"id":"\\u","agentId":"slugger","compartmentKind":"delegated",',
+      '"placement":"imbox","source":"hey","receivedAt":"2026-04-21T10:00:00.000Z"}',
+    ].join(""), "utf-8")
+    fs.writeFileSync(path.join(messagesDir, "bad-kind.json"), `${JSON.stringify({
+      id: "mail_bad_kind",
+      agentId: "slugger",
+      compartmentKind: "shared",
+      placement: "imbox",
+      source: "hey",
+      receivedAt: "2026-04-21T10:10:00.000Z",
+    })}\n`, "utf-8")
+    fs.writeFileSync(path.join(messagesDir, "bad-placement.json"), `${JSON.stringify({
+      id: "mail_bad_placement",
+      agentId: "slugger",
+      compartmentKind: "delegated",
+      placement: "archive",
+      source: "hey",
+      receivedAt: "2026-04-21T10:11:00.000Z",
+    })}\n`, "utf-8")
+    fs.mkdirSync(path.join(messagesDir, "unreadable.json"))
+
+    const records = await store.listMessageIndexRecords?.({ agentId: "slugger", limit: 10 })
+
+    expect(records?.map((record) => record.id).sort()).toEqual(placements.map((placement) => `mail_${placement}`).sort())
+  })
+
+  it("scans incomplete file-backed search caches one message at a time", async () => {
+    setAgentName("slugger")
+    const storePath = tempDir()
+    await seedMail(storePath)
+    fs.rmSync(path.resolve(storePath, "..", "mail-search"), { recursive: true, force: true })
+    resetMailSearchCacheForTests()
+    const originalListMessages = FileMailroomStore.prototype.listMessages
+    const listSpy = vi.spyOn(FileMailroomStore.prototype, "listMessages").mockImplementation(function (filters) {
+      if (filters.limit === undefined) throw new Error("file cache fallback must not request an unbounded local message scan")
+      return originalListMessages.call(this, filters)
+    })
+
+    const miss = await tool("mail_search").handler({
+      query: "waffles",
+      scope: "delegated",
+      source: "hey",
+      reason: "miss breakfast without full mailbox scan",
+    }, trustedContext())
+    expect(miss).toContain("No matching mail.")
+    expect(miss).toContain("file search cache was incomplete; scanned 1 visible message(s) one at a time without materializing the mailbox")
+    fs.rmSync(path.resolve(storePath, "..", "mail-search"), { recursive: true, force: true })
+    resetMailSearchCacheForTests()
+
+    const search = await tool("mail_search").handler({
+      query: "pancakes",
+      scope: "delegated",
+      source: "hey",
+      reason: "find breakfast while repairing an incomplete file cache",
+    }, trustedContext())
+
+    expect(search).toContain("Breakfast logistics")
+    expect(search).toContain("file search cache was incomplete; scanned 1 visible message(s) one at a time without materializing the mailbox")
+    expect(listSpy).not.toHaveBeenCalled()
+  })
+
   it("keeps delegated human mail family-only while still treating native mail as the agent's sense", async () => {
     setAgentName("slugger")
     const storePath = tempDir()

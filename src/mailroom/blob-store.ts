@@ -325,6 +325,10 @@ export class AzureBlobMailroomStore implements MailroomStore {
     return this.container.getBlockBlobClient(objectName)
   }
 
+  mailSearchCacheOptions(): MailSearchCacheOptions {
+    return this.mailSearchCache ?? {}
+  }
+
   private decisionsBlob(agentId: string) {
     return this.container.getBlockBlobClient(`decisions/${agentId}.json`)
   }

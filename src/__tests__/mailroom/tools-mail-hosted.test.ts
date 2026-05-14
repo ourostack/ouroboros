@@ -1440,6 +1440,75 @@ describe("hosted mail tools", () => {
     expect(recordAccess).not.toHaveBeenCalled()
   })
 
+  it("skips missing file-index bodies during incomplete file cache search", async () => {
+    process.env.HOME = tempDir()
+    setAgentName("slugger")
+    const listMessages = vi.fn(async () => {
+      throw new Error("file cache fallback should not request a full scan")
+    })
+    const listMessageIndexRecords = vi.fn(async () => [
+      {
+        schemaVersion: 1 as const,
+        id: "mail_missing_body",
+        agentId: "slugger",
+        compartmentKind: "delegated" as const,
+        placement: "imbox" as const,
+        source: "hey",
+        receivedAt: "2026-04-24T18:00:00.000Z",
+      },
+    ])
+    const getMessage = vi.fn(async () => null)
+    const recordAccess = vi.fn(async (entry: { tool: string; reason: string }) => ({
+      id: `access_${entry.tool}`,
+      agentId: "slugger",
+      tool: entry.tool,
+      reason: entry.reason,
+      accessedAt: "2026-04-24T18:11:00.000Z",
+    }))
+
+    vi.doMock("../../mailroom/reader", () => refreshableReaderMock({
+      resolveMailroomReader: () => ({
+        ok: true,
+        agentName: "slugger",
+        config: {
+          mailboxAddress: "slugger@ouro.bot",
+          privateKeys: {},
+        },
+        store: {
+          getMessage,
+          listMessageIndexRecords,
+          listMessages,
+          recordAccess,
+          mailSearchCacheOptions: () => ({
+            cacheDirForAgent: (agentId: string) => path.join(process.env.HOME!, "mail-search", agentId),
+          }),
+        },
+        storeKind: "file",
+        storeLabel: "/tmp/slugger-mailroom",
+      }),
+      readMailroomRegistry: async () => {
+        throw new Error("registry unavailable")
+      },
+      writeMailroomRegistry: async () => undefined,
+    }))
+
+    const { mailToolDefinitions } = await import("../../repertoire/tools-mail")
+    const searchTool = mailToolDefinitions.find((definition) => definition.tool.function.name === "mail_search")
+    expect(searchTool).toBeTruthy()
+
+    const result = await searchTool!.handler({
+      query: "ruby mimi",
+      scope: "delegated",
+      source: "hey",
+      reason: "missing indexed body proof",
+    }, trustedContext())
+
+    expect(result).toContain("No matching mail.")
+    expect(result).toContain("file search cache was incomplete; scanned 1 visible message(s) one at a time without materializing the mailbox")
+    expect(getMessage).toHaveBeenCalledWith("mail_missing_body")
+    expect(listMessages).not.toHaveBeenCalled()
+  })
+
   it("allows hosted empty-index absence only after current empty coverage", async () => {
     process.env.HOME = tempDir()
     setAgentName("slugger")

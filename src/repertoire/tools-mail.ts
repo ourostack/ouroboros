@@ -10,10 +10,12 @@ import {
   MAIL_SEARCH_TEXT_PROJECTION_VERSION,
   readMailSearchCoverageRecord,
   searchMailSearchCache,
+  snapshotMailSearchCacheForFilters,
   snapshotMailSearchCache,
   upsertMailSearchCacheDocument,
   writeMailSearchCoverageRecord,
   type MailSearchCacheDocument,
+  type MailSearchCacheOptions,
   type MailSearchCacheSnapshot,
   type MailSearchCoverageRecord,
 } from "../mailroom/search-cache"
@@ -322,9 +324,9 @@ function renderAccessLogProvenance(entry: MailAccessLogEntry): string {
   return ""
 }
 
-function cacheDecryptedMessages(messages: DecryptedMailMessage[]): void {
+function cacheDecryptedMessages(messages: DecryptedMailMessage[], options?: MailSearchCacheOptions): void {
   for (const message of messages) {
-    upsertMailSearchCacheDocument(message, message.private)
+    upsertMailSearchCacheDocument(message, message.private, options)
     cacheMailBody(message)
   }
 }
@@ -332,10 +334,11 @@ function cacheDecryptedMessages(messages: DecryptedMailMessage[]): void {
 function cacheAndFilterDecryptedSearchMessages(
   messages: DecryptedMailMessage[],
   terms: string[],
+  options?: MailSearchCacheOptions,
 ): MailSearchCacheDocument[] {
   const matches: MailSearchCacheDocument[] = []
   for (const message of messages) {
-    const document = upsertMailSearchCacheDocument(message, message.private)
+    const document = upsertMailSearchCacheDocument(message, message.private, options)
     cacheMailBody(message)
     if (terms.some((term) => document.searchText.includes(term))) matches.push(document)
   }
@@ -412,6 +415,10 @@ function mailListFilters(input: {
     ...(input.scope ? { compartmentKind: input.scope } : {}),
     ...(input.source ? { source: input.source } : {}),
   }
+}
+
+function mailSearchCacheOptionsForStore(store: MailroomStore): MailSearchCacheOptions | undefined {
+  return typeof store.mailSearchCacheOptions === "function" ? store.mailSearchCacheOptions() : undefined
 }
 
 function mailSearchCoverageKey(input: {
@@ -510,6 +517,7 @@ async function refreshMailSearchIndex(input: {
   store: MailroomStore
   privateKeys: Record<string, string>
   storeKind: string
+  cacheOptions?: MailSearchCacheOptions
   placement?: MailPlacement
   scope?: "native" | "delegated"
   source?: string
@@ -532,7 +540,7 @@ async function refreshMailSearchIndex(input: {
     placement: input.placement,
     compartmentKind: input.scope,
     source: input.source,
-  })
+  }, input.cacheOptions)
   const cachedVisibleIds = new Set(cachedForScope
     .filter((document) => visibleIds.has(document.messageId))
     .filter((document) => !mailSearchCacheDocumentNeedsProjectionRefresh(document))
@@ -560,7 +568,7 @@ async function refreshMailSearchIndex(input: {
       .map((entry) => entry.message)
       .filter((message): message is StoredMailMessage => message !== null)
     const result = decryptVisibleMessages(fetchedStored, input.privateKeys)
-    cacheDecryptedMessages(result.decrypted)
+    cacheDecryptedMessages(result.decrypted, input.cacheOptions)
     fetchedCount += fetchedStored.length
     skippedCount += result.skipped.length
     emitNervesEvent({
@@ -581,7 +589,7 @@ async function refreshMailSearchIndex(input: {
     placement: input.placement,
     compartmentKind: input.scope,
     source: input.source,
-  }).filter((document) => visibleIds.has(document.messageId))
+  }, input.cacheOptions).filter((document) => visibleIds.has(document.messageId))
   if (failures.length > 0) {
     const sample = failures.slice(0, 3).map((entry) => `${entry.id}: ${entry.error}`).join("; ")
     throw new Error(`mail search index refresh incomplete after fetching ${fetchedCount}/${idsToFetch.length} missing message(s); ${failures.length} fetch failed. first failure(s): ${sample}`)
@@ -598,7 +606,7 @@ async function refreshMailSearchIndex(input: {
     textProjectionVersion: MAIL_SEARCH_TEXT_PROJECTION_VERSION,
     ...(coverageSnapshot.oldestReceivedAt ? { oldestReceivedAt: coverageSnapshot.oldestReceivedAt } : {}),
     ...(coverageSnapshot.newestReceivedAt ? { newestReceivedAt: coverageSnapshot.newestReceivedAt } : {}),
-  })
+  }, input.cacheOptions)
   return {
     coverage,
     fetched: fetchedCount,
@@ -1231,6 +1239,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
       const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
+      const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
       const scope = requestedScope === "all"
         ? undefined
         : requestedScope ?? (familyOrAgentSelf(ctx) ? undefined : "native")
@@ -1261,7 +1270,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       if (result.decrypted.length === 0) {
         return appendDecryptSkips("No decryptable mail to show.", result.skipped)
       }
-      cacheDecryptedMessages(result.decrypted)
+      cacheDecryptedMessages(result.decrypted, cacheOptions)
       return appendDecryptSkips(result.decrypted.map(renderMessageSummary).join("\n\n"), result.skipped)
     },
     summaryKeys: ["scope", "placement", "source", "limit"],
@@ -1480,14 +1489,18 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
       const resolved = await resolveMailroomReaderWithRefresh()
       if (!resolved.ok) return resolved.error
+      const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
       const scope = requestedScope === "all"
         ? undefined
         : requestedScope ?? (args.source ? "delegated" : (familyOrAgentSelf(ctx) ? undefined : "native"))
       const limit = numberArg(args.limit, 10, 1, 20)
       const includeCoverage = explicitDelegatedSearch(args, requestedScope)
       const placement = parsePlacement(args.placement)
+      const indexBackedSearch = typeof resolved.store.listMessageIndexRecords === "function"
       const hostedDelegatedSearch = resolved.storeKind === "azure-blob" && scope !== "native"
-      const cachedMatches = hostedDelegatedSearch
+      const fileIndexedSearch = resolved.storeKind === "file" && indexBackedSearch
+      const cacheBackedSearch = hostedDelegatedSearch || fileIndexedSearch
+      const cachedMatches = cacheBackedSearch
         ? searchMailSearchCache({
           agentId: resolved.agentName,
           placement,
@@ -1495,7 +1508,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           source: args.source,
           queryTerms: terms,
           limit,
-        })
+        }, cacheOptions)
         : []
       const storedCoverageRecord = hostedDelegatedSearch
         ? readMailSearchCoverageRecord(mailSearchCoverageKey({
@@ -1504,24 +1517,30 @@ export const mailToolDefinitions: ToolDefinition[] = [
           scope,
           source: args.source,
           storeKind: resolved.storeKind,
-        }))
+        }), cacheOptions)
         : null
       let currentCoverageSnapshot: MailSearchCoverageSnapshot | null = null
       let coverageValidationError: string | undefined
+      let currentIndexRecords: MailMessageIndexRecord[] = []
+      let currentIndexRecordsLoaded = false
+      if (indexBackedSearch && (fileIndexedSearch || (hostedDelegatedSearch && storedCoverageRecord))) {
+        try {
+          const listedIndexRecords = await resolved.store.listMessageIndexRecords!(mailListFilters({
+            agentId: resolved.agentName,
+            placement,
+            scope,
+            source: args.source,
+          }))
+          currentIndexRecords = Array.isArray(listedIndexRecords) ? listedIndexRecords : []
+          currentIndexRecordsLoaded = fileIndexedSearch || Array.isArray(listedIndexRecords)
+        } catch (error) {
+          coverageValidationError = error instanceof Error ? error.message : String(error)
+        }
+      }
       if (hostedDelegatedSearch && storedCoverageRecord) {
-        if (resolved.store.listMessageIndexRecords) {
-          try {
-            const currentIndexRecords = await resolved.store.listMessageIndexRecords(mailListFilters({
-              agentId: resolved.agentName,
-              placement,
-              scope,
-              source: args.source,
-            }))
-            currentCoverageSnapshot = currentIndexRecords ? mailSearchCoverageSnapshot(currentIndexRecords) : null
-          } catch (error) {
-            coverageValidationError = error instanceof Error ? error.message : String(error)
-          }
-        } else {
+        if (currentIndexRecordsLoaded) {
+          currentCoverageSnapshot = mailSearchCoverageSnapshot(currentIndexRecords)
+        } else if (!coverageValidationError) {
           coverageValidationError = "hosted store does not expose message index records"
         }
       }
@@ -1536,7 +1555,9 @@ export const mailToolDefinitions: ToolDefinition[] = [
       let liveCoverageNote: string | undefined
       let decryptableCachedMatches = cachedMatches
       let liveMatches: MailSearchCacheDocument[] = []
+      let cacheBackedMissNeedsRefresh = false
       if (hostedDelegatedSearch) {
+        cacheBackedMissNeedsRefresh = !coverageRecord
         liveCoverageNote = coverageRecord
           ? coverageUnsearchableReason
             ? `hosted search index is current, but ${coverageUnsearchableReason}; do not treat misses as proof of absence`
@@ -1544,6 +1565,34 @@ export const mailToolDefinitions: ToolDefinition[] = [
           : storedCoverageRecord
             ? `${coverageStalenessReason}; run mail_index_refresh for this scope/source before treating missing hits as absent`
             : "hosted search index incomplete; run mail_index_refresh for this scope/source before treating missing hits as absent"
+      } else if (fileIndexedSearch) {
+        const indexRecords = currentIndexRecords
+        liveMessagesSearched = indexRecords.length
+        const cacheSnapshot = snapshotMailSearchCacheForFilters({
+          agentId: resolved.agentName,
+          placement,
+          compartmentKind: scope,
+          source: args.source,
+        }, cacheOptions)
+        cacheBackedMissNeedsRefresh = cacheSnapshot.currentProjectionDocuments < indexRecords.length
+        liveCoverageNote = cacheBackedMissNeedsRefresh
+          ? `file search cache indexed ${cacheSnapshot.currentProjectionDocuments}/${indexRecords.length} visible messages; run mail_index_refresh for this scope/source before treating missing hits as absent`
+          : "file search cache complete; no inline full-mailbox scan needed"
+        if (cacheBackedMissNeedsRefresh) {
+          const liveSkipped: MailDecryptSkip[] = []
+          const liveFound: MailSearchCacheDocument[] = []
+          for (const record of indexRecords) {
+            const message = await resolved.store.getMessage(record.id)
+            if (!message) continue
+            const decrypted = decryptVisibleMessages([message], resolved.config.privateKeys)
+            liveSkipped.push(...decrypted.skipped)
+            liveFound.push(...cacheAndFilterDecryptedSearchMessages(decrypted.decrypted, terms, cacheOptions))
+          }
+          result = { decrypted: [], skipped: liveSkipped }
+          liveMatches = liveFound
+          cacheBackedMissNeedsRefresh = false
+          liveCoverageNote = `file search cache was incomplete; scanned ${indexRecords.length} visible message(s) one at a time without materializing the mailbox`
+        }
       } else {
         const all = await resolved.store.listMessages({
           agentId: resolved.agentName,
@@ -1553,7 +1602,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         })
         liveMessagesSearched = all.length
         result = decryptVisibleMessages(all, resolved.config.privateKeys)
-        liveMatches = cacheAndFilterDecryptedSearchMessages(result.decrypted, terms)
+        liveMatches = cacheAndFilterDecryptedSearchMessages(result.decrypted, terms, cacheOptions)
       }
       let matching = mergeCachedMailSearchDocuments(decryptableCachedMatches, liveMatches, limit, terms)
       let importedMatches: MailSearchCacheDocument[] = []
@@ -1609,7 +1658,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
         )
       }
       if (matching.length === 0) {
-        const emptyBody = hostedDelegatedSearch && !coverageRecord
+        const emptyBody = cacheBackedSearch && cacheBackedMissNeedsRefresh
           ? "No indexed matching mail yet. Search index coverage is incomplete; run mail_index_refresh for this scope/source before treating this as absence."
           : hostedDelegatedSearch && coverageUnsearchableReason
             ? `No matching decryptable/indexed mail. Search index coverage is current, but ${coverageUnsearchableReason}; do not treat this as proof of absence until mail_index_refresh reports full decryptable coverage after keys are repaired.`
@@ -1623,7 +1672,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
             importedArchiveSearched,
             ...(importedArchiveNote ? { importedArchiveNote } : {}),
             liveMessagesSearched,
-            ...(liveCoverageNote ? { liveCoverageNote } : {}),
+            liveCoverageNote,
             coverageRecord,
           },
         )
@@ -1637,7 +1686,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
           importedArchiveSearched,
           ...(importedArchiveNote ? { importedArchiveNote } : {}),
           liveMessagesSearched,
-          ...(liveCoverageNote ? { liveCoverageNote } : {}),
+          liveCoverageNote,
           coverageRecord,
         },
       )
@@ -1675,11 +1724,13 @@ export const mailToolDefinitions: ToolDefinition[] = [
         ? undefined
         : requestedScope ?? (args.source ? "delegated" : (familyOrAgentSelf(ctx) ? undefined : "native"))
       try {
+        const cacheOptions = mailSearchCacheOptionsForStore(resolved.store)
         const refreshed = await refreshMailSearchIndex({
           agentId: resolved.agentName,
           store: resolved.store,
           privateKeys: resolved.config.privateKeys,
           storeKind: resolved.storeKind,
+          cacheOptions,
           placement,
           scope,
           source: args.source,

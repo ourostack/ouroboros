@@ -9,6 +9,7 @@ import {
 	  readMailSearchCoverageRecord,
 	  resetMailSearchCacheForTests,
 	  searchMailSearchCache,
+	  snapshotMailSearchCacheForFilters,
 	  snapshotMailSearchCache,
 	  syncMailSearchCacheMetadata,
 	  upsertMailSearchCacheDocument,
@@ -214,6 +215,97 @@ describe("mail search cache", () => {
     })
     expect(allDocs).toHaveLength(1)
     expect(allDocs[0]?.messageId).toBe("mail_trip_1")
+  })
+
+  it("streams limited searches from disk without loading the whole cache", () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const cacheDir = path.join(homeRoot, "AgentBundles", "slugger.ouro", "state", "mail-search")
+    fs.mkdirSync(path.join(cacheDir, "coverage"), { recursive: true })
+    const older = buildMailSearchCacheDocument(
+      message({ id: "mail_older_basel", receivedAt: "2026-04-20T18:00:00.000Z" }),
+      privateEnvelope({ subject: "Basel stay", text: "Basel hotel note", snippet: "Basel hotel note" }),
+    )
+    const newer = buildMailSearchCacheDocument(
+      message({ id: "mail_newer_basel", receivedAt: "2026-04-21T18:00:00.000Z" }),
+      privateEnvelope({ subject: "Basel later", text: "Basel later note", snippet: "Basel later note" }),
+    )
+    fs.writeFileSync(path.join(cacheDir, `${older.messageId}.json`), `${JSON.stringify(older)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, `${newer.messageId}.json`), `${JSON.stringify(newer)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, "broken.json"), "{", "utf-8")
+    fs.writeFileSync(path.join(cacheDir, "other-agent.json"), `${JSON.stringify({
+      ...newer,
+      messageId: "mail_other_agent",
+      agentId: "other",
+    })}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, "notes.txt"), "not cache json", "utf-8")
+
+    const matches = searchMailSearchCache({
+      agentId: "slugger",
+      queryTerms: ["basel"],
+      limit: 1,
+    })
+
+    expect(matches.map((match) => match.messageId)).toEqual(["mail_newer_basel"])
+  })
+
+  it("streams limited recency listings from disk when no query terms are provided", () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const cacheDir = path.join(homeRoot, "AgentBundles", "slugger.ouro", "state", "mail-search")
+    fs.mkdirSync(cacheDir, { recursive: true })
+    const older = buildMailSearchCacheDocument(
+      message({ id: "mail_older_cached", receivedAt: "2026-04-20T18:00:00.000Z" }),
+      privateEnvelope({ subject: "older cached" }),
+    )
+    const newer = buildMailSearchCacheDocument(
+      message({ id: "mail_newer_cached", receivedAt: "2026-04-21T18:00:00.000Z" }),
+      privateEnvelope({ subject: "newer cached" }),
+    )
+    fs.writeFileSync(path.join(cacheDir, `${older.messageId}.json`), `${JSON.stringify(older)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, `${newer.messageId}.json`), `${JSON.stringify(newer)}\n`, "utf-8")
+
+    expect(searchMailSearchCache({ agentId: "slugger", limit: 1 }).map((match) => match.messageId)).toEqual(["mail_newer_cached"])
+  })
+
+  it("snapshots filtered streamed cache coverage without loading all documents", () => {
+    const homeRoot = tempDir()
+    process.env.HOME = homeRoot
+    const cacheDir = path.join(homeRoot, "AgentBundles", "slugger.ouro", "state", "mail-search")
+    fs.mkdirSync(cacheDir, { recursive: true })
+    const current = buildMailSearchCacheDocument(message(), privateEnvelope())
+    const stale = {
+      ...buildMailSearchCacheDocument(
+        message({ id: "mail_stale_projection", receivedAt: "2026-04-20T18:00:00.000Z" }),
+        privateEnvelope({ subject: "older projection" }),
+      ),
+      textProjectionVersion: 0,
+    }
+    const native = buildMailSearchCacheDocument(
+      message({
+        id: "mail_native_unmatched",
+        compartmentKind: "native",
+        compartmentId: "mailbox_slugger",
+        grantId: undefined,
+        ownerEmail: undefined,
+        source: undefined,
+      }),
+      privateEnvelope({ subject: "native unmatched" }),
+    )
+    fs.writeFileSync(path.join(cacheDir, `${current.messageId}.json`), `${JSON.stringify(current)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, `${stale.messageId}.json`), `${JSON.stringify(stale)}\n`, "utf-8")
+    fs.writeFileSync(path.join(cacheDir, `${native.messageId}.json`), `${JSON.stringify(native)}\n`, "utf-8")
+
+    expect(snapshotMailSearchCacheForFilters({
+      agentId: "slugger",
+      compartmentKind: "delegated",
+      source: "hey",
+    })).toEqual({
+      totalDocuments: 2,
+      currentProjectionDocuments: 1,
+      oldestReceivedAt: "2026-04-20T18:00:00.000Z",
+      newestReceivedAt: "2026-04-24T18:00:00.000Z",
+    })
   })
 
   it("keeps cached mail scoped to the active agent bundle root", () => {

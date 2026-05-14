@@ -135,6 +135,25 @@ async function waitForAbortableDelay(ms: number, abortSignal?: AbortSignal): Pro
 }
 
 describe("AzureBlobMailroomStore", () => {
+  it("exposes store-specific mail search cache options", () => {
+    const serviceClient = new FakeBlobServiceClient()
+    const cacheOptions = {
+      cacheDirForAgent: (agentId: string) => path.join("/tmp/cache-root", agentId),
+    }
+    const configured = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+      mailSearchCache: cacheOptions,
+    })
+    const defaulted = new AzureBlobMailroomStore({
+      serviceClient: serviceClient as unknown as BlobServiceClient,
+      containerName: "mailroom",
+    })
+
+    expect(configured.mailSearchCacheOptions()).toBe(cacheOptions)
+    expect(defaulted.mailSearchCacheOptions()).toEqual({})
+  })
+
   it("stores encrypted raw mail, metadata, and access logs in blob-shaped storage", async () => {
     const serviceClient = new FakeBlobServiceClient()
     const store = new AzureBlobMailroomStore({

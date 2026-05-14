@@ -223,15 +223,61 @@ function sourceMatches(source: string | undefined, filter: string | undefined): 
   return source.toLowerCase() === filter.toLowerCase()
 }
 
-export function searchMailSearchCache(filters: MailSearchCacheFilters, options?: MailSearchCacheOptions): MailSearchCacheDocument[] {
+function documentMatchesFilters(document: MailSearchCacheDocument, filters: MailSearchCacheFilters): boolean {
   const queryTerms = filters.queryTerms ?? []
-  const docs = [...loadCache(filters.agentId, options).values()]
-    .filter((document) => filters.placement ? document.placement === filters.placement : true)
-    .filter((document) => filters.compartmentKind ? document.compartmentKind === filters.compartmentKind : true)
-    .filter((document) => sourceMatches(document.source, filters.source))
-    .filter((document) => queryTerms.length
+  return (filters.placement ? document.placement === filters.placement : true)
+    && (filters.compartmentKind ? document.compartmentKind === filters.compartmentKind : true)
+    && sourceMatches(document.source, filters.source)
+    && (queryTerms.length
       ? queryTerms.some((term) => document.searchText.includes(term))
       : true)
+}
+
+function* readCacheDocuments(agentId: string, options?: MailSearchCacheOptions): Generator<MailSearchCacheDocument> {
+  const dir = cacheDir(agentId, options)
+  if (!fs.existsSync(dir)) return
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+    const document = readJsonDocument(path.join(dir, entry.name))
+    if (!document || document.agentId !== agentId) continue
+    yield document
+  }
+}
+
+function insertLimitedMatch(
+  matches: MailSearchCacheDocument[],
+  candidate: MailSearchCacheDocument,
+  filters: MailSearchCacheFilters & { limit: number },
+): void {
+  matches.push(candidate)
+  const queryTerms = filters.queryTerms ?? []
+  if (queryTerms.length > 0) {
+    matches.sort((left, right) => compareByRelevanceThenRecency(
+      { document: left, relevance: scoreMailSearchDocument(left, queryTerms) },
+      { document: right, relevance: scoreMailSearchDocument(right, queryTerms) },
+    ))
+  } else {
+    matches.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
+  }
+  if (matches.length > filters.limit) matches.length = filters.limit
+}
+
+function streamSearchMailSearchCache(filters: MailSearchCacheFilters & { limit: number }, options?: MailSearchCacheOptions): MailSearchCacheDocument[] {
+  const matches: MailSearchCacheDocument[] = []
+  for (const document of readCacheDocuments(filters.agentId, options)) {
+    if (!documentMatchesFilters(document, filters)) continue
+    insertLimitedMatch(matches, document, filters)
+  }
+  return matches
+}
+
+export function searchMailSearchCache(filters: MailSearchCacheFilters, options?: MailSearchCacheOptions): MailSearchCacheDocument[] {
+  if (typeof filters.limit === "number" && !cacheState(filters.agentId, options).loaded) {
+    return streamSearchMailSearchCache({ ...filters, limit: filters.limit }, options)
+  }
+  const queryTerms = filters.queryTerms ?? []
+  const docs = [...loadCache(filters.agentId, options).values()]
+    .filter((document) => documentMatchesFilters(document, filters))
 
   let ordered: MailSearchCacheDocument[]
   if (queryTerms.length > 0) {
@@ -243,6 +289,38 @@ export function searchMailSearchCache(filters: MailSearchCacheFilters, options?:
     ordered = docs.sort((left, right) => right.receivedAt.localeCompare(left.receivedAt))
   }
   return typeof filters.limit === "number" ? ordered.slice(0, filters.limit) : ordered
+}
+
+export interface MailSearchCacheFilterSnapshot {
+  totalDocuments: number
+  currentProjectionDocuments: number
+  oldestReceivedAt?: string
+  newestReceivedAt?: string
+}
+
+export function snapshotMailSearchCacheForFilters(
+  filters: Omit<MailSearchCacheFilters, "queryTerms" | "limit">,
+  options?: MailSearchCacheOptions,
+): MailSearchCacheFilterSnapshot {
+  let totalDocuments = 0
+  let currentProjectionDocuments = 0
+  let oldestReceivedAt: string | undefined
+  let newestReceivedAt: string | undefined
+  for (const document of readCacheDocuments(filters.agentId, options)) {
+    if (!documentMatchesFilters(document, filters)) continue
+    totalDocuments += 1
+    if (document.textProjectionVersion === MAIL_SEARCH_TEXT_PROJECTION_VERSION) {
+      currentProjectionDocuments += 1
+    }
+    if (!oldestReceivedAt || document.receivedAt < oldestReceivedAt) oldestReceivedAt = document.receivedAt
+    if (!newestReceivedAt || document.receivedAt > newestReceivedAt) newestReceivedAt = document.receivedAt
+  }
+  return {
+    totalDocuments,
+    currentProjectionDocuments,
+    ...(oldestReceivedAt ? { oldestReceivedAt } : {}),
+    ...(newestReceivedAt ? { newestReceivedAt } : {}),
+  }
 }
 
 /**

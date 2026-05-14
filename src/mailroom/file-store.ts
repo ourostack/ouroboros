@@ -78,6 +78,7 @@ export interface MailroomStore {
   listMessages(filters: MailListFilters): Promise<StoredMailMessage[]>
   listMessageIndexRecords?(filters: MailListFilters): Promise<MailMessageIndexRecord[] | null>
   getIndexedMessageById?(id: string): Promise<StoredMailMessage | null>
+  mailSearchCacheOptions?(): MailSearchCacheOptions
   updateMessagePlacement(id: string, placement: MailPlacement): Promise<StoredMailMessage | null>
   /**
    * Returns the original RFC822 bytes for a stored message. For plaintext-form
@@ -124,12 +125,81 @@ function readJson<T>(filePath: string): T | null {
   }
 }
 
+const MESSAGE_INDEX_PREFIX_BYTES = 256 * 1024
+
+function parseJsonStringField(prefix: string, field: string): string | undefined {
+  const match = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`).exec(prefix)
+  if (!match) return undefined
+  try {
+    return JSON.parse(`"${match[1]}"`) as string
+  } catch {
+    return undefined
+  }
+}
+
+function mailCompartmentKind(value: string | undefined): MailCompartmentKind | null {
+  if (value === "native") return value
+  if (value === "delegated") return value
+  return null
+}
+
+function mailPlacement(value: string | undefined): MailPlacement | null {
+  switch (value) {
+    case "imbox":
+    case "screener":
+    case "discarded":
+    case "quarantine":
+    case "draft":
+    case "sent":
+      return value
+    default:
+      return null
+  }
+}
+
+function readMessageIndexRecord(filePath: string): MailMessageIndexRecord | null {
+  try {
+    const fd = fs.openSync(filePath, "r")
+    const buffer = Buffer.allocUnsafe(MESSAGE_INDEX_PREFIX_BYTES)
+    const bytesRead = (() => {
+      try {
+        return fs.readSync(fd, buffer, 0, MESSAGE_INDEX_PREFIX_BYTES, 0)
+      } finally {
+        fs.closeSync(fd)
+      }
+    })()
+    const prefix = buffer.toString("utf-8", 0, bytesRead)
+    const id = parseJsonStringField(prefix, "id")
+    const agentId = parseJsonStringField(prefix, "agentId")
+    const compartmentKind = mailCompartmentKind(parseJsonStringField(prefix, "compartmentKind"))
+    const placement = mailPlacement(parseJsonStringField(prefix, "placement"))
+    const receivedAt = parseJsonStringField(prefix, "receivedAt")
+    const source = parseJsonStringField(prefix, "source")
+    if (!id || !agentId || !compartmentKind || !placement || !receivedAt) return null
+    return {
+      schemaVersion: 1,
+      id,
+      agentId,
+      compartmentKind,
+      placement,
+      ...(source ? { source } : {}),
+      receivedAt,
+    }
+  } catch {
+    return null
+  }
+}
+
 function writeJson(filePath: string, value: unknown): void {
   ensureDir(path.dirname(filePath))
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf-8")
 }
 
 function compareNewestFirst(left: StoredMailMessage, right: StoredMailMessage): number {
+  return Date.parse(right.receivedAt) - Date.parse(left.receivedAt)
+}
+
+function compareIndexNewestFirst(left: MailMessageIndexRecord, right: MailMessageIndexRecord): number {
   return Date.parse(right.receivedAt) - Date.parse(left.receivedAt)
 }
 
@@ -141,6 +211,13 @@ function sourceMatchesFilter(source: string | undefined, filter: string | undefi
   if (!filter) return true
   if (!source) return false
   return source.toLowerCase() === filter.toLowerCase()
+}
+
+function messageIndexMatchesFilters(message: MailMessageIndexRecord, filters: MailListFilters): boolean {
+  return message.agentId === filters.agentId
+    && (filters.placement ? message.placement === filters.placement : true)
+    && (filters.compartmentKind ? message.compartmentKind === filters.compartmentKind : true)
+    && sourceMatchesFilter(message.source, filters.source)
 }
 
 export class FileMailroomStore implements MailroomStore {
@@ -223,6 +300,10 @@ export class FileMailroomStore implements MailroomStore {
     return path.join(this.logsDir, `${agentId}.jsonl`)
   }
 
+  mailSearchCacheOptions(): MailSearchCacheOptions {
+    return this.mailSearchCache
+  }
+
   async putRawMessage(input: {
     resolved: ResolvedMailAddress
     envelope: MailEnvelopeInput
@@ -271,6 +352,19 @@ export class FileMailroomStore implements MailroomStore {
   }
 
   async listMessages(filters: MailListFilters): Promise<StoredMailMessage[]> {
+    if (typeof filters.limit === "number") {
+      const records = await this.listMessageIndexRecords(filters)
+      const messages = records
+        .map((record) => readJson<StoredMailMessage>(this.messagePath(record.id)))
+        .filter((message): message is StoredMailMessage => message !== null)
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.mail_store_messages_listed",
+        message: "mailroom store listed messages",
+        meta: { agentId: filters.agentId, count: messages.length, source: "index" },
+      })
+      return messages
+    }
     const messages = fs.readdirSync(this.messagesDir)
       .filter((name) => name.endsWith(".json"))
       .map((name) => readJson<StoredMailMessage>(path.join(this.messagesDir, name)))
@@ -285,6 +379,23 @@ export class FileMailroomStore implements MailroomStore {
       component: "senses",
       event: "senses.mail_store_messages_listed",
       message: "mailroom store listed messages",
+      meta: { agentId: filters.agentId, count: limited.length },
+    })
+    return limited
+  }
+
+  async listMessageIndexRecords(filters: MailListFilters): Promise<MailMessageIndexRecord[]> {
+    const records = fs.readdirSync(this.messagesDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => readMessageIndexRecord(path.join(this.messagesDir, name)))
+      .filter((message): message is MailMessageIndexRecord => message !== null)
+      .filter((message) => messageIndexMatchesFilters(message, filters))
+      .sort(compareIndexNewestFirst)
+    const limited = applyOptionalLimit(records, filters.limit)
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.mail_file_store_message_indexes_listed",
+      message: "file mailroom store listed message indexes",
       meta: { agentId: filters.agentId, count: limited.length },
     })
     return limited
