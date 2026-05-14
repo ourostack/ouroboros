@@ -2,6 +2,166 @@ import { describe, expect, it } from "vitest"
 import type OpenAI from "openai"
 
 describe("session events", () => {
+  const markerFor = (maxChars: number, originalLength: number) =>
+    `[truncated — event content exceeded ${maxChars} chars; original length ${originalLength} chars]`
+
+  const expectedTruncatedContent = (content: string, maxChars: number) => {
+    const marker = markerFor(maxChars, content.length)
+    const remainingBudget = Math.max(0, maxChars - marker.length)
+    const headLength = Math.ceil(remainingBudget * 0.75)
+    const tailLength = remainingBudget - headLength
+    return `${content.slice(0, headLength)}${marker}${tailLength > 0 ? content.slice(-tailLength) : ""}`
+  }
+
+  describe("truncateLargeEventContent", () => {
+    it("leaves under-cap strings unchanged and reports the original length", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "small event content"
+
+      expect(truncateLargeEventContent(input, 100)).toEqual({
+        content: input,
+        truncated: false,
+        originalLength: input.length,
+      })
+    })
+
+    it("truncates over-cap strings with the rendered marker and preserved head/tail samples", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const maxChars = 100
+      const input = `${"H".repeat(80)}${"M".repeat(80)}${"T".repeat(80)}`
+
+      expect(truncateLargeEventContent(input, maxChars)).toEqual({
+        content: expectedTruncatedContent(input, maxChars),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+
+    it.each([
+      { label: "object", content: { nested: "value" } },
+      { label: "array", content: [{ type: "text", text: "value" }] },
+      { label: "null", content: null },
+      { label: "undefined", content: undefined },
+    ])("leaves non-string $label content unchanged", async ({ content }) => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+
+      expect(truncateLargeEventContent(content, 10)).toEqual({
+        content,
+        truncated: false,
+        originalLength: 0,
+      })
+    })
+
+    it("returns only the marker when the cap is zero", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "anything"
+
+      expect(truncateLargeEventContent(input, 0)).toEqual({
+        content: markerFor(0, input.length),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+
+    it("leaves exactly-at-cap strings unchanged", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const input = "x".repeat(25)
+
+      expect(truncateLargeEventContent(input, input.length)).toEqual({
+        content: input,
+        truncated: false,
+        originalLength: input.length,
+      })
+    })
+
+    it("truncates strings that are one byte over the cap", async () => {
+      const { truncateLargeEventContent } = await import("../../heart/session-events") as unknown as {
+        truncateLargeEventContent: (content: unknown, maxChars: number) => { content: unknown; truncated: boolean; originalLength: number }
+      }
+      const maxChars = 80
+      const input = "x".repeat(maxChars + 1)
+
+      expect(truncateLargeEventContent(input, maxChars)).toEqual({
+        content: expectedTruncatedContent(input, maxChars),
+        truncated: true,
+        originalLength: input.length,
+      })
+    })
+  })
+
+  it("caps oversized event content at 256 KB by default for every session role without changing non-content fields", async () => {
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+    const maxChars = 256 * 1024
+    const oversized = `${"H".repeat(200_000)}${"M".repeat(80_000)}${"T".repeat(20_000)}`
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: oversized, name: "system-name" },
+      { role: "user", content: oversized, name: "user-name" },
+      {
+        role: "assistant",
+        content: oversized,
+        name: "assistant-name",
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: { name: "query_session", arguments: "{\"needle\":\"blue\"}" },
+          },
+        ],
+      },
+      { role: "tool", content: oversized, tool_call_id: "call-1" },
+    ] as OpenAI.ChatCompletionMessageParam[]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-13T20:00:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.events.map((event) => event.role)).toEqual(["system", "user", "assistant", "tool"])
+    for (const event of envelope.events) {
+      expect(typeof event.content).toBe("string")
+      expect((event.content as string).length).toBeLessThanOrEqual(maxChars)
+      expect(event.content).toContain(markerFor(maxChars, oversized.length))
+      expect(event.content).toMatch(/^H+/)
+      expect(event.content).toMatch(/T+$/)
+      expect(event.attachments).toEqual([])
+    }
+    expect(envelope.events[0]).toMatchObject({ name: "system-name", toolCalls: [], toolCallId: null })
+    expect(envelope.events[1]).toMatchObject({ name: "user-name", toolCalls: [], toolCallId: null })
+    expect(envelope.events[2]).toMatchObject({
+      name: "assistant-name",
+      toolCallId: null,
+      toolCalls: [
+        {
+          id: "call-1",
+          type: "function",
+          function: { name: "query_session", arguments: "{\"needle\":\"blue\"}" },
+        },
+      ],
+    })
+    expect(envelope.events[3]).toMatchObject({
+      name: null,
+      toolCallId: "call-1",
+      toolCalls: [],
+      relations: { toolCallId: "call-1" },
+    })
+  })
+
   it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
     const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
 
