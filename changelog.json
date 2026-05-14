@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.614",
+      "changes": [
+        "Republish the bounded file-backed mail search fix after npm rejected the alpha.613 package publish."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.613",
       "changes": [
         "Bound file-backed mail search and limited listings so large imported HEY archives can be searched without materializing every message body."
