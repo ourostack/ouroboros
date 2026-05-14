@@ -489,7 +489,7 @@ function parseFrontmatterTags(rawValue: string, lines: string[], startIndex: num
   for (let index = startIndex; index < lines.length; index += 1) {
     const itemMatch = lines[index]?.match(/^\s*-\s*(.+)$/)
     if (!itemMatch) break
-    const tag = itemMatch[1]?.trim()
+    const tag = itemMatch[1]?.trim().replace(/^['"]|['"]$/g, "")
     if (tag) tags.push(tag)
   }
   return tags

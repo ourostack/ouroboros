@@ -1687,18 +1687,36 @@ describe("mailbox deep readers", () => {
         created_at: "2026-05-14T17:42:13.000Z",
         tags: ["archive-removal"],
       }, "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.")
+      fs.writeFileSync(
+        path.join(agentRoot, "notes", "2026-05-15-quoted-tags.md"),
+        [
+          "---",
+          "created_at: 2026-05-15T17:42:13.000Z",
+          "tags:",
+          "  - \"mailbox\"",
+          "  - \"archive-removal\"",
+          "---",
+          "Quoted tag note.",
+        ].join("\n"),
+        "utf-8",
+      )
 
       const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
 
-      expect(notes.recentCanonicalNotes).toEqual([
-        {
-          filename: "2026-05-14-slug-fallback-title.md",
-          title: "Notes surface contract",
-          tags: ["archive-removal"],
-          preview: "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.",
-          writtenAt: "2026-05-14T17:42:13.000Z",
-        },
-      ])
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-15-quoted-tags.md",
+        title: "quoted tags",
+        tags: ["mailbox", "archive-removal"],
+        preview: "Quoted tag note.",
+        writtenAt: "2026-05-15T17:42:13.000Z",
+      })
+      expect(notes.recentCanonicalNotes[1]).toEqual({
+        filename: "2026-05-14-slug-fallback-title.md",
+        title: "Notes surface contract",
+        tags: ["archive-removal"],
+        preview: "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.",
+        writtenAt: "2026-05-14T17:42:13.000Z",
+      })
     })
 
     it("exposes canonical notes without removing diary or journal data", async () => {
