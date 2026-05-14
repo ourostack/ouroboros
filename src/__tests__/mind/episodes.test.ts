@@ -113,6 +113,43 @@ describe("episode store", () => {
       expectCappedAgentContent(stored.whyItMattered, oversized)
     })
 
+    it("caps oversized meta string leaves before writing JSON while preserving shape", () => {
+      const oversizedTop = makeOversizedAgentContent("episode meta top ")
+      const oversizedNested = makeOversizedAgentContent("episode meta nested ")
+      const oversizedArray = makeOversizedAgentContent("episode meta array ")
+      const episode = emitEpisode(tmpDir, {
+        kind: "coding_milestone",
+        summary: "PR merged",
+        whyItMattered: "shipped the feature",
+        relatedEntities: ["pr-42"],
+        salience: "high",
+        meta: {
+          source: oversizedTop,
+          nested: {
+            note: oversizedNested,
+            count: 2,
+            ok: true,
+          },
+          leaves: ["short", oversizedArray, null],
+        },
+      })
+
+      const filePath = path.join(tmpDir, "arc", "episodes", `${episode.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as EpisodeRecord
+      expect(stored.meta).toEqual({
+        source: expect.any(String),
+        nested: {
+          note: expect.any(String),
+          count: 2,
+          ok: true,
+        },
+        leaves: ["short", expect.any(String), null],
+      })
+      expectCappedAgentContent(stored.meta?.source as string, oversizedTop)
+      expectCappedAgentContent((stored.meta?.nested as Record<string, unknown>).note as string, oversizedNested)
+      expectCappedAgentContent((stored.meta?.leaves as unknown[])[1] as string, oversizedArray)
+    })
+
     it("generates unique IDs for multiple episodes", () => {
       const ep1 = emitEpisode(tmpDir, {
         kind: "bridge_event",

@@ -1,5 +1,6 @@
 import * as path from "path"
 import { readJsonFile, writeJsonFile } from "../../arc/json-store"
+import { capStructuredRecordString } from "../session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { AwaitFile } from "./await-parser"
 
@@ -50,7 +51,9 @@ export function writeAwaitRuntimeState(
   const existing = readAwaitRuntimeState(agentRoot, name)
   const merged: AwaitRuntimeState = {
     last_checked: partial.last_checked ?? existing?.last_checked ?? null,
-    last_observation: partial.last_observation ?? existing?.last_observation ?? null,
+    last_observation: partial.last_observation != null
+      ? capStructuredRecordString(partial.last_observation)
+      : existing?.last_observation ?? null,
     checked_count: partial.checked_count ?? existing?.checked_count ?? 0,
   }
 

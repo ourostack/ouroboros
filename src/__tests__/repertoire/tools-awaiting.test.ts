@@ -25,7 +25,7 @@ import {
   setAwaitToolDeps,
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
-import { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } from "../helpers/content-cap"
+import { expectedCappedContent, expectedTruncationMarker, expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -208,6 +208,23 @@ describe("tools-awaiting", () => {
       // runtime state recorded
       const state = JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "awaits", "hey_export.json"), "utf-8")) as Record<string, unknown>
       expect(state.last_observation).toBe("no sign yet")
+      expect(state.checked_count).toBe(1)
+    })
+
+    it("verdict=no caps oversized observation in runtime state JSON", async () => {
+      await file("hey_export")
+      const oversized = makeOversizedAgentContent("await observation ")
+      const result = parse(await resolveAwaitDef.handler(
+        { name: "hey_export", verdict: "no", observation: oversized },
+        undefined,
+      ) as string)
+
+      expect(result.verdict).toBe("no")
+      expect(result.recorded).toBe(true)
+
+      const raw = fs.readFileSync(path.join(agentRoot, "state", "awaits", "hey_export.json"), "utf-8")
+      const state = JSON.parse(raw) as Record<string, unknown>
+      expectCappedAgentContent(state.last_observation as string, oversized)
       expect(state.checked_count).toBe(1)
     })
 
