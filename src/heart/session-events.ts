@@ -164,6 +164,32 @@ export function truncateLargeEventContent(
   }
 }
 
+export function capStructuredRecordString(value: string): string {
+  return truncateLargeEventContent(value, EVENT_CONTENT_MAX_CHARS).content as string
+}
+
+export function capStructuredRecordStringArray(values: string[]): string[] {
+  return values.map((value) => capStructuredRecordString(value))
+}
+
+export function capStructuredRecordStringLeaves<T>(value: T): T {
+  if (typeof value === "string") {
+    return capStructuredRecordString(value) as T
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => capStructuredRecordStringLeaves(item)) as T
+  }
+  if (!value || typeof value !== "object") {
+    return value
+  }
+
+  const capped: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    capped[key] = capStructuredRecordStringLeaves(child)
+  }
+  return capped as T
+}
+
 function formatElapsed(ms: number): string {
   const minutes = Math.max(0, Math.floor(ms / 60000))
   if (minutes < 60) return `${minutes}m ago`

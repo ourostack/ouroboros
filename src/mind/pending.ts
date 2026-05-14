@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface DelegatedFrom {
@@ -57,7 +58,7 @@ function writeQueueFile(queueDir: string, message: PendingMessage): string {
   fs.mkdirSync(queueDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
   const filePath = path.join(queueDir, fileName)
-  fs.writeFileSync(filePath, JSON.stringify(message, null, 2))
+  fs.writeFileSync(filePath, JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2))
   return filePath
 }
 

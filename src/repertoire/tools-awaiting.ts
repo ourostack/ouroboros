@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { getAgentRoot, getAgentName } from "../heart/identity"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   parseAwaitFile,
@@ -69,7 +70,11 @@ function defaultDeliveryDeps(agentName: string): CrossChatDeliveryDeps {
       // Mirror the write-as-pending convention from tools-session.
       fs.mkdirSync(pendingDir, { recursive: true })
       const filename = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
-      fs.writeFileSync(path.join(pendingDir, filename), JSON.stringify(message, null, 2), "utf-8")
+      fs.writeFileSync(
+        path.join(pendingDir, filename),
+        JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2),
+        "utf-8",
+      )
     },
   }
 }
@@ -125,18 +130,18 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
   const alert = args.alert ?? sessionChannel ?? null
 
   const frontmatter: Record<string, unknown> = {
-    condition: args.condition.trim(),
-    cadence: args.cadence.trim(),
+    condition: capStructuredRecordString(args.condition.trim()),
+    cadence: capStructuredRecordString(args.cadence.trim()),
     alert,
     mode,
-    max_age: args.max_age ?? null,
+    max_age: typeof args.max_age === "string" ? capStructuredRecordString(args.max_age) : null,
     status: "pending",
     created_at: new Date().toISOString(),
     filed_from: sessionChannel ?? "unknown",
     filed_for_friend_id: sessionFriendId ?? null,
   }
 
-  const rendered = renderAwaitFile(frontmatter, args.body ?? "")
+  const rendered = renderAwaitFile(frontmatter, capStructuredRecordString(args.body ?? ""))
   fs.mkdirSync(awaitingDir(agentRoot), { recursive: true })
   fs.writeFileSync(filePath, rendered, "utf-8")
 
@@ -175,7 +180,11 @@ function archiveAwait(agentRoot: string, name: string, updates: Record<string, u
     ...updates,
   }
 
-  const rendered = renderAwaitFile(merged, current.body)
+  const cappedMerged = Object.fromEntries(Object.entries(merged).map(([key, value]) => [
+    key,
+    typeof value === "string" ? capStructuredRecordString(value) : value,
+  ]))
+  const rendered = renderAwaitFile(cappedMerged, capStructuredRecordString(current.body))
   fs.mkdirSync(awaitingDoneDir(agentRoot), { recursive: true })
   fs.writeFileSync(awaitDoneFilePath(agentRoot, name), rendered, "utf-8")
   fs.unlinkSync(source)

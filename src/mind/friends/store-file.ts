@@ -4,6 +4,7 @@
 import * as fs from "fs"
 import * as fsPromises from "fs/promises"
 import * as path from "path"
+import { capStructuredRecordString } from "../../heart/session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { FriendStore } from "./store"
 import type { FriendRecord, TrustLevel, AgentMeta } from "./types"
@@ -203,7 +204,14 @@ export class FileFriendStore implements FriendStore {
   }
 
   private async writeJson(filePath: string, data: FriendRecord): Promise<void> {
-    await fsPromises.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8")
+    const notes = Object.fromEntries(Object.entries(data.notes).map(([key, note]) => [
+      key,
+      {
+        ...note,
+        value: capStructuredRecordString(note.value),
+      },
+    ]))
+    await fsPromises.writeFile(filePath, JSON.stringify({ ...data, notes }, null, 2), "utf-8")
   }
 
   private async removeFile(filePath: string): Promise<void> {

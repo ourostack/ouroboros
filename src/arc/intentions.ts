@@ -1,4 +1,5 @@
 import * as path from "path"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import { generateTimestampId, readJsonDir, readJsonFileOrThrow, writeJsonFile } from "./json-store"
 
@@ -47,7 +48,7 @@ export function captureIntention(
   const id = generateTimestampId("int")
   const intention: IntentionRecord = {
     id,
-    content: input.content,
+    content: capStructuredRecordString(input.content),
     status: "open",
     createdAt: now,
     updatedAt: now,

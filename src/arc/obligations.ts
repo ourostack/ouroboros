@@ -1,5 +1,6 @@
 import * as path from "path"
 import { getAgentRoot } from "../heart/identity"
+import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
 
@@ -70,7 +71,7 @@ export function createObligation(
     id,
     origin: input.origin,
     ...(input.bridgeId ? { bridgeId: input.bridgeId } : {}),
-    content: input.content,
+    content: capStructuredRecordString(input.content),
     status: "pending",
     createdAt: now,
     updatedAt: now,
@@ -128,13 +129,13 @@ export function advanceObligation(
     obligation.currentSurface = update.currentSurface
   }
   if (typeof update.currentArtifact === "string") {
-    obligation.currentArtifact = update.currentArtifact
+    obligation.currentArtifact = capStructuredRecordString(update.currentArtifact)
   }
   if (typeof update.nextAction === "string") {
-    obligation.nextAction = update.nextAction
+    obligation.nextAction = capStructuredRecordString(update.nextAction)
   }
   if (typeof update.latestNote === "string") {
-    obligation.latestNote = update.latestNote
+    obligation.latestNote = capStructuredRecordString(update.latestNote)
   }
   obligation.updatedAt = new Date().toISOString()
   writeJsonFile(dir, obligationId, obligation)
@@ -199,7 +200,14 @@ export function enrichObligation(
   }
 
   const obligation = existing
-  obligation.meaning = meaning
+  obligation.meaning = {
+    ...meaning,
+    ...(typeof meaning.careReason === "string" ? { careReason: capStructuredRecordString(meaning.careReason) } : {}),
+    ...(typeof meaning.resumeHint === "string" ? { resumeHint: capStructuredRecordString(meaning.resumeHint) } : {}),
+    ...(meaning.waitingOn
+      ? { waitingOn: { ...meaning.waitingOn, detail: capStructuredRecordString(meaning.waitingOn.detail) } }
+      : {}),
+  }
   obligation.updatedAt = new Date().toISOString()
   writeJsonFile(dir, id, obligation)
 
@@ -264,7 +272,11 @@ export function getReturnObligationsDir(agentName: string): string {
 
 export function createReturnObligation(agentName: string, obligation: ReturnObligation): string {
   const dir = getReturnObligationsDir(agentName)
-  writeJsonFile(dir, obligation.id, obligation)
+  const cappedObligation: ReturnObligation = {
+    ...obligation,
+    delegatedContent: capStructuredRecordString(obligation.delegatedContent),
+  }
+  writeJsonFile(dir, obligation.id, cappedObligation)
   const filePath = path.join(dir, `${obligation.id}.json`)
 
   emitNervesEvent({

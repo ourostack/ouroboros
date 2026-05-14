@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 
 import { getAgentName, getAgentRoot } from "../../heart/identity"
+import { capStructuredRecordString } from "../../heart/session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { spawnCodingProcess, type CodingProcess, type SpawnCodingResult } from "./spawner"
 import type {
@@ -706,7 +707,10 @@ export class CodingSessionManager {
     const payload: PersistedCodingState = {
       sequence: this.sequence,
       records: [...this.records.values()].map((record) => ({
-        request: record.request,
+        request: {
+          ...record.request,
+          prompt: capStructuredRecordString(record.request.prompt),
+        },
         session: record.session,
       })),
     }
@@ -755,7 +759,7 @@ export class CodingSessionManager {
       `stateFile: ${session.stateFile ?? "none"}`,
       "",
       "## Request",
-      request.prompt,
+      capStructuredRecordString(request.prompt),
       "",
       "## Stdout Tail",
       stdout,

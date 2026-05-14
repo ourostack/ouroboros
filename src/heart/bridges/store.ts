@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { getAgentStateRoot } from "../identity"
+import { capStructuredRecordString } from "../session-events"
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { BridgeLifecycle, BridgeRuntime } from "./state-machine"
 
@@ -71,7 +72,18 @@ export function createBridgeStore(options: CreateBridgeStoreOptions = {}): Bridg
   return {
     save(bridge: BridgeRecord): BridgeRecord {
       ensureRoot()
-      fs.writeFileSync(bridgeFilePath(rootDir, bridge.id), JSON.stringify(bridge, null, 2), "utf-8")
+      const cappedBridge: BridgeRecord = {
+        ...bridge,
+        objective: capStructuredRecordString(bridge.objective),
+        summary: capStructuredRecordString(bridge.summary),
+        attachedSessions: bridge.attachedSessions.map((session) => ({
+          ...session,
+          snapshot: typeof session.snapshot === "string"
+            ? capStructuredRecordString(session.snapshot)
+            : session.snapshot,
+        })),
+      }
+      fs.writeFileSync(bridgeFilePath(rootDir, bridge.id), JSON.stringify(cappedBridge, null, 2), "utf-8")
       emitNervesEvent({
         component: "engine",
         event: "engine.bridge_store_save",
@@ -81,7 +93,7 @@ export function createBridgeStore(options: CreateBridgeStoreOptions = {}): Bridg
           rootDir,
         },
       })
-      return bridge
+      return cappedBridge
     },
 
     get(id: string): BridgeRecord | null {

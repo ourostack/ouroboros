@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName } from "../heart/identity";
+import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { requestInnerWake } from "../heart/daemon/socket-client";
 import {
@@ -98,7 +99,7 @@ function writePendingEnvelope(queueDir: string, message: PendingMessage): void {
   fs.mkdirSync(queueDir, { recursive: true })
   const fileName = `${message.timestamp}-${Math.random().toString(36).slice(2, 10)}.json`
   const filePath = path.join(queueDir, fileName)
-  fs.writeFileSync(filePath, JSON.stringify(message, null, 2))
+  fs.writeFileSync(filePath, JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2))
 }
 
 function renderCrossChatDeliveryStatus(

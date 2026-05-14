@@ -1,4 +1,5 @@
 import * as path from "path"
+import { capStructuredRecordString, capStructuredRecordStringArray, capStructuredRecordStringLeaves } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
 import { isTaskStatus, type TaskStatus, validateTransition } from "./task-lifecycle"
 import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
@@ -103,14 +104,14 @@ export function createPonderPacket(agentRoot: string, input: CreatePonderPacketI
     kind: input.kind,
     sop: packetSop(input.kind),
     status: "drafting",
-    objective: input.objective,
-    summary: input.summary,
-    successCriteria: input.successCriteria,
+    objective: capStructuredRecordString(input.objective),
+    summary: capStructuredRecordString(input.summary),
+    successCriteria: capStructuredRecordStringArray(input.successCriteria),
     ...(input.origin ? { origin: input.origin } : {}),
     ...(input.relatedObligationId ? { relatedObligationId: input.relatedObligationId } : {}),
     ...(input.relatedReturnObligationId ? { relatedReturnObligationId: input.relatedReturnObligationId } : {}),
     ...(input.followsPacketId ? { followsPacketId: input.followsPacketId } : {}),
-    payload: input.payload,
+    payload: capStructuredRecordStringLeaves(input.payload),
     createdAt: now,
     updatedAt: now,
   }
@@ -143,10 +144,10 @@ export function revisePonderPacket(
     ...existing,
     kind: input.kind,
     sop: packetSop(input.kind),
-    objective: input.objective,
-    summary: input.summary,
-    successCriteria: input.successCriteria,
-    payload: input.payload,
+    objective: capStructuredRecordString(input.objective),
+    summary: capStructuredRecordString(input.summary),
+    successCriteria: capStructuredRecordStringArray(input.successCriteria),
+    payload: capStructuredRecordStringLeaves(input.payload),
     updatedAt: Date.now(),
   }
   writeJsonFile(packetsDir(agentRoot), packetId, revised)
