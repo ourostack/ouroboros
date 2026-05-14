@@ -18,6 +18,10 @@ class MockChild extends EventEmitter {
 }
 
 type AgentRuntimeStateForTest = {
+  snapshot: {
+    errorReason: string | null
+    fixHint: string | null
+  }
   crashTimestamps: number[]
   orchestratedRestartTimestamps: number[]
   respawnLoopTripped: boolean
@@ -955,6 +959,8 @@ describe("daemon process manager", () => {
     state.respawnLoopTripped = true
     state.cooldownTimer = cooldownTimer
     state.orchestratedRestartTimestamps = [3_000, 4_000]
+    state.snapshot.errorReason = "respawn loop detected: refusing further restarts"
+    state.snapshot.fixHint = "investigate the root cause then run `ouro up` to resume"
 
     manager.resetAgentFailureState("slugger:bluebubbles")
 
@@ -965,6 +971,8 @@ describe("daemon process manager", () => {
     expect(state.respawnLoopTripped).toBe(false)
     expect(state.cooldownTimer).toBeNull()
     expect(state.orchestratedRestartTimestamps).toEqual([])
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.errorReason).toBeNull()
+    expect(manager.getAgentSnapshot("slugger:bluebubbles")?.fixHint).toBeNull()
   })
 
   it("does not spawn again when startAgent is called while already running", async () => {
