@@ -2997,8 +2997,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## task board")
     expect(result).toContain("## my skills")
     expect(result).toContain("## tool contracts")
-    expect(result).toContain("query_session")
-    expect(result).toContain("mode=search")
+    expect(result).toContain("search_notes")
+    expect(result).toContain("consult_notes")
   })
 
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
