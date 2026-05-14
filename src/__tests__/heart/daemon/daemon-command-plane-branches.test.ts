@@ -620,6 +620,44 @@ describe("daemon command plane branches", () => {
     })
   })
 
+  it("returns the matched revive target when no fresh snapshot is available after restart", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-stale-snapshot")
+    const { daemon, processManager } = make(socketPath)
+    const matchedSnapshot = {
+      name: "slugger:bluebubbles",
+      channel: "bluebubbles",
+      status: "crashed",
+      pid: null,
+      restartCount: 3,
+      startedAt: null,
+      lastCrashAt: "2026-05-14T09:59:00.000Z",
+      backoffMs: 1000,
+      lastExitCode: 1,
+      lastSignal: null,
+      errorReason: "respawn loop detected",
+      fixHint: "investigate the root cause then run `ouro up` to resume",
+    }
+    processManager.listAgentSnapshots
+      .mockReturnValueOnce([matchedSnapshot])
+      .mockReturnValueOnce([])
+    processManager.resetAgentFailureState = vi.fn()
+
+    const response = await daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      sense: "bluebubbles",
+      reason: "manual recovery after fixing BlueBubbles credentials",
+    } as never)
+
+    expect(processManager.resetAgentFailureState).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(processManager.startAgent).toHaveBeenCalledWith("slugger:bluebubbles")
+    expect(response).toEqual({
+      ok: true,
+      message: "revived slugger/bluebubbles",
+      data: matchedSnapshot,
+    })
+  })
+
   it("returns a friendly error for unknown sense revive targets without throwing or starting anything", async () => {
     const socketPath = tmpSocketPath("daemon-sense-revive-unknown")
     const { daemon, processManager } = make(socketPath)

@@ -23,6 +23,12 @@ interface RestartRuntimeArgs {
   reason: string
 }
 
+interface ReviveSenseArgs {
+  agent?: unknown
+  sense: string
+  reason: string
+}
+
 async function restartRuntime(args: RestartRuntimeArgs, agentName: string): Promise<string> {
   if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
     return JSON.stringify({ error: "reason is required (one-line audit string)" })
@@ -55,6 +61,68 @@ async function restartRuntime(args: RestartRuntimeArgs, agentName: string): Prom
   }
 }
 
+async function reviveSense(args: ReviveSenseArgs, agentName: string): Promise<string> {
+  if (args.agent !== undefined) {
+    return "cross-agent revive is unsupported; revive_sense can only revive this agent's own senses."
+  }
+  if (typeof args.sense !== "string" || args.sense.trim().length === 0) {
+    return JSON.stringify({ error: "sense is required (for example, 'bluebubbles')" })
+  }
+  if (typeof args.reason !== "string" || args.reason.trim().length === 0) {
+    return JSON.stringify({ error: "reason is required (one-line audit string)" })
+  }
+
+  const sense = args.sense.trim()
+  const reason = args.reason.trim()
+
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.sense_revive_requested",
+    message: "agent requested sense revive",
+    meta: { agent: agentName, sense, reason },
+  })
+
+  try {
+    const response = await sendDaemonCommand(DEFAULT_DAEMON_SOCKET_PATH, {
+      kind: "daemon.sense_revive",
+      agent: agentName,
+      sense,
+      reason,
+    })
+
+    if (!response.ok) {
+      if (response.error === "Unknown daemon command kind 'daemon.sense_revive'.") {
+        return JSON.stringify({
+          error: "daemon does not support this command; try restart_runtime",
+          detail: response.error,
+          agent: agentName,
+          sense,
+        })
+      }
+      return JSON.stringify({
+        error: response.error ?? "daemon failed to revive sense",
+        agent: agentName,
+        sense,
+      })
+    }
+
+    return JSON.stringify({
+      revived: true,
+      agent: agentName,
+      sense,
+      detail: response.message ?? "sense revive requested",
+      snapshot: response.data,
+    })
+  } catch (error) {
+    return JSON.stringify({
+      error: "failed to reach daemon socket",
+      detail: error instanceof Error ? error.message : String(error),
+      agent: agentName,
+      sense,
+    })
+  }
+}
+
 export const runtimeToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -78,6 +146,37 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
     handler: async (args) => {
       const agentName = getAgentName()
       return restartRuntime({ reason: args.reason }, agentName)
+    },
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "revive_sense",
+        description:
+          "revive one of my managed senses after it has wedged or landed in permanent failure. this only works for my own senses, requires family trust, and sends the daemon a one-line reason for the audit log. use restart_runtime instead if the daemon is too old to support sense-level revive.",
+        parameters: {
+          type: "object",
+          properties: {
+            sense: {
+              type: "string",
+              description: "managed sense name to revive, for example 'bluebubbles'.",
+            },
+            reason: {
+              type: "string",
+              description: "one-line audit reason for the revive request.",
+            },
+          },
+          required: ["sense", "reason"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (ctx?.context?.friend?.trustLevel !== "family") {
+        return "revive_sense requires family trust before I can revive runtime senses."
+      }
+      const agentName = getAgentName()
+      return reviveSense({ agent: args.agent, sense: args.sense, reason: args.reason }, agentName)
     },
   },
 ]

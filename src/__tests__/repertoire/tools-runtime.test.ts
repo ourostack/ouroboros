@@ -223,6 +223,35 @@ describe("revive_sense tool", () => {
   })
 
   describe("daemon command dispatch", () => {
+    it("returns error when sense is missing or empty", async () => {
+      const t = findTool("revive_sense")
+      const r1 = JSON.parse(await t.handler({ reason: "OOM recovery test" }, familyCtx()))
+      const r2 = JSON.parse(await t.handler({ sense: "   ", reason: "OOM recovery test" }, familyCtx()))
+
+      expect(r1.error).toContain("sense is required")
+      expect(r2.error).toContain("sense is required")
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+    })
+
+    it("returns error when reason is missing or empty", async () => {
+      const t = findTool("revive_sense")
+      const r1 = JSON.parse(await t.handler({ sense: "bluebubbles" }, familyCtx()))
+      const r2 = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "   " }, familyCtx()))
+
+      expect(r1.error).toContain("reason is required")
+      expect(r2.error).toContain("reason is required")
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+    })
+
+    it("trims sense and reason whitespace before sending", async () => {
+      const t = findTool("revive_sense")
+      await t.handler({ sense: "  bluebubbles  ", reason: "  OOM recovery test  " }, familyCtx())
+
+      const [, cmd] = mockSendDaemonCommand.mock.calls[0]
+      expect((cmd as { sense: string; reason: string }).sense).toBe("bluebubbles")
+      expect((cmd as { sense: string; reason: string }).reason).toBe("OOM recovery test")
+    })
+
     it("sends daemon.sense_revive with the current agent, sense, and reason", async () => {
       const t = findTool("revive_sense")
       await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, familyCtx())
@@ -248,6 +277,15 @@ describe("revive_sense tool", () => {
       expect(result.snapshot).toEqual(revivedBlueBubblesSnapshot)
       expect(result.detail).toBe("revived slugger/bluebubbles")
     })
+
+    it("falls back to a default detail when daemon response has no message", async () => {
+      mockSendDaemonCommand.mockResolvedValue({ ok: true, data: revivedBlueBubblesSnapshot })
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" }, familyCtx()))
+
+      expect(result.revived).toBe(true)
+      expect(result.detail).toBe("sense revive requested")
+    })
   })
 
   describe("guardrails", () => {
@@ -257,6 +295,14 @@ describe("revive_sense tool", () => {
 
       expect(result).toContain("family trust")
       expect(result).toContain("revive")
+      expect(mockSendDaemonCommand).not.toHaveBeenCalled()
+    })
+
+    it("rejects missing friend context with the family trust message", async () => {
+      const t = findTool("revive_sense")
+      const result = await t.handler({ sense: "bluebubbles", reason: "OOM recovery test" })
+
+      expect(result).toContain("family trust")
       expect(mockSendDaemonCommand).not.toHaveBeenCalled()
     })
 
@@ -288,6 +334,16 @@ describe("revive_sense tool", () => {
       expect(result.agent).toBe("slugger")
     })
 
+    it("surfaces daemon failure without an error string cleanly", async () => {
+      mockSendDaemonCommand.mockResolvedValue({ ok: false })
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "missing sense test" }, familyCtx()))
+
+      expect(result.error).toBe("daemon failed to revive sense")
+      expect(result.sense).toBe("bluebubbles")
+      expect(result.agent).toBe("slugger")
+    })
+
     it("explains older daemons that do not support daemon.sense_revive", async () => {
       mockSendDaemonCommand.mockResolvedValue({
         ok: false,
@@ -298,6 +354,44 @@ describe("revive_sense tool", () => {
 
       expect(result.error).toBe("daemon does not support this command; try restart_runtime")
       expect(result.detail).toBe("Unknown daemon command kind 'daemon.sense_revive'.")
+    })
+
+    it("returns error JSON when sendDaemonCommand throws", async () => {
+      mockSendDaemonCommand.mockRejectedValue(new Error("ECONNREFUSED"))
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "socket test" }, familyCtx()))
+
+      expect(result.error).toBe("failed to reach daemon socket")
+      expect(result.detail).toContain("ECONNREFUSED")
+      expect(result.agent).toBe("slugger")
+      expect(result.sense).toBe("bluebubbles")
+    })
+
+    it("returns error JSON when sendDaemonCommand throws a non-Error value", async () => {
+      mockSendDaemonCommand.mockRejectedValue("socket gone")
+      const t = findTool("revive_sense")
+      const result = JSON.parse(await t.handler({ sense: "bluebubbles", reason: "socket test" }, familyCtx()))
+
+      expect(result.error).toBe("failed to reach daemon socket")
+      expect(result.detail).toBe("socket gone")
+    })
+  })
+
+  describe("nerves events", () => {
+    it("emits repertoire.sense_revive_requested with agent, sense, and reason", async () => {
+      const t = findTool("revive_sense")
+      await t.handler({ sense: "bluebubbles", reason: "deliberate test" }, familyCtx())
+
+      const evt = nervesEvents.find((e) => e.event === "repertoire.sense_revive_requested")
+      expect(evt).toBeDefined()
+      expect(evt?.meta).toMatchObject({ agent: "slugger", sense: "bluebubbles", reason: "deliberate test" })
+    })
+
+    it("does NOT emit the requested event when validation fails", async () => {
+      const t = findTool("revive_sense")
+      await t.handler({ sense: "", reason: "deliberate test" }, familyCtx())
+
+      expect(nervesEvents.find((e) => e.event === "repertoire.sense_revive_requested")).toBeUndefined()
     })
   })
 })

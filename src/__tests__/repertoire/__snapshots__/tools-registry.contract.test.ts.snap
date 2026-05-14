@@ -59,6 +59,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "read_file",
   "resolve_await",
   "restart_runtime",
+  "revive_sense",
   "save_friend_note",
   "search_notes",
   "send_message",

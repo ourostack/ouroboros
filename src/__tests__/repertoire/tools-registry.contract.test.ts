@@ -213,10 +213,11 @@ describe("tool registry contract", () => {
     // Added in let_go primitive: 1 obligation-release tool
     expect(names).toContain("let_go");
 
-    // Added in agent self-maintenance: 1 runtime tool
+    // Added in agent self-maintenance: 2 runtime tools
     expect(names).toContain("restart_runtime");
+    expect(names).toContain("revive_sense");
 
-    // Exact count: 85 tools (83 prior + let_go + restart_runtime)
-    expect(names).toHaveLength(85);
+    // Exact count: 86 tools (83 prior + let_go + restart_runtime + revive_sense)
+    expect(names).toHaveLength(86);
   });
 });
