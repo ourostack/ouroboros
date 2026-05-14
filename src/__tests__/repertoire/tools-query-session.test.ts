@@ -43,6 +43,16 @@ vi.mock("../../heart/identity", () => ({
 
 import * as fs from "fs"
 
+const QUERY_SESSION_SEARCH_DEPRECATION_STUB = {
+  kind: "deprecated",
+  message: "query_session mode=search is no longer available; use search_notes or consult_notes instead.",
+  removalCycle: "alpha.616",
+} as const
+
+function parseToolResult(result: unknown): unknown {
+  return typeof result === "string" ? JSON.parse(result) : result
+}
+
 beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
@@ -516,6 +526,38 @@ describe("query_session tool", () => {
     expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
   })
 
+  it("keeps transcript mode wired to the shared session transcript helper while search is deprecated", async () => {
+    const mockSummarizeSessionTail = vi.fn().mockResolvedValue({
+      kind: "ok",
+      transcript: "[2026-04-09 17:45 | user | evt-000001] transcript still works",
+      summary: "Summary: transcript still works",
+      snapshot: "recent focus: transcript still works",
+    })
+    vi.doMock("../../heart/session-transcript", () => ({
+      summarizeSessionTail: mockSummarizeSessionTail,
+    }))
+
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    const result = await tool.handler({
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+      mode: "transcript",
+      messageCount: "7",
+    })
+
+    expect(result).toBe("Summary: transcript still works")
+    expect(mockSummarizeSessionTail).toHaveBeenCalledWith(expect.objectContaining({
+      sessionPath: "/mock/agent-root/state/sessions/friend-1/cli/session.json",
+      friendId: "friend-1",
+      channel: "cli",
+      key: "session",
+      messageCount: 7,
+    }))
+  })
+
   it("surfaces the latest processed preview in status mode without dumping the full transcript", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
@@ -676,7 +718,59 @@ describe("query_session tool", () => {
     expect(result).toBe("status mode is only available for self/inner dialog.")
   })
 
-  it("returns a deprecation stub in search mode without reading session history", async () => {
+  it("describes query_session search as deprecated and points agents at notes tools", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+    const description = tool.tool.function.description.toLowerCase()
+
+    expect(description).toContain("search_notes")
+    expect(description).toContain("consult_notes")
+    expect(description).toContain("transcript")
+    expect(description).toContain("status")
+    expect(description).not.toContain("older history")
+  })
+
+  it("keeps search in the published mode enum while marking the schema path deprecated", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+    const parameters = tool.tool.function.parameters as any
+    const modeProperty = parameters.properties.mode
+    const queryProperty = parameters.properties.query
+
+    expect(modeProperty).toMatchObject({
+      type: "string",
+      enum: ["transcript", "status", "search"],
+    })
+    expect(modeProperty.description.toLowerCase()).toContain("deprecated")
+    expect(modeProperty.description).toContain("search_notes")
+    expect(modeProperty.description).toContain("consult_notes")
+    expect(queryProperty.description.toLowerCase()).toContain("deprecated")
+    expect(queryProperty.description).toContain("search_notes")
+    expect(queryProperty.description).toContain("consult_notes")
+  })
+
+  it("keeps status mode working while the search mode enum is deprecated", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
+
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+      if (String(filePath).endsWith("/state/sessions/self/inner/dialog.json")) {
+        return JSON.stringify({ version: 1, messages: [{ role: "system", content: "sys" }] })
+      }
+      throw new Error(`ENOENT: ${String(filePath)}`)
+    })
+
+    const result = await tool.handler({
+      friendId: "self",
+      channel: "inner",
+      mode: "status",
+    })
+
+    expect(result).toBe("i thought about this privately. i'll bring it back when the time is right.")
+  })
+
+  it("returns the exact deprecation stub in search mode without reading session history", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
 
@@ -690,10 +784,8 @@ describe("query_session tool", () => {
       mode: "search",
       query: "billing",
     })
-    const rendered = typeof result === "string" ? result : JSON.stringify(result)
 
-    expect(rendered).toContain("deprecated")
-    expect(rendered).toMatch(/search_notes|consult_notes/)
+    expect(parseToolResult(result)).toEqual(QUERY_SESSION_SEARCH_DEPRECATION_STUB)
   })
 
   it("resolves friend name to UUID via ctx.friendStore.listAll", async () => {
