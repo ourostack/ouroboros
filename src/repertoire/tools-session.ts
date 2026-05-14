@@ -396,7 +396,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "query_session",
-        description: "inspect another session. use transcript for recent context, status for self/inner progress, or search to find older history by query.",
+        description: "inspect another session. use transcript for recent context or status for self/inner progress. deprecated search invocations should use search_notes or consult_notes instead.",
         parameters: {
           type: "object",
           properties: {
@@ -407,9 +407,9 @@ export const sessionToolDefinitions: ToolDefinition[] = [
             mode: {
               type: "string",
               enum: ["transcript", "status", "search"],
-              description: "transcript (default), lightweight status for self/inner checks, or search for older history",
+              description: "transcript (default), lightweight status for self/inner checks, or deprecated search; use search_notes or consult_notes instead",
             },
-            query: { type: "string", description: "required when mode=search; search term for older session history" },
+            query: { type: "string", description: "deprecated when mode=search; use search_notes or consult_notes instead" },
           },
           required: ["friendId", "channel"],
         },
@@ -442,7 +442,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       }
 
       if (mode === "search") {
-        return "deprecated: query_session mode=search is no longer available; use search_notes or consult_notes instead."
+        return JSON.stringify({
+          kind: "deprecated",
+          message: "query_session mode=search is no longer available; use search_notes or consult_notes instead.",
+          removalCycle: "alpha.616",
+        })
       }
 
       const sessFile = resolveSessionPath(friendId, channel, key)
