@@ -737,11 +737,21 @@ export interface MailboxJournalEntry {
   mtime: number
 }
 
+export interface MailboxCanonicalNoteEntry {
+  filename: string
+  title: string
+  tags: string[]
+  preview: string
+  writtenAt: string
+}
+
 export interface MailboxNotesView {
   diaryEntryCount: number
   recentDiaryEntries: MailboxDiaryEntry[]
   journalEntryCount: number
   recentJournalEntries: MailboxJournalEntry[]
+  canonicalNoteCount: number
+  recentCanonicalNotes: MailboxCanonicalNoteEntry[]
 }
 
 // ---------------------------------------------------------------------------

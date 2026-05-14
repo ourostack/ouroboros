@@ -3,10 +3,12 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
 import type { MailboxNoteDecisionView, MailboxNotesView } from "../../contracts"
 
+type NotesViewMode = "diary" | "journal" | "notes" | "decisions"
+
 export function NotesTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
   const [data, setData] = useState<MailboxNotesView | null>(null)
   const [decisions, setDecisions] = useState<MailboxNoteDecisionView | null>(null)
-  const [view, setView] = useState<"diary" | "journal" | "decisions">("diary")
+  const [view, setView] = useState<NotesViewMode>("diary")
 
   useEffect(() => {
     fetchJson<MailboxNotesView>(`/agents/${encodeURIComponent(agentName)}/notes`).then(setData)
@@ -24,10 +26,10 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
 
   const diaryEntries = data.recentDiaryEntries
   const journalEntries = data.recentJournalEntries
+  const canonicalNotes = data.recentCanonicalNotes
 
   return (
     <div className="space-y-4">
-      {/* Toggle between diary and journal */}
       <div className="flex items-center gap-3">
         <button
           onClick={() => setView("diary")}
@@ -45,6 +47,15 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
           }`}
         >
           Journal ({data.journalEntryCount})
+        </button>
+        <span className="text-ouro-shadow/30">|</span>
+        <button
+          onClick={() => setView("notes")}
+          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
+            view === "notes" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
+          }`}
+        >
+          Notes ({data.canonicalNoteCount})
         </button>
         <span className="text-ouro-shadow/30">|</span>
         <button
@@ -92,6 +103,33 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
             </div>
           ) : (
             <p className="text-sm text-ouro-shadow italic">No journal entries yet.</p>
+          )}
+        </div>
+      )}
+
+      {view === "notes" && (
+        <div>
+          {canonicalNotes.length > 0 ? (
+            <div className="space-y-3">
+              {canonicalNotes.map((note) => (
+                <article key={note.filename} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-medium text-ouro-bone">{note.title}</p>
+                    <span className="text-xs text-ouro-shadow">{relTime(note.writtenAt)}</span>
+                  </div>
+                  <p className="mt-1 text-sm leading-relaxed text-ouro-mist">{note.preview}</p>
+                  {note.tags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {note.tags.map((tag) => (
+                        <Badge key={tag}>{tag}</Badge>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-ouro-shadow italic">No canonical notes yet.</p>
           )}
         </div>
       )}

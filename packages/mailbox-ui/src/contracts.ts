@@ -10,6 +10,7 @@ export type {
   MailboxAttentionView,
   MailboxBridgeInventory,
   MailboxBridgeItem,
+  MailboxCanonicalNoteEntry,
   MailboxChangesView,
   MailboxCodingDeep,
   MailboxCodingDeepItem,

@@ -10,6 +10,7 @@ import {
   type MailboxAttentionView,
   type MailboxBridgeInventory,
   type MailboxBridgeItem,
+  type MailboxCanonicalNoteEntry,
   type MailboxCodingDeep,
   type MailboxCodingDeepItem,
   type MailboxDaemonHealthDeep,
@@ -39,6 +40,8 @@ import {
 } from "./shared"
 import { readObligationSummary } from "./agent-machine"
 import { readSessionInventory } from "./sessions"
+
+const NOTES_VIEW_LIMIT = 20
 
 /* v8 ignore start — defensive parsing of on-disk JSON, fallback branches are safety nets */
 export function readCodingDeep(agentRoot: string): MailboxCodingDeep {
@@ -390,12 +393,119 @@ export function readNotesView(agentRoot: string): MailboxNotesView {
 
   journalEntries.sort((a, b) => b.mtime - a.mtime)
 
+  const canonicalNotes = readCanonicalNotes(agentRoot)
+
   return {
     diaryEntryCount: diaryEntries.length,
-    recentDiaryEntries: diaryEntries.slice(0, 20),
+    recentDiaryEntries: diaryEntries.slice(0, NOTES_VIEW_LIMIT),
     journalEntryCount: journalEntries.length,
-    recentJournalEntries: journalEntries.slice(0, 20),
+    recentJournalEntries: journalEntries.slice(0, NOTES_VIEW_LIMIT),
+    canonicalNoteCount: canonicalNotes.length,
+    recentCanonicalNotes: canonicalNotes.slice(0, NOTES_VIEW_LIMIT),
   }
+}
+
+function readCanonicalNotes(agentRoot: string): MailboxCanonicalNoteEntry[] {
+  const notesRoot = path.join(agentRoot, "notes")
+  const notes: MailboxCanonicalNoteEntry[] = []
+
+  for (const filename of safeReaddir(notesRoot)) {
+    if (!filename.endsWith(".md")) continue
+    const filePath = path.join(notesRoot, filename)
+    if (safeIsDirectory(filePath)) continue
+
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8")
+      const { frontmatter, body } = parseMarkdownFrontmatter(raw)
+      const writtenAt = typeof frontmatter.created_at === "string" && frontmatter.created_at.trim().length > 0
+        ? frontmatter.created_at.trim()
+        : safeFileMtime(filePath) ?? ""
+
+      notes.push({
+        filename,
+        title: firstMarkdownHeading(body) ?? titleFromFilename(filename),
+        tags: Array.isArray(frontmatter.tags) ? frontmatter.tags : [],
+        preview: body.slice(0, 200),
+        writtenAt,
+      })
+    } catch {
+      // skip unreadable notes
+    }
+  }
+
+  notes.sort((a, b) => b.writtenAt.localeCompare(a.writtenAt) || b.filename.localeCompare(a.filename))
+  return notes
+}
+
+function parseMarkdownFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } {
+  const lines = raw.split(/\r?\n/)
+  if (lines[0] !== "---") return { frontmatter: {}, body: raw }
+
+  const endIndex = lines.findIndex((line, index) => index > 0 && line === "---")
+  if (endIndex === -1) return { frontmatter: {}, body: raw }
+
+  return {
+    frontmatter: parseMinimalFrontmatter(lines.slice(1, endIndex)),
+    body: lines.slice(endIndex + 1).join("\n").replace(/^\n/, ""),
+  }
+}
+
+function parseMinimalFrontmatter(lines: string[]): Record<string, unknown> {
+  const frontmatter: Record<string, unknown> = {}
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const match = line?.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
+    if (!match) continue
+
+    const [, key, rawValue] = match
+    if (!key) continue
+
+    if (key === "tags") {
+      frontmatter.tags = parseFrontmatterTags(rawValue ?? "", lines, index + 1)
+      continue
+    }
+
+    frontmatter[key] = (rawValue ?? "").trim()
+  }
+
+  return frontmatter
+}
+
+function parseFrontmatterTags(rawValue: string, lines: string[], startIndex: number): string[] {
+  const trimmed = rawValue.trim()
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []
+    } catch {
+      return trimmed.slice(1, -1).split(",").map((tag) => tag.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean)
+    }
+  }
+
+  if (trimmed.length > 0) return [trimmed]
+
+  const tags: string[] = []
+  for (let index = startIndex; index < lines.length; index += 1) {
+    const itemMatch = lines[index]?.match(/^\s*-\s*(.+)$/)
+    if (!itemMatch) break
+    const tag = itemMatch[1]?.trim()
+    if (tag) tags.push(tag)
+  }
+  return tags
+}
+
+function firstMarkdownHeading(body: string): string | null {
+  const heading = body
+    .split(/\r?\n/)
+    .map((line) => line.match(/^#\s+(.+)$/)?.[1]?.trim())
+    .find((title) => title && title.length > 0)
+  return heading ?? null
+}
+
+function titleFromFilename(filename: string): string {
+  const stem = filename.replace(/\.md$/i, "").replace(/^\d{4}-\d{2}-\d{2}-/, "")
+  return stem.replace(/[-_]+/g, " ").trim() || filename
 }
 
 export function readFriendView(agentName: string, options: MailboxReadOptions = {}): MailboxFriendView {
