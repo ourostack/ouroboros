@@ -608,6 +608,19 @@ export class DaemonProcessManager {
     }
   }
 
+  resetAgentFailureState(agent: string): void {
+    const state = this.requireAgent(agent)
+    this.clearCooldownTimer(state)
+    state.cooldownRetryCount = 0
+    state.crashTimestamps = []
+    state.fastCrashCount = 0
+    state.respawnLoopTripped = false
+    state.orchestratedRestartTimestamps = []
+    state.snapshot.errorReason = null
+    state.snapshot.fixHint = null
+    this.notifySnapshotChange(state.snapshot)
+  }
+
   sendToAgent(agent: string, message: Record<string, unknown>): void {
     const state = this.requireAgent(agent)
     if (!state.process) return

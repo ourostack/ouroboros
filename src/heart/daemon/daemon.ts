@@ -350,6 +350,7 @@ export interface DaemonProcessManagerLike {
   triggerAutoStartAgents?(): void
   stopAll(): Promise<void>
   startAgent(agent: string): Promise<void>
+  resetAgentFailureState(agent: string): void
   stopAgent?(agent: string): Promise<void>
   restartAgent?(agent: string): Promise<void>
   sendToAgent?(agent: string, message: Record<string, unknown>): void
@@ -403,6 +404,7 @@ export type DaemonCommand =
   | { kind: "daemon.status" }
   | { kind: "daemon.health" }
   | { kind: "daemon.logs" }
+  | { kind: "daemon.sense_revive"; agent: string; sense: string; reason: string }
   | { kind: "agent.start"; agent: string }
   | { kind: "agent.stop"; agent: string }
   | { kind: "agent.restart"; agent: string }
@@ -1322,6 +1324,36 @@ export class OuroDaemon {
           message: "log streaming available via ouro logs",
           data: { logDir: "~/AgentBundles/<agent>.ouro/state/daemon/logs" },
         }
+      case "daemon.sense_revive": {
+        const managedSenseSnapshots = this.processManager.listAgentSnapshots()
+          .filter((snapshot) => snapshot.name.startsWith(`${command.agent}:`))
+        if (managedSenseSnapshots.length === 0) {
+          return {
+            ok: false,
+            error: `No managed agent '${command.agent}' is registered with daemon-managed senses.`,
+          }
+        }
+
+        const exactTargetName = `${command.agent}:${command.sense}`
+        const target = managedSenseSnapshots.find((snapshot) => snapshot.name === exactTargetName)
+          ?? managedSenseSnapshots.find((snapshot) => snapshot.channel === command.sense)
+        if (!target) {
+          return {
+            ok: false,
+            error: `No managed sense '${command.sense}' is registered for agent '${command.agent}'.`,
+          }
+        }
+
+        this.processManager.resetAgentFailureState(target.name)
+        await this.processManager.startAgent(target.name)
+        const freshSnapshot = this.processManager.listAgentSnapshots()
+          .find((snapshot) => snapshot.name === target.name) ?? target
+        return {
+          ok: true,
+          message: `revived ${command.agent}/${command.sense}`,
+          data: freshSnapshot,
+        }
+      }
       case "agent.start":
         await this.processManager.startAgent(command.agent)
         return { ok: true, message: `started ${command.agent}` }
