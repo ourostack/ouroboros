@@ -51,6 +51,10 @@ vi.mock("../../heart/identity", () => {
 
 import * as fs from "fs"
 
+function extractToolContracts(system: string): string {
+  return system.match(/## tool contracts\n[\s\S]*?(?=\n\n## |\n\n# |$)/)?.[0] ?? ""
+}
+
 function setupReadFileSync() {
   vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => {
     const p = String(filePath)
@@ -88,11 +92,13 @@ describe("prompt note/friend contracts", () => {
     })
   })
 
-  it("includes first-person prescriptive guidance for all five tool contracts", async () => {
+  it("includes first-person prescriptive guidance for durable note search tool contracts", async () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = flattenSystemPrompt(await buildSystem("cli")
 )
+    const toolContracts = extractToolContracts(system)
+
     expect(system).toContain("save_friend_note")
     expect(system).toContain("when I learn something about a person")
 
@@ -105,8 +111,25 @@ describe("prompt note/friend contracts", () => {
     expect(system).toContain("search_notes")
     expect(system).toContain("when I need older diary or journal material")
 
-    expect(system).toContain("query_session")
-    expect(system).toContain("grounded session history")
+    expect(system).toContain("consult_notes")
+    expect(system).toContain("durable")
+
+    expect(system).not.toMatch(/session search/i)
+    expect(system).not.toMatch(/query_session search/i)
+    expect(system).not.toMatch(/search session history/i)
+    expect(system).not.toMatch(/session archive/i)
+    expect(system).not.toContain("grounded session history")
+    expect(system).not.toContain("`mode=search`")
+    expect(system).not.toContain(".archive.ndjson")
+
+    expect(toolContracts).toMatchInlineSnapshot(`
+      "## tool contracts
+      1. \`save_friend_note\` -- when I learn something about a person, I save it immediately.
+      2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately.
+      3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.
+      4. \`search_notes\` -- when I need older diary or journal material, I search the written records.
+      5. \`consult_notes\` -- when I need semantic search across durable notes, I consult the note index."
+    `)
   })
 
   it("includes [diary/external] trust framing guidance in tool contracts", async () => {

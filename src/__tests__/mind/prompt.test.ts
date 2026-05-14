@@ -3924,7 +3924,7 @@ describe("active-work prompting", () => {
     setupReadFileSync()
   })
 
-  it("buildSystem teaches query_session search mode in the diary contract", async () => {
+  it("buildSystem teaches durable note search tools instead of session-history lookup", async () => {
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
@@ -3934,7 +3934,15 @@ describe("active-work prompting", () => {
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("## tool contracts")
-    expect(result).toContain("`mode=status` for self/inner progress and `mode=search` for older history")
+    expect(result).toContain("search_notes")
+    expect(result).toContain("consult_notes")
+    expect(result).not.toMatch(/session search/i)
+    expect(result).not.toMatch(/query_session search/i)
+    expect(result).not.toMatch(/search session history/i)
+    expect(result).not.toMatch(/session archive/i)
+    expect(result).not.toContain("grounded session history")
+    expect(result).not.toContain("`mode=search`")
+    expect(result).not.toContain(".archive.ndjson")
   })
 
   it("buildSystem reinforces active-work as the top-level truth for family status questions", async () => {
@@ -4721,7 +4729,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     })
   })
 
-  it("contains all 5 tool contracts with locked numbered format", async () => {
+  it("contains all 5 durable note tool contracts with locked numbered format", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -4738,7 +4746,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
     expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
     expect(result).toContain("4. `search_notes` -- when I need older diary or journal material")
-    expect(result).toContain("5. `query_session` -- when I need grounded session history")
+    expect(result).toContain("5. `consult_notes` -- when I need semantic search across durable notes")
   })
 
   it("contains tool behavior rules (tool_choice required, settle rules)", async () => {
