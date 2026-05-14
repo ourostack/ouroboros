@@ -116,6 +116,8 @@ describe("tool registry contract", () => {
     expect(names).toContain("web_search");
     expect(names).toContain("diary_write");
     expect(names).toContain("search_notes");
+    expect(names).toContain("note");
+    expect(names).toContain("consult_notes");
     expect(names).toContain("save_friend_note");
     expect(names).toContain("get_friend_note");
     expect(names).toContain("friend_list");
@@ -217,7 +219,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("restart_runtime");
     expect(names).toContain("revive_sense");
 
-    // Exact count: 86 tools (83 prior + let_go + restart_runtime + revive_sense)
-    expect(names).toHaveLength(86);
+    // Exact count: 88 tools (86 prior + note + consult_notes)
+    expect(names).toHaveLength(88);
   });
 });

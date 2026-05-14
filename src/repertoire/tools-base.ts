@@ -7,6 +7,7 @@ import type { ActiveWorkFrame } from "../heart/active-work";
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
 import { notesToolDefinitions } from "./tools-notes";
+import { recordToolDefinitions } from "./tools-record";
 import { bridgeToolDefinitions } from "./tools-bridge";
 import { sessionToolDefinitions } from "./tools-session";
 import { continuityToolDefinitions } from "./tools-continuity";
@@ -112,6 +113,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...fileToolDefinitions,
   ...shellToolDefinitions,
   ...notesToolDefinitions,
+  ...recordToolDefinitions,
   ...bridgeToolDefinitions,
   ...sessionToolDefinitions,
   ...continuityToolDefinitions,
