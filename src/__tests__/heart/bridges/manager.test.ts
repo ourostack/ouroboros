@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../../helpers/content-cap"
 
 let agentStateRoot = ""
 const mockCreateTask = vi.fn()
@@ -107,6 +108,36 @@ describe("bridge manager", () => {
 
     expect(turnCount).toBe(2)
     expect(manager.getBridge("bridge-1")?.runtime).toBe("idle")
+  })
+
+  it("caps oversized agent-authored bridge fields and session snapshots before writing JSON", async () => {
+    const { createBridgeStore } = await import("../../../heart/bridges/store")
+    const { createBridgeManager } = await import("../../../heart/bridges/manager")
+    const oversized = makeOversizedAgentContent("bridge ")
+
+    const manager = createBridgeManager({
+      store: createBridgeStore(),
+      now: () => "2026-05-13T00:00:00.000Z",
+      idFactory: () => "bridge-cap",
+    })
+
+    manager.beginBridge({
+      objective: oversized,
+      summary: oversized,
+      session: {
+        friendId: "friend-1",
+        channel: "cli",
+        key: "session",
+        sessionPath: "/tmp/state/sessions/friend-1/cli/session.json",
+        snapshot: oversized,
+      },
+    })
+
+    const raw = fs.readFileSync(path.join(agentStateRoot, "bridges", "bridge-cap.json"), "utf-8")
+    const stored = JSON.parse(raw)
+    expectCappedAgentContent(stored.objective, oversized)
+    expectCappedAgentContent(stored.summary, oversized)
+    expectCappedAgentContent(stored.attachedSessions[0].snapshot, oversized)
   })
 
   it("promotes bridge work into a task and supports complete/cancel lifecycle moves", async () => {

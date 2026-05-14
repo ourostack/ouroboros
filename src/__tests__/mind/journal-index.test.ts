@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -44,6 +45,25 @@ describe("indexJournalFiles", () => {
     expect(index[0].embedding).toEqual([0.1, 0.2, 0.3])
     expect(index[0].preview).toBe("My notes")
     expect(typeof index[0].mtime).toBe("number")
+  })
+
+  it("caps oversized derived previews before writing the journal sidecar JSON", async () => {
+    const journalDir = path.join(tmpDir, "journal")
+    fs.mkdirSync(journalDir, { recursive: true })
+    const oversized = makeOversizedAgentContent("# Oversized journal ")
+    fs.writeFileSync(path.join(journalDir, "oversized.md"), oversized, "utf8")
+
+    const indexPath = path.join(journalDir, ".index.json")
+    const mockProvider = {
+      embed: vi.fn().mockResolvedValue([[0.1]]),
+    }
+
+    const { indexJournalFiles } = await import("../../mind/journal-index")
+    await indexJournalFiles(journalDir, indexPath, mockProvider)
+
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf8"))
+    expect(index).toHaveLength(1)
+    expectCappedAgentContent(index[0].preview, oversized.replace(/^#+\s*/, "").trim())
   })
 
   it("indexes .txt files as well", async () => {

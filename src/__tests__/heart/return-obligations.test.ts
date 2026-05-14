@@ -80,6 +80,28 @@ describe("createReturnObligation", () => {
     expect(written).toEqual(obligation)
   })
 
+  it("caps oversized delegated content before writing JSON", async () => {
+    const { EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } = await import("../helpers/content-cap")
+    const { createReturnObligation } = await import("../../arc/obligations")
+    const oversized = makeOversizedAgentContent("delegated return ")
+
+    createReturnObligation("testagent", {
+      id: "1709900001000-abc12345",
+      origin: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
+      status: "queued" as const,
+      delegatedContent: oversized,
+      createdAt: 1709900001000,
+    })
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find((call) => String(call[0]).endsWith(".json"))
+    expect(writeCall).toBeTruthy()
+    const written = JSON.parse(writeCall![1] as string)
+    expect(written.delegatedContent.length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+    expect(written.delegatedContent).toContain(expectedTruncationMarker(oversized))
+    expect(written.delegatedContent).toBe(expectedCappedContent(oversized))
+  })
+
   it("emits a nerves event on creation", async () => {
     const { createReturnObligation } = await import("../../arc/obligations")
     createReturnObligation("testagent", {

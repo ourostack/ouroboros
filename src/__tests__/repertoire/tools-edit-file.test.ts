@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { baseToolDefinitions, editFileReadTracker } from "../../repertoire/tools-base"
 import { getToolsForChannel } from "../../repertoire/tools"
 import { getChannelCapabilities } from "../../mind/friends/channel"
+import { makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("edit_file tool", () => {
   let tmpDir: string
@@ -89,6 +90,19 @@ describe("edit_file tool", () => {
 
     const content = fs.readFileSync(filePath, "utf-8")
     expect(content).toBe("the slow red fox")
+  })
+
+  it("preserves oversized replacement content exactly without applying the structured record cap", async () => {
+    const filePath = path.join(tmpDir, "oversized-replace.txt")
+    fs.writeFileSync(filePath, "before\nPLACEHOLDER\nafter", "utf-8")
+    editFileReadTracker.add(filePath)
+    const oversized = makeOversizedAgentContent("edit-file replacement ")
+
+    const handler = getEditFileHandler()
+    await handler({ path: filePath, old_string: "PLACEHOLDER", new_string: oversized })
+
+    const content = fs.readFileSync(filePath, "utf-8")
+    expect(content).toBe(`before\n${oversized}\nafter`)
   })
 
   it("fails if old_string not found in file", async () => {

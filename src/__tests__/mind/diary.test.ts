@@ -12,6 +12,7 @@ import {
 } from "../../mind/diary";
 import { cosineSimilarity } from "../../mind/note-search";
 import { baseToolDefinitions } from "../../repertoire/tools-base";
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap";
 
 describe("diary write path", () => {
   it("ensures diary data file paths exist", () => {
@@ -307,6 +308,25 @@ describe("diary write path", () => {
     expect(saved.about).toBe("ari");
     expect(saved.createdAt).toBe(fixedNow);
     expect(saved.embedding).toEqual([0.2, 0.4, 0.6]);
+  });
+
+  it("saveDiaryEntry caps oversized agent-authored fact text before writing JSONL", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "diary-cap-"));
+    const factsPath = path.join(root, "facts.jsonl");
+    const oversized = makeOversizedAgentContent("diary fact ");
+
+    const result = await saveDiaryEntry({
+      text: oversized,
+      source: "unit-test",
+      diaryRoot: root,
+      embeddingProvider: { embed: vi.fn().mockResolvedValue([[0.1, 0.2]]) },
+      idFactory: () => "diary-cap-1",
+      now: () => new Date("2026-05-13T00:00:00.000Z"),
+    });
+
+    expect(result.added).toBe(1);
+    const stored = JSON.parse(fs.readFileSync(factsPath, "utf8").trim()) as DiaryEntry;
+    expectCappedAgentContent(stored.text, oversized);
   });
 
   it("saveDiaryEntry degrades gracefully to empty embeddings when provider fails", async () => {

@@ -154,6 +154,16 @@ describe("execTool", () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", "hello", "utf-8")
   })
 
+  it("write_file preserves oversized content exactly without applying the structured record cap", async () => {
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
+    const oversized = `write-file-${"x".repeat(256 * 1024 + 1)}`
+
+    const result = await execTool("write_file", { path: "/tmp/out.txt", content: oversized })
+
+    expect(result).toContain("ok")
+    expect(fs.writeFileSync).toHaveBeenCalledWith("/tmp/out.txt", oversized, "utf-8")
+  })
+
   it("relative paths resolve against repo root (no workspace indirection)", async () => {
     vi.mocked(fs.readFileSync).mockImplementation((targetPath: any) => {
       if (targetPath === "/mock/repo/src/mind/prompt.ts") {

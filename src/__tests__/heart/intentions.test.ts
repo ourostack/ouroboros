@@ -9,6 +9,7 @@ import {
   dismissIntention,
   type IntentionRecord,
 } from "../../arc/intentions"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("intentions store", () => {
   let tmpDir: string
@@ -77,6 +78,18 @@ describe("intentions store", () => {
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
       expect(stored.id).toBe(intention.id)
       expect(stored.content).toBe("test writing")
+    })
+
+    it("caps oversized agent-authored intention content before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("intention ")
+      const intention = captureIntention(tmpDir, {
+        content: oversized,
+        source: "thought",
+      })
+
+      const filePath = path.join(tmpDir, "arc", "intentions", `${intention.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as IntentionRecord
+      expectCappedAgentContent(stored.content, oversized)
     })
 
     it("generates unique IDs", () => {

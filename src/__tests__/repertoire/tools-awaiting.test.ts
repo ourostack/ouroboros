@@ -25,6 +25,7 @@ import {
   setAwaitToolDeps,
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
+import { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } from "../helpers/content-cap"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -104,6 +105,28 @@ describe("tools-awaiting", () => {
       expect(content).toContain("mode: quick")
       expect(content).toContain("max_age: 24h")
       expect(content).toContain("what would count as ready")
+    })
+
+    it("caps oversized agent-authored condition and body text while preserving markdown", async () => {
+      const oversizedCondition = makeOversizedAgentContent("await condition ")
+      const oversizedBody = makeOversizedAgentContent("await body ")
+      const result = parse(await fileAwaitDef.handler(
+        {
+          name: "oversized",
+          condition: oversizedCondition,
+          cadence: "5m",
+          body: oversizedBody,
+        },
+        undefined,
+      ) as string)
+      expect(result.filed).toBe("oversized")
+
+      const content = fs.readFileSync(path.join(agentRoot, "awaiting", "oversized.md"), "utf-8")
+      expect(content.includes(expectedTruncationMarker(oversizedCondition))).toBe(true)
+      expect(content.includes(expectedTruncationMarker(oversizedBody))).toBe(true)
+      expect(content).toContain(`condition: ${expectedCappedContent(oversizedCondition)}`)
+      expect(content).toContain("---\n")
+      expect(content).toContain(expectedCappedContent(oversizedBody))
     })
 
     it("falls back to mode=full for unknown mode", async () => {

@@ -10,6 +10,7 @@ import {
   resolveCare,
   type CareRecord,
 } from "../../arc/cares"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("care store", () => {
   let tmpDir: string
@@ -75,6 +76,22 @@ describe("care store", () => {
       const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
       expect(stored.id).toBe(care.id)
       expect(stored.label).toBe("harness reliability")
+    })
+
+    it("caps oversized agent-authored care fields before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("care reason ")
+      const care = createCare(tmpDir, {
+        ...baseCareInput,
+        label: oversized,
+        why: oversized,
+        currentRisk: oversized,
+      })
+
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as CareRecord
+      expectCappedAgentContent(stored.label, oversized)
+      expectCappedAgentContent(stored.why, oversized)
+      expectCappedAgentContent(stored.currentRisk ?? "", oversized)
     })
 
     it("generates unique IDs", () => {

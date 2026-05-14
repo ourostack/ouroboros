@@ -21,6 +21,7 @@ import * as fs from "fs"
 beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
+  vi.mocked(fs.writeFileSync).mockReset()
   vi.mocked(fs.readdirSync).mockReset()
   vi.mocked(fs.renameSync).mockReset()
   vi.mocked(fs.unlinkSync).mockReset()
@@ -95,6 +96,26 @@ describe("deferred return queue helpers", () => {
       expect.stringMatching(/pending-returns\/friend-1\/1709900001-.+\.json$/),
       expect.any(String),
     )
+  })
+
+  it("caps oversized deferred return content before writing queue JSON", async () => {
+    const { EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } = await import("../helpers/content-cap")
+    const { enqueueDeferredReturn } = await import("../../mind/pending")
+    const oversized = makeOversizedAgentContent("deferred return ")
+
+    enqueueDeferredReturn("testagent", "friend-1", {
+      from: "testagent",
+      content: oversized,
+      timestamp: 1709900001,
+    })
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.at(-1)
+    expect(writeCall).toBeTruthy()
+    const written = JSON.parse(writeCall![1] as string)
+    expect(written.content.length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+    expect(written.content).toContain(expectedTruncationMarker(oversized))
+    expect(written.content).toBe(expectedCappedContent(oversized))
   })
 
   it("drains deferred returns in timestamp order", async () => {
@@ -354,6 +375,27 @@ describe("queuePendingMessage", () => {
       expect.stringMatching(/1709900001-.+\.json$/),
       expect.stringContaining("a thought"),
     )
+  })
+
+  it("caps oversized pending message content before writing queue JSON", async () => {
+    const { EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const { expectedCappedContent, expectedTruncationMarker, makeOversizedAgentContent } = await import("../helpers/content-cap")
+    const { queuePendingMessage } = await import("../../mind/pending")
+    const dir = "/mock/pending/self/inner/dialog"
+    const oversized = makeOversizedAgentContent("pending ")
+
+    queuePendingMessage(dir, {
+      from: "testagent",
+      content: oversized,
+      timestamp: 1709900001,
+    })
+
+    const writeCall = vi.mocked(fs.writeFileSync).mock.calls.at(-1)
+    expect(writeCall).toBeTruthy()
+    const written = JSON.parse(writeCall![1] as string)
+    expect(written.content.length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+    expect(written.content).toContain(expectedTruncationMarker(oversized))
+    expect(written.content).toBe(expectedCappedContent(oversized))
   })
 })
 

@@ -8,6 +8,7 @@ import {
   type EpisodeRecord,
   type EpisodeKind,
 } from "../../arc/episodes"
+import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("episode store", () => {
   let tmpDir: string
@@ -94,6 +95,22 @@ describe("episode store", () => {
       expect(stored.kind).toBe("coding_milestone")
       expect(stored.summary).toBe("PR merged")
       expect(stored.whyItMattered).toBe("shipped the feature")
+    })
+
+    it("caps oversized agent-authored summary fields before writing JSON", () => {
+      const oversized = makeOversizedAgentContent("episode summary ")
+      const episode = emitEpisode(tmpDir, {
+        kind: "coding_milestone",
+        summary: oversized,
+        whyItMattered: oversized,
+        relatedEntities: ["coding:1"],
+        salience: "high",
+      })
+
+      const filePath = path.join(tmpDir, "arc", "episodes", `${episode.id}.json`)
+      const stored = JSON.parse(fs.readFileSync(filePath, "utf-8")) as EpisodeRecord
+      expectCappedAgentContent(stored.summary, oversized)
+      expectCappedAgentContent(stored.whyItMattered, oversized)
     })
 
     it("generates unique IDs for multiple episodes", () => {
