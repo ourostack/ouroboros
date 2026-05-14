@@ -559,6 +559,42 @@ describe("record tools: note and consult_notes", () => {
     }
   })
 
+  it("consult_notes rebuilds duplicate-entry indexes that omit canonical records", async () => {
+    const notesDir = path.join(agentRoot, "notes")
+    const noteAPath = writeCanonicalNote(notesDir, "2026-05-14-note-a.md", "Archive alpha note.")
+    writeCanonicalNote(notesDir, "2026-05-14-note-b.md", "Archive beta note.")
+    const noteAStat = fs.statSync(noteAPath)
+    const duplicateEntry = {
+      filename: "2026-05-14-note-a.md",
+      path: noteAPath,
+      preview: "Archive alpha note.",
+      embedding: [1, 0],
+      mtimeMs: noteAStat.mtimeMs,
+      size: noteAStat.size,
+    }
+    fs.writeFileSync(path.join(notesDir, ".index.json"), `${JSON.stringify({
+      version: 1,
+      entries: [duplicateEntry, duplicateEntry],
+    }, null, 2)}\n`, "utf8")
+
+    const consultHandler = await handlerFor("consult_notes")
+    const result = JSON.parse(await consultHandler({
+      query: "archive",
+      limit: "5",
+      minScore: "0",
+    } as never, selfContext())) as ConsultNotesResult
+
+    expect(result.items.map((item) => item.filename).sort()).toEqual([
+      "2026-05-14-note-a.md",
+      "2026-05-14-note-b.md",
+    ])
+    const rebuilt = readJson(path.join(notesDir, ".index.json")) as { entries: Array<{ filename: string }> }
+    expect(rebuilt.entries.map((entry) => entry.filename)).toEqual([
+      "2026-05-14-note-a.md",
+      "2026-05-14-note-b.md",
+    ])
+  })
+
   it("consult_notes rebuilds notes without created_at and ignores malformed frontmatter lines", async () => {
     const notesDir = path.join(agentRoot, "notes")
     fs.mkdirSync(notesDir, { recursive: true })

@@ -220,10 +220,14 @@ function indexFreshForRecords(index: NotesIndex | null, records: NoteRecord[]): 
   if (!index) return false
   if (index.entries.length !== records.length) return false
   const recordsByFilename = new Map(records.map((record) => [record.filename, record]))
-  return index.entries.every((entry) => {
+  const seenFilenames = new Set<string>()
+  for (const entry of index.entries) {
+    if (seenFilenames.has(entry.filename)) return false
     const record = recordsByFilename.get(entry.filename)
-    return record ? entryMatchesRecord(entry, record) : false
-  })
+    if (!record || !entryMatchesRecord(entry, record)) return false
+    seenFilenames.add(entry.filename)
+  }
+  return seenFilenames.size === recordsByFilename.size
 }
 
 function indexFreshExcept(index: NotesIndex | null, records: NoteRecord[], filename: string): index is NotesIndex {
