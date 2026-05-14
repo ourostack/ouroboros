@@ -138,7 +138,7 @@ describe("record tools: note and consult_notes", () => {
 
     const savedPath = typeof result === "string" ? result : result.path
     expect(typeof result).toBe("string")
-    expect(savedPath).toBe(path.join(agentRoot, "notes", "2026-05-14-remember-the-mailbox-ui-should-show-envelope.md"))
+    expect(savedPath).toBe(path.join(agentRoot, "notes", "2026-05-14-remember-the-mailbox-ui-should-show-enve.md"))
 
     const saved = parseNoteFile(fs.readFileSync(savedPath!, "utf8"))
     expect(Object.keys(saved.frontmatter).sort()).toEqual(["created_at", "tags"])
@@ -166,7 +166,9 @@ describe("record tools: note and consult_notes", () => {
     } as never, selfContext()) as NoteHandlerResult
     const savedPath = typeof result === "string" ? result : result.path
 
-    expect(path.basename(savedPath!)).toBe("2026-05-14-launch-the-archive-replacement-with-dur.md")
+    const slug = path.basename(savedPath!, ".md").replace(/^2026-05-14-/, "")
+    expect(slug).toBe("launch-the-archive-replacement-with-dura")
+    expect(slug).toHaveLength(40)
   })
 
   it("note updates the notes-native derived index beside canonical markdown", async () => {

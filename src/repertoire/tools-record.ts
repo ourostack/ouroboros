@@ -8,7 +8,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
 const NOTES_INDEX_VERSION = 1
-const NOTE_HEAD_CHARS = 43
+const NOTE_SLUG_MAX_CHARS = 40
 const DEFAULT_LIMIT = 5
 const MAX_LIMIT = 25
 const DEFAULT_MIN_SCORE = 0.5
@@ -54,22 +54,13 @@ function normalizeTags(value: unknown): string[] | undefined {
   return tags.length > 0 ? tags : undefined
 }
 
-function extendHeadThroughHyphenatedWord(content: string): string {
-  let head = content.slice(0, NOTE_HEAD_CHARS)
-  const rest = content.slice(NOTE_HEAD_CHARS)
-  if (!/[A-Za-z0-9]$/.test(head) || !/^[A-Za-z0-9]/.test(rest)) return head
-  const hyphenatedTail = rest.match(/^([A-Za-z0-9]+)-/)
-  if (hyphenatedTail) {
-    head += hyphenatedTail[1]
-  }
-  return head
-}
-
 function slugForContent(content: string): string {
-  const slug = extendHeadThroughHyphenatedWord(content)
+  const slug = content
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
+    .slice(0, NOTE_SLUG_MAX_CHARS)
+    .replace(/-+$/g, "")
   return slug || "note"
 }
 
