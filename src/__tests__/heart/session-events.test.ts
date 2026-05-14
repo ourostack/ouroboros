@@ -162,6 +162,34 @@ describe("session events", () => {
     })
   })
 
+  it("preserves non-string event content arrays through the envelope path while capping oversized strings", async () => {
+    const { buildCanonicalSessionEnvelope, EVENT_CONTENT_MAX_CHARS } = await import("../../heart/session-events")
+    const contentParts = [
+      { type: "text", text: "keep this structured content" },
+      { type: "image_url", image_url: { url: "attachment://image-1" } },
+    ]
+    const oversized = "x".repeat(EVENT_CONTENT_MAX_CHARS + 1)
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: contentParts },
+      { role: "assistant", content: oversized },
+    ] as OpenAI.ChatCompletionMessageParam[]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-13T20:01:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.events[0]?.content).toEqual(contentParts)
+    expect(envelope.events[1]?.content).toContain(markerFor(EVENT_CONTENT_MAX_CHARS, oversized.length))
+    expect(String(envelope.events[1]?.content).length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
+  })
+
   it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
     const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
 

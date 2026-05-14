@@ -136,6 +136,10 @@ interface NormalizedProviderMessage {
 export const EVENT_CONTENT_MAX_CHARS = 256 * 1024
 
 export function truncateLargeEventContent(
+  content: SessionEventContent,
+  maxChars: number,
+): { content: SessionEventContent; truncated: boolean; originalLength: number }
+export function truncateLargeEventContent(
   content: unknown,
   maxChars: number,
 ): { content: unknown; truncated: boolean; originalLength: number } {
@@ -874,7 +878,7 @@ function buildEventFromMessage(
 ): SessionEvent {
   const normalized = normalizeMessage(message)
   const role = normalized.role
-  const cappedContent = truncateLargeEventContent(normalized.content, EVENT_CONTENT_MAX_CHARS).content as SessionEventContent
+  const cappedContent = truncateLargeEventContent(normalized.content, EVENT_CONTENT_MAX_CHARS).content
 
   return {
     id: makeEventId(sequence),
