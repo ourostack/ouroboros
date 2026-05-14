@@ -417,9 +417,7 @@ function readCanonicalNotes(agentRoot: string): MailboxCanonicalNoteEntry[] {
     try {
       const raw = fs.readFileSync(filePath, "utf-8")
       const { frontmatter, body } = parseMarkdownFrontmatter(raw)
-      const writtenAt = typeof frontmatter.created_at === "string" && frontmatter.created_at.trim().length > 0
-        ? frontmatter.created_at.trim()
-        : safeFileMtime(filePath) ?? ""
+      const writtenAt = safeCanonicalNoteTimestamp(frontmatter.created_at, filePath)
 
       notes.push({
         filename,
@@ -435,6 +433,14 @@ function readCanonicalNotes(agentRoot: string): MailboxCanonicalNoteEntry[] {
 
   notes.sort((a, b) => b.writtenAt.localeCompare(a.writtenAt) || b.filename.localeCompare(a.filename))
   return notes
+}
+
+function safeCanonicalNoteTimestamp(value: unknown, filePath: string): string {
+  const fallback = safeFileMtime(filePath)!
+  if (typeof value !== "string") return fallback
+  const trimmed = value.trim()
+  if (!trimmed) return fallback
+  return Number.isNaN(new Date(trimmed).getTime()) ? fallback : trimmed
 }
 
 function parseMarkdownFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } {
@@ -458,15 +464,15 @@ function parseMinimalFrontmatter(lines: string[]): Record<string, unknown> {
     const match = line?.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
     if (!match) continue
 
-    const [, key, rawValue] = match
-    if (!key) continue
+    const key = match[1]!
+    const rawValue = match[2]!
 
     if (key === "tags") {
-      frontmatter.tags = parseFrontmatterTags(rawValue ?? "", lines, index + 1)
+      frontmatter.tags = parseFrontmatterTags(rawValue, lines, index + 1)
       continue
     }
 
-    frontmatter[key] = (rawValue ?? "").trim()
+    frontmatter[key] = rawValue.trim()
   }
 
   return frontmatter
@@ -476,8 +482,8 @@ function parseFrontmatterTags(rawValue: string, lines: string[], startIndex: num
   const trimmed = rawValue.trim()
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
     try {
-      const parsed = JSON.parse(trimmed) as unknown
-      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []
+      const parsed = JSON.parse(trimmed) as unknown[]
+      return parsed.filter((item): item is string => typeof item === "string")
     } catch {
       return trimmed.slice(1, -1).split(",").map((tag) => tag.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean)
     }
@@ -489,7 +495,7 @@ function parseFrontmatterTags(rawValue: string, lines: string[], startIndex: num
   for (let index = startIndex; index < lines.length; index += 1) {
     const itemMatch = lines[index]?.match(/^\s*-\s*(.+)$/)
     if (!itemMatch) break
-    const tag = itemMatch[1]?.trim().replace(/^['"]|['"]$/g, "")
+    const tag = itemMatch[1]!.trim().replace(/^['"]|['"]$/g, "")
     if (tag) tags.push(tag)
   }
   return tags

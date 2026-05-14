@@ -1719,6 +1719,147 @@ describe("mailbox deep readers", () => {
       })
     })
 
+    it("falls back to file mtime for malformed canonical note timestamps and parses loose tag arrays", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const notesRoot = path.join(agentRoot, "notes")
+      fs.mkdirSync(notesRoot, { recursive: true })
+      const notePath = path.join(notesRoot, "2026-05-14-malformed-timestamp.md")
+      fs.writeFileSync(notePath, [
+        "---",
+        "created_at: not-a-date",
+        "tags: [mailbox, archive-removal]",
+        "---",
+        "Malformed timestamp should not poison relative time.",
+      ].join("\n"), "utf-8")
+      const mtime = new Date("2026-05-14T18:00:00.000Z")
+      fs.utimesSync(notePath, mtime, mtime)
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-14-malformed-timestamp.md",
+        title: "malformed timestamp",
+        tags: ["mailbox", "archive-removal"],
+        preview: "Malformed timestamp should not poison relative time.",
+        writtenAt: "2026-05-14T18:00:00.000Z",
+      })
+    })
+
+    it("parses scalar and sparse canonical note tags with safe title fallbacks", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const notesRoot = path.join(agentRoot, "notes")
+      fs.mkdirSync(notesRoot, { recursive: true })
+      const scalarPath = path.join(notesRoot, "2026-05-16-.md")
+      fs.writeFileSync(scalarPath, [
+        "---",
+        "created_at:",
+        "tags: mailbox",
+        "---",
+        "Scalar tag note.",
+      ].join("\n"), "utf-8")
+      const scalarMtime = new Date("2026-05-16T18:00:00.000Z")
+      fs.utimesSync(scalarPath, scalarMtime, scalarMtime)
+      fs.writeFileSync(path.join(notesRoot, "2026-05-15-sparse-tags.md"), [
+        "---",
+        "created_at: 2026-05-15T18:00:00.000Z",
+        "tags:",
+        "  - \"\"",
+        "  - archive-removal",
+        "---",
+        "Sparse tag note.",
+      ].join("\n"), "utf-8")
+      fs.writeFileSync(path.join(notesRoot, "2026-05-14-filter-tags.md"), [
+        "---",
+        "created_at: 2026-05-14T18:00:00.000Z",
+        "tags: [\"mailbox\", 7]",
+        "---",
+        "Filtered tag note.",
+      ].join("\n"), "utf-8")
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-16-.md",
+        title: "2026-05-16-.md",
+        tags: ["mailbox"],
+        preview: "Scalar tag note.",
+        writtenAt: "2026-05-16T18:00:00.000Z",
+      })
+      expect(notes.recentCanonicalNotes[1]!.tags).toEqual(["archive-removal"])
+      expect(notes.recentCanonicalNotes[2]!.tags).toEqual(["mailbox"])
+    })
+
+    it("keeps malformed frontmatter readable and stops tag lists at the next key", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const notesRoot = path.join(agentRoot, "notes")
+      fs.mkdirSync(notesRoot, { recursive: true })
+      fs.writeFileSync(path.join(notesRoot, "2026-05-17-tags-before-date.md"), [
+        "---",
+        "tags:",
+        "  - mailbox",
+        "created_at: 2026-05-17T18:00:00.000Z",
+        "---",
+        "Tags before date.",
+      ].join("\n"), "utf-8")
+      const openFrontmatterPath = path.join(notesRoot, "2026-05-16-open-frontmatter.md")
+      fs.writeFileSync(openFrontmatterPath, [
+        "---",
+        "tags: [mailbox]",
+        "Open frontmatter note.",
+      ].join("\n"), "utf-8")
+      const openMtime = new Date("2026-05-16T18:00:00.000Z")
+      fs.utimesSync(openFrontmatterPath, openMtime, openMtime)
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-17-tags-before-date.md",
+        title: "tags before date",
+        tags: ["mailbox"],
+        preview: "Tags before date.",
+        writtenAt: "2026-05-17T18:00:00.000Z",
+      })
+      expect(notes.recentCanonicalNotes[1]).toEqual({
+        filename: "2026-05-16-open-frontmatter.md",
+        title: "open frontmatter",
+        tags: [],
+        preview: "---\ntags: [mailbox]\nOpen frontmatter note.",
+        writtenAt: "2026-05-16T18:00:00.000Z",
+      })
+    })
+
+    it("reads plain markdown notes, skips .md directories, and sorts timestamp ties by filename", async () => {
+      const tmpRoot = makeBundleRoot()
+      const agentRoot = path.join(tmpRoot, "agent.ouro")
+      const notesRoot = path.join(agentRoot, "notes")
+      fs.mkdirSync(path.join(notesRoot, "2026-05-18-directory.md"), { recursive: true })
+      fs.writeFileSync(path.join(notesRoot, "ignore-me.txt"), "Not a canonical note.", "utf-8")
+      const tiedMtime = new Date("2026-05-18T18:00:00.000Z")
+      for (const filename of ["2026-05-18-a.md", "2026-05-18-b.md"]) {
+        const notePath = path.join(notesRoot, filename)
+        fs.writeFileSync(notePath, `${filename} body.`, "utf-8")
+        fs.utimesSync(notePath, tiedMtime, tiedMtime)
+      }
+
+      const notes = readNotesView(agentRoot) as NotesViewWithCanonicalNotes
+
+      expect(notes.canonicalNoteCount).toBe(2)
+      expect(notes.recentCanonicalNotes.map((note) => note.filename)).toEqual([
+        "2026-05-18-b.md",
+        "2026-05-18-a.md",
+      ])
+      expect(notes.recentCanonicalNotes[0]).toEqual({
+        filename: "2026-05-18-b.md",
+        title: "b",
+        tags: [],
+        preview: "2026-05-18-b.md body.",
+        writtenAt: "2026-05-18T18:00:00.000Z",
+      })
+    })
+
     it("exposes canonical notes without removing diary or journal data", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")

@@ -42,7 +42,10 @@ interface NotesIndex {
 }
 
 function hasSelfTrust(ctx?: ToolContext): boolean {
-  return !ctx?.context?.friend
+  const channel = ctx?.context?.channel?.channel
+  if (channel !== "inner") return false
+  const friend = ctx?.context?.friend
+  return !friend || friend.id === "self"
 }
 
 function normalizeTags(value: unknown): string[] | undefined {
@@ -79,15 +82,17 @@ function ensureUniquePath(notesDir: string, date: string, slug: string): string 
   let candidate = path.join(notesDir, `${date}-${slug}.md`)
   let suffix = 2
   while (fs.existsSync(candidate)) {
-    candidate = path.join(notesDir, `${date}-${slug}-${suffix}.md`)
+    const suffixText = `-${suffix}`
+    const cappedSlug = `${slug.slice(0, Math.max(0, NOTE_SLUG_MAX_CHARS - suffixText.length)).replace(/-+$/g, "")}${suffixText}`
+    candidate = path.join(notesDir, `${date}-${cappedSlug}.md`)
     suffix += 1
   }
   return candidate
 }
 
 function extractPreview(body: string): string {
-  const firstLine = body.trim().split("\n").find((line) => line.trim().length > 0)?.trim() ?? ""
-  return capStructuredRecordString(firstLine).slice(0, PREVIEW_CHAR_LIMIT)
+  const firstLine = body.trim().split("\n").find((line) => line.trim().length > 0)!
+  return capStructuredRecordString(firstLine.trim()).slice(0, PREVIEW_CHAR_LIMIT)
 }
 
 function parseTagsFromFrontmatter(lines: string[], startIndex: number): { tags: string[]; nextIndex: number } {
@@ -115,16 +120,18 @@ function parseCanonicalNote(filePath: string, stat: fs.Stats): NoteRecord | null
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]
         if (!line.trim()) continue
-        const [key, ...rest] = line.split(":")
-        const value = rest.join(":").trim()
+        const colonIndex = line.indexOf(":")
+        if (colonIndex < 0) continue
+        const key = line.slice(0, colonIndex)
+        const value = line.slice(colonIndex + 1).trim()
         if (key === "created_at" && value) {
           createdAt = value.replace(/^"|"$/g, "")
         }
         if (key === "tags") {
           if (value.startsWith("[") && value.endsWith("]")) {
             try {
-              const parsed = JSON.parse(value)
-              tags = Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === "string") : undefined
+              const parsed = JSON.parse(value) as unknown[]
+              tags = parsed.filter((tag): tag is string => typeof tag === "string")
             } catch {
               tags = undefined
             }
@@ -245,7 +252,7 @@ function writeIndex(indexPath: string, index: NotesIndex): void {
 
 async function embedRecord(provider: EmbeddingProvider, record: NoteRecord): Promise<NotesIndexEntry> {
   const [embedding] = await provider.embed([record.body])
-  return makeEntry(record, embedding ?? [])
+  return makeEntry(record, embedding!)
 }
 
 async function rebuildNotesIndex(notesDir: string, indexPath: string, provider: EmbeddingProvider): Promise<NotesIndex> {
@@ -271,12 +278,11 @@ async function updateIndexForSavedNote(
   savedPath: string,
   provider: EmbeddingProvider,
 ): Promise<void> {
-  const records = listCanonicalNotes(notesDir)
-  const savedRecord = records.find((record) => record.filePath === savedPath)
-  if (!savedRecord) {
-    await rebuildNotesIndex(notesDir, indexPath, provider)
-    return
-  }
+  const savedRecord = parseCanonicalNote(savedPath, fs.statSync(savedPath))!
+  const records = [
+    ...listCanonicalNotes(notesDir).filter((record) => record.filePath !== savedPath),
+    savedRecord,
+  ].sort((left, right) => left.filename.localeCompare(right.filename))
 
   const existing = readIndex(indexPath)
   if (!indexFreshExcept(existing, records, savedRecord.filename)) {
@@ -424,7 +430,6 @@ export const recordToolDefinitions: ToolDefinition[] = [
 
       try {
         const index = await getFreshIndex(notesDir, indexPath, provider)
-        if (index.entries.length === 0) return JSON.stringify({ items: [] })
 
         const [queryEmbedding] = await provider.embed([query])
         const minScore = parseMinScore(rawArgs.minScore)
@@ -436,7 +441,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
             path: entry.path,
             filename: entry.filename,
             excerpt: entry.preview,
-            score: cosineSimilarity(queryEmbedding ?? [], entry.embedding),
+            score: cosineSimilarity(queryEmbedding!, entry.embedding),
           }))
           .filter((entry) => entry.score >= minScore)
           .sort((left, right) => right.score - left.score)
