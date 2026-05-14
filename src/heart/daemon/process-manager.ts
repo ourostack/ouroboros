@@ -610,6 +610,7 @@ export class DaemonProcessManager {
 
   resetAgentFailureState(agent: string): void {
     const state = this.requireAgent(agent)
+    this.clearRestartTimer(state)
     this.clearCooldownTimer(state)
     state.cooldownRetryCount = 0
     state.crashTimestamps = []

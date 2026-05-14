@@ -702,6 +702,34 @@ describe("daemon command plane branches", () => {
     expect(processManager.startAgent).not.toHaveBeenCalled()
   })
 
+  it("returns a friendly invalid-payload response for malformed sense revive commands", async () => {
+    const socketPath = tmpSocketPath("daemon-sense-revive-invalid-payload")
+    const { daemon, processManager } = make(socketPath)
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: "slugger",
+      reason: "try malformed payload",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
+    })
+
+    await expect(daemon.handleCommand({
+      kind: "daemon.sense_revive",
+      agent: 12,
+      sense: "bluebubbles",
+      reason: "try non-string agent",
+    } as never)).resolves.toEqual({
+      ok: false,
+      error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
+    })
+
+    expect(processManager.listAgentSnapshots).not.toHaveBeenCalled()
+    expect(processManager.resetAgentFailureState).not.toHaveBeenCalled()
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+  })
+
   it("starts the managed agent and wakes inner dialog via direct IPC", async () => {
     const socketPath = tmpSocketPath("daemon-inner-wake")
     const { daemon, processManager } = make(socketPath)

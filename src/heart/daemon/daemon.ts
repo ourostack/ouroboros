@@ -622,6 +622,12 @@ function parseIncomingCommand(raw: string): DaemonCommand {
   return parsed as DaemonCommand
 }
 
+function isValidSenseReviveCommand(command: Extract<DaemonCommand, { kind: "daemon.sense_revive" }>): boolean {
+  return typeof command.agent === "string"
+    && typeof command.sense === "string"
+    && typeof command.reason === "string"
+}
+
 /**
  * Handle agent.senseTurn command: runs a full agent turn via the daemon process.
  * Dynamic import lazy-loads shared-turn. Hot-reload works because ouro dev
@@ -1325,6 +1331,12 @@ export class OuroDaemon {
           data: { logDir: "~/AgentBundles/<agent>.ouro/state/daemon/logs" },
         }
       case "daemon.sense_revive": {
+        if (!isValidSenseReviveCommand(command)) {
+          return {
+            ok: false,
+            error: "Invalid daemon.sense_revive payload: expected string fields 'agent', 'sense', and 'reason'.",
+          }
+        }
         const managedSenseSnapshots = this.processManager.listAgentSnapshots()
           .filter((snapshot) => snapshot.name.startsWith(`${command.agent}:`))
         if (managedSenseSnapshots.length === 0) {

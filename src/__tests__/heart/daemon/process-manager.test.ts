@@ -25,6 +25,7 @@ type AgentRuntimeStateForTest = {
   crashTimestamps: number[]
   orchestratedRestartTimestamps: number[]
   respawnLoopTripped: boolean
+  restartTimer: unknown | null
   cooldownTimer: unknown | null
   cooldownRetryCount: number
   fastCrashCount: number
@@ -939,6 +940,7 @@ describe("daemon process manager", () => {
 
   it("resets cooldown, crash, and respawn-loop state for operator sense revive", () => {
     const cooldownTimer = { kind: "cooldown" }
+    const restartTimer = { kind: "restart" }
     const senseAgents: DaemonManagedAgent[] = [
       { name: "slugger", entry: "heart/agent-entry.js", channel: "cli", autoStart: false },
       { name: "slugger:bluebubbles", entry: "heart/sense-entry.js", channel: "bluebubbles", autoStart: false },
@@ -957,6 +959,7 @@ describe("daemon process manager", () => {
     state.crashTimestamps = [1_000, 2_000]
     state.fastCrashCount = 2
     state.respawnLoopTripped = true
+    state.restartTimer = restartTimer
     state.cooldownTimer = cooldownTimer
     state.orchestratedRestartTimestamps = [3_000, 4_000]
     state.snapshot.errorReason = "respawn loop detected: refusing further restarts"
@@ -965,10 +968,12 @@ describe("daemon process manager", () => {
     manager.resetAgentFailureState("slugger:bluebubbles")
 
     expect(clearTimeoutFn).toHaveBeenCalledWith(cooldownTimer)
+    expect(clearTimeoutFn).toHaveBeenCalledWith(restartTimer)
     expect(state.cooldownRetryCount).toBe(0)
     expect(state.crashTimestamps).toEqual([])
     expect(state.fastCrashCount).toBe(0)
     expect(state.respawnLoopTripped).toBe(false)
+    expect(state.restartTimer).toBeNull()
     expect(state.cooldownTimer).toBeNull()
     expect(state.orchestratedRestartTimestamps).toEqual([])
     expect(manager.getAgentSnapshot("slugger:bluebubbles")?.errorReason).toBeNull()
