@@ -142,6 +142,10 @@ export function truncateLargeEventContent(
 export function truncateLargeEventContent(
   content: unknown,
   maxChars: number,
+): { content: unknown; truncated: boolean; originalLength: number }
+export function truncateLargeEventContent(
+  content: unknown,
+  maxChars: number,
 ): { content: unknown; truncated: boolean; originalLength: number } {
   if (typeof content !== "string") {
     return { content, truncated: false, originalLength: 0 }
