@@ -7,7 +7,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ouroborosbot/ouroboros.git"
+    "url": "git+https://github.com/ourostack/ouroboros.git"
   },
   "license": "MIT"
 }

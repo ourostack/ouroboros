@@ -44,7 +44,7 @@ const OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 const OPEN_METEO_GEOCODING = "https://geocoding-api.open-meteo.com/v1/search"
 
 const OPEN_METEO_HEADERS = {
-  "User-Agent": "Ouroboros/1.0 (https://github.com/ouroborosbot/ouroboros)",
+  "User-Agent": "Ouroboros/1.0 (https://github.com/ourostack/ouroboros)",
   Accept: "application/json",
 }
 
@@ -345,7 +345,7 @@ export async function getTravelAdvisory(countryCode: string): Promise<TravelAdvi
 
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org"
 const NOMINATIM_HEADERS = {
-  "User-Agent": "Ouroboros/1.0 (https://github.com/ouroborosbot/ouroboros)",
+  "User-Agent": "Ouroboros/1.0 (https://github.com/ourostack/ouroboros)",
   Accept: "application/json",
 }
 

@@ -309,7 +309,7 @@ export function getAgentStateRoot(agentName?: string): string {
   return path.join(getAgentRoot(resolveOptionalAgentName(agentName)), "state")
 }
 
-export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
+export const HARNESS_CANONICAL_REPO_URL = "https://github.com/ourostack/ouroboros.git"
 
 export function getAgentRepoWorkspacesRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "workspaces")
