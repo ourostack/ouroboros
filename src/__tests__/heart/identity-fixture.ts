@@ -72,4 +72,14 @@ export const FULL_AGENT_JSON = {
     enabled: true,
     remote: "fixture-origin",
   },
+  // W5.1 plugin support — added 2026-05-18 (worker-generalization wave).
+  // Bundles may declare which installed plugins they have enabled.
+  plugins: [
+    {
+      id: "desk",
+      enabled: true,
+      source: "github:ourostack/ouroboros-skills:plugins/desk",
+      version: "0.1.0",
+    },
+  ],
 } as const satisfies DeepRequired<AgentConfig>
