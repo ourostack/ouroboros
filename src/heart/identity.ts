@@ -79,6 +79,25 @@ export interface AgentConfig {
     enabled?: boolean
     remote?: string
   }
+  /**
+   * Plugins this agent has enabled. Plugins are machine-installed at
+   * ~/.ouro-cli/plugins/<plugin-id>/ via `ouro plugin install`; this list
+   * declares which of them apply to this agent. Added 2026-05-18 for
+   * worker-generalization W5 plugin support. desk plugin is the first
+   * use-case.
+   */
+  plugins?: PluginConfig[]
+}
+
+export interface PluginConfig {
+  /** Plugin identifier; matches the directory name under ~/.ouro-cli/plugins/. */
+  id: string
+  /** When false, the plugin is installed-but-disabled for this agent. */
+  enabled: boolean
+  /** Plugin source URL (e.g. github:ourostack/ouroboros-skills:plugins/desk). Optional; informational. */
+  source?: string
+  /** Plugin version this agent expects. Optional. */
+  version?: string
 }
 
 export const DEFAULT_AGENT_CONTEXT = {
