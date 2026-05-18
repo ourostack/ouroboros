@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.618",
+      "changes": [
+        "Plugin support W5.4: prompt-assembly integration. src/repertoire/skills.ts listSkills() merges plugin skills (via listPluginSkills(listEnabledPlugins())) with bundle skills (deduped, sorted). loadSkill() falls back to plugin skills after the 3 bundle paths (agent → protocol mirror → harness); iterates enabled plugins in declaration order and returns the first match. Bundle skills retain precedence — if the same skill name is in both a bundle and a plugin, the bundle wins. 6 new tests cover the integration paths; skills.ts stays at 100% coverage. Final sub-PR in the ouroboros plugin support track."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.617",
       "changes": [
         "Plugin support W5.3: `ouro plugin install <source>`, `ouro plugin list`, and `ouro plugin remove <id>` CLI commands. Install clones to ~/.ouro-cli/plugins/<id>/ via git, supports `github:org/repo:plugins/<id>`, `https://github.com/...[.git]`, `local:/path/...`, and bare absolute paths; verifies `.claude-plugin/plugin.json` exists and rolls back on failure. List walks the plugins root and reports sorted installed plugins. Remove deletes the plugin install dir. Handlers live in src/heart/daemon/plugin-cli.ts (narrow RM_RECURSIVE_ALLOWLIST entry — operator-invoked CLI infrastructure, not agent-callable). Next sub-PR (W5.4) wires plugin skills into prompt assembly via listPluginSkills()."
