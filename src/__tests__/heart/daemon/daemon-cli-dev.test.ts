@@ -18,7 +18,7 @@ vi.mock("../../../heart/identity", () => ({
   getAgentRoot: () => "/mock/AgentBundles/test.ouro",
   getAgentDaemonLogsDir: () => "/mock/logs",
   getAgentDaemonLoggingConfigPath: () => "/mock/logging.json",
-  HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+  HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({

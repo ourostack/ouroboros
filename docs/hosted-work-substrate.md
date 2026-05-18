@@ -5,7 +5,7 @@ Ouroboros and Ouro now have a deliberate repo boundary.
 - **Ouroboros** is this harness: local agent runtime, CLI, senses, tools, skills, bundle state, and Ouro Mailbox.
 - **Ouro** is the hosted agentic work substrate: agent-owned accounts, hosted mail ingress, vault control, shared work protocol, and cloud infra.
 
-Hosted service source lives at [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate).
+Hosted service source lives at [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate).
 
 ## What Moved Out
 

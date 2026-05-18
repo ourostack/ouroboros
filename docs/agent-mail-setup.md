@@ -21,7 +21,7 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 ## Completion States
 
 - **Implemented in the harness:** `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, Mail sense readiness checks, bounded mail read tools, guarded native autonomous send policy evaluation, confirmed outbound drafts/sends, and Mailbox read-only views.
-- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and the Mailbox UI.
+- **Hosted service source:** production-oriented Mail ingress, Vault control, shared work protocol, and Azure infra live in [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate). This harness keeps local runtime, agent setup, sense orchestration, tools, and the Mailbox UI.
 - **Agent-runnable:** provisioning Mailroom, storing private keys in the agent vault, enabling `senses.mail.enabled`, importing a human-provided MBOX, verifying the Mail sense, and managing Screener decisions after family authorization.
 - **Human-required:** HEY browser export, HEY forwarding/extension changes, DNS changes at the registrar, provider/browser auth, secret entry, and final autonomous-send enablement.
 - **Not enabled by default:** autonomous sending, destructive mail actions, and new DNS/provider changes.
@@ -190,7 +190,7 @@ Important HEY nuance: a single HEY browser login can expose multiple linked acco
 
 Programmatic mailboxes are created by `ouro account ensure` or `ouro connect mail`. In production, the agent vault `runtime/config` item carries `workSubstrate.mode: "hosted"` plus `workSubstrate.mailControl.url` and a bearer `token`; setup then calls hosted Mail Control, stores the one-time private keys it returns, records hosted Blob coordinates, and refuses to claim success if a hosted mailbox/source key id is missing from the vault. If the one-time response was lost, `--rotate-missing-mail-keys` calls the hosted rotation endpoint for the missing public key ids and stores the newly returned private keys. Without hosted work-substrate config, setup stays explicit local development and writes a local registry/cache under the bundle. External delivery still needs a production ingress host and human-confirmed DNS/MX.
 
-Hosted service code now lives in [`ouroborosbot/ouro-work-substrate`](https://github.com/ouroborosbot/ouro-work-substrate):
+Hosted service code now lives in [`ourostack/ouro-work-substrate`](https://github.com/ourostack/ouro-work-substrate):
 
 - `packages/work-protocol` owns shared registry, route, encryption, Screener records, and machine-readable protocol contracts. Harness mailroom tests validate the vendored contract copy and compare it with a local `ouro-work-substrate` checkout when present.
 - `apps/mail-ingress` owns SMTP ingress and encrypted Azure Blob/file storage.
@@ -380,4 +380,4 @@ For the full recovery map, use the repo path `docs/agent-mail-recovery.md` ([Age
 - Azure Container Apps TCP ingress: [Ingress in Azure Container Apps](https://learn.microsoft.com/en-us/azure/container-apps/ingress-how-to)
 - Azure Communication Services custom domains: [Add custom verified domains](https://learn.microsoft.com/en-us/azure/communication-services/quickstarts/email/add-custom-verified-domains)
 - Azure Communication Services DNS troubleshooting: [Email domain configuration troubleshooting](https://learn.microsoft.com/en-us/azure/communication-services/concepts/email/email-domain-configuration-troubleshooting)
-- Ouro Work hosted service source: [ouroborosbot/ouro-work-substrate](https://github.com/ouroborosbot/ouro-work-substrate)
+- Ouro Work hosted service source: [ourostack/ouro-work-substrate](https://github.com/ourostack/ouro-work-substrate)
