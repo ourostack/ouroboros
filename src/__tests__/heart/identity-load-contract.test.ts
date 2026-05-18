@@ -75,6 +75,7 @@ describe("loadAgentConfig structural contract", () => {
     expect(config.phrases).toEqual(FULL_AGENT_JSON.phrases)
     expect(config.vault).toEqual(FULL_AGENT_JSON.vault)
     expect(config.sync).toEqual(FULL_AGENT_JSON.sync)
+    expect(config.plugins).toEqual(FULL_AGENT_JSON.plugins)
   })
 
   it("preserves the sync block (regression for #349)", async () => {
