@@ -50,7 +50,7 @@ vi.mock("../../heart/identity", () => ({
     context: {},
   })),
   getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/ouroboros/state/workspaces"),
-  HARNESS_CANONICAL_REPO_URL: "https://github.com/ouroborosbot/ouroboros.git",
+  HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
 }))
 
 // Minimal mocks for tools-base dependencies

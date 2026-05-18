@@ -85,7 +85,7 @@ PR-based merge policy, conflict resolution, and retry rules live in:
 
 - `docs/sync-and-merge-conventions.md`
 
-The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ouroborosbot/ouroboros-skills). Install via the skill-management skill.
+The implemented workflow helpers have moved to [ouroboros-skills](https://github.com/ourostack/ouroboros-skills). Install via the skill-management skill.
 
 ## Dev Mode
 

@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentBundlesRoot } from "../identity"
 
 const SKILL_MANAGEMENT_URL =
-  "https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/skills/skill-management/SKILL.md"
+  "https://raw.githubusercontent.com/ourostack/ouroboros-skills/main/skills/skill-management/SKILL.md"
 
 export async function ensureSkillManagement(): Promise<void> {
   const bundlesRoot = getAgentBundlesRoot()

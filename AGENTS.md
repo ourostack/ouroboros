@@ -44,7 +44,7 @@ This harness is built for the agent inhabiting it. Two principles guide everythi
 - Ouroboros is not primarily a coding agent. It is a general-purpose way to build executive-assistant and purpose-oriented agents that can execute real-world work.
 - Model the default agent-human relationship as a person and their executive assistant. For private systems like email, calendars, documents, payments, and accounts, prefer delegated, revocable live access over bulk export or shadow ownership. Exports are appropriate for migration, archive bootstrap, recovery, legal/discovery-style review, or explicit human handoff; they are not the default shape of day-to-day assistance.
 - Treat vault, mail, calendars, files, tasks, contacts, conversations, the diary, policy, and audit as coupled parts of an agent-first work substrate. Ouro is not trying to copy human office suites; it is building what those suites become when the primary user is an agent with an identity, a vault, durable state, scoped tools, and accountable access.
-- Keep the brand and repo boundary clear: **Ouroboros** is the harness/local runtime; **Ouro** is the hosted agentic work substrate. Hosted mail/vault service code lives in `github.com/ouroborosbot/ouro-work-substrate`; this repo keeps the local runtime, senses, CLI, and Ouro Mailbox.
+- Keep the brand and repo boundary clear: **Ouroboros** is the harness/local runtime; **Ouro** is the hosted agentic work substrate. Hosted mail/vault service code lives in `github.com/ourostack/ouro-work-substrate`; this repo keeps the local runtime, senses, CLI, and Ouro Mailbox.
 - Represent work-substrate surfaces that the agent perceives over time as senses. Mail is a sense, not merely a tool namespace; bounded read tools are how the mail sense inspects specific messages and threads without turning the inbox into an unfiltered prompt stream.
 - When a human asks an agent to set up email, follow [Agent Mail Setup](docs/agent-mail-setup.md): provision Mailroom with `ouro connect mail --agent <agent>`, keep private keys in the agent vault, import explicit MBOX handoffs with `ouro mail import-mbox`, and treat DNS, HEY export/forwarding, production MX, and autonomous sending as human-confirmed steps.
 - Treat the generic secret primitive as a vault item / credential with no assumed use. Managed workflows and workflow bindings may reference ordinary vault items, but notes are human/agent orientation and code must not parse notes as authority or configuration.
@@ -118,13 +118,13 @@ Hook events are fire-and-forget — they never block the dev tool. If the daemon
 - **Codex app**: Use skills by name: `$work-planner`, `$work-doer`, and `$work-merger`.
   - Skills are turn-scoped in practice, so re-invoke `$work-planner` on each planning/conversion turn.
   - `work-planner` already enforces `NEEDS_REVIEW` and hard-stop behavior during default operation; a direct human override may waive that gate for the current task.
-- **Claude Code**: Skills are installed from `github.com/ouroborosbot/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
+- **Claude Code**: Skills are installed from `github.com/ourostack/ouroboros-skills` into `~/.claude/skills/` (`work-planner`, `work-doer`, `work-merger`).
 
 ### Skill Freshness
 
 Before starting work, check that locally installed skills are up to date:
 
-1. Fetch the manifest from `https://raw.githubusercontent.com/ouroborosbot/ouroboros-skills/main/manifest.json`.
+1. Fetch the manifest from `https://raw.githubusercontent.com/ourostack/ouroboros-skills/main/manifest.json`.
 2. Compare the manifest against `_registry.json` in each active local skills directory.
 3. If `_registry.json` is missing, run the `skill-management` "Bootstrap or Repair a Missing Registry" workflow first so installed skills get explicit provenance before freshness comparison continues.
 4. If any non-local skill's commit SHA is stale, update it using the skill-management workflow before proceeding.

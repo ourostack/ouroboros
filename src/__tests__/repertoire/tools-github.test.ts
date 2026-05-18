@@ -70,7 +70,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok123",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Bug fix" }),
     )
   })
@@ -86,7 +86,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Issue", body: "Description here" }),
     )
   })
@@ -102,7 +102,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Issue", labels: ["bug", "enhancement", "urgent"] }),
     )
   })
@@ -118,7 +118,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Issue" }),
     )
   })
@@ -134,7 +134,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Issue" }),
     )
   })
@@ -150,7 +150,7 @@ describe("file_ouroboros_bug handler", () => {
     expect(githubRequest).toHaveBeenCalledWith(
       "tok",
       "POST",
-      "/repos/ouroborosbot/ouroboros/issues",
+      "/repos/ourostack/ouroboros/issues",
       JSON.stringify({ title: "Issue", body: "Details", labels: ["bug"] }),
     )
   })

@@ -174,7 +174,7 @@ describe("agent paths", () => {
     } = await import("../../heart/identity")
     resetIdentity()
 
-    expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ouroborosbot/ouroboros.git")
+    expect(HARNESS_CANONICAL_REPO_URL).toBe("https://github.com/ourostack/ouroboros.git")
     expect(getAgentDaemonLoggingConfigPath()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logging.json"))
     expect(getAgentDaemonLogsDir()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "daemon", "logs"))
     expect(getAgentMailroomRoot()).toBe(path.join(os.homedir(), "AgentBundles", "slugger.ouro", "state", "mailroom"))

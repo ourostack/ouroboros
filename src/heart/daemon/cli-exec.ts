@@ -6386,7 +6386,7 @@ function resolveClonePath(
 
   // Fresh clone
   deps.writeStdout(`cloning ouroboros to ${cloneTarget}...`)
-  const HARNESS_CANONICAL_REPO_URL = "https://github.com/ouroborosbot/ouroboros.git"
+  const HARNESS_CANONICAL_REPO_URL = "https://github.com/ourostack/ouroboros.git"
   fs.mkdirSync(path.dirname(cloneTarget), { recursive: true })
   execSync(`git clone ${HARNESS_CANONICAL_REPO_URL} "${cloneTarget}"`, { stdio: "inherit" })
   deps.writeStdout(`installing dependencies in ${cloneTarget}...`)
