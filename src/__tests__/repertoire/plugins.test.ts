@@ -175,6 +175,13 @@ describe("plugins.ts — listPluginSkills", () => {
     expect(listPluginSkills([])).toEqual([])
   })
 
+  it("skips plugins whose skills/ directory does not exist (line 41 short-circuit)", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const { listPluginSkills } = await import("../../repertoire/plugins")
+    const skills = listPluginSkills([{ id: "desk", enabled: true }])
+    expect(skills).toEqual([])
+  })
+
   it("returns flat-layout (skills/*.md) basenames", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readdirSync).mockReturnValue([
@@ -241,6 +248,22 @@ describe("plugins.ts — listPluginSkills", () => {
       }
       return { isDirectory: () => false } as fs.Stats
     })
+    const { listPluginSkills } = await import("../../repertoire/plugins")
+    const skills = listPluginSkills([{ id: "desk", enabled: true }])
+    expect(skills).toEqual(["task-lifecycle"])
+  })
+
+  it("drops non-md non-directory entries (line 57 fall-through)", async () => {
+    // Cover line 57: entry is NOT .md AND statSync says NOT a directory.
+    // e.g., a stray plain file like "README" with no extension.
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "task-lifecycle.md", // happy .md file
+      "stray-plain-file", // not .md, is a file
+    ] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockReturnValue({
+      isDirectory: () => false,
+    } as fs.Stats)
     const { listPluginSkills } = await import("../../repertoire/plugins")
     const skills = listPluginSkills([{ id: "desk", enabled: true }])
     expect(skills).toEqual(["task-lifecycle"])
