@@ -94,6 +94,22 @@ describe("plugins.ts — listPlugins", () => {
     const { listPlugins } = await import("../../repertoire/plugins")
     expect(listPlugins()).toEqual(["desk", "work-suite"])
   })
+
+  it("tolerates statSync throwing on stray entries (returns empty isDirectory result)", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "desk",
+      "broken-entry",
+    ] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockImplementation((p: fs.PathLike) => {
+      if (String(p).endsWith("broken-entry")) {
+        throw new Error("EACCES: permission denied")
+      }
+      return { isDirectory: () => true } as fs.Stats
+    })
+    const { listPlugins } = await import("../../repertoire/plugins")
+    expect(listPlugins()).toEqual(["desk"])
+  })
 })
 
 describe("plugins.ts — listEnabledPlugins", () => {
@@ -208,6 +224,25 @@ describe("plugins.ts — listPluginSkills", () => {
       { id: "desk", enabled: true },
       { id: "another-plugin", enabled: true },
     ])
+    expect(skills).toEqual(["task-lifecycle"])
+  })
+
+  it("tolerates statSync throwing inside listMarkdownBasenames (directory-layout probe failure)", async () => {
+    // Cover the catch branch in listMarkdownBasenames at lines 54-56:
+    // when statSync throws while probing a non-md entry, that entry is dropped.
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "task-lifecycle.md", // happy .md file
+      "broken-entry", // statSync will throw on this
+    ] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockImplementation((p: fs.PathLike) => {
+      if (String(p).endsWith("broken-entry")) {
+        throw new Error("EACCES: permission denied")
+      }
+      return { isDirectory: () => false } as fs.Stats
+    })
+    const { listPluginSkills } = await import("../../repertoire/plugins")
+    const skills = listPluginSkills([{ id: "desk", enabled: true }])
     expect(skills).toEqual(["task-lifecycle"])
   })
 })
