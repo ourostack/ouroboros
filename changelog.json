@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.616",
+      "changes": [
+        "Plugin support W5.2: src/repertoire/plugins.ts plugin loader. listPlugins() walks ~/.ouro-cli/plugins/ for installed plugins; listEnabledPlugins() reads AgentConfig.plugins[] and filters to enabled+installed; listPluginSkills() returns skill names across enabled plugins (supports flat skills/*.md AND directory-per-skill skills/<name>/SKILL.md layouts); loadPluginSkill(pluginId, skillName) returns the body. Nerves events on every code path per harness audit rules. 15 unit tests with fs+identity mocks. Next sub-PR (W5.3) adds the ouro plugin install/list/remove CLI commands."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.615",
       "changes": [
         "Plugin support W5.1: extend CANONICAL_BUNDLE_MANIFEST with plugins/ + desk/ top-level directories (bundles may now declare desk-style work-organization workspaces alongside the legacy tasks/one-shots/ layout, and host plugin metadata locally). Extend AgentConfig with an optional plugins[] field carrying {id, enabled, source?, version?} per declared plugin; loadAgentConfig/readAgentConfigForAgent preserve it through round-trip. First sub-PR in the ouroboros side of the worker-generalization extraction; subsequent sub-PRs add the plugin loader (src/repertoire/plugins.ts), the ouro plugin install/list/remove CLI commands, and the prompt assembly integration so plugin skills surface alongside bundle skills."
