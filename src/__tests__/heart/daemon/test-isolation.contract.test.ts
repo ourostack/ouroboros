@@ -128,6 +128,10 @@ const RM_RECURSIVE_ALLOWLIST: Array<{ file: string; why: string }> = [
     file: "src/heart/daemon/stale-bundle-prune.ts",
     why: "Stale ephemeral bundle pruning: removes .ouro directories that have no agent.json during `ouro up`. Not agent-callable — runs inside the daemon.up handler before ensureDaemonRunning.",
   },
+  {
+    file: "src/heart/daemon/plugin-cli.ts",
+    why: "Plugin install/remove CLI infrastructure: removes plugin directories under ~/.ouro-cli/plugins/<id>/ during `ouro plugin install` rollback and `ouro plugin remove`. Not agent-callable — runs inside operator-invoked `ouro plugin` commands; the plugin install is a transaction (clone → verify manifest → rollback on failure).",
+  },
 ]
 
 // Files that are themselves the enforcement layer for the rm-rf rule

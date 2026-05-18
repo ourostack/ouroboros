@@ -120,6 +120,11 @@ import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
 import { getGroupedHelp, getCommandHelp } from "./cli-help"
 import {
+  executePluginInstall,
+  executePluginList,
+  executePluginRemove,
+} from "./plugin-cli"
+import {
   parseStatusPayload,
   formatDaemonStatusOutput,
   formatVersionOutput,
@@ -1577,7 +1582,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7777,6 +7782,17 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     return executeDnsWorkflow(command, deps)
   }
 
+  // ── plugin commands (local, no daemon socket needed) ──
+  if (command.kind === "plugin.install") {
+    return executePluginInstall(command, { writeStdout: deps.writeStdout })
+  }
+  if (command.kind === "plugin.list") {
+    return executePluginList(command, { writeStdout: deps.writeStdout })
+  }
+  if (command.kind === "plugin.remove") {
+    return executePluginRemove(command, { writeStdout: deps.writeStdout })
+  }
+
   // ── auth (local, no daemon socket needed) ──
   if (command.kind === "auth.run") {
     return executeAuthRun(command, deps)
@@ -8628,3 +8644,4 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   deps.writeStdout(message)
   return message
 }
+
