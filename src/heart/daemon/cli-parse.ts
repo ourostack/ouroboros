@@ -1387,6 +1387,54 @@ function parseSetupCommand(args: string[]): OuroCliCommand {
   return { kind: "setup", tool, ...(agent ? { agent } : {}) }
 }
 
+function parsePluginCommand(args: string[]): OuroCliCommand {
+  const subcommand = args[0]
+  if (!subcommand) {
+    throw new Error(
+      "plugin requires a subcommand: install <source> | list | remove <pluginId>",
+    )
+  }
+  let agent: string | undefined
+  let version: string | undefined
+  const positional: string[] = []
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
+    if (args[i] === "--version" && args[i + 1]) { version = args[++i]; continue }
+    positional.push(args[i])
+  }
+  if (subcommand === "install") {
+    const source = positional[0]
+    if (!source) {
+      throw new Error(
+        "plugin install requires a source (e.g. github:ourostack/ouroboros-skills:plugins/desk)",
+      )
+    }
+    return {
+      kind: "plugin.install",
+      source,
+      ...(agent ? { agent } : {}),
+      ...(version ? { version } : {}),
+    }
+  }
+  if (subcommand === "list") {
+    return { kind: "plugin.list", ...(agent ? { agent } : {}) }
+  }
+  if (subcommand === "remove") {
+    const pluginId = positional[0]
+    if (!pluginId) {
+      throw new Error("plugin remove requires a plugin id")
+    }
+    return {
+      kind: "plugin.remove",
+      pluginId,
+      ...(agent ? { agent } : {}),
+    }
+  }
+  throw new Error(
+    `Unknown plugin subcommand: ${subcommand}. Supported: install | list | remove`,
+  )
+}
+
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   const subcommand = args[0]
   if (subcommand !== "replay") {
@@ -1553,6 +1601,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "link") return parseLinkCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
+  if (head === "plugin") return parsePluginCommand(args.slice(1))
   if (head === "clone") return parseCloneCommand(args.slice(1))
   if (head === "doctor") {
     const tail = args.slice(1)
