@@ -428,6 +428,509 @@ describe("plugin-cli — executePluginRemove", () => {
   })
 })
 
+describe("plugin-cli — --agent flag wire-up", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function setupSuccessfulInstallMocks(opts: { initialPluginsList?: unknown[] } = {}): {
+    capturedWrites: Array<{ path: string; content: string }>
+  } {
+    const captured: Array<{ path: string; content: string }> = []
+    let installed = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installed
+      if (s.endsWith(".claude-plugin/plugin.json")) return installed
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) {
+        return JSON.stringify({
+          version: 2,
+          enabled: true,
+          plugins: opts.initialPluginsList ?? [],
+        }) as never
+      }
+      return "" as never
+    })
+    vi.mocked(fs.writeFileSync).mockImplementation(
+      (p: fs.PathLike | number, content: unknown) => {
+        captured.push({ path: String(p), content: String(content) })
+      },
+    )
+    vi.mocked(execFileSync).mockImplementation(() => {
+      installed = true
+      return Buffer.from("")
+    })
+    return { capturedWrites: captured }
+  }
+
+  it("install --agent X adds plugin to X's agent.json plugins[]", async () => {
+    const { capturedWrites } = setupSuccessfulInstallMocks()
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(out).toContain("Enabled plugin 'desk' for agent 'slugger'")
+    const agentJsonWrite = capturedWrites.find((w) =>
+      w.path.endsWith("/AgentBundles/slugger.ouro/agent.json"),
+    )
+    expect(agentJsonWrite).toBeDefined()
+    const parsed = JSON.parse(agentJsonWrite!.content)
+    expect(parsed.plugins).toContainEqual(
+      expect.objectContaining({ id: "desk", enabled: true }),
+    )
+  })
+
+  it("install --agent X creates plugins[] when agent.json had no plugins field", async () => {
+    const captured: Array<{ path: string; content: string }> = []
+    let installed = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installed
+      if (s.endsWith(".claude-plugin/plugin.json")) return installed
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 2, enabled: true }) as never, // no plugins field
+    )
+    vi.mocked(fs.writeFileSync).mockImplementation(
+      (p: fs.PathLike | number, content: unknown) => {
+        captured.push({ path: String(p), content: String(content) })
+      },
+    )
+    vi.mocked(execFileSync).mockImplementation(() => {
+      installed = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("Enabled plugin 'desk'")
+    const agentJsonWrite = captured.find((w) =>
+      w.path.endsWith("/AgentBundles/slugger.ouro/agent.json"),
+    )
+    const parsed = JSON.parse(agentJsonWrite!.content)
+    expect(parsed.plugins).toEqual([
+      expect.objectContaining({ id: "desk", enabled: true }),
+    ])
+  })
+
+  it("install --agent X is idempotent when plugin already enabled", async () => {
+    const { capturedWrites } = setupSuccessfulInstallMocks({
+      initialPluginsList: [{ id: "desk", enabled: true }],
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("already enabled")
+    expect(capturedWrites.find((w) =>
+      w.path.endsWith("/AgentBundles/slugger.ouro/agent.json"),
+    )).toBeUndefined()
+  })
+
+  it("install --agent X persists version when provided", async () => {
+    const { capturedWrites } = setupSuccessfulInstallMocks()
+    const deps = makeDeps()
+    await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        agent: "slugger",
+        version: "0.1.0",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    const agentJsonWrite = capturedWrites.find((w) =>
+      w.path.endsWith("/AgentBundles/slugger.ouro/agent.json"),
+    )
+    const parsed = JSON.parse(agentJsonWrite!.content)
+    expect(parsed.plugins[0]).toMatchObject({
+      id: "desk",
+      enabled: true,
+      source: "github:ourostack/ouroboros-skills:plugins/desk",
+      version: "0.1.0",
+    })
+  })
+
+  it("install --agent X reports clearly when the agent bundle doesn't exist", async () => {
+    let installed = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installed
+      if (s.endsWith(".claude-plugin/plugin.json")) return installed
+      if (s.endsWith("/AgentBundles/ghost.ouro/agent.json")) return false
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(execFileSync).mockImplementation(() => {
+      installed = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        agent: "ghost",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(out).toContain("enabling for agent 'ghost' failed")
+  })
+
+  it("list --agent X filters to plugins enabled for X", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins")) return true
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "desk",
+      "work-suite",
+      "other-thing",
+    ] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockReturnValue({
+      isDirectory: () => true,
+    } as fs.Stats)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        plugins: [
+          { id: "desk", enabled: true },
+          { id: "work-suite", enabled: false },
+        ],
+      }) as never,
+    )
+    const deps = makeDeps()
+    const out = await executePluginList(
+      { kind: "plugin.list", agent: "slugger" } as Extract<
+        OuroCliCommand,
+        { kind: "plugin.list" }
+      >,
+      deps,
+    )
+    expect(out).toContain("desk")
+    expect(out).not.toContain("work-suite")
+    expect(out).not.toContain("other-thing")
+  })
+
+  it("list --agent X with no plugins[] field reports clearly", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins")) return true
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockReturnValue(["desk"] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as fs.Stats)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 2 }) as never, // no plugins field
+    )
+    const deps = makeDeps()
+    const out = await executePluginList(
+      { kind: "plugin.list", agent: "slugger" } as Extract<
+        OuroCliCommand,
+        { kind: "plugin.list" }
+      >,
+      deps,
+    )
+    expect(out).toContain("No plugins enabled for agent 'slugger'")
+  })
+
+  it("remove --agent X removes only from X's plugins[]; does not delete on disk", async () => {
+    const captured: Array<{ path: string; content: string }> = []
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk")) return true
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        plugins: [{ id: "desk", enabled: true }],
+      }) as never,
+    )
+    vi.mocked(fs.writeFileSync).mockImplementation(
+      (p: fs.PathLike | number, content: unknown) => {
+        captured.push({ path: String(p), content: String(content) })
+      },
+    )
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("disabled for agent 'slugger'")
+    expect(fs.rmSync).not.toHaveBeenCalled()
+    const agentJsonWrite = captured.find((w) =>
+      w.path.endsWith("/AgentBundles/slugger.ouro/agent.json"),
+    )
+    expect(agentJsonWrite).toBeDefined()
+    const parsed = JSON.parse(agentJsonWrite!.content)
+    expect(parsed.plugins).toEqual([])
+  })
+
+  it("remove --agent X is idempotent when plugin not in X's plugins[]", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ plugins: [] }) as never,
+    )
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("was not enabled for agent 'slugger'")
+  })
+
+  it("remove --agent X handles agent.json with no plugins[] field at all", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ version: 2 }) as never,
+    )
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+        agent: "slugger",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("was not enabled for agent 'slugger'")
+  })
+
+  it("remove --agent X reports failure cleanly when the agent bundle doesn't exist", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+        agent: "ghost",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("remove failed for agent 'ghost'")
+  })
+
+  it("remove (no --agent) refuses when other agents reference the plugin", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return true
+      if (s.endsWith("/plugins/desk")) return true
+      if (s.includes("/AgentBundles/") && s.endsWith("/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) {
+        return ["slugger.ouro", "ouroboros.ouro"] as unknown as fs.Dirent[]
+      }
+      return [] as unknown as fs.Dirent[]
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ plugins: [{ id: "desk", enabled: true }] }) as never,
+    )
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("Cannot remove plugin 'desk'")
+    expect(out).toContain("still enabled for")
+    expect(out).toContain("ouroboros")
+    expect(out).toContain("slugger")
+    expect(fs.rmSync).not.toHaveBeenCalled()
+  })
+
+  it("remove (no --agent) lists only agents that actually reference the plugin", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return true
+      if (s.endsWith("/plugins/desk")) return true
+      if (s.includes("/AgentBundles/") && s.endsWith("/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) {
+        return ["slugger.ouro", "ouroboros.ouro"] as unknown as fs.Dirent[]
+      }
+      return [] as unknown as fs.Dirent[]
+    })
+    vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) {
+        return JSON.stringify({
+          plugins: [{ id: "desk", enabled: true }],
+        }) as never
+      }
+      if (s.endsWith("/AgentBundles/ouroboros.ouro/agent.json")) {
+        return JSON.stringify({
+          plugins: [{ id: "some-other-plugin", enabled: true }],
+        }) as never
+      }
+      return "{}" as never
+    })
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("Cannot remove plugin 'desk'")
+    expect(out).toContain("slugger")
+    expect(out).not.toContain("ouroboros")
+  })
+
+  it("remove (no --agent) proceeds with disk delete when no agents reference the plugin", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return true
+      if (s.endsWith("/plugins/desk")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return [] as unknown as fs.Dirent[]
+      return [] as unknown as fs.Dirent[]
+    })
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("removed")
+    expect(fs.rmSync).toHaveBeenCalled()
+  })
+
+  it("remove (no --agent) when bundles root does not exist proceeds as before", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return false
+      if (s.endsWith("/plugins/desk")) return true
+      return false
+    })
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("removed")
+  })
+
+  it("listAgentsReferencingPlugin skips non-.ouro entries in bundles root", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) return true
+      if (s.endsWith("/plugins/desk")) return true
+      if (s.includes("/AgentBundles/") && s.endsWith("/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/AgentBundles")) {
+        return [
+          ".DS_Store",
+          "ouroboros.ouro",
+          "not-an-agent",
+        ] as unknown as fs.Dirent[]
+      }
+      return [] as unknown as fs.Dirent[]
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ plugins: [{ id: "desk", enabled: true }] }) as never,
+    )
+    const deps = makeDeps()
+    const out = await executePluginRemove(
+      {
+        kind: "plugin.remove",
+        pluginId: "desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.remove" }>,
+      deps,
+    )
+    expect(out).toContain("Cannot remove plugin 'desk'")
+    expect(out).toContain("ouroboros")
+    expect(out).not.toContain(".DS_Store")
+    expect(out).not.toContain("not-an-agent")
+  })
+
+  it("readAgentPluginsList tolerates malformed agent.json (returns empty)", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins")) return true
+      if (s.endsWith("/AgentBundles/slugger.ouro/agent.json")) return true
+      return false
+    })
+    vi.mocked(fs.readdirSync).mockReturnValue(["desk"] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as fs.Stats)
+    vi.mocked(fs.readFileSync).mockReturnValue("{ malformed" as never)
+    const deps = makeDeps()
+    const out = await executePluginList(
+      { kind: "plugin.list", agent: "slugger" } as Extract<
+        OuroCliCommand,
+        { kind: "plugin.list" }
+      >,
+      deps,
+    )
+    expect(out).toContain("No plugins enabled for agent 'slugger'")
+  })
+})
+
 describe("plugin-cli — runOuroCli dispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks()
