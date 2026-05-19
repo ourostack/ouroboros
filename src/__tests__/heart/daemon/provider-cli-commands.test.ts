@@ -10214,6 +10214,59 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.inner.provider).toBe("minimax")
   })
 
+  it("legacy auth switch defaults incompatible current models instead of writing invalid provider pairs", async () => {
+    emitTestEvent("provider cli legacy auth switch defaults incompatible model")
+    const bundlesRoot = makeTempDir("provider-cli-auth-switch-default-model-bundles")
+    const homeDir = makeTempDir("provider-cli-auth-switch-default-model-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.agentFacing = { provider: "openai-codex", model: "gpt-5.5" }
+    })
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
+      lanes: {
+        outward: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          updatedAt: NOW,
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+
+    const result = await runOuroCli([
+      "auth",
+      "switch",
+      "--agent",
+      "Slugger",
+      "--provider",
+      "minimax",
+      "--facing",
+      "agent",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("MiniMax-M2.7")
+    const config = readAgentConfig(bundlesRoot, "Slugger")
+    expect(config.agentFacing).toMatchObject({
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+    })
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.lanes.inner).toMatchObject({
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+    })
+  })
+
   it("ouro status --agent renders agent.json provider selection without raw secrets", async () => {
     emitTestEvent("provider cli status cached state")
     const bundlesRoot = makeTempDir("provider-cli-status-bundles")
