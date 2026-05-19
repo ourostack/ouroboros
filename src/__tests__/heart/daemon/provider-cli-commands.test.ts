@@ -5034,7 +5034,6 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "anthropic",
       model: "claude-opus-4-6",
-      source: "bootstrap",
     })
   })
 

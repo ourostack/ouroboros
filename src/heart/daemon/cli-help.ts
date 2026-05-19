@@ -116,10 +116,11 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   config: {
     category: "Agents",
-    description: "View or change agent configuration",
+    description: "Legacy model compatibility helpers; prefer `ouro use` and `ouro check`",
     usage: "ouro config <subcommand> [--agent <name>]",
     example: "ouro config models",
     subcommands: ["model", "models"],
+    hidden: true,
   },
   changelog: {
     category: "Agents",
@@ -181,10 +182,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   auth: {
     category: "Auth",
-    description: "Set up, verify, or switch agent credentials",
-    usage: "ouro auth [verify|switch] [--agent <name>] [--provider <provider>]",
+    description: "Set up or verify agent credentials",
+    usage: "ouro auth [verify] [--agent <name>] [--provider <provider>]",
     example: "ouro auth",
-    subcommands: ["verify", "switch"],
+    subcommands: ["verify"],
   },
   account: {
     category: "Auth",
@@ -306,9 +307,9 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     example: "ouro auth verify --provider openai-codex",
   },
   "auth switch": {
-    description: "Switch agent.json provider/model lanes after credentials are available",
+    description: "Deprecated compatibility wrapper; use `ouro use` for provider/model lane selection",
     usage: "ouro auth switch [--agent <name>] --provider <provider> [--facing human|agent]",
-    example: "ouro auth switch --provider minimax",
+    example: "ouro use --agent ouroboros --lane outward --provider minimax --model MiniMax-M2.5",
   },
   "connect perplexity": {
     description: "Connect portable Perplexity search that travels with this agent",

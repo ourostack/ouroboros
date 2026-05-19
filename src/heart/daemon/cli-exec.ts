@@ -58,7 +58,7 @@ import {
 } from "../provider-visibility"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
-import { getDefaultModelForProvider } from "../provider-models"
+import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
 import { getOuroCliHome, buildChangelogCommand } from "../versioning/ouro-version-manager"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, type CheckForUpdateResult } from "../versioning/update-checker"
 import { postTurnPush } from "../sync"
@@ -5351,6 +5351,14 @@ async function executeProviderUse(
     if (options.writeStdout !== false) deps.writeStdout(message)
     return message
   }
+  const mismatch = getProviderModelMismatchMessage(command.provider, command.model)
+  if (mismatch) {
+    const defaultModel = getDefaultModelForProvider(command.provider)
+    return writeMessage([
+      mismatch,
+      `Run \`ouro use --agent ${command.agent} --lane ${command.lane} --provider ${command.provider} --model ${defaultModel}\`.`,
+    ].join("\n"))
+  }
   try {
     progress?.startPhase(`reading ${command.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, command.provider, deps, {
@@ -5628,8 +5636,7 @@ async function executeAuthRun(
     throw error
   }
   progress.completePhase(`authenticating ${provider}`, "credentials stored")
-  // Behavior: ouro auth stores credentials only — does NOT switch provider.
-  // Use `ouro auth switch` to change the active provider.
+  // Behavior: ouro auth stores credentials only; `ouro use` selects the active provider/model lane.
 
   // Verify the credentials actually work by pinging the provider.
   let verificationStatus = "not checked"
@@ -5868,12 +5875,13 @@ async function executeLegacyAuthSwitch(
   const messages: string[] = []
   for (const lane of lanes) {
     const model = providerConfigBinding(config, lane).model
+    const selection = resolveModelForProviderSelection(command.provider, model)
     messages.push(await executeProviderUse({
       kind: "provider.use",
       agent: command.agent,
       lane,
       provider: command.provider,
-      model,
+      model: selection.model,
       force: true,
       legacyFacing: command.facing,
     }, deps, { writeStdout: false }))
@@ -5894,6 +5902,16 @@ async function executeLegacyConfigModel(
   const lane: ProviderLane = command.facing === "agent" ? "inner" : "outward"
   const { configPath, config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
   const binding = providerConfigBinding(config, lane)
+  const mismatch = getProviderModelMismatchMessage(binding.provider, command.modelName)
+  if (mismatch) {
+    const defaultModel = getDefaultModelForProvider(binding.provider)
+    const message = [
+      mismatch,
+      `Run \`ouro use --agent ${command.agent} --lane ${lane} --provider ${binding.provider} --model ${defaultModel}\`.`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
   const progress = binding.provider === "github-copilot" ? createHumanCommandProgress(deps, "config model") : null
   const writeMessage = (message: string): string => {
     progress?.end()
@@ -8644,4 +8662,3 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   deps.writeStdout(message)
   return message
 }
-

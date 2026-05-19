@@ -5162,13 +5162,13 @@ describe("openai-codex oauth provider contract", () => {
         }
         if (testCase.expectedRepair) {
           expect(terminal?.error.message).toContain(testCase.expectedRepair)
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane outward --provider openai-codex --model gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane inner --provider openai-codex --model gpt-5.4")
         } else {
           expect(terminal?.error.message).not.toContain("Config warning:")
         }
         expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
-        expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
+        expect(terminal?.error.message).toContain("ouro use --agent testagent --lane <outward|inner> --provider <provider> --model <model>")
       }
     } finally {
       vi.useRealTimers()

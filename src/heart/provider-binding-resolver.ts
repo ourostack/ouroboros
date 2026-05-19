@@ -11,6 +11,7 @@ import {
   type ProviderCredentialProvenanceSource,
 } from "./provider-credentials"
 import { readProviderLaneReadiness } from "./provider-readiness-cache"
+import { getProviderModelMismatchMessage } from "./provider-models"
 
 export type { ProviderLaneSelector } from "./provider-lanes"
 
@@ -282,6 +283,10 @@ function resolveAgentConfigLane(input: ResolveEffectiveProviderBindingInput, lan
     const model = typeof binding.model === "string" ? binding.model.trim() : ""
     if (model.length === 0) {
       return { ok: false, configPath: resolvedConfigPath, error: `${facingKey}.model must be a non-empty string` }
+    }
+    const mismatch = getProviderModelMismatchMessage(binding.provider, model)
+    if (mismatch) {
+      return { ok: false, configPath: resolvedConfigPath, error: mismatch }
     }
     return {
       ok: true,

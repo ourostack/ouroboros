@@ -303,11 +303,12 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro habit create --agent ${agentName} <name> --cadence <interval>
   ouro inner --agent ${agentName}
   ouro attention --agent ${agentName}
-  ouro config model --agent ${agentName} <model-name>
-  ouro config models --agent ${agentName}
   ouro auth --agent ${agentName} --provider <provider>
   ouro auth verify --agent ${agentName} [--provider <provider>]
-  ouro auth switch --agent ${agentName} --provider <provider>
+  ouro use --agent ${agentName} --lane outward --provider <provider> --model <model>
+  ouro use --agent ${agentName} --lane inner --provider <provider> --model <model>
+  ouro check --agent ${agentName} --lane outward
+  ouro check --agent ${agentName} --lane inner
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
   ouro mcp-serve --agent ${agentName}
@@ -315,7 +316,7 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro rollback --agent ${agentName} [<version>]
   ouro --help
 
-provider/model changes via \`ouro config model\` or \`ouro auth switch\` take effect on the next turn automatically — no restart needed.`
+provider/model changes via \`ouro use\` take effect on the next turn automatically — no restart needed.`
 }
 
 // mcpToolsSection removed — MCP tools are now first-class citizens in the tool registry

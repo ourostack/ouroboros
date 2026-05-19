@@ -8662,12 +8662,12 @@ describe("ouro config model", () => {
       listDiscoveredAgents: vi.fn(async () => [tmp.agentName]),
     }
     try {
-      const result = await runOuroCli(["config", "model", "gpt-5.4"], deps)
-      expect(result).toContain("gpt-5.4")
+      const result = await runOuroCli(["config", "model", "claude-sonnet-4.6"], deps)
+      expect(result).toContain("claude-sonnet-4.6")
       const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
-      expect(stateResult.state.lanes.outward.model).toBe("gpt-5.4")
+      expect(stateResult.state.lanes.outward.model).toBe("claude-sonnet-4.6")
     } finally {
       tmp.cleanup()
     }

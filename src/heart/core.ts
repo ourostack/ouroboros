@@ -694,12 +694,12 @@ function buildAuthFailureGuidance(provider: ProviderId, model: string, agentName
     lines.push("Config warning:")
     lines.push(`  - ${mismatch}`)
     lines.push("  - Repair the configured model with:")
-    lines.push(`    \`ouro config model --agent ${agentName} --facing human ${defaultModel}\``)
-    lines.push(`    \`ouro config model --agent ${agentName} --facing agent ${defaultModel}\``)
+    lines.push(`    \`ouro use --agent ${agentName} --lane outward --provider ${provider} --model ${defaultModel}\``)
+    lines.push(`    \`ouro use --agent ${agentName} --lane inner --provider ${provider} --model ${defaultModel}\``)
   }
 
   lines.push("")
-  lines.push(`To use another configured provider instead, run \`ouro auth switch --agent ${agentName} --provider <provider>\`.`)
+  lines.push(`To use another configured provider instead, run \`ouro use --agent ${agentName} --lane <outward|inner> --provider <provider> --model <model>\`.`)
   return lines.join("\n")
 }
 
