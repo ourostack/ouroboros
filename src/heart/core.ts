@@ -25,6 +25,7 @@ import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
+import type { OrientationFrame } from "./orientation-frame";
 import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
@@ -303,6 +304,8 @@ export interface RunAgentOptions {
   skipKeptNotes?: boolean;
   /** Safe provider/model/readiness view for this machine. */
   providerVisibility?: AgentProviderVisibility;
+  /** Structured orientation frame for the current inbound turn. */
+  orientationFrame?: OrientationFrame;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -869,12 +872,15 @@ export async function runAgent(
     providerRuntime.model,
   );
   // Augment tool context with reasoning effort controls from provider
-  const augmentedToolContext: ToolContext | undefined = options?.toolContext
+  const baseToolContext: ToolContext | undefined = options?.toolContext
+    ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
+  const augmentedToolContext: ToolContext | undefined = baseToolContext
       ? {
-        ...options.toolContext,
+        ...baseToolContext,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
+        orientationFrame: options?.orientationFrame ?? baseToolContext.orientationFrame,
       }
     : undefined;
 
