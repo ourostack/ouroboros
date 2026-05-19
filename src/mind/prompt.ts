@@ -30,6 +30,7 @@ import { readPulse } from "../heart/daemon/pulse";
 import { formatAgentProviderVisibilityForPrompt, formatAgentProviderVisibilityForPulse, type AgentProviderVisibility } from "../heart/provider-visibility";
 import { listTripIds, readTripRecord } from "../trips/store";
 import type { TripRecord } from "../trips/core";
+import { renderOrientationFrame, type OrientationFrame } from "../heart/orientation-frame";
 
 export interface SystemPrompt {
   stable: string;
@@ -776,6 +777,8 @@ export interface BuildSystemOptions {
   startOfTurnPacket?: string;
   /** Safe provider/model/readiness view for this machine. */
   providerVisibility?: AgentProviderVisibility;
+  /** Structured frame for source metadata, user speech, referents, and action policy. */
+  orientationFrame?: OrientationFrame;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   // These fields are populated by buildTurnContext() in the main pipeline path.
@@ -805,6 +808,10 @@ function bridgeContextSection(options?: BuildSystemOptions): string {
 
 export function startOfTurnPacketSection(options?: BuildSystemOptions): string {
   return options?.startOfTurnPacket ?? ""
+}
+
+function orientationFrameSection(options?: BuildSystemOptions): string {
+  return options?.orientationFrame ? renderOrientationFrame(options.orientationFrame) : ""
 }
 
 function activeWorkSection(options?: BuildSystemOptions): string {
@@ -1581,6 +1588,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     // Group 7: dynamic state for this turn
     "# dynamic state for this turn",
     startOfTurnPacketSection(options),
+    orientationFrameSection(options),
     pulseSection(channel),
     tripLedgerTruthSection(channel, context),
     liveWorldStateSection(options),

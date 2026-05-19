@@ -14,6 +14,9 @@ export interface OrientationSource {
   lane?: string
   defaultReplyTarget?: string
   threadId?: string
+  replyingToText?: string
+  repairNotice?: string
+  routingHint?: string
   recentLanes?: Array<{ key: string; label: string; snippet: string }>
 }
 
@@ -191,6 +194,9 @@ export function renderOrientationFrame(frame: OrientationFrame): string {
     if (frame.source.lane) lines.push(`- lane: ${frame.source.lane}`)
     if (frame.source.defaultReplyTarget) lines.push(`- default reply target: ${frame.source.defaultReplyTarget}`)
     if (frame.source.threadId) lines.push(`- thread id: ${frame.source.threadId}`)
+    if (frame.source.replyingToText) lines.push(`- replying to: ${frame.source.replyingToText}`)
+    if (frame.source.repairNotice) lines.push(`- repair notice: ${frame.source.repairNotice}`)
+    if (frame.source.routingHint) lines.push(`- routing hint: ${frame.source.routingHint}`)
     if (frame.source.recentLanes && frame.source.recentLanes.length > 0) {
       lines.push("- recent lanes:")
       for (const lane of frame.source.recentLanes) {
