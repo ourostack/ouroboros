@@ -294,7 +294,9 @@ export function readAgencyMetadata(
     })
     return parsed
   } catch (e) {
+    /* v8 ignore start -- defensive: JSON.parse only throws Error subclasses */
     const errMessage = e instanceof Error ? e.message : String(e)
+    /* v8 ignore stop */
     emitNervesEvent({
       level: "error",
       event: "plugins.agency_read_error",
