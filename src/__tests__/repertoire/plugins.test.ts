@@ -182,25 +182,8 @@ describe("plugins.ts — listPluginSkills", () => {
     expect(skills).toEqual([])
   })
 
-  it("returns flat-layout (skills/*.md) basenames", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(fs.readdirSync).mockReturnValue([
-      "task-lifecycle.md",
-      "session-start.md",
-      "README.md", // typical non-skill .md — still surfaces (caller can filter via description-gating)
-    ] as unknown as fs.Dirent[])
-    vi.mocked(fs.statSync).mockReturnValue({
-      isDirectory: () => false,
-    } as fs.Stats)
-    const { listPluginSkills } = await import("../../repertoire/plugins")
-    const skills = listPluginSkills([{ id: "desk", enabled: true }])
-    expect(skills).toContain("task-lifecycle")
-    expect(skills).toContain("session-start")
-    expect(skills).toContain("README")
-  })
-
   it("returns directory-layout (skills/<name>/SKILL.md) names", async () => {
-    // Simulate desk's actual layout: each skill is a directory containing SKILL.md
+    // Each plugin's skill is a directory containing SKILL.md.
     vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
       const s = String(p)
       // skills dir + each SKILL.md exists
@@ -218,13 +201,36 @@ describe("plugins.ts — listPluginSkills", () => {
     expect(skills).toEqual(["session-start", "task-lifecycle"])
   })
 
-  it("deduplicates skills across plugins", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  it("skips directories that don't contain a SKILL.md", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      // skills dir + only task-lifecycle's SKILL.md exists; orphan-dir has no SKILL.md
+      if (s.endsWith("skills")) return true
+      if (s.endsWith("task-lifecycle/SKILL.md")) return true
+      return false
+    })
     vi.mocked(fs.readdirSync).mockReturnValue([
-      "task-lifecycle.md",
+      "task-lifecycle",
+      "orphan-dir",
     ] as unknown as fs.Dirent[])
     vi.mocked(fs.statSync).mockReturnValue({
-      isDirectory: () => false,
+      isDirectory: () => true,
+    } as fs.Stats)
+    const { listPluginSkills } = await import("../../repertoire/plugins")
+    const skills = listPluginSkills([{ id: "desk", enabled: true }])
+    expect(skills).toEqual(["task-lifecycle"])
+  })
+
+  it("deduplicates skills across plugins", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      return s.endsWith("skills") || s.endsWith("SKILL.md")
+    })
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      "task-lifecycle",
+    ] as unknown as fs.Dirent[])
+    vi.mocked(fs.statSync).mockReturnValue({
+      isDirectory: () => true,
     } as fs.Stats)
     const { listPluginSkills } = await import("../../repertoire/plugins")
     const skills = listPluginSkills([
@@ -234,36 +240,41 @@ describe("plugins.ts — listPluginSkills", () => {
     expect(skills).toEqual(["task-lifecycle"])
   })
 
-  it("tolerates statSync throwing inside listMarkdownBasenames (directory-layout probe failure)", async () => {
-    // Cover the catch branch in listMarkdownBasenames at lines 54-56:
-    // when statSync throws while probing a non-md entry, that entry is dropped.
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  it("filters out non-directory entries (stray files)", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      return s.endsWith("skills") || s.endsWith("task-lifecycle/SKILL.md")
+    })
     vi.mocked(fs.readdirSync).mockReturnValue([
-      "task-lifecycle.md", // happy .md file
-      "broken-entry", // statSync will throw on this
+      "task-lifecycle",
+      "stray-file",
     ] as unknown as fs.Dirent[])
     vi.mocked(fs.statSync).mockImplementation((p: fs.PathLike) => {
-      if (String(p).endsWith("broken-entry")) {
-        throw new Error("EACCES: permission denied")
-      }
-      return { isDirectory: () => false } as fs.Stats
+      const s = String(p)
+      return {
+        isDirectory: () => s.endsWith("task-lifecycle"),
+      } as fs.Stats
     })
     const { listPluginSkills } = await import("../../repertoire/plugins")
     const skills = listPluginSkills([{ id: "desk", enabled: true }])
     expect(skills).toEqual(["task-lifecycle"])
   })
 
-  it("drops non-md non-directory entries (line 57 fall-through)", async () => {
-    // Cover line 57: entry is NOT .md AND statSync says NOT a directory.
-    // e.g., a stray plain file like "README" with no extension.
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  it("tolerates statSync throwing on candidate entries", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      return s.endsWith("skills") || s.endsWith("task-lifecycle/SKILL.md")
+    })
     vi.mocked(fs.readdirSync).mockReturnValue([
-      "task-lifecycle.md", // happy .md file
-      "stray-plain-file", // not .md, is a file
+      "task-lifecycle",
+      "broken-entry",
     ] as unknown as fs.Dirent[])
-    vi.mocked(fs.statSync).mockReturnValue({
-      isDirectory: () => false,
-    } as fs.Stats)
+    vi.mocked(fs.statSync).mockImplementation((p: fs.PathLike) => {
+      if (String(p).endsWith("broken-entry")) {
+        throw new Error("EACCES: permission denied")
+      }
+      return { isDirectory: () => true } as fs.Stats
+    })
     const { listPluginSkills } = await import("../../repertoire/plugins")
     const skills = listPluginSkills([{ id: "desk", enabled: true }])
     expect(skills).toEqual(["task-lifecycle"])
@@ -277,15 +288,6 @@ describe("plugins.ts — loadPluginSkill", () => {
     vi.mocked(fs.readFileSync).mockReset()
   })
 
-  it("loads flat-layout skill content", async () => {
-    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
-      return String(p).endsWith("session-start.md")
-    })
-    vi.mocked(fs.readFileSync).mockReturnValue("# session-start body" as never)
-    const { loadPluginSkill } = await import("../../repertoire/plugins")
-    expect(loadPluginSkill("desk", "session-start")).toBe("# session-start body")
-  })
-
   it("loads directory-layout skill content (SKILL.md)", async () => {
     vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
       return String(p).endsWith("SKILL.md")
@@ -295,7 +297,7 @@ describe("plugins.ts — loadPluginSkill", () => {
     expect(loadPluginSkill("desk", "session-start")).toBe("# session-start SKILL.md body")
   })
 
-  it("throws when skill not found in either layout", async () => {
+  it("throws when SKILL.md not found", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
     const { loadPluginSkill } = await import("../../repertoire/plugins")
     expect(() => loadPluginSkill("desk", "nonexistent")).toThrow(/plugin skill 'desk:nonexistent' not found/)

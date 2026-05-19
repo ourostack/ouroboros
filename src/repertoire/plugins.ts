@@ -37,26 +37,24 @@ export function getPluginSkillsDir(pluginId: string, homeDir?: string): string {
   return path.join(getPluginDir(pluginId, homeDir), "skills")
 }
 
-function listMarkdownBasenames(dir: string): string[] {
+function listSkillDirNames(dir: string): string[] {
+  // Industry-standard plugin skill layout: each skill is a directory under
+  // `skills/`, containing a `SKILL.md` (Claude Code / Copilot CLI / agency
+  // convention; SKILL.md is the cross-vendor "agent skill" format with YAML
+  // frontmatter + markdown body). Older flat-file layouts (`skills/<name>.md`)
+  // are not part of the spec and not supported.
   if (!fs.existsSync(dir)) return []
   return fs
     .readdirSync(dir)
-    .filter((f) => {
-      // Plugins may use a directory-per-skill layout
-      // (`skills/<name>/SKILL.md`) OR a flat-file layout
-      // (`skills/<name>.md`). We support both.
-      const fullPath = path.join(dir, f)
-      if (f.endsWith(".md")) return true
+    .filter((name) => {
+      const candidate = path.join(dir, name)
       try {
-        if (fs.statSync(fullPath).isDirectory()) {
-          return fs.existsSync(path.join(fullPath, "SKILL.md"))
-        }
+        if (!fs.statSync(candidate).isDirectory()) return false
+        return fs.existsSync(path.join(candidate, "SKILL.md"))
       } catch {
         return false
       }
-      return false
     })
-    .map((f) => (f.endsWith(".md") ? path.basename(f, ".md") : f))
     .sort()
 }
 
@@ -138,8 +136,9 @@ export function listEnabledPlugins(homeDir?: string): PluginConfig[] {
 /**
  * List skill names provided by the given enabled plugins.
  *
- * Walks each plugin's `skills/` directory; supports both directory-per-skill
- * (`skills/<name>/SKILL.md`) and flat-file (`skills/<name>.md`) layouts.
+ * Walks each plugin's `skills/` directory using the industry-standard
+ * directory-per-skill layout (`skills/<name>/SKILL.md`). The SKILL.md
+ * convention is shared across Claude Code, Copilot CLI, and the agency CLI.
  *
  * Returns a deduplicated sorted list across all plugins. If two plugins
  * declare a skill with the same name, the later-sorted plugin's skill wins
@@ -159,7 +158,7 @@ export function listPluginSkills(
   const all: string[] = []
   for (const plugin of enabledPlugins) {
     const skillsDir = getPluginSkillsDir(plugin.id, homeDir)
-    const skills = listMarkdownBasenames(skillsDir)
+    const skills = listSkillDirNames(skillsDir)
     all.push(...skills)
   }
   const deduped = [...new Set(all)].sort()
@@ -179,8 +178,8 @@ export function listPluginSkills(
 /**
  * Load the body of a specific skill from a specific plugin.
  *
- * Tries both layout shapes: `skills/<name>.md` then `skills/<name>/SKILL.md`.
- * Throws if not found in either.
+ * Resolves the industry-standard directory-per-skill layout:
+ * `skills/<skillName>/SKILL.md`. Throws if not found.
  */
 export function loadPluginSkill(
   pluginId: string,
@@ -194,17 +193,9 @@ export function loadPluginSkill(
     meta: { operation: "loadPluginSkill", plugin: pluginId, skill: skillName },
   })
   const skillsDir = getPluginSkillsDir(pluginId, homeDir)
-  const flatPath = path.join(skillsDir, `${skillName}.md`)
-  const nestedPath = path.join(skillsDir, skillName, "SKILL.md")
+  const skillPath = path.join(skillsDir, skillName, "SKILL.md")
 
-  let resolvedPath: string | null = null
-  if (fs.existsSync(flatPath)) {
-    resolvedPath = flatPath
-  } else if (fs.existsSync(nestedPath)) {
-    resolvedPath = nestedPath
-  }
-
-  if (!resolvedPath) {
+  if (!fs.existsSync(skillPath)) {
     emitNervesEvent({
       level: "error",
       event: "plugins.load_skill_error",
@@ -214,17 +205,15 @@ export function loadPluginSkill(
         operation: "loadPluginSkill",
         plugin: pluginId,
         skill: skillName,
-        checkedPaths: [flatPath, nestedPath],
+        checkedPath: skillPath,
       },
     })
     throw new Error(
-      `plugin skill '${pluginId}:${skillName}' not found in:\n` +
-        `- ${flatPath}\n` +
-        `- ${nestedPath}`,
+      `plugin skill '${pluginId}:${skillName}' not found at ${skillPath}`,
     )
   }
 
-  const content = fs.readFileSync(resolvedPath, "utf-8")
+  const content = fs.readFileSync(skillPath, "utf-8")
   emitNervesEvent({
     event: "plugins.load_skill_end",
     component: "repertoire",
@@ -233,7 +222,7 @@ export function loadPluginSkill(
       operation: "loadPluginSkill",
       plugin: pluginId,
       skill: skillName,
-      path: resolvedPath,
+      path: skillPath,
     },
   })
   return content

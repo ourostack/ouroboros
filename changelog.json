@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.619",
+      "changes": [
+        "Plugin support W5.5a (spec alignment, sub-PR 1 of 3): drop the flat-file skill layout (`skills/<name>.md`) from src/repertoire/plugins.ts. Industry spec (Claude Code + Copilot CLI + agency CLI) only uses directory-per-skill (`skills/<name>/SKILL.md`); the flat-file branch was speculative and added complexity for no real consumer. listMarkdownBasenames() renamed to listSkillDirNames() and simplified. loadPluginSkill() now resolves a single path. plugins.ts stays at 100% coverage. Workspace doc OUROBOROS-PLUGIN-CONSUMPTION.md authored to explain how ouro consumes the industry agent-plugin format. Next sub-PRs add agency.json reading + transitive deps (W5.5b) and end-to-end --agent flag wire-up (W5.5c)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.618",
       "changes": [
         "Plugin support W5.4: prompt-assembly integration. src/repertoire/skills.ts listSkills() merges plugin skills (via listPluginSkills(listEnabledPlugins())) with bundle skills (deduped, sorted). loadSkill() falls back to plugin skills after the 3 bundle paths (agent → protocol mirror → harness); iterates enabled plugins in declaration order and returns the first match. Bundle skills retain precedence — if the same skill name is in both a bundle and a plugin, the bundle wins. 6 new tests cover the integration paths; skills.ts stays at 100% coverage. Final sub-PR in the ouroboros plugin support track."
