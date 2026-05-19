@@ -205,6 +205,26 @@ describe("effective provider binding resolver", () => {
     })
   })
 
+  it("surfaces clearly incompatible provider/model pairings as invalid config", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot, {
+      humanFacing: { provider: "minimax", model: "gpt-5.5" },
+    })
+
+    const result = resolveEffectiveProviderBinding({
+      agentName,
+      agentRoot,
+      lane: "outward",
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "agent-config-invalid",
+      error: expect.stringContaining("MiniMax is currently paired with gpt-5.5"),
+      warnings: [{ code: "agent-config-invalid" }],
+    })
+  })
+
   it("marks readiness unknown when credentials are missing or unavailable", () => {
     const bundlesRoot = tempBundlesRoot()
     const agentRoot = writeAgentConfig(bundlesRoot)

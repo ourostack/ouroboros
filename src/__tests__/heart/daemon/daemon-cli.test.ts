@@ -8536,6 +8536,11 @@ describe("ouro config model", () => {
     expect(() => parseOuroCommand(["config", "model", "--agent", "slugger"])).toThrow("Usage")
   })
 
+  it("rejects config model flag-like tokens as model names", () => {
+    expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--model"])).toThrow("model name")
+    expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--list"])).toThrow("model name")
+  })
+
   it("rejects config without subcommand", () => {
     expect(() => parseOuroCommand(["config"])).toThrow("Usage")
   })
