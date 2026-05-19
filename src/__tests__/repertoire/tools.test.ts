@@ -185,6 +185,25 @@ describe("execTool", () => {
     await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
   })
 
+  it("orientation hold blocks first-class MCP tools before external calls run", async () => {
+    const tools = await import("../../repertoire/tools")
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
+    const mcpManager = {
+      listAllTools: () => [{
+        server: "calendar",
+        tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+      }],
+      callTool,
+    }
+
+    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+
+    const result = await execTool("calendar_create_event", { title: "wrong referent" }, orientationHoldCtx())
+
+    expect(result).toContain("orientation hold")
+    expect(callTool).not.toHaveBeenCalled()
+  })
+
   it("orientation hold allows orientation_get so the agent can inspect the frame", async () => {
     const result = await execTool("orientation_get", {}, orientationHoldCtx())
 

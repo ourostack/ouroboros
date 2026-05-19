@@ -341,8 +341,7 @@ function checkCredentialTrustGuardrails(toolName: string, context: GuardContext)
 
 function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
   if (!context.mcpServerName) return allow
-  const rules = MCP_SERVER_TRUST[context.mcpServerName]
-  if (!rules) return allow
+  const rules = MCP_SERVER_TRUST[context.mcpServerName] ?? { minTrust: "friend" as TrustLevel, blockGroupChat: false }
   if (!trustLevelSatisfied(rules.minTrust, context.trustLevel ?? "friend")) {
     return deny(REASONS.needsTrust)
   }
