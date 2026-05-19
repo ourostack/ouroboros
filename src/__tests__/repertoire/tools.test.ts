@@ -88,6 +88,25 @@ describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
   let patchRuntimeConfig: (partial: any) => void
 
+  function orientationHoldCtx(): any {
+    return {
+      signin: async () => undefined,
+      context: { friend: { trustLevel: "family" } },
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [{ kind: "ordered_list_item", label: "2", text: "Better substrate" }],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+        },
+      },
+    }
+  }
+
   afterEach(() => {
     vi.restoreAllMocks()
   })
@@ -139,6 +158,37 @@ describe("execTool", () => {
     const result = await execTool("read_file", { path: "/tmp/test.txt" })
     expect(result).toBe("file content here")
     expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt", "utf-8")
+  })
+
+  it("orientation hold blocks high-risk durable mutations before handlers run", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("trip_update_leg", {
+      tripId: "trip_test",
+      legId: "leg_1",
+      updates: "{\"status\":\"cancelled\"}",
+      updatedAt: "2026-05-19T00:00:00.000Z",
+    }, ctx)).resolves.toContain("orientation hold")
+    await expect(execTool("update_config", { path: "context.contextMargin", value: "25" }, ctx))
+      .resolves.toContain("orientation hold")
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold blocks mutating shell commands but still allows read-only shell inspection", async () => {
+    const ctx = orientationHoldCtx()
+
+    await expect(execTool("shell", { command: "rm -rf /tmp/ouro-test" }, ctx)).resolves.toContain("orientation hold")
+    expect(execSync).not.toHaveBeenCalled()
+
+    vi.mocked(execSync).mockReturnValue("repo status\n")
+    await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
+  })
+
+  it("orientation hold allows orientation_get so the agent can inspect the frame", async () => {
+    const result = await execTool("orientation_get", {}, orientationHoldCtx())
+
+    expect(JSON.parse(result).actionPolicy.mode).toBe("correction_hold")
   })
 
   it("rethrows non-Error values from handlers", async () => {

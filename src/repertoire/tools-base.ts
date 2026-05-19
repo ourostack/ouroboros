@@ -95,6 +95,13 @@ export interface ToolContext {
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
+export type ToolMutationKind = "none" | "durable_state_write" | "external_side_effect"
+
+export interface ToolRiskProfile {
+  mutates: ToolMutationKind
+  risk: "low" | "high"
+  reason?: string
+}
 
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
@@ -102,6 +109,7 @@ export interface ToolDefinition {
   integration?: Integration;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
+  riskProfile?: ToolRiskProfile;
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
 }

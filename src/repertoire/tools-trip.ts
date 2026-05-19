@@ -253,6 +253,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       return `trip ledger ${verb}: ledgerId=${result.ledger.ledgerId}, keyId=${result.ledger.keyId}, createdAt=${result.ledger.createdAt}`
     },
     summaryKeys: [],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates trip ledger state" },
   },
   {
     tool: {
@@ -333,6 +334,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: [],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates or replaces trip records" },
   },
   {
     tool: {
@@ -387,6 +389,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["tripId", "legId"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "appends trip evidence" },
   },
   {
     tool: {
@@ -401,8 +404,9 @@ export const tripToolDefinitions: ToolDefinition[] = [
             legId: { type: "string", description: "Leg id within the trip." },
             updates: { type: "string", description: "JSON object of leg fields to update. Cannot include `legId` or `kind`. Common fields: status, confirmationCode, vendor, amount, checkInDate, checkOutDate, departureTime, arrivalTime, etc." },
             updatedAt: { type: "string", description: "ISO timestamp for the update. Used both for the leg's updatedAt and the trip's updatedAt." },
+            updateReason: { type: "string", description: "One-line source or reason that makes this update correct. Required so semantic trip writes remain auditable." },
           },
-          required: ["tripId", "legId", "updates", "updatedAt"],
+          required: ["tripId", "legId", "updates", "updatedAt", "updateReason"],
         },
       },
     },
@@ -411,9 +415,11 @@ export const tripToolDefinitions: ToolDefinition[] = [
       const tripId = args.tripId
       const legId = args.legId
       const updatedAt = args.updatedAt
+      const updateReason = typeof args.updateReason === "string" ? args.updateReason.trim() : ""
       if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
       if (typeof legId !== "string" || legId.length === 0) return "legId is required."
       if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
+      if (updateReason.length === 0) return "updateReason is required."
       try {
         const updates = parseJsonArg(args.updates, "updates")
         if (!isRecord(updates)) return "updates must be a JSON object."
@@ -442,16 +448,17 @@ export const tripToolDefinitions: ToolDefinition[] = [
           component: "trips",
           event: "trips.leg_updated",
           message: "trip leg fields updated",
-          meta: { agentId: getAgentName(), tripId, legId, fields: Object.keys(updates) },
+          meta: { agentId: getAgentName(), tripId, legId, fields: Object.keys(updates), updateReason: updateReason.slice(0, 240) },
         })
         const fieldList = Object.keys(updates).join(", ")
-        return `leg ${legId} updated in ${tripId}: ${fieldList}.`
+        return `leg ${legId} updated in ${tripId}: ${fieldList}. reason: ${updateReason}`
       } catch (error) {
         if (error instanceof TripNotFoundError) return error.message
         return `update failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`
       }
     },
     summaryKeys: ["tripId", "legId"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "updates trip leg fields" },
   },
   {
     tool: {
@@ -511,6 +518,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
       } /* v8 ignore stop */
     },
     summaryKeys: ["tripId", "legId", "reason"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "removes trip legs" },
   },
   {
     tool: {
