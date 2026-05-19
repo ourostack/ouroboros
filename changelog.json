@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.620",
+      "changes": [
+        "Plugin support W5.5b (spec alignment, sub-PR 2 of 3): read `<plugin>/agency.json` for engines + dependencies + category + tags metadata. New `readAgencyMetadata(pluginId)` export in src/repertoire/plugins.ts; agency.json is OPTIONAL (returns null if absent; malformed JSON emits nerves error + treats as null). `ouro plugin install` now resolves transitive dependencies declared in agency.json — recursively installs each entry in `dependencies[]` with cycle detection (in-progress set) and depth-aware indented output. Dep-failure policy is warn-and-continue: parent stays installed, failed deps reported in stdout + nerves event with retry hint. New `--no-deps` flag skips transitive resolution entirely (useful for local dev / debugging). 7 new tests cover transitive install, cycle detection, dep-failure warn-and-continue, --no-deps flag, missing agency.json, malformed agency.json, and invalid-source-in-deps. plugin-cli.ts + plugins.ts stay at 100% coverage. Next sub-PR (W5.5c) wires --agent flag end-to-end across install/list/remove."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.619",
       "changes": [
         "Plugin support W5.5a (spec alignment, sub-PR 1 of 3): drop the flat-file skill layout (`skills/<name>.md`) from src/repertoire/plugins.ts. Industry spec (Claude Code + Copilot CLI + agency CLI) only uses directory-per-skill (`skills/<name>/SKILL.md`); the flat-file branch was speculative and added complexity for no real consumer. listMarkdownBasenames() renamed to listSkillDirNames() and simplified. loadPluginSkill() now resolves a single path. plugins.ts stays at 100% coverage. Workspace doc OUROBOROS-PLUGIN-CONSUMPTION.md authored to explain how ouro consumes the industry agent-plugin format. Next sub-PRs add agency.json reading + transitive deps (W5.5b) and end-to-end --agent flag wire-up (W5.5c)."

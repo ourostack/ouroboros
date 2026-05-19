@@ -1396,10 +1396,12 @@ function parsePluginCommand(args: string[]): OuroCliCommand {
   }
   let agent: string | undefined
   let version: string | undefined
+  let noDeps = false
   const positional: string[] = []
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
     if (args[i] === "--version" && args[i + 1]) { version = args[++i]; continue }
+    if (args[i] === "--no-deps") { noDeps = true; continue }
     positional.push(args[i])
   }
   if (subcommand === "install") {
@@ -1414,6 +1416,7 @@ function parsePluginCommand(args: string[]): OuroCliCommand {
       source,
       ...(agent ? { agent } : {}),
       ...(version ? { version } : {}),
+      ...(noDeps ? { noDeps: true } : {}),
     }
   }
   if (subcommand === "list") {

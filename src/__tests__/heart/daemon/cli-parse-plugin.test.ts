@@ -96,3 +96,30 @@ describe("parsePluginCommand — error paths", () => {
     expect(() => parseOuroCommand(["plugin"])).toThrow(/subcommand/)
   })
 })
+
+describe("parsePluginCommand — --no-deps flag", () => {
+  it("parses --no-deps on install", () => {
+    const cmd = parseOuroCommand([
+      "plugin",
+      "install",
+      "github:ourostack/ouroboros-skills:plugins/desk",
+      "--no-deps",
+    ])
+    expect(cmd.kind).toBe("plugin.install")
+    if (cmd.kind === "plugin.install") {
+      expect(cmd.noDeps).toBe(true)
+    }
+  })
+
+  it("omits noDeps when flag absent", () => {
+    const cmd = parseOuroCommand([
+      "plugin",
+      "install",
+      "github:ourostack/ouroboros-skills:plugins/desk",
+    ])
+    expect(cmd.kind).toBe("plugin.install")
+    if (cmd.kind === "plugin.install") {
+      expect(cmd.noDeps).toBeUndefined()
+    }
+  })
+})

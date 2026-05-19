@@ -303,3 +303,63 @@ describe("plugins.ts — loadPluginSkill", () => {
     expect(() => loadPluginSkill("desk", "nonexistent")).toThrow(/plugin skill 'desk:nonexistent' not found/)
   })
 })
+
+describe("plugins.ts — readAgencyMetadata", () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.mocked(fs.existsSync).mockReset()
+    vi.mocked(fs.readFileSync).mockReset()
+  })
+
+  it("returns null when agency.json is absent", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    const { readAgencyMetadata } = await import("../../repertoire/plugins")
+    expect(readAgencyMetadata("desk")).toBeNull()
+  })
+
+  it("parses the four overlay fields when present", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) =>
+      String(p).endsWith("agency.json"),
+    )
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        engines: ["claude", "copilot", "ouro"],
+        dependencies: ["github:ourostack/ouroboros-skills:plugins/work-suite"],
+        category: "productivity",
+        tags: ["desk", "tasks"],
+      }) as never,
+    )
+    const { readAgencyMetadata } = await import("../../repertoire/plugins")
+    const meta = readAgencyMetadata("desk")
+    expect(meta).not.toBeNull()
+    expect(meta!.engines).toEqual(["claude", "copilot", "ouro"])
+    expect(meta!.dependencies).toEqual([
+      "github:ourostack/ouroboros-skills:plugins/work-suite",
+    ])
+    expect(meta!.category).toBe("productivity")
+    expect(meta!.tags).toEqual(["desk", "tasks"])
+  })
+
+  it("returns parsed object even when only some fields are present", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) =>
+      String(p).endsWith("agency.json"),
+    )
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({ engines: ["ouro"] }) as never,
+    )
+    const { readAgencyMetadata } = await import("../../repertoire/plugins")
+    const meta = readAgencyMetadata("work-suite")
+    expect(meta).not.toBeNull()
+    expect(meta!.engines).toEqual(["ouro"])
+    expect(meta!.dependencies).toBeUndefined()
+  })
+
+  it("returns null on malformed JSON (emits error event, does not throw)", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) =>
+      String(p).endsWith("agency.json"),
+    )
+    vi.mocked(fs.readFileSync).mockReturnValue("{ this is not json" as never)
+    const { readAgencyMetadata } = await import("../../repertoire/plugins")
+    expect(readAgencyMetadata("desk")).toBeNull()
+  })
+})

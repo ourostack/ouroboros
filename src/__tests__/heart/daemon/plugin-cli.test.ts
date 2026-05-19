@@ -428,6 +428,299 @@ describe("plugin-cli — executePluginRemove", () => {
   })
 })
 
+describe("plugin-cli — transitive dependency install", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("recursively installs dependencies declared in agency.json", async () => {
+    const installedSet = new Set<string>()
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installedSet.has("desk")
+      if (s.endsWith("/plugins/work-suite") && !s.includes(".clone-")) return installedSet.has("work-suite")
+      if (s.endsWith(".claude-plugin/plugin.json")) {
+        return s.includes("/plugins/desk") ? installedSet.has("desk") : installedSet.has("work-suite")
+      }
+      if (s.endsWith("/plugins/desk/agency.json")) return installedSet.has("desk")
+      if (s.endsWith("/plugins/work-suite/agency.json")) return false
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk/agency.json")) {
+        return JSON.stringify({
+          dependencies: ["github:ourostack/ouroboros-skills:plugins/work-suite"],
+        }) as never
+      }
+      return "" as never
+    })
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv.some((a) => a.includes("desk"))) installedSet.add("desk")
+      if (argv.some((a) => a.includes("work-suite"))) installedSet.add("work-suite")
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(execFileSync).toHaveBeenCalledTimes(2)
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("→ resolving dependency"),
+    )
+  })
+
+  it("skips dependency that is already installed", async () => {
+    const installState: Record<string, boolean> = { "work-suite": true, desk: false }
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/work-suite") && !s.includes(".clone-")) return installState["work-suite"]
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installState["desk"]
+      if (s.endsWith(".claude-plugin/plugin.json")) return s.includes("/plugins/desk") ? installState["desk"] : false
+      if (s.endsWith("/plugins/desk/agency.json")) return installState["desk"]
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        dependencies: ["github:ourostack/ouroboros-skills:plugins/work-suite"],
+      }) as never,
+    )
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv.some((a) => a.includes("desk"))) installState["desk"] = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("already installed"),
+    )
+  })
+
+  it("warns and continues when a dependency clone fails (parent stays installed)", async () => {
+    const installState: Record<string, boolean> = { desk: false }
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return installState["desk"]
+      if (s.endsWith("/plugins/work-suite")) return false
+      if (s.endsWith(".claude-plugin/plugin.json")) return s.includes("/plugins/desk") && installState["desk"]
+      if (s.endsWith("/plugins/desk/agency.json")) return installState["desk"]
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        dependencies: ["github:ourostack/ouroboros-skills:plugins/work-suite"],
+      }) as never,
+    )
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv.some((a) => a.includes("work-suite"))) {
+        throw new Error("fatal: work-suite clone refused")
+      }
+      if (argv.some((a) => a.includes("desk"))) installState["desk"] = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("→ resolving dependency"),
+    )
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("dependency"),
+    )
+  })
+
+  it("--no-deps flag skips transitive resolution entirely", async () => {
+    let cloned = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return cloned
+      if (s.endsWith(".claude-plugin/plugin.json")) return cloned
+      if (s.endsWith("agency.json")) return cloned
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        dependencies: ["github:ourostack/ouroboros-skills:plugins/work-suite"],
+      }) as never,
+    )
+    vi.mocked(execFileSync).mockImplementation(() => {
+      cloned = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+        noDeps: true,
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(execFileSync).toHaveBeenCalledTimes(1)
+    expect(deps.writeStdout).not.toHaveBeenCalledWith(
+      expect.stringContaining("resolving dependency"),
+    )
+  })
+
+  it("detects dependency cycles (A → B → A) and skips the cycle leg", async () => {
+    const installState: Record<string, boolean> = { a: false, b: false }
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/cyc-a") && !s.includes(".clone-")) return installState["a"]
+      if (s.endsWith("/plugins/cyc-b") && !s.includes(".clone-")) return installState["b"]
+      if (s.endsWith(".claude-plugin/plugin.json")) {
+        return s.includes("cyc-a") ? installState["a"] : installState["b"]
+      }
+      if (s.endsWith("/plugins/cyc-a/agency.json")) return installState["a"]
+      if (s.endsWith("/plugins/cyc-b/agency.json")) return installState["b"]
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/cyc-a/agency.json")) {
+        return JSON.stringify({ dependencies: ["github:org/repo:plugins/cyc-b"] }) as never
+      }
+      if (s.endsWith("/plugins/cyc-b/agency.json")) {
+        return JSON.stringify({ dependencies: ["github:org/repo:plugins/cyc-a"] }) as never
+      }
+      return "" as never
+    })
+    vi.mocked(execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv.some((a) => a.includes("cyc-a"))) installState["a"] = true
+      if (argv.some((a) => a.includes("cyc-b"))) installState["b"] = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:org/repo:plugins/cyc-a",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringMatching(/cycle/),
+    )
+  })
+
+  it("treats missing agency.json as no deps", async () => {
+    let cloned = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return cloned
+      if (s.endsWith(".claude-plugin/plugin.json")) return cloned
+      if (s.endsWith("agency.json")) return false
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(execFileSync).mockImplementation(() => {
+      cloned = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    expect(execFileSync).toHaveBeenCalledTimes(1)
+  })
+
+  it("warns and continues when a dependency has an invalid source (derivePluginIdFromSource throws)", async () => {
+    let cloned = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return cloned
+      if (s.endsWith(".claude-plugin/plugin.json")) return cloned
+      if (s.endsWith("/plugins/desk/agency.json")) return cloned
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      // Dep with invalid name (uppercase + underscores) — derivePluginIdFromSource will throw
+      JSON.stringify({ dependencies: ["github:org/repo:plugins/BAD_NAME!"] }) as never,
+    )
+    vi.mocked(execFileSync).mockImplementation(() => {
+      cloned = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+    // The dep-failed warning fires
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("dependency"),
+    )
+    expect(deps.writeStdout).toHaveBeenCalledWith(
+      expect.stringContaining("install failed"),
+    )
+  })
+
+  it("treats malformed agency.json as no deps", async () => {
+    let cloned = false
+    vi.mocked(fs.existsSync).mockImplementation((p: fs.PathLike) => {
+      const s = String(p)
+      if (s.endsWith("/plugins/desk") && !s.includes(".clone-")) return cloned
+      if (s.endsWith(".claude-plugin/plugin.json")) return cloned
+      if (s.endsWith("agency.json")) return cloned
+      if (s.includes(".clone-")) return true
+      return false
+    })
+    vi.mocked(fs.readFileSync).mockReturnValue("{ malformed" as never)
+    vi.mocked(execFileSync).mockImplementation(() => {
+      cloned = true
+      return Buffer.from("")
+    })
+    const deps = makeDeps()
+    const out = await executePluginInstall(
+      {
+        kind: "plugin.install",
+        source: "github:ourostack/ouroboros-skills:plugins/desk",
+      } as Extract<OuroCliCommand, { kind: "plugin.install" }>,
+      deps,
+    )
+    expect(out).toContain("installed")
+  })
+})
+
 describe("plugin-cli — runOuroCli dispatch", () => {
   beforeEach(() => {
     vi.clearAllMocks()

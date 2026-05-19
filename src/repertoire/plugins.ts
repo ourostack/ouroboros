@@ -227,3 +227,86 @@ export function loadPluginSkill(
   })
   return content
 }
+
+/**
+ * Agency CLI overlay metadata read from `<plugin>/agency.json`.
+ *
+ * The agency CLI (and now ouroboros) read this sibling-of-plugin.json file
+ * for cross-engine extensions that aren't part of the Claude Code /
+ * Copilot CLI universal manifest:
+ *   - `engines`: list of engine names that may install this plugin
+ *     (e.g. `["claude", "copilot", "ouro"]`). Empty / absent = any engine.
+ *   - `dependencies`: list of source strings (`github:owner/repo:plugins/<id>`)
+ *     to install transitively.
+ *   - `category`, `tags`: discovery metadata; surfaced to operator on
+ *     `ouro plugin list` later.
+ *
+ * agency.json is OPTIONAL. If absent, `readAgencyMetadata` returns null
+ * and callers treat the plugin as no-engine-restriction, no-deps.
+ */
+export type PluginAgencyMetadata = {
+  engines?: string[]
+  dependencies?: string[]
+  category?: string
+  tags?: string[]
+}
+
+/**
+ * Read `<pluginDir>/agency.json`. Returns null if absent. Returns null AND
+ * emits a nerves error event if the file exists but is malformed JSON
+ * (treating malformed-optional-file as no-op rather than breaking install).
+ */
+export function readAgencyMetadata(
+  pluginId: string,
+  homeDir?: string,
+): PluginAgencyMetadata | null {
+  const pluginDir = getPluginDir(pluginId, homeDir)
+  const agencyJsonPath = path.join(pluginDir, "agency.json")
+  emitNervesEvent({
+    event: "plugins.agency_read_start",
+    component: "repertoire",
+    message: "reading plugin agency.json",
+    meta: { operation: "readAgencyMetadata", plugin: pluginId, path: agencyJsonPath },
+  })
+  if (!fs.existsSync(agencyJsonPath)) {
+    emitNervesEvent({
+      event: "plugins.agency_read_end",
+      component: "repertoire",
+      message: "plugin has no agency.json (optional)",
+      meta: { operation: "readAgencyMetadata", plugin: pluginId, present: false },
+    })
+    return null
+  }
+  try {
+    const raw = fs.readFileSync(agencyJsonPath, "utf-8")
+    const parsed = JSON.parse(raw) as PluginAgencyMetadata
+    emitNervesEvent({
+      event: "plugins.agency_read_end",
+      component: "repertoire",
+      message: "read plugin agency.json",
+      meta: {
+        operation: "readAgencyMetadata",
+        plugin: pluginId,
+        present: true,
+        engines: parsed.engines,
+        depCount: parsed.dependencies?.length ?? 0,
+      },
+    })
+    return parsed
+  } catch (e) {
+    const errMessage = e instanceof Error ? e.message : String(e)
+    emitNervesEvent({
+      level: "error",
+      event: "plugins.agency_read_error",
+      component: "repertoire",
+      message: "agency.json malformed; treating as no metadata",
+      meta: {
+        operation: "readAgencyMetadata",
+        plugin: pluginId,
+        path: agencyJsonPath,
+        error: errMessage,
+      },
+    })
+    return null
+  }
+}
