@@ -39,10 +39,10 @@ export function getPluginSkillsDir(pluginId: string, homeDir?: string): string {
 
 function listSkillDirNames(dir: string): string[] {
   // Industry-standard plugin skill layout: each skill is a directory under
-  // `skills/`, containing a `SKILL.md` (Claude Code / Copilot CLI / agency
-  // convention; SKILL.md is the cross-vendor "agent skill" format with YAML
-  // frontmatter + markdown body). Older flat-file layouts (`skills/<name>.md`)
-  // are not part of the spec and not supported.
+  // `skills/`, containing a `SKILL.md` (Claude Code + Copilot CLI convention;
+  // SKILL.md is the cross-vendor "agent skill" format with YAML frontmatter +
+  // markdown body). Older flat-file layouts (`skills/<name>.md`) are not part
+  // of the spec and not supported.
   if (!fs.existsSync(dir)) return []
   return fs
     .readdirSync(dir)
@@ -138,7 +138,7 @@ export function listEnabledPlugins(homeDir?: string): PluginConfig[] {
  *
  * Walks each plugin's `skills/` directory using the industry-standard
  * directory-per-skill layout (`skills/<name>/SKILL.md`). The SKILL.md
- * convention is shared across Claude Code, Copilot CLI, and the agency CLI.
+ * convention is shared across Claude Code and Copilot CLI.
  *
  * Returns a deduplicated sorted list across all plugins. If two plugins
  * declare a skill with the same name, the later-sorted plugin's skill wins
