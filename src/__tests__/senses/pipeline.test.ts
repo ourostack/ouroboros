@@ -721,6 +721,67 @@ describe("handleInboundTurn", () => {
       expect(options.toolContext?.orientationFrame).toBe(options.orientationFrame)
     })
 
+    it.each([
+      "cli",
+      "teams",
+      "bluebubbles",
+      "mcp",
+      "voice",
+      "inner",
+      "mail",
+    ] as Channel[])("builds the generic orientation frame for %s channel turns", async (channel) => {
+      const caps = makeCapabilities({ channel })
+      const context: ResolvedContext = { friend: makeFriend(), channel: caps }
+      const input = makeInput({
+        channel,
+        capabilities: caps,
+        friendResolver: { resolve: vi.fn().mockResolvedValue(context) },
+        messages: [{ role: "user", content: "same, number 4 is fine" }] as ChatCompletionMessageParam[],
+        continuityIngressTexts: ["same, number 4 is fine"],
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: "/tmp/test-session.json",
+            structuredOutputs: [
+              {
+                schemaVersion: 1,
+                id: "structured-evt-000021-1",
+                kind: "ordered_list",
+                sourceEventId: "evt-000021",
+                recordedAt: "2026-05-19T16:12:41.000Z",
+                heading: "Options:",
+                items: [
+                  { label: "1", text: "small patch" },
+                  { label: "2", text: "medium patch" },
+                  { label: "3", text: "risky rewrite" },
+                  { label: "4", text: "defer to human judgement" },
+                ],
+              },
+            ],
+          }),
+        },
+      })
+
+      await handleInboundTurn(input)
+
+      const call = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = call[4] as RunAgentOptions
+      expect(options.orientationFrame).toMatchObject({
+        channel,
+        currentUserSpeech: ["same, number 4 is fine"],
+        signals: expect.arrayContaining(["structured_referent"]),
+        actionPolicy: {
+          mode: "correction_hold",
+          blockedMutationKinds: expect.arrayContaining(["durable_state_write", "external_side_effect"]),
+        },
+        latestStructuredOutput: expect.objectContaining({
+          id: "structured-evt-000021-1",
+          items: expect.arrayContaining([{ label: "4", text: "defer to human judgement" }]),
+        }),
+      })
+      expect(options.toolContext?.orientationFrame).toBe(options.orientationFrame)
+    })
+
     it("preserves a richer sense-supplied orientation frame", async () => {
       const suppliedFrame: RunAgentOptions["orientationFrame"] = {
         schemaVersion: 1,

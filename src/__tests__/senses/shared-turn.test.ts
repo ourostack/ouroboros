@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../../heart/core"
-import type { FriendRecord, ResolvedContext, ChannelCapabilities } from "../../mind/friends/types"
+import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "../../mind/friends/types"
 import type { InboundTurnResult } from "../../senses/pipeline"
 
 // ── Mocks ──────────────────────────────────────────────────────
@@ -371,6 +371,29 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.channel).toBe("mcp")
     expect(input.sessionKey).toBe("my-session")
+  })
+
+  it.each(["mcp", "voice"] as Channel[])("delegates %s turns to the shared pipeline for orientation construction", async (channel) => {
+    const caps = { ...makeMcpCapabilities(), channel } as ChannelCapabilities
+    mockGetChannelCapabilities.mockReturnValueOnce(caps)
+    mockFriendResolve.mockResolvedValueOnce({ friend: makeFriend(), channel: caps })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel,
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "same, number 4",
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    expect(input.channel).toBe(channel)
+    expect(input.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "same, number 4" }),
+    ])
+    expect(input.runAgentOptions?.orientationFrame).toBeUndefined()
+    expect(input.runAgentOptions?.toolContext?.orientationFrame).toBeUndefined()
   })
 
   it("passes transport tool context through to the agent turn", async () => {
