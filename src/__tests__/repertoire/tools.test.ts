@@ -185,6 +185,45 @@ describe("execTool", () => {
     await expect(execTool("shell", { command: "git status --short" }, ctx)).resolves.toBe("repo status\n")
   })
 
+  it("orientation hold blocks fake Ouro runtime shell commands and points at the first-class tool", async () => {
+    const ctx = orientationHoldCtx()
+
+    const result = await execTool("shell", {
+      command: "ouro restart_runtime --agent slugger --reason \"switching human-facing lane\"",
+    }, ctx)
+
+    expect(result).toContain("orientation hold")
+    expect(result).toContain("restart_runtime tool")
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold blocks risky Ouro lifecycle/config shell commands", async () => {
+    const ctx = orientationHoldCtx()
+
+    for (const command of [
+      "ouro",
+      "ouro stop",
+      "ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.5",
+      "ouro provider refresh --agent slugger",
+      "ouro vault unlock --agent slugger",
+    ]) {
+      await expect(execTool("shell", { command }, ctx)).resolves.toContain("orientation hold")
+    }
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold allows read-only Ouro shell inspection commands", async () => {
+    const ctx = orientationHoldCtx()
+    vi.mocked(execSync).mockImplementation((command: string) => `ran ${command}\n`)
+
+    await expect(execTool("shell", { command: "ouro status" }, ctx)).resolves.toBe("ran ouro status\n")
+    await expect(execTool("shell", { command: "ouro --help" }, ctx)).resolves.toBe("ran ouro --help\n")
+    await expect(execTool("shell", { command: "ouro whoami --agent slugger" }, ctx)).resolves.toBe("ran ouro whoami --agent slugger\n")
+    await expect(execTool("shell", { command: "ouro versions" }, ctx)).resolves.toBe("ran ouro versions\n")
+    await expect(execTool("shell", { command: "ouro mcp list" }, ctx)).resolves.toBe("ran ouro mcp list\n")
+    await expect(execTool("shell", { command: "ouro vault item list --agent slugger" }, ctx)).resolves.toBe("ran ouro vault item list --agent slugger\n")
+  })
+
   it("orientation hold blocks first-class MCP tools before external calls run", async () => {
     const tools = await import("../../repertoire/tools")
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
