@@ -1,7 +1,12 @@
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
+import {
+  extractVisibleTextFromAssistantToolCalls,
+  type StructuredOutput,
+  type StructuredOutputSourceEvent,
+} from "./structured-output"
 
-export type OrientationSignal = "correction_marker" | "terse_referent"
+export type OrientationSignal = "correction_marker" | "terse_referent" | "structured_referent"
 
 export interface OrientationReferent {
   kind: "ordered_list_item"
@@ -33,6 +38,7 @@ export interface OrientationFrame {
   channel: string
   currentUserSpeech: string[]
   priorAssistantReferents: OrientationReferent[]
+  latestStructuredOutput?: StructuredOutput
   signals: OrientationSignal[]
   actionPolicy: OrientationActionPolicy
   source?: OrientationSource
@@ -42,6 +48,7 @@ export interface BuildOrientationFrameInput {
   channel: string
   messages: OpenAI.ChatCompletionMessageParam[]
   currentUserMessages?: OpenAI.ChatCompletionMessageParam[]
+  structuredOutputs?: StructuredOutput[]
   source?: OrientationSource
 }
 
@@ -52,8 +59,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function extractMessageText(message: OpenAI.ChatCompletionMessageParam | undefined): string {
   if (!message) return ""
   const content = message.content
-  if (typeof content === "string") return content.trim()
-  if (!Array.isArray(content)) return ""
+  const toolText = message.role === "assistant"
+    ? extractVisibleTextFromAssistantToolCalls((message as { tool_calls?: StructuredOutputSourceEvent["toolCalls"] }).tool_calls)
+    : ""
+  if (typeof content === "string") return [content, toolText].filter((part) => part.trim().length > 0).join("\n").trim()
+  if (!Array.isArray(content)) return toolText.trim()
 
   const parts: string[] = []
   for (const part of content) {
@@ -63,6 +73,7 @@ export function extractMessageText(message: OpenAI.ChatCompletionMessageParam | 
       parts.push(text.trim())
     }
   }
+  if (toolText) parts.push(toolText)
   return parts.filter(Boolean).join("\n").trim()
 }
 
@@ -112,20 +123,40 @@ export function extractOrderedListReferents(text: string): OrientationReferent[]
 
 function hasCorrectionMarker(text: string): boolean {
   return /\b(hang on|wait|actually|not that|not this|wrong|misunderstood|you(?:'re| are) right|correct|exactly)\b/i.test(text)
+    || /^\s*no[\s,]/i.test(text)
 }
 
 function isTerseReferent(text: string): boolean {
   const normalized = text.trim().toLowerCase().replace(/[.!?]+$/g, "")
-  return /^(same|correct|exactly|yes|no|that one|this one|the first one|the second one|the third one|first|second|third|option \d+|\d+)$/.test(normalized)
+  return /^(same|correct|exactly|yes|no|that one|this one|the first one|the second one|the third one|first|second|third|option \d+|number \d+|item \d+|\d+)$/.test(normalized)
 }
 
-function deriveSignals(currentUserSpeech: string[], priorAssistantReferents: OrientationReferent[]): OrientationSignal[] {
+function hasNumericStructuredReferent(text: string): boolean {
+  return /\b(?:number|item|option|#)\s*\d+\b/i.test(text) || /^\s*\d+\b/.test(text.trim())
+}
+
+function latestStructuredOutputFrom(outputs: StructuredOutput[] | undefined): StructuredOutput | undefined {
+  if (!outputs || outputs.length === 0) return undefined
+  return outputs.at(-1)
+}
+
+function shouldAttachStructuredOutput(combinedSpeech: string, signals: OrientationSignal[]): boolean {
+  if (hasNumericStructuredReferent(combinedSpeech)) return true
+  return signals.some((signal) => signal === "terse_referent" || signal === "correction_marker")
+}
+
+function deriveSignals(
+  currentUserSpeech: string[],
+  priorAssistantReferents: OrientationReferent[],
+  latestStructuredOutput: StructuredOutput | undefined,
+): OrientationSignal[] {
   const combined = currentUserSpeech.join("\n").trim()
   if (!combined) return []
 
   const signals: OrientationSignal[] = []
   if (hasCorrectionMarker(combined)) signals.push("correction_marker")
   if (priorAssistantReferents.length > 0 && isTerseReferent(combined)) signals.push("terse_referent")
+  if (latestStructuredOutput && hasNumericStructuredReferent(combined)) signals.push("structured_referent")
   return [...new Set(signals)]
 }
 
@@ -149,7 +180,12 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
     .filter((text) => text.length > 0)
   const previousAssistant = latestAssistantBefore(input.messages, derivedCurrent.firstIndex)
   const priorAssistantReferents = extractOrderedListReferents(extractMessageText(previousAssistant))
-  const signals = deriveSignals(currentUserSpeech, priorAssistantReferents)
+  const candidateStructuredOutput = latestStructuredOutputFrom(input.structuredOutputs)
+  const signals = deriveSignals(currentUserSpeech, priorAssistantReferents, candidateStructuredOutput)
+  const combinedSpeech = currentUserSpeech.join("\n").trim()
+  const latestStructuredOutput = candidateStructuredOutput && shouldAttachStructuredOutput(combinedSpeech, signals)
+    ? candidateStructuredOutput
+    : undefined
   const actionPolicy = deriveActionPolicy(signals)
 
   const frame: OrientationFrame = {
@@ -157,6 +193,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
     channel: input.channel,
     currentUserSpeech,
     priorAssistantReferents,
+    ...(latestStructuredOutput ? { latestStructuredOutput } : {}),
     signals,
     actionPolicy,
     ...(input.source ? { source: input.source } : {}),
@@ -170,6 +207,7 @@ export function buildOrientationFrame(input: BuildOrientationFrameInput): Orient
       channel: input.channel,
       signalCount: signals.length,
       referentCount: priorAssistantReferents.length,
+      structuredOutput: latestStructuredOutput?.id ?? null,
       policy: actionPolicy.mode,
     },
   })
@@ -219,6 +257,14 @@ export function renderOrientationFrame(frame: OrientationFrame): string {
   if (frame.priorAssistantReferents.length > 0) {
     lines.push("prior assistant referents:")
     for (const item of frame.priorAssistantReferents) {
+      lines.push(`${item.label}. ${item.text}`)
+    }
+  }
+
+  if (frame.latestStructuredOutput) {
+    lines.push(`latest structured output: ${frame.latestStructuredOutput.id}`)
+    if (frame.latestStructuredOutput.heading) lines.push(`heading: ${frame.latestStructuredOutput.heading}`)
+    for (const item of frame.latestStructuredOutput.items) {
       lines.push(`${item.label}. ${item.text}`)
     }
   }

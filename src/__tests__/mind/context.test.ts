@@ -703,6 +703,42 @@ describe("loadSession", () => {
     expect(result!.events).toHaveLength(2)
   })
 
+  it("returns an empty structured output registry for envelopes saved before the registry existed", async () => {
+    vi.resetModules()
+    vi.doMock("../../heart/session-events", async () => {
+      const actual = await vi.importActual<typeof import("../../heart/session-events")>("../../heart/session-events")
+      return {
+        ...actual,
+        loadSessionEnvelopeFile: vi.fn(() => ({
+          version: 2 as const,
+          events: [],
+          projection: {
+            eventIds: [],
+            trimmed: false,
+            maxTokens: null,
+            contextMargin: null,
+            inputTokens: null,
+            projectedAt: null,
+          },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        })),
+        projectProviderMessages: vi.fn(() => [{ role: "user", content: "hello" }]),
+      }
+    })
+
+    try {
+      const { loadSession } = await import("../../mind/context")
+      const result = loadSession("/tmp/pre-registry.json")
+      expect(result).not.toBeNull()
+      expect(result!.structuredOutputs).toEqual([])
+      expect(result!.messages).toEqual([{ role: "user", content: "hello" }])
+    } finally {
+      vi.doUnmock("../../heart/session-events")
+      vi.resetModules()
+    }
+  })
+
   it("does not inject relative-time annotations into live provider messages", async () => {
     const { loadSession } = await import("../../mind/context")
     const usage = { input_tokens: 100, output_tokens: 50, reasoning_tokens: 10, total_tokens: 150 }
