@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.625",
       "changes": [
-        "Suppress structured-output extraction telemetry during historical session backfill while keeping live extraction events visible."
+        "Suppress structured-output extraction telemetry during historical session backfill while keeping live extraction events visible.",
+        "Free inner dialogue's explicit outward path: `buildSystem(\"inner\")` now exposes `send_message` and explains that `surface` is for held-work/session returns while `send_message` is for intentional contact with people or sibling agents. This preserves the BlueBubbles surface queue boundary from alpha.620 while making the documented `send_message(channel=\"bluebubbles\")` escape hatch reachable from inner dialogue."
       ]
     },
     {
