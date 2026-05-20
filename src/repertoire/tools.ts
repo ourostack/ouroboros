@@ -148,11 +148,64 @@ function normalizeGuardArgs(_name: string, args: Record<string, string>): Record
   return args
 }
 
+const READ_ONLY_OURO_SHELL_COMMANDS = new Set([
+  "help",
+  "-h",
+  "--help",
+  "-v",
+  "--version",
+  "status",
+  "whoami",
+  "versions",
+  "changelog",
+  "mailbox",
+  "inner",
+  "thoughts",
+  "check",
+  "session list",
+  "mcp list",
+  "config models",
+  "auth verify",
+  "vault status",
+  "vault config status",
+  "vault item status",
+  "vault item list",
+])
+
+function shellTokens(command: string): string[] {
+  return command.trim().split(/\s+/).filter(Boolean)
+}
+
+function ouroShellRiskReason(command: string): string | null {
+  const tokens = shellTokens(command)
+  if (tokens[0] !== "ouro") return null
+
+  const first = tokens[1] ?? ""
+  const second = tokens[2] ?? ""
+  const third = tokens[3] ?? ""
+  const twoWord = second ? `${first} ${second}` : first
+  const threeWord = third ? `${twoWord} ${third}` : twoWord
+  if (READ_ONLY_OURO_SHELL_COMMANDS.has(threeWord)
+    || READ_ONLY_OURO_SHELL_COMMANDS.has(twoWord)
+    || READ_ONLY_OURO_SHELL_COMMANDS.has(first)) {
+    return null
+  }
+
+  const hint = first === "restart_runtime"
+    ? " Hint: use the restart_runtime tool instead of shell."
+    : ""
+  return `ouro CLI command may mutate runtime/config state or be unavailable from shell.${hint}`
+}
+
 function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
   const command = String(args.command)
   const destructive = detectDestructivePatterns(command)
   if (destructive.length > 0) {
     return { mutates: "external_side_effect", risk: "high", reason: `destructive shell pattern: ${destructive.join(", ")}` }
+  }
+  const ouroRiskReason = ouroShellRiskReason(command)
+  if (ouroRiskReason) {
+    return { mutates: "external_side_effect", risk: "high", reason: ouroRiskReason }
   }
   if (/(^|\s)(rm|mv|cp|touch|mkdir|rmdir)\b/.test(command)
     || /(^|\s)(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)\b/.test(command)
