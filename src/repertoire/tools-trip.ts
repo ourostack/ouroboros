@@ -135,12 +135,12 @@ function consumePreview(input: {
   legId?: string
   digest: string
   previewToolName: string
-  attemptSummary?: string
+  attemptSummary: string
 }): string | null {
   const token = typeof input.token === "string" ? input.token.trim() : ""
   if (!token) {
     const guidance = `previewToken is required. Call ${input.previewToolName} first, inspect the diff, then retry with its previewToken.`
-    return input.attemptSummary ? `${guidance}\nAttempted change:\n${input.attemptSummary}` : guidance
+    return `${guidance}\nAttempted change:\n${input.attemptSummary}`
   }
   pruneExpiredPreviews()
   const preview = pendingTripMutationPreviews.get(token)
