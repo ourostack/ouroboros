@@ -359,6 +359,18 @@ describe("send_message tool", () => {
 
     expect(result).toContain("delivered")
     expect(result).not.toContain("queued for delivery")
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith(expect.objectContaining({
+      friendId: "group-uuid",
+      sessionKey: "chat:any;+;project-group-123",
+      text: "tell the group the plan changed",
+      intent: "explicit_cross_chat",
+      authorizingSession: expect.objectContaining({
+        friendId: "friend-uuid-1",
+        channel: "bluebubbles",
+        key: "chat:any;-;ari@icloud.com",
+        trustLevel: "friend",
+      }),
+    }))
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
