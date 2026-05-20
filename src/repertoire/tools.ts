@@ -16,7 +16,7 @@ import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
-import type { ToolRiskProfile } from "./tools-base";
+import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -220,11 +220,25 @@ function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
 
 function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
   if (name === "shell") return shellRiskProfile(args)
+  if (typeof def.riskProfile === "function") return def.riskProfile(args)
   return def.riskProfile ?? { mutates: "none", risk: "low" }
 }
 
 function orientationHoldMessage(name: string, profile: Extract<ToolRiskProfile, { risk: "high" }>, reason: string): string {
-  return `orientation hold: ${reason} Call orientation_get, resolve the referent/correction, then retry ${name} if the write is still correct. Blocked ${profile.mutates}. ${profile.reason}.`
+  return `orientation hold: ${reason} Available: orientation_get plus read-only inspection tools like trip_status, query_session, read_config, read_file, grep, and search_notes. Resolve the referent/correction, then retry ${name} if the action is still correct. Blocked ${mutationKindsFor(profile).join(", ")}. ${profile.reason}.`
+}
+
+function mutationKindsFor(profile: Extract<ToolRiskProfile, { risk: "high" }>): ToolHighRiskMutationKind[] {
+  const mutates = profile.mutates
+  return typeof mutates === "string" ? [mutates] : [...mutates]
+}
+
+function orientationPolicyBlocks(
+  profile: ToolRiskProfile,
+  blockedMutationKinds: readonly string[],
+): profile is Extract<ToolRiskProfile, { risk: "high" }> {
+  if (profile.risk !== "high") return false
+  return mutationKindsFor(profile).some((kind) => blockedMutationKinds.includes(kind))
 }
 
 export async function execTool(name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> {
@@ -251,7 +265,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   const riskProfile = riskProfileForTool(def, name, args)
   const orientationPolicy = ctx?.orientationFrame?.actionPolicy
   if (orientationPolicy?.mode === "correction_hold"
-    && riskProfile.risk === "high") {
+    && orientationPolicyBlocks(riskProfile, orientationPolicy.blockedMutationKinds)) {
     const reason = orientationPolicy.reason
     const message = orientationHoldMessage(name, riskProfile, reason)
     emitNervesEvent({
@@ -259,7 +273,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
       event: "tool.orientation_hold_block",
       component: "tools",
       message: "orientation hold blocked high-risk tool execution",
-      meta: { name, mutates: riskProfile.mutates, reason },
+      meta: { name, mutates: mutationKindsFor(riskProfile), reason },
     });
     return message
   }

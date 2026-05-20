@@ -228,6 +228,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
     summaryKeys: ["entry", "about"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes diary memory" },
   },
   {
     tool: {
@@ -383,5 +384,6 @@ export const notesToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["type", "key", "content"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes friend notes/preferences" },
   },
 ]

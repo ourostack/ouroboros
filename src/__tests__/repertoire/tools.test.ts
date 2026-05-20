@@ -88,7 +88,7 @@ describe("execTool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
   let patchRuntimeConfig: (partial: any) => void
 
-  function orientationHoldCtx(): any {
+  function orientationHoldCtx(blockedMutationKinds = ["durable_state_write", "external_side_effect"]): any {
     return {
       signin: async () => undefined,
       context: { friend: { trustLevel: "family" } },
@@ -101,7 +101,7 @@ describe("execTool", () => {
         actionPolicy: {
           mode: "correction_hold",
           reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
-          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+          blockedMutationKinds,
         },
       },
     }
@@ -175,6 +175,178 @@ describe("execTool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("orientation hold blocks representative real mutation tools across surfaces before handlers run", async () => {
+    const ctx = orientationHoldCtx()
+    const cases: Array<[string, Record<string, string>]> = [
+      ["write_file", { path: "/tmp/out.txt", content: "wrong referent" }],
+      ["diary_write", { entry: "wrong referent" }],
+      ["save_friend_note", { type: "note", key: "preference", content: "wrong referent" }],
+      ["note", { title: "wrong referent", body: "wrong referent" }],
+      ["update_config", { path: "context.contextMargin", value: "25" }],
+      ["bridge_manage", { action: "begin", objective: "wrong referent" }],
+      ["care_manage", { action: "create", label: "wrong referent" }],
+      ["intention_capture", { content: "wrong referent" }],
+      ["credential_store", { domain: "example.com", username: "ari", password: "secret" }],
+      ["user_profile_store", { fields: "{\"legalName\":{\"first\":\"Wrong\",\"last\":\"Referent\"}}" }],
+      ["send_message", { friendId: "self", channel: "inner", content: "wrong referent" }],
+      ["coding_spawn", { runner: "codex", workdir: "/mock/repo", prompt: "wrong referent", taskRef: "wrong" }],
+      ["stripe_create_card", { type: "single_use", spend_limit: "500", currency: "usd" }],
+      ["flight_book", { offer_id: "off_123", amount: "100", currency: "usd" }],
+      ["mail_send", { draft_id: "draft_123", reason: "wrong referent" }],
+      ["await_condition", { name: "wrong", condition: "wrong referent", cadence: "5m" }],
+      ["let_go", { id: "wrong-obligation" }],
+      ["restart_runtime", { reason: "wrong referent" }],
+      ["bluebubbles_set_reply_target", { target: "top_level" }],
+      ["surface", { content: "wrong referent" }],
+      ["graph_mutate", { method: "POST", path: "/me/sendMail", body: "{}" }],
+      ["ado_create_epic", { title: "wrong referent" }],
+      ["file_ouroboros_bug", { title: "wrong referent" }],
+      ["bundle_push", {}],
+      ["voice_play_audio", { source: "tone" }],
+    ]
+
+    for (const [toolName, args] of cases) {
+      const result = await execTool(toolName, args, ctx)
+      expect(result, toolName).toContain("orientation hold")
+      expect(result, toolName).toContain("Available: orientation_get")
+    }
+
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(execSync).not.toHaveBeenCalled()
+  })
+
+  it("orientation hold respects blockedMutationKinds instead of blocking every high-risk tool", async () => {
+    const tools = await import("../../repertoire/tools")
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "created" }] })
+    const mcpManager = {
+      listAllTools: () => [{
+        server: "calendar",
+        tools: [{ name: "create_event", description: "Create event", inputSchema: { type: "object" } }],
+      }],
+      callTool,
+    }
+
+    tools.getToolsForChannel(undefined, undefined, undefined, undefined, mcpManager as any)
+
+    const result = await execTool(
+      "calendar_create_event",
+      { title: "external write allowed by this narrow policy" },
+      orientationHoldCtx(["durable_state_write"]),
+    )
+
+    expect(result).toBe("created")
+    expect(callTool).toHaveBeenCalledWith("calendar", "create_event", { title: "external write allowed by this narrow policy" })
+  })
+
+  it("obvious mutation tool definitions declare high-risk correction-hold metadata", async () => {
+    const [
+      toolsBase,
+      bluebubbles,
+      teams,
+      adoSemantic,
+      github,
+      bundle,
+      voice,
+      surface,
+    ] = await Promise.all([
+      import("../../repertoire/tools-base"),
+      import("../../repertoire/tools-bluebubbles"),
+      import("../../repertoire/tools-teams"),
+      import("../../repertoire/ado-semantic"),
+      import("../../repertoire/tools-github"),
+      import("../../repertoire/tools-bundle"),
+      import("../../repertoire/tools-voice"),
+      import("../../repertoire/tools-surface"),
+    ])
+    const definitions = [
+      ...toolsBase.baseToolDefinitions,
+      ...bluebubbles.bluebubblesToolDefinitions,
+      ...teams.teamsToolDefinitions,
+      ...adoSemantic.adoSemanticToolDefinitions,
+      ...github.githubToolDefinitions,
+      ...bundle.bundleToolDefinitions,
+      ...voice.voiceToolDefinitions,
+      surface.surfaceToolDefinition,
+    ]
+    const byName = new Map(definitions.map((definition) => [definition.tool.function.name, definition]))
+    const expected = new Map<string, string[]>([
+      ["write_file", ["durable_state_write"]],
+      ["edit_file", ["durable_state_write"]],
+      ["diary_write", ["durable_state_write"]],
+      ["save_friend_note", ["durable_state_write"]],
+      ["note", ["durable_state_write"]],
+      ["update_config", ["durable_state_write"]],
+      ["trip_ensure_ledger", ["durable_state_write"]],
+      ["trip_upsert", ["durable_state_write"]],
+      ["trip_attach_evidence", ["durable_state_write"]],
+      ["trip_update_leg", ["durable_state_write"]],
+      ["trip_remove_leg", ["durable_state_write"]],
+      ["bridge_manage", ["durable_state_write"]],
+      ["capture_episode", ["durable_state_write"]],
+      ["care_manage", ["durable_state_write"]],
+      ["intention_capture", ["durable_state_write"]],
+      ["intention_manage", ["durable_state_write"]],
+      ["credential_store", ["durable_state_write"]],
+      ["credential_delete", ["durable_state_write"]],
+      ["user_profile_store", ["durable_state_write"]],
+      ["user_profile_delete", ["durable_state_write"]],
+      ["send_message", ["durable_state_write", "external_side_effect"]],
+      ["coding_spawn", ["durable_state_write", "external_side_effect"]],
+      ["coding_send_input", ["external_side_effect"]],
+      ["coding_kill", ["external_side_effect"]],
+      ["stripe_create_card", ["external_side_effect"]],
+      ["stripe_deactivate_card", ["external_side_effect"]],
+      ["flight_hold", ["external_side_effect"]],
+      ["flight_book", ["external_side_effect"]],
+      ["flight_cancel", ["external_side_effect"]],
+      ["mail_compose", ["durable_state_write"]],
+      ["mail_send", ["durable_state_write", "external_side_effect"]],
+      ["mail_decide", ["durable_state_write", "external_side_effect"]],
+      ["await_condition", ["durable_state_write"]],
+      ["resolve_await", ["durable_state_write", "external_side_effect"]],
+      ["cancel_await", ["durable_state_write"]],
+      ["let_go", ["durable_state_write"]],
+      ["restart_runtime", ["external_side_effect"]],
+      ["revive_sense", ["external_side_effect"]],
+      ["bluebubbles_set_reply_target", ["external_side_effect"]],
+      ["surface", ["durable_state_write", "external_side_effect"]],
+      ["graph_mutate", ["external_side_effect"]],
+      ["ado_mutate", ["external_side_effect"]],
+      ["teams_send_message", ["external_side_effect"]],
+      ["ado_create_epic", ["external_side_effect"]],
+      ["ado_create_issue", ["external_side_effect"]],
+      ["ado_move_items", ["external_side_effect"]],
+      ["ado_restructure_backlog", ["external_side_effect"]],
+      ["ado_batch_update", ["external_side_effect"]],
+      ["file_ouroboros_bug", ["external_side_effect"]],
+      ["bundle_init_git", ["durable_state_write"]],
+      ["bundle_add_remote", ["durable_state_write"]],
+      ["bundle_do_first_commit", ["durable_state_write"]],
+      ["bundle_push", ["external_side_effect"]],
+      ["bundle_pull_rebase", ["durable_state_write", "external_side_effect"]],
+      ["voice_play_audio", ["external_side_effect"]],
+    ])
+
+    for (const [toolName, mutationKinds] of expected) {
+      const definition = byName.get(toolName)
+      expect(definition, toolName).toBeDefined()
+      const rawProfile = typeof definition!.riskProfile === "function"
+        ? definition!.riskProfile({ action: "begin", verdict: "yes" })
+        : definition!.riskProfile
+      expect(rawProfile?.risk, toolName).toBe("high")
+      const rawKinds = rawProfile?.mutates
+      const actualKinds = Array.isArray(rawKinds) ? rawKinds : [rawKinds]
+      expect(actualKinds, toolName).toEqual(expect.arrayContaining(mutationKinds))
+      expect(rawProfile?.reason, toolName).toEqual(expect.any(String))
+      expect(rawProfile?.reason?.trim().length, toolName).toBeGreaterThan(0)
+    }
+
+    const bridgeStatusProfile = byName.get("bridge_manage")?.riskProfile
+    expect(typeof bridgeStatusProfile).toBe("function")
+    expect((bridgeStatusProfile as (args: Record<string, string>) => unknown)({ action: "status" }))
+      .toMatchObject({ mutates: "none", risk: "low" })
+  })
+
   it("orientation hold blocks mutating shell commands but still allows read-only shell inspection", async () => {
     const ctx = orientationHoldCtx()
 
@@ -245,8 +417,10 @@ describe("execTool", () => {
 
   it("orientation hold allows orientation_get so the agent can inspect the frame", async () => {
     const result = await execTool("orientation_get", {}, orientationHoldCtx())
+    const frame = JSON.parse(result)
 
-    expect(JSON.parse(result).actionPolicy.mode).toBe("correction_hold")
+    expect(frame.actionPolicy.mode).toBe("correction_hold")
+    expect(frame.actionPolicy.blockedMutationKinds).toEqual(["durable_state_write", "external_side_effect"])
   })
 
   it("rethrows non-Error values from handlers", async () => {
