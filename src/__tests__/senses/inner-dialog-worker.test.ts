@@ -30,7 +30,7 @@ vi.mock("../../heart/habits/habit-runtime-state", () => ({
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
-import { createInnerDialogWorker, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
+import { createInnerDialogWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
 
 describe("inner-dialog-worker", () => {
   beforeEach(() => {
@@ -575,6 +575,78 @@ describe("inner-dialog-worker", () => {
 
       const recursionEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.habit_recursion_suspected")
       expect(recursionEvents).toHaveLength(0)
+    })
+  })
+
+  describe("HEARTBEAT_OK rest shield", () => {
+    it("accepts repeated heartbeat fires without another model turn after clean HEARTBEAT_OK", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 10_000_000
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "info",
+          event: "senses.heartbeat_ok_rest_reused",
+          meta: expect.objectContaining({ habitName: "heartbeat" }),
+        }),
+      )
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.habit_recursion_suspected" }),
+      )
+    })
+
+    it("does not reuse HEARTBEAT_OK rest when pending work exists", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true)
+        .mockReturnValue(false)
+      let now = 11_000_000
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(mockEmitNervesEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+    })
+
+    it("lets heartbeat run again after the HEARTBEAT_OK quiet window expires", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 12_000_000
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += HEARTBEAT_OK_REST_SUPPRESSION_MS + 1
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+    })
+
+    it("does not suppress heartbeat after a non-HEARTBEAT_OK rest", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "thinking" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 13_000_000
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 60_000
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
     })
   })
 })
