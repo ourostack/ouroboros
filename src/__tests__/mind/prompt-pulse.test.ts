@@ -113,7 +113,7 @@ describe("pulseSection", () => {
     expect(result).not.toContain("broken siblings")
   })
 
-  it("renders inner-channel reachable siblings without teaching send_message delivery", async () => {
+  it("renders inner-channel reachable siblings with send_message as the explicit peer-contact path", async () => {
     mockReadPulse.mockReturnValue({
       generatedAt: "2026-04-08T22:00:00Z",
       daemonVersion: "0.1.0-alpha.273",
@@ -141,10 +141,10 @@ describe("pulseSection", () => {
     const { pulseSection } = await import("../../mind/prompt")
     const result = pulseSection("inner")
     expect(result).toContain("reachable siblings")
-    expect(result).toContain("inner dialogue does not call send_message")
-    expect(result).toContain("use surface")
-    expect(result).not.toContain("via send_message")
-    expect(result).not.toContain("to ask a sibling for help: i send_message them")
+    expect(result).toContain("inner dialogue can use send_message")
+    expect(result).toContain("explicitly choose outward contact")
+    expect(result).not.toContain("inner dialogue does not call send_message")
+    expect(result).not.toContain("use surface or report the need")
   })
 
   it("renders a broken sibling without a fix hint (still shows the reason)", async () => {
