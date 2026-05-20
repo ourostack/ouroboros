@@ -18,6 +18,7 @@ import { getPendingDir, drainDeferredReturns, drainPending } from "../../mind/pe
 import { buildSystem, flattenSystemPrompt } from "../../mind/prompt"
 import { getSharedMcpManager } from "../../repertoire/mcp-manager"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { buildOrientationFrame, type OrientationSource } from "../../heart/orientation-frame"
 import { getProactiveInternalContentBlockReason, emitProactiveInternalContentBlocked } from "../proactive-content-guard"
 import { containsInternalMetaMarkers, emitBluebubblesMetaBlocked } from "../bluebubbles-meta-guard"
 import type { BlueBubblesReplyTargetSelection } from "../../repertoire/tools-base"
@@ -442,69 +443,54 @@ function extractHistoricalLaneSummary(
   return summaries
 }
 
-function buildConversationScopePrefix(
+function buildBlueBubblesOrientationSource(
   event: BlueBubblesNormalizedEvent,
   existingMessages: OpenAI.ChatCompletionMessageParam[],
   repliedToText?: string | null,
-): string {
+): OrientationSource {
+  const repairNotice = event.repairNotice?.trim()
   if (event.kind !== "message") {
-    return ""
+    return {
+      kind: "bluebubbles",
+      lane: "mutation",
+      ...(repairNotice ? { repairNotice } : {}),
+    }
   }
 
   const summaries = extractHistoricalLaneSummary(existingMessages)
-  const lines: string[] = []
-  if (event.threadOriginatorGuid?.trim()) {
-    lines.push(
-      `[conversation scope: existing chat trunk | current inbound lane: thread | current thread id: ${event.threadOriginatorGuid.trim()} | default outbound target for this turn: current_lane]`,
-    )
-    if (repliedToText) {
-      lines.push(`[replying to: "${repliedToText}"]`)
-    }
-    lines.push(`[if you need more context about what was being discussed, use search_notes or consult_notes to search durable diary/journal notes.]`)
-  } else {
-    lines.push(
-      "[conversation scope: existing chat trunk | current inbound lane: top_level | default outbound target for this turn: top_level]",
-    )
+  const threadId = event.threadOriginatorGuid?.trim() || undefined
+  const hasThreadRoute = !!threadId || summaries.some((summary) => summary.key.startsWith("thread:"))
+  return {
+    kind: "bluebubbles",
+    lane: threadId ? "thread" : "top_level",
+    defaultReplyTarget: threadId ? "current_lane" : "top_level",
+    ...(threadId ? { threadId } : {}),
+    ...(repliedToText ? { replyingToText: repliedToText } : {}),
+    ...(repairNotice ? { repairNotice } : {}),
+    ...(summaries.length > 0 ? { recentLanes: summaries } : {}),
+    ...(hasThreadRoute
+      ? { routingHint: "use bluebubbles_set_reply_target to choose current_lane, top_level, or a listed thread before sending BlueBubbles-specific replies." }
+      : {}),
   }
-  if (summaries.length > 0) {
-    lines.push("[recent active lanes]")
-    for (const summary of summaries) {
-      lines.push(`- ${summary.label}: ${summary.snippet}`)
-    }
-  }
-  if (event.threadOriginatorGuid?.trim() || summaries.some((summary) => summary.key.startsWith("thread:"))) {
-    lines.push(
-      "[routing control: use bluebubbles_set_reply_target with target=top_level to widen back out, or target=thread plus a listed thread id to route into a specific active thread]",
-    )
-  }
-  return lines.join("\n")
 }
 
 function buildInboundText(
   event: BlueBubblesNormalizedEvent,
-  existingMessages: OpenAI.ChatCompletionMessageParam[],
-  repliedToText?: string | null,
 ): string {
-  const metadataPrefix = buildConversationScopePrefix(event, existingMessages, repliedToText)
-  const baseText = event.repairNotice?.trim()
-    ? `${event.textForAgent}\n[${event.repairNotice.trim()}]`
-    : event.textForAgent
+  const baseText = event.textForAgent
   if (!event.chat.isGroup) {
-    return metadataPrefix ? `${metadataPrefix}\n${baseText}` : baseText
+    return baseText
   }
-  const scopedText = metadataPrefix ? `${metadataPrefix}\n${baseText}` : baseText
   if (event.kind === "mutation") {
-    return `${event.sender.displayName} ${scopedText}`
+    return `${event.sender.displayName} ${baseText}`
   }
-  return `${event.sender.displayName}: ${scopedText}`
+  return `${event.sender.displayName}: ${baseText}`
 }
 
 function buildInboundContent(
   event: BlueBubblesNormalizedEvent,
-  existingMessages: OpenAI.ChatCompletionMessageParam[],
-  repliedToText?: string | null,
 ): OpenAI.ChatCompletionUserMessageParam["content"] {
-  const text = buildInboundText(event, existingMessages, repliedToText)
+  const text = buildInboundText(event)
   if (event.kind !== "message" || !event.inputPartsForAgent || event.inputPartsForAgent.length === 0) {
     return text
   }
@@ -1297,11 +1283,18 @@ async function handleBlueBubblesNormalizedEvent(
       /* v8 ignore stop */
     }
 
-    // Build inbound user message (adapter concern: BB-specific content formatting)
+    // Build inbound user message as user-visible speech only; source/routing facts live in the orientation frame.
+    const priorMessages = existing?.messages ?? sessionMessages
     const userMessage: OpenAI.ChatCompletionMessageParam = {
       role: "user",
-      content: buildInboundContent(event, existing?.messages ?? sessionMessages, repliedToText),
+      content: buildInboundContent(event),
     }
+    const orientationFrame = buildOrientationFrame({
+      channel: "bluebubbles",
+      messages: [...priorMessages, userMessage],
+      currentUserMessages: [userMessage],
+      source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
+    })
 
     const callbacks = createBlueBubblesCallbacks(
       client,
@@ -1436,7 +1429,7 @@ async function handleBlueBubblesNormalizedEvent(
         },
         accumulateFriendTokens: resolvedDeps.accumulateFriendTokens,
         signal: controller.signal,
-        runAgentOptions: { mcpManager, ...(isReaction ? { isReactionSignal: true } : {}) },
+        runAgentOptions: { mcpManager, orientationFrame, ...(isReaction ? { isReactionSignal: true } : {}) },
         callbacks: failoverAwareCallbacks,
         failoverState: (() => {
           if (!bbFailoverStates.has(event.chat.sessionKey)) {

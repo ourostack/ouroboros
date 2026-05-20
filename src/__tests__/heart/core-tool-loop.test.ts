@@ -270,4 +270,57 @@ describe("runAgent tool loop guard", () => {
     expect(loopGuardMessage?.content).toContain("stop polling")
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("coding_status", "sessionId=coding-001", false)
   })
+
+  it("passes a run-level orientation frame into tool execution even without an existing tool context", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_orientation",
+            function: {
+              name: "orientation_get",
+              arguments: "{}",
+            },
+          },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          {
+            index: 0,
+            id: "call_final",
+            function: {
+              name: "settle",
+              arguments: '{"answer":"checked orientation"}',
+            },
+          },
+        ]),
+      ]))
+
+    const { runAgent } = await import("../../heart/core")
+    const orientationFrame = {
+      schemaVersion: 1 as const,
+      channel: "bluebubbles",
+      currentUserSpeech: ["same"],
+      priorAssistantReferents: [],
+      signals: ["terse_referent" as const],
+      actionPolicy: {
+        mode: "correction_hold" as const,
+        reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+        blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+      },
+    }
+    const execTool = vi.fn().mockResolvedValue(JSON.stringify(orientationFrame))
+    const callbacks = makeCallbacks()
+
+    const result = await runAgent([{ role: "user", content: "same" }], callbacks, undefined, undefined, {
+      toolChoiceRequired: true,
+      execTool,
+      orientationFrame,
+    })
+
+    expect(execTool).toHaveBeenCalledWith("orientation_get", {}, expect.objectContaining({ orientationFrame }))
+    expect(result.completion).toMatchObject({ answer: "checked orientation" })
+  })
 })

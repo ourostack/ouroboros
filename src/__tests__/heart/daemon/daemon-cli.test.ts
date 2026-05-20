@@ -8536,6 +8536,11 @@ describe("ouro config model", () => {
     expect(() => parseOuroCommand(["config", "model", "--agent", "slugger"])).toThrow("Usage")
   })
 
+  it("rejects config model flag-like tokens as model names", () => {
+    expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--model"])).toThrow("model name")
+    expect(() => parseOuroCommand(["config", "model", "--agent", "slugger", "--list"])).toThrow("model name")
+  })
+
   it("rejects config without subcommand", () => {
     expect(() => parseOuroCommand(["config"])).toThrow("Usage")
   })
@@ -8657,12 +8662,12 @@ describe("ouro config model", () => {
       listDiscoveredAgents: vi.fn(async () => [tmp.agentName]),
     }
     try {
-      const result = await runOuroCli(["config", "model", "gpt-5.4"], deps)
-      expect(result).toContain("gpt-5.4")
+      const result = await runOuroCli(["config", "model", "claude-sonnet-4.6"], deps)
+      expect(result).toContain("claude-sonnet-4.6")
       const stateResult = readAgentProviderSelectionFixture(tmp.agentRoot)
       expect(stateResult.ok).toBe(true)
       if (!stateResult.ok) throw new Error(stateResult.error)
-      expect(stateResult.state.lanes.outward.model).toBe("gpt-5.4")
+      expect(stateResult.state.lanes.outward.model).toBe("claude-sonnet-4.6")
     } finally {
       tmp.cleanup()
     }

@@ -404,6 +404,8 @@ describe("runOuroCli help execution", () => {
     const deps = makeDeps()
     const result = await runOuroCli(["-h"], deps)
     expect(result).toContain("Lifecycle")
+    expect(result).not.toContain("config model")
+    expect(result).not.toContain("auth switch")
   })
 
   it("ouro help outputs grouped help via command routing", async () => {

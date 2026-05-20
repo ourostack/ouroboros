@@ -154,6 +154,41 @@ describe("start-of-turn packet prompt section", () => {
     expect(system).toContain("**Owed:** deploy fix")
   })
 
+  it("buildSystem includes orientation frame when provided", async () => {
+    const fs = await import("fs")
+    const fsMock = vi.mocked(fs)
+    fsMock.existsSync.mockReturnValue(false)
+    fsMock.readFileSync.mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" })
+      return ""
+    })
+    fsMock.readdirSync.mockReturnValue([])
+
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("bluebubbles", {
+      orientationFrame: {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [{ kind: "ordered_list_item", label: "2", text: "Better substrate" }],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+        },
+        source: { kind: "bluebubbles", lane: "thread", defaultReplyTarget: "current_lane" },
+      },
+    }))
+
+    expect(system).toContain("## orientation frame")
+    expect(system).toContain("current user speech:")
+    expect(system).toContain("- same")
+    expect(system).toContain("2. Better substrate")
+    expect(system).toContain("action policy: correction_hold")
+  })
+
   it("buildSystem omits start-of-turn packet section when none provided", async () => {
     const fs = await import("fs")
     const fsMock = vi.mocked(fs)

@@ -185,6 +185,7 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
     const updateLegResult = await tool("trip_update_leg").handler({
       tripId: seeded.tripId,
       legId: "leg_flight_aaaaaaaaaaaaaaaa",
+      updateReason: "operator confirmed the flight leg and corrected the departure time",
       updates: JSON.stringify({ status: "confirmed", departureAt: "2026-08-05T08:30:00.000Z" }),
       updatedAt: "2026-04-02T19:30:00.000Z",
     }, familyCtx) as string

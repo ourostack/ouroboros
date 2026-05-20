@@ -747,10 +747,12 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify({ status: "cancelled", confirmationCode: "REFUND-2026-XYZ" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Refund confirmation from Basel hotel email.",
       }, familyCtx) as string
       expect(result).toContain("leg_lodging_0000000000000000 updated")
       expect(result).toContain("status")
       expect(result).toContain("confirmationCode")
+      expect(result).toContain("Refund confirmation")
 
       const got = await tool("trip_get").handler({ tripId: "trip_basel_aaaaaaaaaaaaaaaa" }, familyCtx) as string
       expect(got).toContain("\"status\": \"cancelled\"")
@@ -769,6 +771,7 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify({ legId: "leg_other" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing identity guard.",
       }, familyCtx) as string
       expect(idChange).toContain("cannot change legId")
 
@@ -777,8 +780,26 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify({ kind: "flight" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing identity guard.",
       }, familyCtx) as string
       expect(kindChange).toContain("cannot change kind")
+    })
+
+    it("requires updateReason before applying a leg update", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
+
+      const result = await tool("trip_update_leg").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+        updatedAt: "2026-04-26T10:00:00.000Z",
+      }, familyCtx) as string
+
+      expect(result).toContain("updateReason is required")
+      const got = await tool("trip_get").handler({ tripId: "trip_basel_aaaaaaaaaaaaaaaa" }, familyCtx) as string
+      expect(got).not.toContain("\"status\": \"cancelled\"")
     })
 
     it("rejects when the leg id is unknown", async () => {
@@ -790,6 +811,7 @@ describe("trip tools", () => {
         legId: "leg_missing",
         updates: JSON.stringify({ status: "cancelled" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing unknown-leg guard.",
       }, familyCtx) as string
       expect(result).toContain("leg_missing not found")
     })
@@ -802,6 +824,7 @@ describe("trip tools", () => {
         legId: "leg_x",
         updates: JSON.stringify({ status: "cancelled" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing unknown-trip guard.",
       }, familyCtx) as string
       expect(result).toContain("trip not found")
     })
@@ -815,6 +838,7 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: "{not json",
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing malformed JSON guard.",
       }, familyCtx) as string
       expect(result).toContain("not valid JSON")
     })
@@ -828,6 +852,7 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify(["not", "object"]),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing object guard.",
       }, familyCtx) as string
       expect(result).toContain("must be a JSON object")
     })
@@ -841,6 +866,7 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: "{}",
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Testing empty update guard.",
       }, familyCtx) as string
       expect(result).toContain("cannot be empty")
     })
@@ -871,6 +897,7 @@ describe("trip tools", () => {
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify({ status: "cancelled" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Cancellation notice from source email.",
       }, familyCtx) as string
       expect(result).toContain("status")
       void recorded

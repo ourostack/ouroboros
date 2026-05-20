@@ -3532,6 +3532,64 @@ describe("runAgent", () => {
     expect(toolMsg?.content).toBe("custom result")
   })
 
+  it("creates a tool context when only orientationFrame is provided", async () => {
+    const customExecTool = vi.fn(async (_name: string, _args: Record<string, string>, ctx?: any) => {
+      await ctx?.signin?.()
+      return "orientation result"
+    })
+    const orientationFrame = {
+      schemaVersion: 1,
+      channel: "bluebubbles",
+      currentUserSpeech: ["same"],
+      priorAssistantReferents: [],
+      signals: ["terse_referent"],
+      actionPolicy: {
+        mode: "correction_hold",
+        reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+        blockedMutationKinds: ["durable_state_write", "external_side_effect"],
+      },
+    }
+
+    mockCreate
+      .mockReturnValueOnce(makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "call_1", function: { name: "orientation_get", arguments: "{}" } },
+        ]),
+      ]))
+      .mockReturnValueOnce(makeStream([makeChunk("done")]))
+
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+
+    const messages: any[] = [{ role: "user", content: "hello" }]
+    await runAgent(messages, callbacks, undefined, undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "orientation_get",
+          description: "test",
+          parameters: { type: "object", properties: {} },
+        },
+      }],
+      execTool: customExecTool,
+      orientationFrame,
+      toolChoiceRequired: false,
+    } as any)
+
+    expect(customExecTool).toHaveBeenCalledWith(
+      "orientation_get",
+      {},
+      expect.objectContaining({ orientationFrame }),
+    )
+  })
+
   it("uses default tools and execTool when overrides are not provided", async () => {
     // This is the existing behavior -- just verify it still works
     mockCreate.mockReturnValue(makeStream([makeChunk("hello")]))
@@ -5162,13 +5220,13 @@ describe("openai-codex oauth provider contract", () => {
         }
         if (testCase.expectedRepair) {
           expect(terminal?.error.message).toContain(testCase.expectedRepair)
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing human gpt-5.4")
-          expect(terminal?.error.message).toContain("ouro config model --agent testagent --facing agent gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane outward --provider openai-codex --model gpt-5.4")
+          expect(terminal?.error.message).toContain("ouro use --agent testagent --lane inner --provider openai-codex --model gpt-5.4")
         } else {
           expect(terminal?.error.message).not.toContain("Config warning:")
         }
         expect(terminal?.error.message).toContain("ouro auth --agent testagent --provider openai-codex")
-        expect(terminal?.error.message).toContain("ouro auth switch --agent testagent --provider <provider>")
+        expect(terminal?.error.message).toContain("ouro use --agent testagent --lane <outward|inner> --provider <provider> --model <model>")
       }
     } finally {
       vi.useRealTimers()

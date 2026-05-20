@@ -150,5 +150,6 @@ export const configToolDefinitions: ToolDefinition[] = [
       emitNervesEvent({ component: "repertoire", event: "repertoire.update_config_applied", message: `applied config change to ${a.path}`, meta: { path: a.path, tier: entry.tier, value: parsedValue } });
       return `Success: "${a.path}" updated to ${JSON.stringify(parsedValue)}. Change applied immediately.`;
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes agent.json" },
   },
 ];
