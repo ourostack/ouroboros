@@ -154,6 +154,17 @@ describe("trip tools", () => {
       expect(got).toContain("raw record (JSON)")
     })
 
+    it("rejects trip records that are not JSON objects", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+
+      const nullRecord = await tool("trip_upsert").handler({ record: "null" }, familyCtx) as string
+      expect(nullRecord).toContain("record must be a TripRecord object")
+
+      const scalarRecord = await tool("trip_upsert").handler({ record: "\"not object\"" }, familyCtx) as string
+      expect(scalarRecord).toContain("record must be a TripRecord object")
+    })
+
     it("requires writeReason before replacing an existing trip record", async () => {
       mountAgent()
       await tool("trip_ensure_ledger").handler({}, familyCtx)
@@ -242,10 +253,48 @@ describe("trip tools", () => {
       expect(stored.name).toBe("Basel weekend")
     })
 
+    it("expires replacement previews before accepting writes", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const now = 1_800_000_000_000
+      const dateNow = vi.spyOn(Date, "now").mockReturnValue(now)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        name: "Basel corrected weekend",
+        updatedAt: "2026-04-02T08:00:00.000Z",
+      })
+      const token = await previewTripReplacement(replacement)
+      dateNow.mockReturnValue(now + 16 * 60 * 1000)
+
+      const expired = await tool("trip_upsert").handler({
+        record: JSON.stringify(replacement),
+        writeReason: "Ari corrected the itinerary in chat.",
+        previewToken: token,
+      }, familyCtx) as string
+      expect(expired).toContain("previewToken is invalid or expired")
+
+      const stored = tripStore.readTripRecord("slugger", original.tripId)
+      expect(stored.name).toBe("Basel weekend")
+    })
+
     it("renders field-level replacement previews for kept legs", async () => {
       mountAgent()
       await tool("trip_ensure_ledger").handler({}, familyCtx)
-      const original = trip()
+      const original = trip({
+        legs: [
+          trip().legs[0]!,
+          {
+            legId: "leg_flight_removed_000000000001",
+            kind: "flight",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T09:00:00.000Z",
+            updatedAt: "2026-04-01T09:00:00.000Z",
+          },
+        ],
+      })
       await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
 
       const replacement = trip({
@@ -265,6 +314,43 @@ describe("trip tools", () => {
       expect(preview).toContain("leg changes:")
       expect(preview).toContain("- changed leg_lodging_0000000000000000.checkOutDate: \"2026-08-05\" -> \"2026-08-06\"")
       expect(preview).toContain("- changed leg_lodging_0000000000000000.confirmationCode: (unset) -> \"NEW-CODE\"")
+      expect(preview).toContain("- removed leg_flight_removed_000000000001:")
+    })
+
+    it("renders no top-level replacement changes when only legs changed", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        legs: [{
+          ...original.legs[0]!,
+          checkOutDate: "2026-08-06",
+        }],
+      })
+      const preview = await tool("trip_replace_preview").handler({
+        record: JSON.stringify(replacement),
+      }, familyCtx) as string
+
+      expect(preview).toContain("top-level changes:\n- (none)")
+      expect(preview).toContain("- changed leg_lodging_0000000000000000.checkOutDate: \"2026-08-05\" -> \"2026-08-06\"")
+    })
+
+    it("reports replacement preview records that are new or malformed", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+
+      const noExisting = await tool("trip_replace_preview").handler({
+        record: JSON.stringify(trip({ tripId: "trip_new_aaaaaaaaaaaaaaaa" })),
+      }, familyCtx) as string
+      expect(noExisting).toContain("new trip creation does not require")
+
+      const malformed = await tool("trip_replace_preview").handler({
+        record: "{not json",
+      }, familyCtx) as string
+      expect(malformed).toContain("replace preview failed")
+      expect(malformed).toContain("not valid JSON")
     })
 
     it("reports replacement-read failures before mutating", async () => {
@@ -958,6 +1044,91 @@ describe("trip tools", () => {
       expect(got).not.toContain("DIFFERENT")
     })
 
+    it("reports update preview validation and read failures", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+
+      const emptyTrip = await tool("trip_update_leg_preview").handler({
+        tripId: "",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(emptyTrip).toContain("tripId is required")
+
+      const nonStringTrip = await tool("trip_update_leg_preview").handler({
+        tripId: 42,
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(nonStringTrip).toContain("tripId is required")
+
+      const emptyLeg = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "",
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(emptyLeg).toContain("legId is required")
+
+      const nonStringLeg = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: 42,
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(nonStringLeg).toContain("legId is required")
+
+      const missingTrip = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_missing_0000000000000000",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(missingTrip).toContain("trip not found")
+
+      await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
+
+      const updatesArray = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify(["not", "object"]),
+      }, familyCtx) as string
+      expect(updatesArray).toContain("updates must be a JSON object")
+
+      const idChange = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ legId: "leg_other" }),
+      }, familyCtx) as string
+      expect(idChange).toContain("cannot change legId")
+
+      const kindChange = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ kind: "flight" }),
+      }, familyCtx) as string
+      expect(kindChange).toContain("cannot change kind")
+
+      const emptyUpdates = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: "{}",
+      }, familyCtx) as string
+      expect(emptyUpdates).toContain("updates cannot be empty")
+
+      const missingLeg = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_missing_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+      }, familyCtx) as string
+      expect(missingLeg).toContain("not found")
+
+      const malformed = await tool("trip_update_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: "{not json",
+      }, familyCtx) as string
+      expect(malformed).toContain("update preview failed")
+      expect(malformed).toContain("not valid JSON")
+    })
+
     it("rejects updates that try to change legId or kind (identity-changing)", async () => {
       mountAgent()
       await tool("trip_ensure_ledger").handler({}, familyCtx)
@@ -1268,6 +1439,57 @@ describe("trip tools", () => {
       expect(got).toContain("legs: 2")
       expect(got).toContain("leg_flight_0000000000000001")
       expect(got).toContain("leg_lodging_0000000000000000")
+    })
+
+    it("reports remove preview read failures", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+
+      const emptyTrip = await tool("trip_remove_leg_preview").handler({
+        tripId: "",
+        legId: "leg_flight_0000000000000001",
+      }, familyCtx) as string
+      expect(emptyTrip).toContain("tripId is required")
+
+      const emptyLeg = await tool("trip_remove_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "",
+      }, familyCtx) as string
+      expect(emptyLeg).toContain("legId is required")
+
+      const missingTrip = await tool("trip_remove_leg_preview").handler({
+        tripId: "trip_missing_0000000000000000",
+        legId: "leg_flight_0000000000000001",
+      }, familyCtx) as string
+      expect(missingTrip).toContain("trip not found")
+
+      await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
+      const missingLeg = await tool("trip_remove_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_missing_0000000000000000",
+      }, familyCtx) as string
+      expect(missingLeg).toContain("not found")
+
+      const readTrip = vi.spyOn(tripStore, "readTripRecord")
+      readTrip.mockImplementationOnce(() => {
+        throw new Error("decrypt failure: corrupt envelope")
+      })
+      const corrupt = await tool("trip_remove_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_flight_0000000000000001",
+      }, familyCtx) as string
+      expect(corrupt).toContain("remove preview failed")
+      expect(corrupt).toContain("decrypt failure")
+
+      readTrip.mockImplementationOnce(() => {
+        throw "string failure"
+      })
+      const nonError = await tool("trip_remove_leg_preview").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_flight_0000000000000001",
+      }, familyCtx) as string
+      expect(nonError).toContain("remove preview failed")
+      expect(nonError).toContain("string failure")
     })
 
     it("rejects when the leg id is unknown so accidental no-op removals are visible", async () => {
