@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto"
 import type { ToolDefinition } from "./tools-base"
 import { isTrustedLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -82,6 +83,231 @@ function compact(parts: Array<string | undefined>): string {
     .map((part) => part?.trim())
     .filter((part): part is string => !!part)
     .join(" ")
+}
+
+type TripMutationPreviewKind = "replace_trip" | "update_leg" | "remove_leg"
+
+interface PendingTripMutationPreview {
+  kind: TripMutationPreviewKind
+  agentName: string
+  tripId: string
+  legId?: string
+  digest: string
+  createdAtMs: number
+}
+
+const TRIP_PREVIEW_TOKEN_TTL_MS = 15 * 60 * 1000
+const pendingTripMutationPreviews = new Map<string, PendingTripMutationPreview>()
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return "undefined"
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`
+  }
+  return JSON.stringify(value)
+}
+
+function previewDigest(value: unknown): string {
+  return createHash("sha256").update(stableJson(value)).digest("hex")
+}
+
+function pruneExpiredPreviews(nowMs = Date.now()): void {
+  for (const [token, preview] of pendingTripMutationPreviews.entries()) {
+    if (nowMs - preview.createdAtMs > TRIP_PREVIEW_TOKEN_TTL_MS) {
+      pendingTripMutationPreviews.delete(token)
+    }
+  }
+}
+
+function rememberPreview(input: Omit<PendingTripMutationPreview, "createdAtMs">): string {
+  pruneExpiredPreviews()
+  const token = `trip_preview_${randomUUID()}`
+  pendingTripMutationPreviews.set(token, { ...input, createdAtMs: Date.now() })
+  return token
+}
+
+function consumePreview(input: {
+  token: unknown
+  kind: TripMutationPreviewKind
+  agentName: string
+  tripId: string
+  legId?: string
+  digest: string
+  previewToolName: string
+  attemptSummary?: string
+}): string | null {
+  const token = typeof input.token === "string" ? input.token.trim() : ""
+  if (!token) {
+    const guidance = `previewToken is required. Call ${input.previewToolName} first, inspect the diff, then retry with its previewToken.`
+    return input.attemptSummary ? `${guidance}\nAttempted change:\n${input.attemptSummary}` : guidance
+  }
+  pruneExpiredPreviews()
+  const preview = pendingTripMutationPreviews.get(token)
+  if (!preview) return `previewToken is invalid or expired. Call ${input.previewToolName} again.`
+  const matches = preview.kind === input.kind
+    && preview.agentName === input.agentName
+    && preview.tripId === input.tripId
+    && preview.legId === input.legId
+    && preview.digest === input.digest
+  if (!matches) return `previewToken does not match the current trip state or requested change. Call ${input.previewToolName} again.`
+  pendingTripMutationPreviews.delete(token)
+  return null
+}
+
+function formatPreviewValue(value: unknown): string {
+  return value === undefined ? "(unset)" : stableJson(value)
+}
+
+function previewAttemptSummary(renderedPreview: string): string {
+  return renderedPreview.replace(/^previewToken: .*\n/, "")
+}
+
+function changedRecordKeys(before: Record<string, unknown>, after: Record<string, unknown>, omit = new Set<string>()): string[] {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+  return [...keys]
+    .filter((key) => !omit.has(key))
+    .filter((key) => stableJson(before[key]) !== stableJson(after[key]))
+    .sort()
+}
+
+function legPreviewLabel(trip: TripRecord, leg: TripLeg): string {
+  const entry = tripLegCalendarEntry(trip, leg)
+  return `${entry.title} [${entry.kind}; ${entry.status}; ${calendarEntryRange(entry)}; leg=${entry.legId}]`
+}
+
+function updateLegPreviewDigest(input: {
+  agentName: string
+  trip: TripRecord
+  leg: TripLeg
+  updates: Record<string, unknown>
+}): string {
+  return previewDigest({
+    kind: "update_leg",
+    agentName: input.agentName,
+    tripId: input.trip.tripId,
+    tripUpdatedAt: input.trip.updatedAt,
+    leg: input.leg,
+    updates: input.updates,
+  })
+}
+
+function removeLegPreviewDigest(input: {
+  agentName: string
+  trip: TripRecord
+  leg: TripLeg
+}): string {
+  return previewDigest({
+    kind: "remove_leg",
+    agentName: input.agentName,
+    trip: input.trip,
+    leg: input.leg,
+  })
+}
+
+function replaceTripPreviewDigest(input: {
+  agentName: string
+  currentTrip: TripRecord
+  replacementTrip: TripRecord
+}): string {
+  return previewDigest({
+    kind: "replace_trip",
+    agentName: input.agentName,
+    currentTrip: input.currentTrip,
+    replacementTrip: input.replacementTrip,
+  })
+}
+
+function renderUpdateLegPreview(input: {
+  trip: TripRecord
+  leg: TripLeg
+  updates: Record<string, unknown>
+  token: string
+}): string {
+  const legRecord = input.leg as unknown as Record<string, unknown>
+  const lines = [
+    `previewToken: ${input.token}`,
+    `trip: ${input.trip.name} (${input.trip.tripId})`,
+    `leg: ${legPreviewLabel(input.trip, input.leg)}`,
+    "changes:",
+  ]
+  for (const key of Object.keys(input.updates).sort()) {
+    lines.push(`- ${key}: ${formatPreviewValue(legRecord[key])} -> ${formatPreviewValue(input.updates[key])}`)
+  }
+  return lines.join("\n")
+}
+
+function renderRemoveLegPreview(input: {
+  trip: TripRecord
+  leg: TripLeg
+  token: string
+}): string {
+  return [
+    `previewToken: ${input.token}`,
+    `trip: ${input.trip.name} (${input.trip.tripId})`,
+    `will remove: ${legPreviewLabel(input.trip, input.leg)}`,
+    `trip legs: ${input.trip.legs.length} -> ${input.trip.legs.length - 1}`,
+    `evidence on removed leg: ${input.leg.evidence.length}`,
+    "removed leg (JSON):",
+    JSON.stringify(input.leg, null, 2),
+  ].join("\n")
+}
+
+function renderReplaceTripPreview(input: {
+  currentTrip: TripRecord
+  replacementTrip: TripRecord
+  token: string
+}): string {
+  const currentLegs = new Map(input.currentTrip.legs.map((leg) => [leg.legId, leg]))
+  const replacementLegs = new Map(input.replacementTrip.legs.map((leg) => [leg.legId, leg]))
+  const currentLegIds = new Set(currentLegs.keys())
+  const replacementLegIds = new Set(replacementLegs.keys())
+  const removed = [...currentLegIds].filter((id) => !replacementLegIds.has(id)).sort()
+  const added = [...replacementLegIds].filter((id) => !currentLegIds.has(id)).sort()
+  const kept = [...replacementLegIds].filter((id) => currentLegIds.has(id)).sort()
+  const lines = [
+    `previewToken: ${input.token}`,
+    `replace trip: ${input.currentTrip.name} (${input.currentTrip.tripId})`,
+    `legs: ${input.currentTrip.legs.length} -> ${input.replacementTrip.legs.length}`,
+    "top-level changes:",
+  ]
+  const topLevelChanges = changedRecordKeys(
+    input.currentTrip as unknown as Record<string, unknown>,
+    input.replacementTrip as unknown as Record<string, unknown>,
+    new Set(["legs"]),
+  )
+  if (topLevelChanges.length === 0) {
+    lines.push("- (none)")
+  } else {
+    for (const key of topLevelChanges) {
+      const before = input.currentTrip as unknown as Record<string, unknown>
+      const after = input.replacementTrip as unknown as Record<string, unknown>
+      lines.push(`- ${key}: ${formatPreviewValue(before[key])} -> ${formatPreviewValue(after[key])}`)
+    }
+  }
+  lines.push("leg changes:")
+  let legChangeCount = 0
+  for (const legId of removed) {
+    const leg = currentLegs.get(legId)!
+    lines.push(`- removed ${legId}: ${legPreviewLabel(input.currentTrip, leg)}`)
+    legChangeCount += 1
+  }
+  for (const legId of added) {
+    const leg = replacementLegs.get(legId)!
+    lines.push(`- added ${legId}: ${legPreviewLabel(input.replacementTrip, leg)}`)
+    legChangeCount += 1
+  }
+  for (const legId of kept) {
+    const before = currentLegs.get(legId)! as unknown as Record<string, unknown>
+    const after = replacementLegs.get(legId)! as unknown as Record<string, unknown>
+    const fieldChanges = changedRecordKeys(before, after)
+    for (const field of fieldChanges) {
+      lines.push(`- changed ${legId}.${field}: ${formatPreviewValue(before[field])} -> ${formatPreviewValue(after[field])}`)
+      legChangeCount += 1
+    }
+  }
+  if (legChangeCount === 0) lines.push("- (none)")
+  return lines.join("\n")
 }
 
 function routeLabel(origin: string | undefined, destination: string | undefined): string | undefined {
@@ -310,13 +536,46 @@ export const tripToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "trip_replace_preview",
+        description: "Preview replacing an existing trip record before calling trip_upsert. Returns a short-lived previewToken that trip_upsert requires when the record already exists.",
+        parameters: {
+          type: "object",
+          properties: {
+            record: { type: "string", description: "Full replacement TripRecord JSON, same shape accepted by trip_upsert." },
+          },
+          required: ["record"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      try {
+        const parsed = parseJsonArg(args.record, "record")
+        const replacementTrip = validateTripRecord(parsed)
+        const agentName = getAgentName()
+        const currentTrip = readTripRecord(agentName, replacementTrip.tripId)
+        const digest = replaceTripPreviewDigest({ agentName, currentTrip, replacementTrip })
+        const token = rememberPreview({ kind: "replace_trip", agentName, tripId: replacementTrip.tripId, digest })
+        return renderReplaceTripPreview({ currentTrip, replacementTrip, token })
+      } catch (error) {
+        if (error instanceof TripNotFoundError) return "no existing trip record found; new trip creation does not require trip_replace_preview."
+        return `replace preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`
+      }
+    },
+    summaryKeys: [],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "trip_upsert",
-        description: "Create or replace a TripRecord. Pass the full record as a JSON string in `record`. Every leg requires a legId and an evidence array (each evidence entry requires messageId + discoveryMethod). Returns the persisted tripId.",
+        description: "Create or replace a TripRecord. Pass the full record as a JSON string in `record`. Every leg requires a legId and an evidence array (each evidence entry requires messageId + discoveryMethod). Replacing an existing record requires trip_replace_preview first and its previewToken. Returns the persisted tripId.",
         parameters: {
           type: "object",
           properties: {
             record: { type: "string", description: "Full TripRecord JSON. Must include tripId, agentId, ownerEmail, name, status, travellers[], legs[], createdAt, updatedAt." },
             writeReason: { type: "string", description: "Required when replacing an existing trip record. One-line source or reason that makes the whole-record replacement correct." },
+            previewToken: { type: "string", description: "Required when replacing an existing trip record. Get it from trip_replace_preview after inspecting the replacement diff." },
           },
           required: ["record"],
         },
@@ -330,8 +589,9 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const agentName = getAgentName()
         ensureAgentTripLedger({ agentName })
         let replacesExisting = false
+        let currentTrip: TripRecord | undefined
         try {
-          readTripRecord(agentName, trip.tripId)
+          currentTrip = readTripRecord(agentName, trip.tripId)
           replacesExisting = true
         } catch (error) {
           if (!(error instanceof TripNotFoundError)) throw error
@@ -339,6 +599,19 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const writeReason = typeof args.writeReason === "string" ? args.writeReason.trim() : ""
         if (replacesExisting && writeReason.length === 0) {
           return "writeReason is required when replacing an existing trip record."
+        }
+        if (replacesExisting && currentTrip) {
+          const digest = replaceTripPreviewDigest({ agentName, currentTrip, replacementTrip: trip })
+          const previewError = consumePreview({
+            token: args.previewToken,
+            kind: "replace_trip",
+            agentName,
+            tripId: trip.tripId,
+            digest,
+            previewToolName: "trip_replace_preview",
+            attemptSummary: previewAttemptSummary(renderReplaceTripPreview({ currentTrip, replacementTrip: trip, token: "" })),
+          })
+          if (previewError) return previewError
         }
         upsertTripRecord(agentName, trip)
         if (replacesExisting) {
@@ -417,8 +690,51 @@ export const tripToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "trip_update_leg_preview",
+        description: "Preview a trip_update_leg mutation before committing it. Returns a diff plus a short-lived previewToken that trip_update_leg requires.",
+        parameters: {
+          type: "object",
+          properties: {
+            tripId: { type: "string", description: "Canonical trip id." },
+            legId: { type: "string", description: "Leg id within the trip." },
+            updates: { type: "string", description: "JSON object of leg fields to update. Cannot include `legId` or `kind`." },
+          },
+          required: ["tripId", "legId", "updates"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      const tripId = args.tripId
+      const legId = args.legId
+      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
+      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      try {
+        const updates = parseJsonArg(args.updates, "updates")
+        if (!isRecord(updates)) return "updates must be a JSON object."
+        if ("legId" in updates) return "updates cannot change legId; create a new leg instead."
+        if ("kind" in updates) return "updates cannot change kind; create a new leg instead."
+        if (Object.keys(updates).length === 0) return "updates cannot be empty — pass at least one field."
+        const agentName = getAgentName()
+        const trip = readTripRecord(agentName, tripId)
+        const leg = trip.legs.find((candidate) => candidate.legId === legId)
+        if (!leg) return `leg ${legId} not found in trip ${tripId}.`
+        const digest = updateLegPreviewDigest({ agentName, trip, leg, updates })
+        const token = rememberPreview({ kind: "update_leg", agentName, tripId, legId, digest })
+        return renderUpdateLegPreview({ trip, leg, updates, token })
+      } catch (error) {
+        if (error instanceof TripNotFoundError) return error.message
+        return `update preview failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from parseJsonArg/store */ String(error)}`
+      }
+    },
+    summaryKeys: ["tripId", "legId"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "trip_update_leg",
-        description: "Update specific fields of an existing leg in a trip. Pass tripId, legId, and a JSON object of field updates (e.g. {status:\"cancelled\", confirmationCode:\"PNR123\"}). Existing evidence is preserved unless explicitly overwritten. Use this instead of trip_upsert when you only need to change one leg without re-emitting the whole record. The leg's `kind` cannot be changed (changing kind means a new leg).",
+        description: "Update specific fields of an existing leg in a trip. Pass tripId, legId, and a JSON object of field updates (e.g. {status:\"cancelled\", confirmationCode:\"PNR123\"}). Existing evidence is preserved unless explicitly overwritten. Use this instead of trip_upsert when you only need to change one leg without re-emitting the whole record. The leg's `kind` cannot be changed (changing kind means a new leg). Requires trip_update_leg_preview first and its previewToken.",
         parameters: {
           type: "object",
           properties: {
@@ -427,8 +743,9 @@ export const tripToolDefinitions: ToolDefinition[] = [
             updates: { type: "string", description: "JSON object of leg fields to update. Cannot include `legId` or `kind`. Common fields: status, confirmationCode, vendor, amount, checkInDate, checkOutDate, departureTime, arrivalTime, etc." },
             updatedAt: { type: "string", description: "ISO timestamp for the update. Used both for the leg's updatedAt and the trip's updatedAt." },
             updateReason: { type: "string", description: "One-line source or reason that makes this update correct. Required so semantic trip writes remain auditable." },
+            previewToken: { type: "string", description: "Required. Get it from trip_update_leg_preview after inspecting the diff." },
           },
-          required: ["tripId", "legId", "updates", "updatedAt", "updateReason"],
+          required: ["tripId", "legId", "updates", "updatedAt", "updateReason", "previewToken"],
         },
       },
     },
@@ -453,6 +770,19 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
         if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
         const leg = trip.legs[legIndex]!
+        const agentName = getAgentName()
+        const digest = updateLegPreviewDigest({ agentName, trip, leg, updates })
+        const previewError = consumePreview({
+          token: args.previewToken,
+          kind: "update_leg",
+          agentName,
+          tripId,
+          legId,
+          digest,
+          previewToolName: "trip_update_leg_preview",
+          attemptSummary: previewAttemptSummary(renderUpdateLegPreview({ trip, leg, updates, token: "" })),
+        })
+        if (previewError) return previewError
         const updatedLeg = {
           ...leg,
           ...updates,
@@ -465,12 +795,12 @@ export const tripToolDefinitions: ToolDefinition[] = [
           legs: [...trip.legs.slice(0, legIndex), updatedLeg, ...trip.legs.slice(legIndex + 1)],
           updatedAt,
         }
-        upsertTripRecord(getAgentName(), updated)
+        upsertTripRecord(agentName, updated)
         emitNervesEvent({
           component: "trips",
           event: "trips.leg_updated",
           message: "trip leg fields updated",
-          meta: { agentId: getAgentName(), tripId, legId, fields: Object.keys(updates), updateReason: updateReason.slice(0, 240) },
+          meta: { agentId: agentName, tripId, legId, fields: Object.keys(updates), updateReason: updateReason.slice(0, 240) },
         })
         const fieldList = Object.keys(updates).join(", ")
         return `leg ${legId} updated in ${tripId}: ${fieldList}. reason: ${updateReason}`
@@ -486,8 +816,45 @@ export const tripToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
+        name: "trip_remove_leg_preview",
+        description: "Preview removing a leg from a trip before committing it. Returns the leg summary plus a short-lived previewToken that trip_remove_leg requires.",
+        parameters: {
+          type: "object",
+          properties: {
+            tripId: { type: "string", description: "Canonical trip id." },
+            legId: { type: "string", description: "Leg id within the trip to drop." },
+          },
+          required: ["tripId", "legId"],
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      if (!trustAllowsTripAccess(ctx)) return "trip ledger is private; this tool is only available in trusted contexts."
+      const tripId = args.tripId
+      const legId = args.legId
+      if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
+      if (typeof legId !== "string" || legId.length === 0) return "legId is required."
+      try {
+        const agentName = getAgentName()
+        const trip = readTripRecord(agentName, tripId)
+        const leg = trip.legs.find((candidate) => candidate.legId === legId)
+        if (!leg) return `leg ${legId} not found in trip ${tripId}.`
+        const digest = removeLegPreviewDigest({ agentName, trip, leg })
+        const token = rememberPreview({ kind: "remove_leg", agentName, tripId, legId, digest })
+        return renderRemoveLegPreview({ trip, leg, token })
+      } catch (error) {
+        if (error instanceof TripNotFoundError) return error.message
+        return `remove preview failed: ${error instanceof Error ? error.message : String(error)}`
+      }
+    },
+    summaryKeys: ["tripId", "legId"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
         name: "trip_remove_leg",
-        description: "Remove a leg from a trip. Use when a leg was added by mistake or the booking was cancelled. Updates the trip's updatedAt. Rejects when the leg id is unknown so accidental no-op removals are visible.",
+        description: "Remove a leg from a trip. Use when a leg was added by mistake or the booking was cancelled. Updates the trip's updatedAt. Rejects when the leg id is unknown so accidental no-op removals are visible. Requires trip_remove_leg_preview first and its previewToken.",
         parameters: {
           type: "object",
           properties: {
@@ -495,8 +862,9 @@ export const tripToolDefinitions: ToolDefinition[] = [
             legId: { type: "string", description: "Leg id within the trip to drop." },
             updatedAt: { type: "string", description: "ISO timestamp for the trip's updatedAt." },
             reason: { type: "string", description: "Why the leg is being removed. Logged in nerves for audit." },
+            previewToken: { type: "string", description: "Required. Get it from trip_remove_leg_preview after inspecting the leg removal preview." },
           },
-          required: ["tripId", "legId", "updatedAt", "reason"],
+          required: ["tripId", "legId", "updatedAt", "reason", "previewToken"],
         },
       },
     },
@@ -515,18 +883,31 @@ export const tripToolDefinitions: ToolDefinition[] = [
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
         if (legIndex === -1) return `leg ${legId} not found in trip ${tripId}.`
         const droppedLeg = trip.legs[legIndex]!
+        const agentName = getAgentName()
+        const digest = removeLegPreviewDigest({ agentName, trip, leg: droppedLeg })
+        const previewError = consumePreview({
+          token: args.previewToken,
+          kind: "remove_leg",
+          agentName,
+          tripId,
+          legId,
+          digest,
+          previewToolName: "trip_remove_leg_preview",
+          attemptSummary: previewAttemptSummary(renderRemoveLegPreview({ trip, leg: droppedLeg, token: "" })),
+        })
+        if (previewError) return previewError
         const updated: TripRecord = {
           ...trip,
           legs: [...trip.legs.slice(0, legIndex), ...trip.legs.slice(legIndex + 1)],
           updatedAt,
         }
-        upsertTripRecord(getAgentName(), updated)
+        upsertTripRecord(agentName, updated)
         emitNervesEvent({
           component: "trips",
           event: "trips.leg_removed",
           message: "trip leg removed from ledger",
           meta: {
-            agentId: getAgentName(),
+            agentId: agentName,
             tripId,
             legId,
             kind: droppedLeg.kind,

@@ -38,6 +38,12 @@ function tool(name: string) {
   return def
 }
 
+function previewToken(output: string): string {
+  const match = /^previewToken: (trip_preview_[0-9a-f-]+)$/m.exec(output)
+  expect(match).not.toBeNull()
+  return match![1]
+}
+
 function flightBookingMime(): Buffer {
   return Buffer.from([
     "From: Acme Air <noreply@acme-air.example>",
@@ -167,9 +173,13 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
       legs: [...seeded.legs, newLeg],
       updatedAt: "2026-04-01T17:00:00.000Z",
     }
+    const flightPreview = await tool("trip_replace_preview").handler({
+      record: JSON.stringify(withFlight),
+    }, familyCtx) as string
     const flightUpsertResult = await tool("trip_upsert").handler({
       record: JSON.stringify(withFlight),
       writeReason: "flight confirmation extracted from booking email",
+      previewToken: previewToken(flightPreview),
     }, familyCtx) as string
     expect(flightUpsertResult).toContain("trip replaced")
 
@@ -186,12 +196,18 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
     }, familyCtx) as string
     expect(attachResult).toContain("evidence attached")
 
+    const updateLegPreview = await tool("trip_update_leg_preview").handler({
+      tripId: seeded.tripId,
+      legId: "leg_flight_aaaaaaaaaaaaaaaa",
+      updates: JSON.stringify({ status: "confirmed", departureAt: "2026-08-05T08:30:00.000Z" }),
+    }, familyCtx) as string
     const updateLegResult = await tool("trip_update_leg").handler({
       tripId: seeded.tripId,
       legId: "leg_flight_aaaaaaaaaaaaaaaa",
       updateReason: "operator confirmed the flight leg and corrected the departure time",
       updates: JSON.stringify({ status: "confirmed", departureAt: "2026-08-05T08:30:00.000Z" }),
       updatedAt: "2026-04-02T19:30:00.000Z",
+      previewToken: previewToken(updateLegPreview),
     }, familyCtx) as string
     expect(updateLegResult).toMatch(/leg leg_flight_aaaaaaaaaaaaaaaa updated/)
 
