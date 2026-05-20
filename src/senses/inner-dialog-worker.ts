@@ -67,6 +67,13 @@ export const MAX_CONSECUTIVE_INSTINCT_TURNS = 3
 export const HABIT_RECURSION_MIN_INTERVAL_MS = 5_000
 export const HABIT_RECURSION_BURST_WINDOW_MS = 60_000
 export const HABIT_RECURSION_BURST_THRESHOLD = 5
+export const HEARTBEAT_OK_REST_SUPPRESSION_MS = 20 * 60_000
+
+function isHeartbeatOkRestResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false
+  const maybeResult = result as { turnOutcome?: unknown; restStatus?: unknown }
+  return maybeResult.turnOutcome === "rested" && maybeResult.restStatus === "HEARTBEAT_OK"
+}
 
 export function createInnerDialogWorker(
   runTurn: (options: InnerDialogWorkerRunOptions) => Promise<unknown> = (options) => runInnerDialogTurn(options),
@@ -77,6 +84,47 @@ export function createInnerDialogWorker(
   const queue: QueueEntry[] = []
   const lastFireByHabit = new Map<string, number>()
   const recentHabitFires: number[] = []
+  let heartbeatOkRestedAt: number | null = null
+
+  function recordHabitCompletion(habitName: string): void {
+    try {
+      const agentRoot = getAgentRoot()
+      recordHabitRun(agentRoot, habitName, new Date(nowSource()).toISOString(), {
+        definitionPath: path.join(agentRoot, "habits", `${habitName}.md`),
+      })
+    } catch {
+      // Habit file/state may be unavailable during the turn — skip gracefully
+    }
+  }
+
+  function clearHeartbeatRestShield(): void {
+    heartbeatOkRestedAt = null
+  }
+
+  function shouldReuseHeartbeatOkRest(habitName: string): boolean {
+    if (habitName !== "heartbeat" || heartbeatOkRestedAt === null) return false
+    if (nowSource() - heartbeatOkRestedAt > HEARTBEAT_OK_REST_SUPPRESSION_MS) return false
+    if (hasPendingWork()) {
+      clearHeartbeatRestShield()
+      return false
+    }
+    return true
+  }
+
+  function reuseHeartbeatOkRest(habitName: string): void {
+    recordHabitCompletion(habitName)
+    emitNervesEvent({
+      level: "info",
+      component: "senses",
+      event: "senses.heartbeat_ok_rest_reused",
+      message: "heartbeat skipped because previous HEARTBEAT_OK rest is still valid and no pending work exists",
+      meta: {
+        habitName,
+        quietWindowMs: HEARTBEAT_OK_REST_SUPPRESSION_MS,
+        restedAgoMs: heartbeatOkRestedAt === null ? null : nowSource() - heartbeatOkRestedAt,
+      },
+    })
+  }
 
   function recordHabitFireForRecursion(habitName: string): void {
     const now = nowSource()
@@ -133,9 +181,16 @@ export function createInnerDialogWorker(
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       do {
+        const currentReason = nextReason
+        const currentHabitName = nextHabitName
+        if (!(currentReason === "habit" && currentHabitName === "heartbeat")) {
+          clearHeartbeatRestShield()
+        }
+        let turnResult: unknown
         try {
-          await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
+          turnResult = await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
         } catch (error) {
+          clearHeartbeatRestShield()
           emitNervesEvent({
             level: "error",
             component: "senses",
@@ -147,23 +202,26 @@ export function createInnerDialogWorker(
             },
           })
         }
+        if (currentReason === "habit" && currentHabitName === "heartbeat") {
+          heartbeatOkRestedAt = isHeartbeatOkRestResult(turnResult) ? nowSource() : null
+        }
 
         // Record lastRun after a habit turn without dirtying the tracked habit file.
         if (nextReason === "habit" && nextHabitName) {
-          try {
-            const agentRoot = getAgentRoot()
-            recordHabitRun(agentRoot, nextHabitName, new Date().toISOString(), {
-              definitionPath: path.join(agentRoot, "habits", `${nextHabitName}.md`),
-            })
-          } catch {
-            // Habit file/state may be unavailable during the turn — skip gracefully
-          }
+          recordHabitCompletion(nextHabitName)
         }
 
         // Drain queue first. Externally-queued work resets the instinct cap
         // because a real outside trigger arrived between turns.
         if (queue.length > 0) {
           const next = queue.shift()!
+          if (next.reason === "habit" && next.habitName === "heartbeat" && shouldReuseHeartbeatOkRest(next.habitName)) {
+            reuseHeartbeatOkRest(next.habitName)
+            continue
+          }
+          if (!(next.reason === "habit" && next.habitName === "heartbeat")) {
+            clearHeartbeatRestShield()
+          }
           nextReason = next.reason
           nextTaskId = next.taskId
           nextHabitName = next.habitName
@@ -177,6 +235,7 @@ export function createInnerDialogWorker(
         // would cause hasPendingWork() to be true here, producing a
         // self-sustaining "instinct" loop with no external input. Cap it.
         if (hasPendingWork()) {
+          clearHeartbeatRestShield()
           if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
             emitNervesEvent({
               level: "warn",
@@ -212,11 +271,16 @@ export function createInnerDialogWorker(
     if (maybeMessage.type === "habit") {
       /* v8 ignore next -- defensive fallback: live habit dispatch always sets habitName @preserve */
       const habitName = maybeMessage.habitName ?? "(unnamed)"
+      if (shouldReuseHeartbeatOkRest(habitName)) {
+        reuseHeartbeatOkRest(habitName)
+        return
+      }
       recordHabitFireForRecursion(habitName)
       await run("habit", undefined, maybeMessage.habitName)
       return
     }
     if (maybeMessage.type === "await") {
+      clearHeartbeatRestShield()
       /* v8 ignore next -- defensive fallback: live await dispatch always sets awaitName @preserve */
       const awaitName = maybeMessage.awaitName ?? "(unnamed)"
       recordHabitFireForRecursion(`await:${awaitName}`)
@@ -225,11 +289,16 @@ export function createInnerDialogWorker(
     }
     if (maybeMessage.type === "heartbeat") {
       // Backward compatibility: heartbeat -> habit/heartbeat
+      if (shouldReuseHeartbeatOkRest("heartbeat")) {
+        reuseHeartbeatOkRest("heartbeat")
+        return
+      }
       recordHabitFireForRecursion("heartbeat")
       await run("habit", undefined, "heartbeat")
       return
     }
     if (maybeMessage.type === "poke") {
+      clearHeartbeatRestShield()
       await run("instinct", maybeMessage.taskId)
       return
     }
@@ -237,6 +306,7 @@ export function createInnerDialogWorker(
       maybeMessage.type === "chat" ||
       maybeMessage.type === "message"
     ) {
+      clearHeartbeatRestShield()
       await run("instinct")
       return
     }

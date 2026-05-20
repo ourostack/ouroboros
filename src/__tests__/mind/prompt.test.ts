@@ -3081,6 +3081,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("when i intentionally choose outward contact, i send_message")
     expect(result).toContain("ponder creates or revises typed packets")
     expect(result).toContain("HEARTBEAT_OK")
+    expect(result).toContain("HEARTBEAT_OK is real rest")
+    expect(result).toContain("repeated heartbeat/test pokes do not mean i am failing")
     expect(result).toContain("## ponder packet sops")
     expect(result).toContain("harness_friction")
     expect(result).toContain("think. journal. share. rest.")

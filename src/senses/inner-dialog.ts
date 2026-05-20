@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 import * as fs from "fs"
 import * as path from "path"
 import { sessionPath } from "../heart/config"
-import { runAgent, type ChannelCallbacks, type CompletionMetadata } from "../heart/core"
+import { runAgent, type ChannelCallbacks, type CompletionMetadata, type RunAgentOutcome } from "../heart/core"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
@@ -76,6 +76,8 @@ export interface InnerDialogTurnResult {
   usage?: UsageData
   sessionPath: string
   completion?: CompletionMetadata
+  turnOutcome?: RunAgentOutcome | "command"
+  restStatus?: string
 }
 
 interface InnerDialogRuntimeState {
@@ -293,6 +295,20 @@ function checkpointTextFromAssistantToolCalls(message: OpenAI.ChatCompletionMess
     if (summary) return summary
   }
   return null
+}
+
+function latestRestStatus(messages: OpenAI.ChatCompletionMessageParam[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) continue
+    for (let j = message.tool_calls.length - 1; j >= 0; j--) {
+      const toolFunction = extractToolFunction(message.tool_calls[j])
+      if (toolFunction?.name !== "rest") continue
+      const status = parseToolArguments(toolFunction.arguments).status
+      return typeof status === "string" && status.trim() ? status.trim() : undefined
+    }
+  }
+  return undefined
 }
 
 export function deriveResumeCheckpoint(messages: OpenAI.ChatCompletionMessageParam[]): string {
@@ -964,6 +980,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     usage: result.usage,
     sessionPath: result.sessionPath ?? sessionFilePath,
     completion: result.completion,
+    turnOutcome: result.turnOutcome,
+    restStatus: latestRestStatus(resultMessages),
   }
   } finally {
     writeInnerDialogRuntimeState(sessionFilePath, {
