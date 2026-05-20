@@ -676,6 +676,78 @@ describe("handleInboundTurn", () => {
       expect(call[4]).toMatchObject({ traceId: "test-trace" })
     })
 
+    it("builds a generic orientation frame from session structured outputs when none is supplied", async () => {
+      const input = makeInput({
+        messages: [{ role: "user", content: "no, number 4 will be sorted" }] as ChatCompletionMessageParam[],
+        continuityIngressTexts: ["no, number 4 will be sorted"],
+        sessionLoader: {
+          loadOrCreate: vi.fn().mockResolvedValue({
+            messages: [{ role: "system", content: "You are helpful." }],
+            sessionPath: "/tmp/test-session.json",
+            structuredOutputs: [
+              {
+                schemaVersion: 1,
+                id: "structured-evt-000010-1",
+                kind: "ordered_list",
+                sourceEventId: "evt-000010",
+                recordedAt: "2026-05-19T16:12:41.000Z",
+                heading: "Gaps:",
+                items: [
+                  { label: "1", text: "Zurich to Basel" },
+                  { label: "2", text: "Basel to Lugano" },
+                  { label: "3", text: "Lugano to Milan" },
+                  { label: "4", text: "La Villa to MXP" },
+                ],
+              },
+            ],
+          }),
+        },
+      })
+
+      await handleInboundTurn(input)
+
+      const call = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = call[4] as RunAgentOptions
+      expect(options.orientationFrame).toMatchObject({
+        channel: "cli",
+        currentUserSpeech: ["no, number 4 will be sorted"],
+        signals: expect.arrayContaining(["structured_referent"]),
+        actionPolicy: { mode: "correction_hold" },
+        latestStructuredOutput: expect.objectContaining({
+          id: "structured-evt-000010-1",
+          items: expect.arrayContaining([{ label: "4", text: "La Villa to MXP" }]),
+        }),
+      })
+      expect(options.toolContext?.orientationFrame).toBe(options.orientationFrame)
+    })
+
+    it("preserves a richer sense-supplied orientation frame", async () => {
+      const suppliedFrame: RunAgentOptions["orientationFrame"] = {
+        schemaVersion: 1,
+        channel: "bluebubbles",
+        currentUserSpeech: ["same"],
+        priorAssistantReferents: [],
+        signals: ["terse_referent"],
+        actionPolicy: {
+          mode: "correction_hold",
+          reason: "Current user speech appears referent-dependent; inspect orientation before mutating durable state.",
+          blockedMutationKinds: ["durable_state_write"],
+        },
+        source: { kind: "bluebubbles", lane: "top_level" },
+      }
+      const input = makeInput({
+        channel: "bluebubbles" as Channel,
+        runAgentOptions: { orientationFrame: suppliedFrame },
+      })
+
+      await handleInboundTurn(input)
+
+      const call = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const options = call[4] as RunAgentOptions
+      expect(options.orientationFrame).toBe(suppliedFrame)
+      expect(options.toolContext?.orientationFrame).toBe(suppliedFrame)
+    })
+
     it("returns usage data from runAgent", async () => {
       const input = makeInput({
         runAgent: vi.fn().mockResolvedValue({ usage: usageData }),

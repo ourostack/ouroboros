@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.621",
+      "changes": [
+        "Persist structured assistant outputs and surface them through orientation frames for referent-safe correction turns."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.620",
       "changes": [
         "Plugin support W5.5: wire the `--agent <name>` flag end-to-end across `ouro plugin install / list / remove`. Previously parsed but ignored by the handlers. Now: install --agent X reads X's `~/AgentBundles/X.ouro/agent.json`, idempotently adds `{ id, enabled: true, source, version }` to plugins[] (source + version persisted only when set on the command). list --agent X intersects installed-on-disk with X's plugins[] (enabled-for-X filter). remove --agent X removes the entry from X's plugins[] only — never deletes the plugin from disk (other agents may still use it). remove WITHOUT --agent scans all bundles via getAgentBundlesRoot; refuses with a clear message if any agent's plugins[] still references the plugin, listing the offending agents. agent.json writes match the codebase's existing non-atomic `fs.writeFileSync` pattern (atomic-write helper deferred as a follow-up). 15 new tests cover the install / list / remove paths under --agent (and the new machine-wide remove guardrail); plugin-cli.ts stays at 100% coverage.",

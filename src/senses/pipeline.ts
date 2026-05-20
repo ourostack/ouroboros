@@ -45,6 +45,8 @@ import { derivePresence, writePresence } from "../arc/presence"
 import { emitEpisode } from "../arc/episodes"
 import { buildTurnContext } from "../heart/turn-context"
 import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
+import { buildOrientationFrame } from "../heart/orientation-frame"
+import type { StructuredOutput } from "../heart/structured-output"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -291,7 +293,7 @@ export interface InboundTurnInput {
   /** Resolves external identity into a FriendRecord + channel capabilities. */
   friendResolver: { resolve(): Promise<ResolvedContext> }
   /** Loads an existing session or creates a fresh one. */
-  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[] }> }
+  sessionLoader: { loadOrCreate(): Promise<{ messages: ChatCompletionMessageParam[]; sessionPath: string; state?: SessionContinuityState; events?: SessionEvent[]; structuredOutputs?: StructuredOutput[] }> }
   /** Directory to drain pending messages from. */
   pendingDir: string
   /** Friend store used for token accumulation. */
@@ -684,6 +686,16 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     stampIngressTime(msg)
     sessionMessages.push(msg)
   }
+  const currentUserMessages = input.messages.filter((message) => message.role === "user")
+  const orientationFrame = input.runAgentOptions?.orientationFrame
+    ?? (currentUserMessages.length > 0
+      ? buildOrientationFrame({
+          channel: input.channel,
+          messages: sessionMessages,
+          currentUserMessages,
+          structuredOutputs: session.structuredOutputs ?? [],
+        })
+      : undefined)
 
   // Step 4b: Continuity pipeline — derive tempo, build start-of-turn packet, snapshot obligations
   let renderedStartOfTurnPacket: string | undefined
@@ -763,6 +775,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   const existingToolContext = input.runAgentOptions?.toolContext
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
+    ...(orientationFrame ? { orientationFrame } : {}),
     ...(liveLatencyMode ? { skipKeptNotes: true } : {}),
     bridgeContext,
     activeWorkFrame,
@@ -790,6 +803,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       friendStore: input.friendStore,
       currentSession,
       activeBridges,
+      ...(orientationFrame ? { orientationFrame } : {}),
     },
   }
 

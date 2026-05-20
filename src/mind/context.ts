@@ -11,6 +11,7 @@ import {
   type SessionEnvelope,
   type SessionEvent,
 } from "../heart/session-events"
+import type { StructuredOutput } from "../heart/structured-output"
 import { emitNervesEvent } from "../nerves/runtime"
 import * as fs from "fs"
 import * as path from "path"
@@ -33,6 +34,7 @@ export interface SessionContinuityState {
 export interface SessionData {
   messages: OpenAI.ChatCompletionMessageParam[]
   events: SessionEvent[]
+  structuredOutputs: StructuredOutput[]
   lastUsage?: UsageData
   state?: SessionContinuityState
 }
@@ -358,6 +360,7 @@ export function loadSession(filePath: string): SessionData | null {
     return {
       messages: sanitizeProviderMessages(projectProviderMessages(envelope)),
       events: envelope.events,
+      structuredOutputs: envelope.structuredOutputs ?? [],
       lastUsage: envelope.lastUsage ?? undefined,
       state: denormalizeContinuityState(envelope.state),
     }

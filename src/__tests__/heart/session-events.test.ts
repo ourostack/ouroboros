@@ -190,6 +190,45 @@ describe("session events", () => {
     expect(String(envelope.events[1]?.content).length).toBeLessThanOrEqual(EVENT_CONTENT_MAX_CHARS)
   })
 
+  it("persists assistant structured outputs in the canonical session envelope", async () => {
+    const { buildCanonicalSessionEnvelope, parseSessionEnvelope } = await import("../../heart/session-events")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "user", content: "what are the gaps?" },
+      {
+        role: "assistant",
+        content: "Gaps:\n1. Zurich to Basel\n2. Basel to Lugano\n3. Lugano to Milan\n4. La Villa to MXP",
+      },
+    ]
+
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: messages,
+      trimmedMessages: messages,
+      recordedAt: "2026-05-19T16:20:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+
+    expect(envelope.structuredOutputs).toEqual([
+      expect.objectContaining({
+        id: "structured-evt-000002-1",
+        sourceEventId: "evt-000002",
+        heading: "Gaps:",
+        items: [
+          { label: "1", text: "Zurich to Basel" },
+          { label: "2", text: "Basel to Lugano" },
+          { label: "3", text: "Lugano to Milan" },
+          { label: "4", text: "La Villa to MXP" },
+        ],
+      }),
+    ])
+
+    const parsed = parseSessionEnvelope(JSON.parse(JSON.stringify(envelope)))
+    expect(parsed?.structuredOutputs).toEqual(envelope.structuredOutputs)
+  })
+
   it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
     const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
 
