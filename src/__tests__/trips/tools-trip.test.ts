@@ -921,6 +921,11 @@ describe("trip tools", () => {
   })
 
   describe("trip_remove_leg", () => {
+    it("declares reason as required in the tool schema", () => {
+      const params = tool("trip_remove_leg").tool.function.parameters as { required: string[] }
+      expect(params.required).toContain("reason")
+    })
+
     it("removes the named leg, updates updatedAt, and reports the new leg count", async () => {
       mountAgent()
       await tool("trip_ensure_ledger").handler({}, familyCtx)
@@ -958,6 +963,51 @@ describe("trip tools", () => {
       expect(got).not.toContain("leg_flight_0000000000000001")
     })
 
+    it("requires a non-empty reason before removing a leg", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const seeded = trip({
+        legs: [
+          {
+            legId: "leg_lodging_0000000000000000",
+            kind: "lodging",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T08:00:00.000Z",
+            updatedAt: "2026-04-01T08:00:00.000Z",
+          },
+          {
+            legId: "leg_flight_0000000000000001",
+            kind: "flight",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T09:00:00.000Z",
+            updatedAt: "2026-04-01T09:00:00.000Z",
+          },
+        ],
+      })
+      await tool("trip_upsert").handler({ record: JSON.stringify(seeded) }, familyCtx)
+
+      const missing = await tool("trip_remove_leg").handler({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+      }, familyCtx) as string
+      expect(missing).toContain("reason is required")
+
+      const blank = await tool("trip_remove_leg").handler({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "   ",
+      }, familyCtx) as string
+      expect(blank).toContain("reason is required")
+
+      const got = await tool("trip_get").handler({ tripId: seeded.tripId }, familyCtx) as string
+      expect(got).toContain("legs: 2")
+      expect(got).toContain("leg_flight_0000000000000001")
+    })
+
     it("rejects when the leg id is unknown so accidental no-op removals are visible", async () => {
       mountAgent()
       await tool("trip_ensure_ledger").handler({}, familyCtx)
@@ -966,6 +1016,7 @@ describe("trip tools", () => {
         tripId: "trip_basel_aaaaaaaaaaaaaaaa",
         legId: "leg_doesnotexist_0000000000000000",
         updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "booking cancelled",
       }, familyCtx) as string
       expect(result).toContain("not found")
     })
@@ -977,6 +1028,7 @@ describe("trip tools", () => {
         tripId: "trip_missing_0000000000000000",
         legId: "leg_x",
         updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "booking cancelled",
       }, familyCtx) as string
       expect(result).toContain("trip not found")
     })
