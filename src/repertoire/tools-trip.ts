@@ -316,6 +316,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             record: { type: "string", description: "Full TripRecord JSON. Must include tripId, agentId, ownerEmail, name, status, travellers[], legs[], createdAt, updatedAt." },
+            writeReason: { type: "string", description: "Required when replacing an existing trip record. One-line source or reason that makes the whole-record replacement correct." },
           },
           required: ["record"],
         },
@@ -326,8 +327,29 @@ export const tripToolDefinitions: ToolDefinition[] = [
       try {
         const parsed = parseJsonArg(args.record, "record")
         const trip = validateTripRecord(parsed)
-        ensureAgentTripLedger({ agentName: getAgentName() })
-        upsertTripRecord(getAgentName(), trip)
+        const agentName = getAgentName()
+        ensureAgentTripLedger({ agentName })
+        let replacesExisting = false
+        try {
+          readTripRecord(agentName, trip.tripId)
+          replacesExisting = true
+        } catch (error) {
+          if (!(error instanceof TripNotFoundError)) throw error
+        }
+        const writeReason = typeof args.writeReason === "string" ? args.writeReason.trim() : ""
+        if (replacesExisting && writeReason.length === 0) {
+          return "writeReason is required when replacing an existing trip record."
+        }
+        upsertTripRecord(agentName, trip)
+        if (replacesExisting) {
+          emitNervesEvent({
+            component: "trips",
+            event: "trips.record_replaced",
+            message: "trip record replaced with write reason",
+            meta: { agentId: agentName, tripId: trip.tripId, legCount: trip.legs.length, status: trip.status, writeReason: writeReason.slice(0, 240) },
+          })
+          return `trip replaced: ${trip.tripId} (${trip.legs.length} leg(s), status=${trip.status}). reason: ${writeReason}`
+        }
         return `trip upserted: ${trip.tripId} (${trip.legs.length} leg(s), status=${trip.status})`
       } catch (error) {
         return `upsert failed: ${error instanceof Error ? error.message : /* v8 ignore next -- non-Error throw is unreachable from validateTripRecord/parseJsonArg */ String(error)}`

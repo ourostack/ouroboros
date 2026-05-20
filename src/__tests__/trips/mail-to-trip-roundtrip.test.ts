@@ -167,7 +167,11 @@ describe("mail booking → trip ledger end-to-end roundtrip", () => {
       legs: [...seeded.legs, newLeg],
       updatedAt: "2026-04-01T17:00:00.000Z",
     }
-    await tool("trip_upsert").handler({ record: JSON.stringify(withFlight) }, familyCtx)
+    const flightUpsertResult = await tool("trip_upsert").handler({
+      record: JSON.stringify(withFlight),
+      writeReason: "flight confirmation extracted from booking email",
+    }, familyCtx) as string
+    expect(flightUpsertResult).toContain("trip replaced")
 
     const operatorEvidence = JSON.stringify({
       messageId: "operator-conversation-2026-04-02",
