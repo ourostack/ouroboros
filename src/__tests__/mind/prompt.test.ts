@@ -3077,7 +3077,8 @@ describe("buildSystem with context", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
-    expect(result).toContain("when a thought is ready to share, i surface it outward")
+    expect(result).toContain("when a held thought or session-linked return is ready, i surface it")
+    expect(result).toContain("when i intentionally choose outward contact, i send_message")
     expect(result).toContain("ponder creates or revises typed packets")
     expect(result).toContain("HEARTBEAT_OK")
     expect(result).toContain("## ponder packet sops")
@@ -3085,7 +3086,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("think. journal. share. rest.")
   })
 
-  it("buildSystem('inner') teaches surface/rest instead of send_message/settle delivery", async () => {
+  it("buildSystem('inner') exposes send_message as the explicit outward escape hatch", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -3096,15 +3097,16 @@ describe("buildSystem with context", () => {
     const toolsBlock = result.match(/## my tools\n[\s\S]*?(?=\n\n## |\n\n# )/)?.[0] ?? ""
 
     expect(toolsBlock).toContain("- surface:")
+    expect(toolsBlock).toContain("- send_message:")
     expect(toolsBlock).toContain("- rest:")
     expect(toolsBlock).toContain("- ponder:")
-    expect(toolsBlock).not.toContain("- send_message:")
     expect(toolsBlock).not.toContain("- settle:")
-    expect(result).toContain("When I have something to say to a person, I call `surface`")
-    expect(result).toContain("I do not call `send_message` or `settle` from inner dialogue")
-    expect(result).toContain("my outward delivery tool is `surface`, not `send_message`")
+    expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
+    expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
+    expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
+    expect(result).not.toContain("I do not call `send_message` or `settle` from inner dialogue")
+    expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
-    expect(result).not.toContain("to ask a sibling for help: i send_message them")
 
     const duplicateResult = flattenSystemPrompt(await buildSystem("inner", {
       tools: [{ type: "function", function: { name: "rest", description: "duplicate rest" } } as any],
