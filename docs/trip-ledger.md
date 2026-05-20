@@ -116,7 +116,7 @@ Mirrors the mail substrate exactly:
 
 ## Harness tools
 
-The agent has eight tools for working with the ledger
+The agent has twelve tools for working with the ledger
 (`src/repertoire/tools-trip.ts`):
 
 | Tool | Purpose |
@@ -124,13 +124,23 @@ The agent has eight tools for working with the ledger
 | `trip_ensure_ledger` | Idempotently provision the agent's keypair on disk. Safe to call at every boot. |
 | `trip_status` | List known trip ids in sorted order. Cheap overview. |
 | `trip_get` | Read + decrypt one trip by id. Returns a structured summary plus the raw JSON. |
-| `trip_upsert` | Create or replace a whole `TripRecord`. Validates shape before persisting. |
-| `trip_update_leg` | Update specific fields of an existing leg without re-emitting the whole record. Cannot change `legId` or `kind`. |
+| `trip_replace_preview` | Preview replacing an existing `TripRecord`. Returns the short-lived `previewToken` required before `trip_upsert` may replace an existing trip. |
+| `trip_upsert` | Create or replace a whole `TripRecord`. New trip creation is direct; replacing an existing trip requires `writeReason` plus a matching `trip_replace_preview` token. |
 | `trip_attach_evidence` | Append a `TripEvidence` entry to a specific leg's evidence array. The natural follow-up to "I just extracted a fact from a mail message and need to remember where it came from." |
+| `trip_update_leg_preview` | Preview specific leg-field changes and return the short-lived `previewToken` required before `trip_update_leg` may commit them. |
+| `trip_update_leg` | Update specific fields of an existing leg without re-emitting the whole record. Cannot change `legId` or `kind`; requires `updateReason` plus a matching preview token. |
+| `trip_remove_leg_preview` | Preview removing a leg and return the short-lived `previewToken` required before `trip_remove_leg` may commit it. |
+| `trip_remove_leg` | Remove a leg from an existing trip. Requires a human-readable `reason` plus a matching preview token. |
 | `trip_calendar` | Render a chronological calendar/agenda projection from ledger legs, preserving leg status and evidence ids so mail-derived plans are trackable over time. |
 | `trip_new_id` | Compute a deterministic trip id from `agentId + name + createdAt`. Useful before constructing a new record so the id is stable. |
 
-All eight tools gate behind the same trust check used by other private
+Whole-record replacement, leg updates, and leg removals deliberately use a
+preview-then-apply shape: the agent must inspect the exact diff for the
+current trip state, then pass the matching token into the write tool. Tokens
+expire quickly and are consumed on success, so a stale or mismatched change is
+rejected before it reaches durable state.
+
+All twelve tools gate behind the same trust check used by other private
 surfaces (mail, vault): only callers in trusted contexts (operator
 loopback, family friend records) can invoke them.
 

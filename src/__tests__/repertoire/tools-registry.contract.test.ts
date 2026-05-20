@@ -195,13 +195,16 @@ describe("tool registry contract", () => {
     expect(names).toContain("flight_book");
     expect(names).toContain("flight_cancel");
 
-    // Added in trip ledger Step 4: 8 trip tools
+    // Added in trip ledger Step 4 plus preview-gated write hardening.
     expect(names).toContain("trip_ensure_ledger");
     expect(names).toContain("trip_status");
     expect(names).toContain("trip_get");
+    expect(names).toContain("trip_replace_preview");
     expect(names).toContain("trip_upsert");
     expect(names).toContain("trip_attach_evidence");
+    expect(names).toContain("trip_update_leg_preview");
     expect(names).toContain("trip_update_leg");
+    expect(names).toContain("trip_remove_leg_preview");
     expect(names).toContain("trip_remove_leg");
     expect(names).toContain("trip_calendar");
     expect(names).toContain("trip_new_id");
@@ -222,7 +225,7 @@ describe("tool registry contract", () => {
     // Added in orientation substrate: 1 turn-frame inspection tool
     expect(names).toContain("orientation_get");
 
-    // Exact count: 89 tools (88 prior + orientation_get)
-    expect(names).toHaveLength(89);
+    // Exact count: 92 tools (89 prior + trip semantic-write preview tools)
+    expect(names).toHaveLength(92);
   });
 });
