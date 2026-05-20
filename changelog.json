@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.623",
+      "changes": [
+        "Block risky Ouro shell commands during correction holds."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.622",
       "changes": [
         "Require explicit reasons before removing trip legs."
