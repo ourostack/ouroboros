@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
+const mockListSessionActivity = vi.fn()
+const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
+const mockGetBridge = vi.fn()
+
 vi.mock("fs", () => ({
   existsSync: vi.fn().mockReturnValue(false),
   readFileSync: vi.fn().mockReturnValue(""),
@@ -17,6 +21,21 @@ vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn().mockReturnValue("test"),
 }))
 
+vi.mock("../../heart/session-activity", () => ({
+  listSessionActivity: (...args: unknown[]) => mockListSessionActivity(...args),
+}))
+
+vi.mock("../../senses/bluebubbles", () => ({
+  sendProactiveBlueBubblesMessageToSession: (...args: unknown[]) =>
+    mockSendProactiveBlueBubblesMessageToSession(...args),
+}))
+
+vi.mock("../../heart/bridges/manager", () => ({
+  createBridgeManager: () => ({
+    getBridge: (...args: unknown[]) => mockGetBridge(...args),
+  }),
+}))
+
 describe("surface tool", () => {
   let surfaceToolDef: typeof import("../../repertoire/tools").surfaceToolDef
   let handleSurface: typeof import("../../senses/surface-tool").handleSurface
@@ -24,6 +43,19 @@ describe("surface tool", () => {
 
   beforeEach(async () => {
     vi.resetModules()
+    vi.clearAllMocks()
+    const fs = await import("fs")
+    vi.mocked(fs.existsSync).mockReturnValue(false)
+    vi.mocked(fs.readFileSync).mockReturnValue("")
+    vi.mocked(fs.writeFileSync).mockReset()
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    vi.mocked(fs.mkdirSync).mockReset()
+    mockListSessionActivity.mockReturnValue([])
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
+      delivered: false,
+      reason: "send_error",
+    })
+    mockGetBridge.mockReturnValue(null)
     const toolsMod = await import("../../repertoire/tools")
     surfaceToolDef = toolsMod.surfaceToolDef
     const surfaceMod = await import("../../senses/surface-tool")
@@ -395,6 +427,89 @@ describe("surface tool", () => {
 
       expect((result as string).toLowerCase()).toContain("failed")
       expect(result).toContain("blocked: contains internal meta markers")
+    })
+
+    it("surfaceToolDefinition queues bridge-attached BlueBubbles returns without live-sending iMessage", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockGetBridge.mockReturnValue({
+        id: "bridge-1",
+        lifecycle: "active",
+        attachedSessions: [
+          {
+            friendId: "friend-1",
+            channel: "bluebubbles",
+            key: "chat:any;-;ari@mendelow.me",
+          },
+        ],
+      })
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "private answer ready for the bluebubbles session",
+        delegationId: "delegation-1",
+      }, {
+        delegatedOrigins: [
+          {
+            id: "delegation-1",
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "bluebubbles",
+            key: "chat:any;-;ari@mendelow.me",
+            bridgeId: "bridge-1",
+            delegatedContent: "think about this privately",
+            source: "drained",
+            timestamp: 1,
+          },
+        ],
+      } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for next interaction via bluebubbles")
+      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("private answer ready for the bluebubbles session"),
+      )
+    })
+
+    it("surfaceToolDefinition queues freshest BlueBubbles DM returns without live-sending iMessage", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "freshest bluebubbles return should wait",
+        friendId: "friend-1",
+      }, { delegatedOrigins: [] } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for next interaction via bluebubbles")
+      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("freshest bluebubbles return should wait"),
+      )
     })
 
     it("calls fulfillHeartObligation even when queue item has no obligationId", async () => {
