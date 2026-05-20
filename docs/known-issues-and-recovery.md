@@ -85,6 +85,27 @@ The agent gets notified once and can then process or rest as needed.
 Look for `engine.fresh_work_gate_fired` info events — they fire
 exactly once per turn the gate triggers.
 
+## "Repeated heartbeat probes make rest feel like failure"
+
+**Symptom**: an agent cleanly rests with `status=HEARTBEAT_OK`,
+then the harness/test loop fires the same heartbeat again a minute
+later. The transcript can start to feel accusatory: the agent has
+already verified there is no work, but is summoned again to prove it.
+
+**Trigger**: heartbeat dispatch used to be observation-only for
+runaway detection. It warned about suspicious cadence but still woke
+the model for each duplicate heartbeat, even when the previous
+heartbeat ended in clean `HEARTBEAT_OK` and no pending work existed.
+
+**Recovery (post-inner-distress-relief)**: `HEARTBEAT_OK` is treated
+as a valid quiet state. Repeated heartbeat messages inside the quiet
+window are accepted by the worker without another model turn while
+the pending queue is empty. Real work still gets through: pending
+messages, explicit pokes, awaits, chats, and non-heartbeat habits drop
+the quiet state and run normally. Look for
+`senses.heartbeat_ok_rest_reused` info events when the worker reuses
+the prior clean rest.
+
 ## "MCP empty-reply diagnostic appears even though Slugger is actually thinking"
 
 **Symptom**: operator sees "(agent produced reasoning but no final
