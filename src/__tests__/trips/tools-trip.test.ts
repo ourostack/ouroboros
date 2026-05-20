@@ -122,6 +122,73 @@ describe("trip tools", () => {
       expect(got).toContain("raw record (JSON)")
     })
 
+    it("requires writeReason before replacing an existing trip record", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        name: "Basel corrected weekend",
+        status: "tentative",
+        updatedAt: "2026-04-02T08:00:00.000Z",
+      })
+      const missing = await tool("trip_upsert").handler({ record: JSON.stringify(replacement) }, familyCtx) as string
+      expect(missing).toContain("writeReason is required")
+
+      const blank = await tool("trip_upsert").handler({
+        record: JSON.stringify(replacement),
+        writeReason: "   ",
+      }, familyCtx) as string
+      expect(blank).toContain("writeReason is required")
+
+      const stored = tripStore.readTripRecord("slugger", original.tripId)
+      expect(stored.name).toBe("Basel weekend")
+      expect(stored.status).toBe("confirmed")
+      expect(stored.updatedAt).toBe("2026-04-01T08:00:00.000Z")
+    })
+
+    it("replaces an existing trip record when writeReason is provided", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        name: "Basel corrected weekend",
+        status: "tentative",
+        updatedAt: "2026-04-02T08:00:00.000Z",
+      })
+      const result = await tool("trip_upsert").handler({
+        record: JSON.stringify(replacement),
+        writeReason: "Ari corrected the itinerary in chat.",
+      }, familyCtx) as string
+      expect(result).toContain("trip replaced")
+      expect(result).toContain("Ari corrected")
+
+      const stored = tripStore.readTripRecord("slugger", original.tripId)
+      expect(stored.name).toBe("Basel corrected weekend")
+      expect(stored.status).toBe("tentative")
+      expect(stored.updatedAt).toBe("2026-04-02T08:00:00.000Z")
+    })
+
+    it("reports replacement-read failures before mutating", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const upsertSpy = vi.spyOn(tripStore, "upsertTripRecord")
+      vi.spyOn(tripStore, "readTripRecord").mockImplementation(() => {
+        throw new Error("decrypt failure: corrupt envelope")
+      })
+
+      const result = await tool("trip_upsert").handler({
+        record: JSON.stringify(trip()),
+        writeReason: "Trying to recover a corrupt trip.",
+      }, familyCtx) as string
+
+      expect(result).toContain("decrypt failure")
+      expect(upsertSpy).not.toHaveBeenCalled()
+    })
+
     it("trip_status returns the empty-state message before any trip exists", async () => {
       mountAgent()
       const result = await tool("trip_status").handler({}, familyCtx) as string
