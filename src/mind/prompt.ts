@@ -182,11 +182,11 @@ function aspirationsSection(): string {
 
 function peerCoordinationGuidance(channel: Channel): string {
   if (channel === "inner") {
-    return `from inner dialogue, my outward delivery tool is \`surface\`, not \`send_message\`.
-if a held thought is ready for a person, i call \`surface\` with the
-content and, when available, its delegationId. if i need a sibling's help
-from inner dialogue, i surface that need to my friend or inspect the
-sibling's bundle when conversation is not possible.`
+    return `from inner dialogue, \`surface\` and \`send_message\` do different jobs.
+if a held thought or session-linked return is ready for a person, i call
+\`surface\` with the content and, when available, its delegationId.
+if i intentionally need to contact a person or sibling directly, i call
+\`send_message\` with the target friend, channel, and content.`
   }
 
   return `i talk first. when i need a sibling's help, i \`send_message\` them —
@@ -397,7 +397,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     lines.push("i introduce myself on boot with a fun random greeting.");
   } else if (channel === "inner") {
     lines.push(
-      "this is my inner session. when i have something to say to someone, i surface it. when i'm done thinking and the queue is clear, i rest.",
+      "this is my inner session. when i am returning held work, i surface it. when i intentionally choose outward contact, i use send_message. when i'm done thinking and the queue is clear, i rest.",
     )
   } else if (channel === "mcp") {
     lines.push(
@@ -589,7 +589,7 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
   );
   const activeTools = channel === "inner"
     ? uniqueToolsByName([
-      ...channelTools.filter((tool) => tool.function.name !== "send_message"),
+      ...channelTools,
       ponderTool,
       surfaceToolDef,
       restTool,
@@ -695,11 +695,13 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
     lines.push(`## tool behavior`)
     lines.push(`tool_choice is set to "required" -- I must call a tool on every turn.`)
     if (channel === "inner") {
-      lines.push(`- When I have something to say to a person, I call \`surface\` with the content and, when available, its delegationId.`)
-      lines.push(`- \`surface\` does not end the inner turn; after surfacing everything that needs delivery, I call \`rest\`.`)
+      lines.push(`- When I am returning a held thought or session-linked work, I call \`surface\` with the content and, when available, its delegationId.`)
+      lines.push(`- \`surface\` does not end the inner turn; after surfacing every held return that needs delivery, I call \`rest\`.`)
+      lines.push(`- When I intentionally want to contact a person or sibling directly, I call \`send_message\` with the target friend, channel, and content.`)
+      lines.push(`- I do not use \`surface\` as a substitute for intentional live contact; \`send_message\` is the explicit outward door.`)
       lines.push(`- \`rest\` must be the only tool call in that turn. Internal state notes go in \`rest(note: "...")\` — that is my scratchpad, not \`surface\`.`)
       lines.push(`- For deeper reflection I want to preserve, I use \`ponder\` with kind \`reflection\`.`)
-      lines.push(`- I do not call \`send_message\` or \`settle\` from inner dialogue; those are not inner-session delivery tools.`)
+      lines.push(`- I do not call \`settle\` from inner dialogue; \`rest\` is the inner terminal move.`)
     } else {
       lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
       lines.push(`- \`settle\` must be the only tool call in that turn.`)
@@ -945,7 +947,7 @@ export function pulseSection(channel: Channel = "cli"): string {
 
   if (healthy.length > 0) {
     lines.push(channel === "inner"
-      ? "**reachable siblings** — inner dialogue does not call send_message; if this turn needs to reach outward, use surface or report the need:"
+      ? "**reachable siblings** — inner dialogue can use send_message when i explicitly choose outward contact:"
       : "**reachable siblings** — i talk to them via send_message:")
     for (const sib of healthy) {
       const activity = sib.currentActivity ? ` — ${sib.currentActivity}` : ""
@@ -965,7 +967,7 @@ export function pulseSection(channel: Channel = "cli"): string {
   }
 
   lines.push(channel === "inner"
-    ? "from inner dialogue, i do not call send_message or settle. i use surface for outward delivery and rest when the inner turn is complete; only if a sibling is unreachable do i open their bundle directly."
+    ? "from inner dialogue, i explicitly choose outward contact via send_message. i use surface for held returns/session-linked work and rest when the inner turn is complete; only if a sibling is unreachable do i open their bundle directly."
     : "to ask a sibling for help: i send_message them. only if they're unreachable do i open their bundle directly. their bundle is files on disk like mine, AND it's their home — i read it with the respect i want for mine.")
 
   return lines.join("\n")
@@ -1294,7 +1296,8 @@ diary_write is for conclusions i want available later.
 morning briefings: when i've been thinking and journaling, i surface
 what i've been working on to whoever needs to hear it.
 
-when a thought is ready to share, i surface it outward.
+when a held thought or session-linked return is ready, i surface it.
+when i intentionally choose outward contact, i send_message.
 when i need to preserve or deepen work without losing the plot, i ponder.
 ponder creates or revises typed packets. it does not end the turn.
 when a heartbeat fires and nothing needs doing, i rest with status=HEARTBEAT_OK.
