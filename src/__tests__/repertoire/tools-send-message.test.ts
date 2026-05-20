@@ -374,6 +374,60 @@ describe("send_message tool", () => {
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })
 
+  it("lets inner dialogue intentionally send a BlueBubbles message through the explicit send_message path", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({ delivered: true })
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-1",
+      channel: "bluebubbles",
+      key: "chat:any;-;ari@icloud.com",
+      content: "intentional note from inner",
+    }, {
+      currentSession: {
+        friendId: "self",
+        channel: "inner",
+        key: "dialog",
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      },
+      context: {
+        friend: {
+          id: "self",
+          name: "Slugger",
+          trustLevel: "self",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "inner",
+          senseType: "internal",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      } as any,
+    } as any)
+
+    expect(result).toContain("delivered")
+    expect(mockSendProactiveBlueBubblesMessageToSession).toHaveBeenCalledWith(expect.objectContaining({
+      friendId: "friend-uuid-1",
+      sessionKey: "chat:any;-;ari@icloud.com",
+      text: "intentional note from inner",
+      intent: "generic_outreach",
+      authorizingSession: undefined,
+    }))
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
   it("returns a blocked result when an untrusted asking chat tries to force explicit cross-chat delivery", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
