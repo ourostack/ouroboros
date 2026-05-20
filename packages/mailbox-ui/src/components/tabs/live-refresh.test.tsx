@@ -412,7 +412,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(ui.getByText("older context not available; the agent's curated record is in diary/journal/notes")).toBeTruthy()
+    expect(await ui.findByText("older context not available; the agent's curated record is in diary/journal/notes")).toBeTruthy()
   })
 
   it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {
