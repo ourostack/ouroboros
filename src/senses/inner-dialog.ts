@@ -855,6 +855,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         return {
           messages: existingMessages,
           sessionPath: sessionFilePath,
+          structuredOutputs: loaded?.structuredOutputs,
         }
       }
       // Fresh session: build system prompt
@@ -862,6 +863,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       return {
         messages: [{ role: "system" as const, content: flattenSystemPrompt(systemPrompt) }],
         sessionPath: sessionFilePath,
+        structuredOutputs: [],
       }
     },
   }

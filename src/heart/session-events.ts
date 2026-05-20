@@ -1,6 +1,11 @@
 import * as fs from "fs"
 import type OpenAI from "openai"
 import { emitNervesEvent } from "../nerves/runtime"
+import {
+  extractStructuredOutputsFromEvents,
+  normalizeStructuredOutputs,
+  type StructuredOutput,
+} from "./structured-output"
 
 export interface SessionUsageData {
   input_tokens: number
@@ -81,6 +86,7 @@ export interface SessionEnvelope {
   version: 2
   events: SessionEvent[]
   projection: SessionProjection
+  structuredOutputs?: StructuredOutput[]
   lastUsage: SessionUsageData | null
   state: SessionContinuitySnapshot
 }
@@ -1092,6 +1098,7 @@ export function migrateLegacySessionEnvelope(
       inputTokens: null,
       projectedAt: recordedAt,
     },
+    structuredOutputs: extractStructuredOutputsFromEvents(events),
     lastUsage: normalizeUsage(legacy.lastUsage),
     state: normalizeContinuityState(legacy.state),
   }
@@ -1170,6 +1177,9 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       inputTokens: typeof projection.inputTokens === "number" ? projection.inputTokens : null,
       projectedAt: typeof projection.projectedAt === "string" ? projection.projectedAt : null,
     },
+    structuredOutputs: record.structuredOutputs === undefined
+      ? extractStructuredOutputsFromEvents(events)
+      : normalizeStructuredOutputs(record.structuredOutputs),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
   }
@@ -1334,6 +1344,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
         inputTokens: options.projectionBasis.inputTokens,
         projectedAt: options.recordedAt,
       },
+      structuredOutputs: extractStructuredOutputsFromEvents(prunedEvents),
       lastUsage: normalizeUsage(options.lastUsage),
       state: normalizeContinuityState(options.state),
     },
@@ -1390,6 +1401,7 @@ export function appendSyntheticAssistantEvent(
   return {
     ...envelope,
     events: [...envelope.events, event],
+    structuredOutputs: extractStructuredOutputsFromEvents([...envelope.events, event]),
     projection: {
       ...envelope.projection,
       eventIds: [...envelope.projection.eventIds, event.id],

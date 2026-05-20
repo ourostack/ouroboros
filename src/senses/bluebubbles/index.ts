@@ -1293,6 +1293,7 @@ async function handleBlueBubblesNormalizedEvent(
       channel: "bluebubbles",
       messages: [...priorMessages, userMessage],
       currentUserMessages: [userMessage],
+      structuredOutputs: existing?.structuredOutputs ?? [],
       source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
     })
 
@@ -1390,6 +1391,7 @@ async function handleBlueBubblesNormalizedEvent(
             sessionPath: sessPath,
             state: existing?.state,
             events: existing?.events,
+            structuredOutputs: existing?.structuredOutputs,
           }),
         },
         pendingDir,

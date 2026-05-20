@@ -1091,6 +1091,7 @@ export async function main(agentName?: string, options?: { pasteDebounceMs?: num
               sessionPath: sessPath,
               state: sessionState,
               events: sessionEvents,
+              structuredOutputs: existing?.structuredOutputs,
             }),
           },
           pendingDir,

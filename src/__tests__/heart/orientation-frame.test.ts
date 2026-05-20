@@ -66,6 +66,25 @@ describe("orientation frame", () => {
     } as any)).toBe("keep this")
   })
 
+  it("adds visible delivery tool text after multimodal assistant content", () => {
+    expect(extractMessageText({
+      role: "assistant",
+      content: [
+        { type: "text", text: "visible content" },
+      ],
+      tool_calls: [
+        {
+          id: "call-settle",
+          type: "function",
+          function: {
+            name: "settle",
+            arguments: JSON.stringify({ answer: "visible settle answer" }),
+          },
+        },
+      ],
+    } as any)).toBe("visible content\nvisible settle answer")
+  })
+
   it("keeps ordinary turns in normal action policy", () => {
     const frame = buildOrientationFrame({
       channel: "cli",
@@ -77,6 +96,144 @@ describe("orientation frame", () => {
 
     expect(frame.signals).toEqual([])
     expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
+  it("surfaces the latest structured output for numeric correction referents", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "assistant", content: null, tool_calls: [] } as any,
+        { role: "tool", content: "(delivered)", tool_call_id: "call-1" } as any,
+        { role: "user", content: "no, number 4 will be sorted" },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-000010-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-000010",
+          recordedAt: "2026-05-19T16:12:41.000Z",
+          heading: "Gaps:",
+          items: [
+            { label: "1", text: "Zurich to Basel" },
+            { label: "2", text: "Basel to Lugano" },
+            { label: "3", text: "Lugano to Milan" },
+            { label: "4", text: "La Villa to MXP" },
+          ],
+        },
+      ],
+    })
+
+    expect(frame.signals).toEqual(expect.arrayContaining(["correction_marker", "structured_referent"]))
+    expect(frame.latestStructuredOutput).toMatchObject({
+      id: "structured-evt-000010-1",
+      heading: "Gaps:",
+      items: [
+        { label: "1", text: "Zurich to Basel" },
+        { label: "2", text: "Basel to Lugano" },
+        { label: "3", text: "Lugano to Milan" },
+        { label: "4", text: "La Villa to MXP" },
+      ],
+    })
+    expect(frame.actionPolicy.mode).toBe("correction_hold")
+  })
+
+  it("does not invent a structured referent when no structured output exists", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "user", content: "number 4" },
+      ],
+      structuredOutputs: [],
+    })
+
+    expect(frame.latestStructuredOutput).toBeUndefined()
+    expect(frame.signals).not.toContain("structured_referent")
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
+  it("attaches structured output for non-numeric correction turns", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "user", content: "hang on, that should be different" },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-correction-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-correction",
+          recordedAt: "2026-05-19T16:12:41.000Z",
+          items: [
+            { label: "1", text: "Small" },
+            { label: "2", text: "Real substrate" },
+          ],
+        },
+      ],
+    })
+
+    expect(frame.signals).toContain("correction_marker")
+    expect(frame.latestStructuredOutput?.id).toBe("structured-evt-correction-1")
+    expect(frame.actionPolicy.mode).toBe("correction_hold")
+  })
+
+  it("leaves structured output detached for ordinary turns", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "user", content: "please keep going" },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-ordinary-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-ordinary",
+          recordedAt: "2026-05-19T16:12:41.000Z",
+          items: [
+            { label: "1", text: "Small" },
+            { label: "2", text: "Real substrate" },
+          ],
+        },
+      ],
+    })
+
+    expect(frame.signals).toEqual([])
+    expect(frame.latestStructuredOutput).toBeUndefined()
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
+  it("extracts prior assistant referents from settle tool-call answers", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call-settle",
+              type: "function",
+              function: {
+                name: "settle",
+                arguments: JSON.stringify({
+                  answer: "Options:\n1. Keep current config\n2. Switch outward lane",
+                }),
+              },
+            },
+          ],
+        } as any,
+        { role: "tool", content: "(delivered)", tool_call_id: "call-settle" } as any,
+        { role: "user", content: "number 2" },
+      ],
+    })
+
+    expect(frame.priorAssistantReferents).toEqual([
+      { kind: "ordered_list_item", label: "1", text: "Keep current config" },
+      { kind: "ordered_list_item", label: "2", text: "Switch outward lane" },
+    ])
+    expect(frame.signals).toContain("terse_referent")
   })
 
   it("handles a user-only turn without inventing prior referents", () => {
@@ -182,6 +339,63 @@ describe("orientation frame", () => {
     expect(rendered).toContain("replying to: the message being corrected")
     expect(rendered).toContain("repair notice: repair kept the attachment visible")
     expect(rendered).toContain("routing hint: choose the lane before replying")
+  })
+
+  it("renders latest structured output when attached", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "user", content: "number 2" },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-000020-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-000020",
+          recordedAt: "2026-05-19T16:12:41.000Z",
+          heading: "Directions:",
+          items: [
+            { label: "1", text: "Small" },
+            { label: "2", text: "Real substrate" },
+          ],
+        },
+      ],
+    })
+
+    const rendered = renderOrientationFrame(frame)
+
+    expect(rendered).toContain("latest structured output: structured-evt-000020-1")
+    expect(rendered).toContain("heading: Directions:")
+    expect(rendered).toContain("2. Real substrate")
+  })
+
+  it("renders latest structured output without inventing a heading", () => {
+    const frame = buildOrientationFrame({
+      channel: "cli",
+      messages: [
+        { role: "user", content: "number 2" },
+      ],
+      structuredOutputs: [
+        {
+          schemaVersion: 1,
+          id: "structured-evt-no-heading-1",
+          kind: "ordered_list",
+          sourceEventId: "evt-no-heading",
+          recordedAt: "2026-05-19T16:12:41.000Z",
+          items: [
+            { label: "1", text: "Small" },
+            { label: "2", text: "Real substrate" },
+          ],
+        },
+      ],
+    })
+
+    const rendered = renderOrientationFrame(frame)
+
+    expect(rendered).toContain("latest structured output: structured-evt-no-heading-1")
+    expect(rendered).not.toContain("heading:")
+    expect(rendered).toContain("2. Real substrate")
   })
 
   it("renders frames without source metadata", () => {
