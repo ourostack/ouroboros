@@ -93,6 +93,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return scrutiny ? `ok\n\n${scrutiny}` : "ok"
     },
     summaryKeys: ["path"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes file contents" },
   },
   {
     tool: {
@@ -183,6 +184,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
       return scrutiny ? `${diffResult}\n\n${scrutiny}` : diffResult
     },
     summaryKeys: ["path"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "edits file contents" },
   },
   {
     tool: {
@@ -321,4 +323,3 @@ export const fileToolDefinitions: ToolDefinition[] = [
     summaryKeys: ["pattern", "path", "include"],
   },
 ]
-

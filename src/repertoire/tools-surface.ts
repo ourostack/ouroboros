@@ -286,5 +286,10 @@ export const surfaceToolDefinition: ToolDefinition = {
     })
   },
   summaryKeys: ["content", "delegationId", "friendId", "channel"],
+  riskProfile: {
+    mutates: ["durable_state_write", "external_side_effect"] as const,
+    risk: "high",
+    reason: "queues or delivers surfaced responses and may fulfill obligations",
+  },
 }
 /* v8 ignore stop */

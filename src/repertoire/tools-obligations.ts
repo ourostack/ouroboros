@@ -123,5 +123,6 @@ export const obligationToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       return letGo({ id: args.id, reason: args.reason }, agentRoot, agentName)
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "releases durable obligation state" },
   },
 ]

@@ -405,6 +405,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["organization", "project", "title"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "creates an Azure DevOps epic" },
   },
 
   // -- ado_create_issue --
@@ -448,6 +449,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["organization", "project", "title"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "creates an Azure DevOps work item" },
   },
 
   // -- ado_move_items --
@@ -504,6 +506,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["organization", "project", "workItemIds"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "reparents Azure DevOps work items" },
   },
 
   // -- ado_restructure_backlog --
@@ -564,6 +567,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["organization", "project"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "bulk-reparents Azure DevOps work items" },
   },
 
   // -- ado_validate_structure --
@@ -780,6 +784,7 @@ export const adoSemanticToolDefinitions: ToolDefinition[] = [
     },
     integration: "ado",
     summaryKeys: ["organization", "project"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "executes Azure DevOps batch mutations" },
   },
 
   // -- ado_detect_orphans --

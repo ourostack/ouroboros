@@ -275,6 +275,7 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["domain"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "stores credential vault item" },
   },
 
   {
@@ -371,5 +372,6 @@ export const credentialToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["domain"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "deletes credential vault item" },
   },
 ]
