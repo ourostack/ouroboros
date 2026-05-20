@@ -1098,7 +1098,7 @@ export function migrateLegacySessionEnvelope(
       inputTokens: null,
       projectedAt: recordedAt,
     },
-    structuredOutputs: extractStructuredOutputsFromEvents(events),
+    structuredOutputs: extractStructuredOutputsFromEvents(events, { emitTelemetry: false }),
     lastUsage: normalizeUsage(legacy.lastUsage),
     state: normalizeContinuityState(legacy.state),
   }
@@ -1178,7 +1178,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       projectedAt: typeof projection.projectedAt === "string" ? projection.projectedAt : null,
     },
     structuredOutputs: record.structuredOutputs === undefined
-      ? extractStructuredOutputsFromEvents(events)
+      ? extractStructuredOutputsFromEvents(events, { emitTelemetry: false })
       : normalizeStructuredOutputs(record.structuredOutputs),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
