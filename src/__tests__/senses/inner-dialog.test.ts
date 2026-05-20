@@ -2082,6 +2082,43 @@ describe("inner dialog runtime", () => {
     expect(result.restStatus).toBe("HEARTBEAT_OK")
   })
 
+  it.each([
+    ["blank", JSON.stringify({ status: "   " })],
+    ["missing", JSON.stringify({})],
+  ])("omits %s rest status metadata from pipeline result", async (_caseName, restArguments) => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+      gateResult: { allowed: true },
+      usage: undefined,
+      sessionPath: sessionFile,
+      turnOutcome: "rested",
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "...time passing. anything stirring?" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_rest",
+            type: "function",
+            function: { name: "rest", arguments: restArguments },
+          }],
+        },
+        { role: "tool", tool_call_id: "call_rest", content: "(resting)" },
+      ],
+    })
+
+    const result = await runInnerDialogTurn({
+      reason: "habit",
+      habitName: "heartbeat",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-06T12:00:00.000Z"),
+    })
+
+    expect(result.turnOutcome).toBe("rested")
+    expect(result.restStatus).toBeUndefined()
+  })
+
   it("marks runtime state as running during the turn and idle afterward", async () => {
     const runtimePath = path.join(path.dirname(sessionFile), "runtime.json")
     let runtimeDuringTurn: Record<string, unknown> | null = null

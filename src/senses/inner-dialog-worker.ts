@@ -118,12 +118,12 @@ export function createInnerDialogWorker(
       component: "senses",
       event: "senses.heartbeat_ok_rest_reused",
       message: "heartbeat skipped because previous HEARTBEAT_OK rest is still valid and no pending work exists",
-      meta: {
-        habitName,
-        quietWindowMs: HEARTBEAT_OK_REST_SUPPRESSION_MS,
-        restedAgoMs: heartbeatOkRestedAt === null ? null : nowSource() - heartbeatOkRestedAt,
-      },
-    })
+        meta: {
+          habitName,
+          quietWindowMs: HEARTBEAT_OK_REST_SUPPRESSION_MS,
+          restedAgoMs: nowSource() - heartbeatOkRestedAt!,
+        },
+      })
   }
 
   function recordHabitFireForRecursion(habitName: string): void {
@@ -180,7 +180,7 @@ export function createInnerDialogWorker(
       let nextAwaitName = awaitName
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
-      do {
+      runLoop: do {
         const currentReason = nextReason
         const currentHabitName = nextHabitName
         if (!(currentReason === "habit" && currentHabitName === "heartbeat")) {
@@ -213,7 +213,7 @@ export function createInnerDialogWorker(
 
         // Drain queue first. Externally-queued work resets the instinct cap
         // because a real outside trigger arrived between turns.
-        if (queue.length > 0) {
+        while (queue.length > 0) {
           const next = queue.shift()!
           if (next.reason === "habit" && next.habitName === "heartbeat" && shouldReuseHeartbeatOkRest(next.habitName)) {
             reuseHeartbeatOkRest(next.habitName)
@@ -227,7 +227,7 @@ export function createInnerDialogWorker(
           nextHabitName = next.habitName
           nextAwaitName = next.awaitName
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
-          continue
+          continue runLoop
         }
 
         // Then check hasPendingWork fallback. This is the loop site: any
