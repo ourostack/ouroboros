@@ -474,7 +474,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
             updatedAt: { type: "string", description: "ISO timestamp for the trip's updatedAt." },
             reason: { type: "string", description: "Why the leg is being removed. Logged in nerves for audit." },
           },
-          required: ["tripId", "legId", "updatedAt"],
+          required: ["tripId", "legId", "updatedAt", "reason"],
         },
       },
     },
@@ -483,9 +483,11 @@ export const tripToolDefinitions: ToolDefinition[] = [
       const tripId = args.tripId
       const legId = args.legId
       const updatedAt = args.updatedAt
+      const reason = typeof args.reason === "string" ? args.reason.trim() : ""
       if (typeof tripId !== "string" || tripId.length === 0) return "tripId is required."
       if (typeof legId !== "string" || legId.length === 0) return "legId is required."
       if (typeof updatedAt !== "string" || updatedAt.length === 0) return "updatedAt is required."
+      if (reason.length === 0) return "reason is required."
       try {
         const trip = readTripRecord(getAgentName(), tripId)
         const legIndex = trip.legs.findIndex((leg) => leg.legId === legId)
@@ -506,8 +508,7 @@ export const tripToolDefinitions: ToolDefinition[] = [
             tripId,
             legId,
             kind: droppedLeg.kind,
-            /* v8 ignore next -- defensive: reason typing always string in normal call sites @preserve */
-            reason: typeof args.reason === "string" ? args.reason : undefined,
+            reason,
           },
         })
         /* v8 ignore next -- pluralization branch: tests don't exhaustively cover both 1-leg and N-leg removal outcomes @preserve */
