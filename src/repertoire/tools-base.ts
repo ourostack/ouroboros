@@ -97,11 +97,9 @@ export interface ToolContext {
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
 export type ToolMutationKind = "none" | "durable_state_write" | "external_side_effect"
 
-export interface ToolRiskProfile {
-  mutates: ToolMutationKind
-  risk: "low" | "high"
-  reason?: string
-}
+export type ToolRiskProfile =
+  | { mutates: "none"; risk: "low"; reason?: string }
+  | { mutates: Exclude<ToolMutationKind, "none">; risk: "high"; reason: string }
 
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;

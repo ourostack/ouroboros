@@ -149,7 +149,7 @@ function normalizeGuardArgs(_name: string, args: Record<string, string>): Record
 }
 
 function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
-  const command = typeof args.command === "string" ? args.command : ""
+  const command = String(args.command)
   const destructive = detectDestructivePatterns(command)
   if (destructive.length > 0) {
     return { mutates: "external_side_effect", risk: "high", reason: `destructive shell pattern: ${destructive.join(", ")}` }
@@ -170,9 +170,8 @@ function riskProfileForTool(def: ToolDefinition, name: string, args: Record<stri
   return def.riskProfile ?? { mutates: "none", risk: "low" }
 }
 
-function orientationHoldMessage(name: string, profile: ToolRiskProfile, reason: string): string {
-  const detail = profile.reason ? ` ${profile.reason}.` : ""
-  return `orientation hold: ${reason} Call orientation_get, resolve the referent/correction, then retry ${name} if the write is still correct. Blocked ${profile.mutates}.${detail}`
+function orientationHoldMessage(name: string, profile: Extract<ToolRiskProfile, { risk: "high" }>, reason: string): string {
+  return `orientation hold: ${reason} Call orientation_get, resolve the referent/correction, then retry ${name} if the write is still correct. Blocked ${profile.mutates}. ${profile.reason}.`
 }
 
 export async function execTool(name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> {
@@ -199,8 +198,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   const riskProfile = riskProfileForTool(def, name, args)
   const orientationPolicy = ctx?.orientationFrame?.actionPolicy
   if (orientationPolicy?.mode === "correction_hold"
-    && riskProfile.risk === "high"
-    && riskProfile.mutates !== "none") {
+    && riskProfile.risk === "high") {
     const reason = orientationPolicy.reason
     const message = orientationHoldMessage(name, riskProfile, reason)
     emitNervesEvent({

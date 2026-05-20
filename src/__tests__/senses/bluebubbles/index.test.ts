@@ -1790,6 +1790,23 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.markChatRead).toHaveBeenCalledWith(expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }))
   })
 
+  it("carries mutation repair notices in the orientation frame", async () => {
+    mocks.repairEvent.mockImplementationOnce(async (event: any) => ({
+      ...event,
+      repairNotice: "BlueBubbles mutation repair failed: stale reaction target",
+    }))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(reactionPayload, {
+      recordMutation: mocks.recordMutation,
+    } as any)
+
+    expect(firstRunAgentOptions().orientationFrame.source).toMatchObject({
+      lane: "mutation",
+      repairNotice: "BlueBubbles mutation repair failed: stale reaction target",
+    })
+  })
+
   it("keeps edit and unsend mutations notifyable while treating delivery as state-only", async () => {
     const bluebubbles = await import("../../../senses/bluebubbles")
 
