@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.626",
       "changes": [
         "Expand correction hold risk metadata across mutation, messaging, mail, runtime, and integration tools so disorientation freezes high-risk actions before handlers run.",
-        "Run the `claude` orientation tool through Claude Code plan mode with only read/search/list tools so it remains a mechanically read-only second-opinion path during correction holds."
+        "Run the `claude` orientation tool through Claude Code plan mode with only read/search/list tools so it remains a mechanically read-only second-opinion path during correction holds.",
+        "Require preview tokens from trip replacement, leg update, and leg removal preview tools before those semantic trip mutations can commit, forcing agents to inspect the exact diff for current itinerary state before writing."
       ]
     },
     {

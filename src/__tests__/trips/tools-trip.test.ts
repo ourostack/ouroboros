@@ -65,6 +65,38 @@ function trip(overrides: Partial<TripRecord> = {}): TripRecord {
   }
 }
 
+function previewToken(output: string): string {
+  const match = /^previewToken: (trip_preview_[0-9a-f-]+)$/m.exec(output)
+  expect(match).not.toBeNull()
+  return match![1]
+}
+
+async function previewTripReplacement(record: TripRecord): Promise<string> {
+  const preview = await tool("trip_replace_preview").handler({ record: JSON.stringify(record) }, familyCtx) as string
+  return previewToken(preview)
+}
+
+async function previewTripUpdateLeg(input: {
+  tripId?: string
+  legId?: string
+  updates: Record<string, unknown>
+}): Promise<string> {
+  const preview = await tool("trip_update_leg_preview").handler({
+    tripId: input.tripId ?? "trip_basel_aaaaaaaaaaaaaaaa",
+    legId: input.legId ?? "leg_lodging_0000000000000000",
+    updates: JSON.stringify(input.updates),
+  }, familyCtx) as string
+  return previewToken(preview)
+}
+
+async function previewTripRemoveLeg(input: {
+  tripId: string
+  legId: string
+}): Promise<string> {
+  const preview = await tool("trip_remove_leg_preview").handler(input, familyCtx) as string
+  return previewToken(preview)
+}
+
 describe("trip tools", () => {
   describe("trust gating", () => {
     it("trust-allows family ctx for trip_status", async () => {
@@ -75,7 +107,7 @@ describe("trip tools", () => {
 
     it("rejects stranger ctx for every trip_ tool", async () => {
       mountAgent()
-      const names = ["trip_ensure_ledger", "trip_status", "trip_get", "trip_upsert", "trip_attach_evidence", "trip_update_leg", "trip_remove_leg", "trip_calendar", "trip_new_id"]
+      const names = ["trip_ensure_ledger", "trip_status", "trip_get", "trip_replace_preview", "trip_upsert", "trip_attach_evidence", "trip_update_leg_preview", "trip_update_leg", "trip_remove_leg_preview", "trip_remove_leg", "trip_calendar", "trip_new_id"]
       for (const name of names) {
         const result = await tool(name).handler({ tripId: "x", legId: "y", evidence: "{}", record: "{}", name: "n", createdAt: "t" }, strangerCtx)
         expect(typeof result === "string" && result.includes("private")).toBe(true)
@@ -159,9 +191,11 @@ describe("trip tools", () => {
         status: "tentative",
         updatedAt: "2026-04-02T08:00:00.000Z",
       })
+      const token = await previewTripReplacement(replacement)
       const result = await tool("trip_upsert").handler({
         record: JSON.stringify(replacement),
         writeReason: "Ari corrected the itinerary in chat.",
+        previewToken: token,
       }, familyCtx) as string
       expect(result).toContain("trip replaced")
       expect(result).toContain("Ari corrected")
@@ -170,6 +204,67 @@ describe("trip tools", () => {
       expect(stored.name).toBe("Basel corrected weekend")
       expect(stored.status).toBe("tentative")
       expect(stored.updatedAt).toBe("2026-04-02T08:00:00.000Z")
+    })
+
+    it("requires a matching replacement preview before replacing an existing trip record", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        name: "Basel corrected weekend",
+        status: "tentative",
+        updatedAt: "2026-04-02T08:00:00.000Z",
+      })
+      const missing = await tool("trip_upsert").handler({
+        record: JSON.stringify(replacement),
+        writeReason: "Ari corrected the itinerary in chat.",
+      }, familyCtx) as string
+      expect(missing).toContain("previewToken is required")
+      expect(missing).toContain("Attempted change:")
+      expect(missing).toContain("- name: \"Basel weekend\" -> \"Basel corrected weekend\"")
+
+      const token = await previewTripReplacement(replacement)
+      const changedAgain = trip({
+        name: "Basel different weekend",
+        status: "tentative",
+        updatedAt: "2026-04-02T08:00:00.000Z",
+      })
+      const mismatch = await tool("trip_upsert").handler({
+        record: JSON.stringify(changedAgain),
+        writeReason: "Ari corrected the itinerary in chat.",
+        previewToken: token,
+      }, familyCtx) as string
+      expect(mismatch).toContain("previewToken does not match")
+
+      const stored = tripStore.readTripRecord("slugger", original.tripId)
+      expect(stored.name).toBe("Basel weekend")
+    })
+
+    it("renders field-level replacement previews for kept legs", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const original = trip()
+      await tool("trip_upsert").handler({ record: JSON.stringify(original) }, familyCtx)
+
+      const replacement = trip({
+        updatedAt: "2026-04-02T08:00:00.000Z",
+        legs: [{
+          ...original.legs[0]!,
+          checkOutDate: "2026-08-06",
+          confirmationCode: "NEW-CODE",
+        }],
+      })
+      const preview = await tool("trip_replace_preview").handler({
+        record: JSON.stringify(replacement),
+      }, familyCtx) as string
+
+      expect(preview).toContain("top-level changes:")
+      expect(preview).toContain("- updatedAt: \"2026-04-01T08:00:00.000Z\" -> \"2026-04-02T08:00:00.000Z\"")
+      expect(preview).toContain("leg changes:")
+      expect(preview).toContain("- changed leg_lodging_0000000000000000.checkOutDate: \"2026-08-05\" -> \"2026-08-06\"")
+      expect(preview).toContain("- changed leg_lodging_0000000000000000.confirmationCode: (unset) -> \"NEW-CODE\"")
     })
 
     it("reports replacement-read failures before mutating", async () => {
@@ -809,12 +904,15 @@ describe("trip tools", () => {
       await tool("trip_ensure_ledger").handler({}, familyCtx)
       await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
 
+      const updates = { status: "cancelled", confirmationCode: "REFUND-2026-XYZ" }
+      const token = await previewTripUpdateLeg({ updates })
       const result = await tool("trip_update_leg").handler({
         tripId: "trip_basel_aaaaaaaaaaaaaaaa",
         legId: "leg_lodging_0000000000000000",
-        updates: JSON.stringify({ status: "cancelled", confirmationCode: "REFUND-2026-XYZ" }),
+        updates: JSON.stringify(updates),
         updatedAt: "2026-04-26T10:00:00.000Z",
         updateReason: "Refund confirmation from Basel hotel email.",
+        previewToken: token,
       }, familyCtx) as string
       expect(result).toContain("leg_lodging_0000000000000000 updated")
       expect(result).toContain("status")
@@ -826,6 +924,38 @@ describe("trip tools", () => {
       expect(got).toContain("REFUND-2026-XYZ")
       // Evidence preserved (one entry from the original trip())
       expect(got).toContain("mail_basel_booking")
+    })
+
+    it("requires a matching update preview before applying a leg update", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      await tool("trip_upsert").handler({ record: JSON.stringify(trip()) }, familyCtx)
+
+      const missing = await tool("trip_update_leg").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ status: "cancelled" }),
+        updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Refund confirmation from Basel hotel email.",
+      }, familyCtx) as string
+      expect(missing).toContain("previewToken is required")
+      expect(missing).toContain("Attempted change:")
+      expect(missing).toContain("- status: \"confirmed\" -> \"cancelled\"")
+
+      const token = await previewTripUpdateLeg({ updates: { status: "cancelled" } })
+      const mismatch = await tool("trip_update_leg").handler({
+        tripId: "trip_basel_aaaaaaaaaaaaaaaa",
+        legId: "leg_lodging_0000000000000000",
+        updates: JSON.stringify({ confirmationCode: "DIFFERENT" }),
+        updatedAt: "2026-04-26T10:00:00.000Z",
+        updateReason: "Refund confirmation from Basel hotel email.",
+        previewToken: token,
+      }, familyCtx) as string
+      expect(mismatch).toContain("previewToken does not match")
+
+      const got = await tool("trip_get").handler({ tripId: "trip_basel_aaaaaaaaaaaaaaaa" }, familyCtx) as string
+      expect(got).toContain("\"status\": \"confirmed\"")
+      expect(got).not.toContain("DIFFERENT")
     })
 
     it("rejects updates that try to change legId or kind (identity-changing)", async () => {
@@ -959,12 +1089,14 @@ describe("trip tools", () => {
       void original
       // Spy by re-importing — easier: just verify the result message format
       // since the nerves bus is harness-wide.
+      const token = await previewTripUpdateLeg({ updates: { status: "cancelled" } })
       const result = await tool("trip_update_leg").handler({
         tripId: "trip_basel_aaaaaaaaaaaaaaaa",
         legId: "leg_lodging_0000000000000000",
         updates: JSON.stringify({ status: "cancelled" }),
         updatedAt: "2026-04-26T10:00:00.000Z",
         updateReason: "Cancellation notice from source email.",
+        previewToken: token,
       }, familyCtx) as string
       expect(result).toContain("status")
       void recorded
@@ -991,6 +1123,7 @@ describe("trip tools", () => {
     it("declares reason as required in the tool schema", () => {
       const params = tool("trip_remove_leg").tool.function.parameters as { required: string[] }
       expect(params.required).toContain("reason")
+      expect(params.required).toContain("previewToken")
     })
 
     it("removes the named leg, updates updatedAt, and reports the new leg count", async () => {
@@ -1017,11 +1150,19 @@ describe("trip tools", () => {
         ],
       })
       await tool("trip_upsert").handler({ record: JSON.stringify(seeded) }, familyCtx)
+      const preview = await tool("trip_remove_leg_preview").handler({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+      }, familyCtx) as string
+      expect(preview).toContain("removed leg (JSON):")
+      expect(preview).toContain("\"legId\": \"leg_flight_0000000000000001\"")
+      const token = previewToken(preview)
       const result = await tool("trip_remove_leg").handler({
         tripId: seeded.tripId,
         legId: "leg_flight_0000000000000001",
         updatedAt: "2026-04-02T10:00:00.000Z",
         reason: "booking cancelled",
+        previewToken: token,
       }, familyCtx) as string
       expect(result).toContain("removed")
       expect(result).toContain("trip now has 1 leg")
@@ -1073,6 +1214,60 @@ describe("trip tools", () => {
       const got = await tool("trip_get").handler({ tripId: seeded.tripId }, familyCtx) as string
       expect(got).toContain("legs: 2")
       expect(got).toContain("leg_flight_0000000000000001")
+    })
+
+    it("requires a matching removal preview before removing a leg", async () => {
+      mountAgent()
+      await tool("trip_ensure_ledger").handler({}, familyCtx)
+      const seeded = trip({
+        legs: [
+          {
+            legId: "leg_lodging_0000000000000000",
+            kind: "lodging",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T08:00:00.000Z",
+            updatedAt: "2026-04-01T08:00:00.000Z",
+          },
+          {
+            legId: "leg_flight_0000000000000001",
+            kind: "flight",
+            status: "tentative",
+            evidence: [],
+            createdAt: "2026-04-01T09:00:00.000Z",
+            updatedAt: "2026-04-01T09:00:00.000Z",
+          },
+        ],
+      })
+      await tool("trip_upsert").handler({ record: JSON.stringify(seeded) }, familyCtx)
+
+      const missing = await tool("trip_remove_leg").handler({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "booking cancelled",
+      }, familyCtx) as string
+      expect(missing).toContain("previewToken is required")
+      expect(missing).toContain("Attempted change:")
+      expect(missing).toContain("will remove: ")
+
+      const token = await previewTripRemoveLeg({
+        tripId: seeded.tripId,
+        legId: "leg_flight_0000000000000001",
+      })
+      const mismatch = await tool("trip_remove_leg").handler({
+        tripId: seeded.tripId,
+        legId: "leg_lodging_0000000000000000",
+        updatedAt: "2026-04-02T10:00:00.000Z",
+        reason: "booking cancelled",
+        previewToken: token,
+      }, familyCtx) as string
+      expect(mismatch).toContain("previewToken does not match")
+
+      const got = await tool("trip_get").handler({ tripId: seeded.tripId }, familyCtx) as string
+      expect(got).toContain("legs: 2")
+      expect(got).toContain("leg_flight_0000000000000001")
+      expect(got).toContain("leg_lodging_0000000000000000")
     })
 
     it("rejects when the leg id is unknown so accidental no-op removals are visible", async () => {
