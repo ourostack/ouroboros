@@ -529,9 +529,38 @@ describe("execTool", () => {
     expect(result).toBe("claude response")
     expect(spawnSync).toHaveBeenCalledWith(
       "claude",
-      ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
+      [
+        "-p",
+        "--no-session-persistence",
+        "--permission-mode",
+        "plan",
+        "--tools",
+        "Read,Grep,Glob,LS",
+        "--add-dir",
+        ".",
+      ],
       expect.objectContaining({ input: "What is 2+2?" })
     )
+  })
+
+  it("claude remains available during orientation hold because it is mechanically read-only", async () => {
+    vi.mocked(spawnSync).mockReturnValue({ stdout: "read-only review", stderr: "", status: 0 } as any)
+
+    const result = await execTool("claude", { prompt: "Review the current diff" }, orientationHoldCtx())
+
+    expect(result).toBe("read-only review")
+    expect(spawnSync).toHaveBeenCalled()
+  })
+
+  it("claude declares a low-risk read-only contract", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const definition = baseToolDefinitions.find((tool) => tool.tool.function.name === "claude")
+
+    expect(definition?.riskProfile).toMatchObject({
+      mutates: "none",
+      risk: "low",
+      reason: expect.stringContaining("read/search/list tools"),
+    })
   })
 
   it("claude returns error on spawn failure", async () => {

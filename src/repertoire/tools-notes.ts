@@ -11,6 +11,8 @@ import { classifyProvenanceTrust } from "../mind/provenance-trust";
 import { type JournalIndexEntry } from "../mind/note-search";
 import type { ToolDefinition } from "./tools-base";
 
+const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
+
 export const notesToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -63,7 +65,16 @@ export const notesToolDefinitions: ToolDefinition[] = [
       try {
         const result = spawnSync(
           "claude",
-          ["-p", "--no-session-persistence", "--dangerously-skip-permissions", "--add-dir", "."],
+          [
+            "-p",
+            "--no-session-persistence",
+            "--permission-mode",
+            "plan",
+            "--tools",
+            CLAUDE_READ_ONLY_TOOLS,
+            "--add-dir",
+            ".",
+          ],
           {
             input: a.prompt,
             encoding: "utf-8",
@@ -79,6 +90,11 @@ export const notesToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["prompt"],
+    riskProfile: {
+      mutates: "none",
+      risk: "low",
+      reason: "runs Claude Code in plan mode with only read/search/list tools",
+    },
   },
   {
     tool: {
