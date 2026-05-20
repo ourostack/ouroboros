@@ -219,7 +219,10 @@ describe("tool registry contract", () => {
     expect(names).toContain("restart_runtime");
     expect(names).toContain("revive_sense");
 
-    // Exact count: 88 tools (86 prior + note + consult_notes)
-    expect(names).toHaveLength(88);
+    // Added in orientation substrate: 1 turn-frame inspection tool
+    expect(names).toContain("orientation_get");
+
+    // Exact count: 89 tools (88 prior + orientation_get)
+    expect(names).toHaveLength(89);
   });
 });

@@ -15,6 +15,8 @@ import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
 import { voiceToolDefinitions } from "./tools-voice";
+import { detectDestructivePatterns } from "./shell-sessions";
+import type { ToolRiskProfile } from "./tools-base";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -146,6 +148,32 @@ function normalizeGuardArgs(_name: string, args: Record<string, string>): Record
   return args
 }
 
+function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
+  const command = String(args.command)
+  const destructive = detectDestructivePatterns(command)
+  if (destructive.length > 0) {
+    return { mutates: "external_side_effect", risk: "high", reason: `destructive shell pattern: ${destructive.join(", ")}` }
+  }
+  if (/(^|\s)(rm|mv|cp|touch|mkdir|rmdir)\b/.test(command)
+    || /(^|\s)(npm|pnpm|yarn)\s+(install|add|remove|update|upgrade)\b/.test(command)
+    || /(^|\s)git\s+(add|apply|checkout|clean|commit|merge|pull|push|rebase|reset|restore|switch)\b/.test(command)
+    || /(^|\s)(sed\s+-i|perl\s+-pi)\b/.test(command)
+    || /(^|\s)(tee|truncate)\b/.test(command)
+    || /(^|[^<])>>?\s*\S+/.test(command)) {
+    return { mutates: "external_side_effect", risk: "high", reason: "shell command appears to mutate files, packages, git state, or external state" }
+  }
+  return { mutates: "none", risk: "low" }
+}
+
+function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
+  if (name === "shell") return shellRiskProfile(args)
+  return def.riskProfile ?? { mutates: "none", risk: "low" }
+}
+
+function orientationHoldMessage(name: string, profile: Extract<ToolRiskProfile, { risk: "high" }>, reason: string): string {
+  return `orientation hold: ${reason} Call orientation_get, resolve the referent/correction, then retry ${name} if the write is still correct. Blocked ${profile.mutates}. ${profile.reason}.`
+}
+
 export async function execTool(name: string, args: Record<string, string>, ctx?: ToolContext): Promise<string> {
   emitNervesEvent({
     event: "tool.start",
@@ -165,6 +193,22 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
       meta: { name },
     });
     return `unknown: ${name}`;
+  }
+
+  const riskProfile = riskProfileForTool(def, name, args)
+  const orientationPolicy = ctx?.orientationFrame?.actionPolicy
+  if (orientationPolicy?.mode === "correction_hold"
+    && riskProfile.risk === "high") {
+    const reason = orientationPolicy.reason
+    const message = orientationHoldMessage(name, riskProfile, reason)
+    emitNervesEvent({
+      level: "warn",
+      event: "tool.orientation_hold_block",
+      component: "tools",
+      message: "orientation hold blocked high-risk tool execution",
+      meta: { name, mutates: riskProfile.mutates, reason },
+    });
+    return message
   }
 
   // Guardrail check: structural + trust-level

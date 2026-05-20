@@ -92,15 +92,12 @@ export function usage(): string {
     "  ouro provider refresh [--agent <name>]",
     "  ouro mailbox [--json]",
     "  ouro -v|--version",
-    "  ouro config model [--agent <name>] <model-name>",
-    "  ouro config models [--agent <name>]",
     "  ouro auth [--agent <name>] [--provider <provider>]",
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
     "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
-    "  ouro auth switch [--agent <name>] --provider <provider>",
     "  ouro vault create [--agent <name>] --email <email> [--server <url>] [--store <store>]",
     "  ouro vault replace [--agent <name>] [--email <email>] [--server <url>] [--store <store>]",
     "  ouro vault recover [--agent <name>] --from <json> [--from <json>] [--email <email>] [--server <url>] [--store <store>]",
@@ -1257,6 +1254,7 @@ function parseConfigCommand(args: string[]): OuroCliCommand {
   if (sub === "model") {
     const modelName = rest[0]
     if (!modelName) throw new Error("Usage: ouro config model [--agent <name>] <model-name>")
+    if (modelName.startsWith("-")) throw new Error("config model requires a model name, not another flag.")
     return {
       kind: "config.model",
       ...(agent ? { agent } : {}),

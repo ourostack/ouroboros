@@ -51,6 +51,7 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "mail_thread",
   "materialize_attachment",
   "note",
+  "orientation_get",
   "query_active_work",
   "query_cares",
   "query_episodes",

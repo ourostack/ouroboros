@@ -5004,6 +5004,39 @@ describe("provider CLI command execution", () => {
     })
   })
 
+  it("ouro use rejects clearly incompatible provider/model pairs even with force", async () => {
+    emitTestEvent("provider cli use incompatible force")
+    const bundlesRoot = makeTempDir("provider-cli-use-incompatible-force-bundles")
+    const homeDir = makeTempDir("provider-cli-use-incompatible-force-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const result = await runOuroCli([
+      "use",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "inner",
+      "--provider",
+      "minimax",
+      "--model",
+      "gpt-5.5",
+      "--force",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("MiniMax is currently paired with gpt-5.5")
+    expect(result).toContain("ouro use --agent Slugger --lane inner --provider minimax --model MiniMax-M2.7")
+    expect(mockPingProvider).not.toHaveBeenCalledWith("minimax", expect.anything(), expect.anything())
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.lanes.inner).toMatchObject({
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    })
+  })
+
   it("ouro auth delegates storage to the auth flow and does not switch bindings", async () => {
     emitTestEvent("provider cli auth delegates storage")
     const bundlesRoot = makeTempDir("provider-cli-auth-bundles")
@@ -10181,6 +10214,59 @@ describe("provider CLI command execution", () => {
     expect(stateResult.state.lanes.inner.provider).toBe("minimax")
   })
 
+  it("legacy auth switch defaults incompatible current models instead of writing invalid provider pairs", async () => {
+    emitTestEvent("provider cli legacy auth switch defaults incompatible model")
+    const bundlesRoot = makeTempDir("provider-cli-auth-switch-default-model-bundles")
+    const homeDir = makeTempDir("provider-cli-auth-switch-default-model-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.agentFacing = { provider: "openai-codex", model: "gpt-5.5" }
+    })
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
+      lanes: {
+        outward: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          source: "agent.json",
+          updatedAt: NOW,
+        },
+      },
+    }))
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: 1 })
+
+    const result = await runOuroCli([
+      "auth",
+      "switch",
+      "--agent",
+      "Slugger",
+      "--provider",
+      "minimax",
+      "--facing",
+      "agent",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("MiniMax-M2.7")
+    const config = readAgentConfig(bundlesRoot, "Slugger")
+    expect(config.agentFacing).toMatchObject({
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+    })
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.lanes.inner).toMatchObject({
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+    })
+  })
+
   it("ouro status --agent renders agent.json provider selection without raw secrets", async () => {
     emitTestEvent("provider cli status cached state")
     const bundlesRoot = makeTempDir("provider-cli-status-bundles")
@@ -10915,5 +11001,52 @@ describe("provider CLI command execution", () => {
 
     const agentConfig = readAgentConfig(bundlesRoot, "Slugger")
     expect(agentConfig.agentFacing).toEqual({ provider: "minimax", model: "MiniMax-M2.5" })
+  })
+
+  it("legacy config model refuses incompatible model names for the selected provider", async () => {
+    emitTestEvent("provider cli config model rejects incompatible model")
+    const bundlesRoot = makeTempDir("provider-cli-config-model-incompatible-bundles")
+    const homeDir = makeTempDir("provider-cli-config-model-incompatible-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
+      lanes: {
+        outward: {
+          provider: "minimax",
+          model: "MiniMax-M2.5",
+          source: "agent.json",
+          updatedAt: NOW,
+        },
+        inner: {
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          source: "bootstrap",
+          updatedAt: NOW,
+        },
+      },
+      readiness: {},
+    }))
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.humanFacing = { provider: "minimax", model: "MiniMax-M2.5" }
+    })
+    writeProviderCredentialPool(homeDir, credentialPool())
+
+    const result = await runOuroCli([
+      "config",
+      "model",
+      "--agent",
+      "Slugger",
+      "gpt-5.5",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("MiniMax is currently paired with gpt-5.5")
+    expect(result).toContain("ouro use --agent Slugger --lane outward --provider minimax --model MiniMax-M2.7")
+    const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
+    expect(stateResult.ok).toBe(true)
+    if (!stateResult.ok) throw new Error(stateResult.error)
+    expect(stateResult.state.lanes.outward).toMatchObject({
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      source: "agent.json",
+    })
   })
 })

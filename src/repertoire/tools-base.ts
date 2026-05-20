@@ -25,6 +25,8 @@ import { tripToolDefinitions } from "./tools-trip"
 import { awaitingToolDefinitions } from "./tools-awaiting"
 import { obligationToolDefinitions } from "./tools-obligations"
 import { runtimeToolDefinitions } from "./tools-runtime"
+import { orientationToolDefinitions } from "./tools-orientation"
+import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
 
@@ -89,9 +91,15 @@ export interface ToolContext {
   setReasoningEffort?: (level: string) => void;
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
   voiceCall?: VoiceCallControl;
+  orientationFrame?: OrientationFrame;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
+export type ToolMutationKind = "none" | "durable_state_write" | "external_side_effect"
+
+export type ToolRiskProfile =
+  | { mutates: "none"; risk: "low"; reason?: string }
+  | { mutates: Exclude<ToolMutationKind, "none">; risk: "high"; reason: string }
 
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
@@ -99,6 +107,7 @@ export interface ToolDefinition {
   integration?: Integration;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
+  riskProfile?: ToolRiskProfile;
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
 }
@@ -130,6 +139,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...tripToolDefinitions,
   ...awaitingToolDefinitions,
   ...obligationToolDefinitions,
+  ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
 ];
 
