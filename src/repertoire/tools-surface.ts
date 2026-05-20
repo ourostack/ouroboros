@@ -58,7 +58,7 @@ export const surfaceToolDef: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "surface",
     description:
-      "send a message to someone — write it the way you'd text a friend. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
+      "return a ready thought to a friend or active session without publishing private inner work to BlueBubbles. pass delegationId to address a held thought (see your attention queue above), or friendId for spontaneous outreach. Surface delivers tool responses to the active session. BlueBubbles is a dedicated channel - use send_message with channel=\"bluebubbles\" for intentional iMessage delivery. set channel=voice only when you intentionally want a live phone call; content becomes the call reason/opening context. does not end your turn.",
     parameters: {
       type: "object",
       properties: {
@@ -195,24 +195,6 @@ export const surfaceToolDefinition: ToolDefinition = {
               ),
             )
             if (bridgeTarget) {
-              // Attempt proactive BB delivery for bridge target
-              if (bridgeTarget.channel === "bluebubbles") {
-                const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-                const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
-                  friendId: bridgeTarget.friendId,
-                  sessionKey: bridgeTarget.key,
-                  text: content,
-                  intent: "explicit_cross_chat",
-                } as any)
-                if (proactiveResult.delivered) {
-                  // Inject surfaced content into the target session so it knows what was delivered
-                  const { appendSyntheticAssistantMessage } = await import("../mind/context")
-                  const sessionFilePath = path.join(sessionsDir, bridgeTarget.friendId, bridgeTarget.channel, `${bridgeTarget.key}.json`)
-                  appendSyntheticAssistantMessage(sessionFilePath, content)
-                  return { status: "delivered", detail: "via iMessage" }
-                }
-              }
-              // Fall back to pending queue for bridge target
               const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
               const pendingDir = getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key)
               queuePendingMessage(pendingDir, {
@@ -232,24 +214,7 @@ export const surfaceToolDefinition: ToolDefinition = {
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
 
-        // 2a: Attempt proactive BB delivery on a DM session (;-; = individual, never ;+; = group)
-        const bbSession = allFriendSessions.find((s) => s.channel === "bluebubbles" && s.key.includes(";-;"))
-        if (bbSession) {
-          const { sendProactiveBlueBubblesMessageToSession } = await import("../senses/bluebubbles")
-          const proactiveResult = await sendProactiveBlueBubblesMessageToSession({
-            friendId: bbSession.friendId,
-            sessionKey: bbSession.key,
-            text: content,
-          })
-          if (proactiveResult.delivered) {
-            const { appendSyntheticAssistantMessage } = await import("../mind/context")
-            const sessionFilePath = path.join(sessionsDir, bbSession.friendId, bbSession.channel, `${bbSession.key}.json`)
-            appendSyntheticAssistantMessage(sessionFilePath, content)
-            return { status: "delivered", detail: "via iMessage" }
-          }
-        }
-
-        // 2b: No proactive delivery — queue to freshest non-inner session
+        // Priority 2: Queue to freshest non-inner session
         const freshest = allFriendSessions[0]
         if (freshest) {
           const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
