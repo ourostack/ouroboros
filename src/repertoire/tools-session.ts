@@ -773,6 +773,11 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "queues or delivers messages across sessions/channels",
+    },
   },
   {
     tool: {

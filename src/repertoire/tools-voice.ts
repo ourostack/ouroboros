@@ -143,4 +143,5 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
     if (result.toolResult?.trim()) return result.toolResult.trim()
     return `(played audio: ${result.label}, ${Math.round(result.durationMs)}ms)`
   },
+  riskProfile: { mutates: "external_side_effect", risk: "high", reason: "plays audio into a live voice call" },
 }]

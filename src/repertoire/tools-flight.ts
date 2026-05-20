@@ -127,6 +127,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
       })
     },
     summaryKeys: ["offer_id"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "requests an airline offer hold" },
   },
 
   {
@@ -194,6 +195,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["offer_id", "amount"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "books travel through an external provider" },
   },
 
   {
@@ -233,6 +235,7 @@ export const flightToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["order_id"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "cancels travel through an external provider" },
   },
 ]
 

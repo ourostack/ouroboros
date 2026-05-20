@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 
 import { attachCodingSessionFeedback, formatCodingTail, getCodingSessionManager } from "./index"
 import { prepareCodingContextPack } from "./context-pack"
-import type { ToolContext } from "../tools-base"
+import type { ToolContext, ToolDefinition } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../arc/obligations"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -248,7 +248,7 @@ const codingKillTool: OpenAI.ChatCompletionTool = {
   },
 }
 
-export const codingToolDefinitions = [
+export const codingToolDefinitions: ToolDefinition[] = [
   {
     tool: codingSpawnTool,
     handler: async (args: Record<string, string>, ctx?: ToolContext): Promise<string> => {
@@ -349,6 +349,11 @@ export const codingToolDefinitions = [
       return JSON.stringify(session)
     },
     summaryKeys: ["runner", "workdir", "taskRef"],
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "spawns a separate coding process and may create obligations",
+    },
   },
   {
     tool: codingStatusTool,
@@ -392,6 +397,7 @@ export const codingToolDefinitions = [
       return JSON.stringify(getCodingSessionManager().sendInput(sessionId, input))
     },
     summaryKeys: ["sessionId", "input"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "sends input to a live coding process" },
   },
   {
     tool: codingKillTool,
@@ -403,5 +409,6 @@ export const codingToolDefinitions = [
       return JSON.stringify(getCodingSessionManager().killSession(sessionId))
     },
     summaryKeys: ["sessionId"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "terminates a live coding process" },
   },
 ]
