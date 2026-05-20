@@ -229,6 +229,142 @@ describe("session events", () => {
     expect(parsed?.structuredOutputs).toEqual(envelope.structuredOutputs)
   })
 
+  it("derives missing structured outputs during session reads without live extraction telemetry", async () => {
+    const { registerGlobalLogSink } = await import("../../nerves")
+    const { parseSessionEnvelope } = await import("../../heart/session-events")
+    const extractedEvents: Array<{ event: string }> = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "heart.structured_output_extracted") {
+        extractedEvents.push(entry)
+      }
+    })
+
+    try {
+      const parsedV2 = parseSessionEnvelope({
+        version: 2,
+        events: [{
+          id: "evt-quiet-v2",
+          sequence: 1,
+          role: "assistant",
+          content: "Backfilled choices:\n1. Keep old referents queryable\n2. Keep logs quiet",
+          name: null,
+          toolCallId: null,
+          toolCalls: [],
+          attachments: [],
+          time: {
+            authoredAt: null,
+            authoredAtSource: "unknown",
+            observedAt: null,
+            observedAtSource: "unknown",
+            recordedAt: "2026-05-19T17:00:00.000Z",
+            recordedAtSource: "save",
+          },
+          relations: {
+            replyToEventId: null,
+            threadRootEventId: null,
+            references: [],
+            toolCallId: null,
+            supersedesEventId: null,
+            redactsEventId: null,
+          },
+          provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+        }],
+        projection: {
+          eventIds: ["evt-quiet-v2"],
+          trimmed: false,
+          maxTokens: null,
+          contextMargin: null,
+          inputTokens: null,
+          projectedAt: "2026-05-19T17:00:00.000Z",
+        },
+        lastUsage: null,
+        state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+      }, {
+        recordedAt: "2026-05-19T17:00:00.000Z",
+        fileMtimeAt: "2026-05-19T17:00:00.000Z",
+      })
+
+      expect(parsedV2?.structuredOutputs).toEqual([
+        expect.objectContaining({
+          id: "structured-evt-quiet-v2-1",
+          items: [
+            { label: "1", text: "Keep old referents queryable" },
+            { label: "2", text: "Keep logs quiet" },
+          ],
+        }),
+      ])
+
+      const migrated = parseSessionEnvelope({
+        version: 1,
+        messages: [
+          {
+            role: "assistant",
+            content: "Legacy choices:\n1. Derive old referents\n2. Do not fake live activity",
+          },
+        ],
+      }, {
+        recordedAt: "2026-05-19T17:01:00.000Z",
+        fileMtimeAt: "2026-05-19T17:01:00.000Z",
+      })
+
+      expect(migrated?.structuredOutputs).toEqual([
+        expect.objectContaining({
+          id: "structured-evt-000001-1",
+          items: [
+            { label: "1", text: "Derive old referents" },
+            { label: "2", text: "Do not fake live activity" },
+          ],
+        }),
+      ])
+      expect(extractedEvents).toEqual([])
+    } finally {
+      unregister()
+    }
+  })
+
+  it("keeps live structured-output extraction telemetry for canonical envelope builds", async () => {
+    const { registerGlobalLogSink } = await import("../../nerves")
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+    const extractedEvents: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const unregister = registerGlobalLogSink((entry) => {
+      if (entry.event === "heart.structured_output_extracted") {
+        extractedEvents.push(entry)
+      }
+    })
+
+    try {
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "user", content: "what changed?" },
+        { role: "assistant", content: "Live choices:\n1. Emit the event\n2. Preserve diagnostic signal" },
+      ]
+
+      const { envelope } = buildCanonicalSessionEnvelope({
+        existing: null,
+        previousMessages: [],
+        currentMessages: messages,
+        trimmedMessages: messages,
+        recordedAt: "2026-05-19T17:05:00.000Z",
+        lastUsage: null,
+        state: null,
+        projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+      })
+
+      expect(envelope.structuredOutputs).toHaveLength(1)
+      expect(extractedEvents).toEqual([
+        expect.objectContaining({
+          event: "heart.structured_output_extracted",
+          meta: {
+            sourceEventId: "evt-000002",
+            outputCount: 1,
+            itemCount: 2,
+          },
+        }),
+      ])
+    } finally {
+      unregister()
+    }
+  })
+
   it("migrates a legacy v1 session envelope into canonical events with explicit metadata", async () => {
     const { migrateLegacySessionEnvelope } = await import("../../heart/session-events")
 

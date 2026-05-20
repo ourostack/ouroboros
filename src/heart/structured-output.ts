@@ -33,6 +33,11 @@ export interface StructuredOutputSourceEvent {
 export interface ExtractStructuredOutputTextOptions {
   eventId: string
   recordedAt: string
+  emitTelemetry?: boolean
+}
+
+export interface ExtractStructuredOutputEventsOptions {
+  emitTelemetry?: boolean
 }
 
 const ORDERED_LIST_LINE_RE = /^\s*(\d+)[.)]\s+(.+?)\s*$/
@@ -205,7 +210,7 @@ export function extractStructuredOutputsFromText(
 
   finishCurrent()
 
-  if (outputs.length > 0) {
+  if (outputs.length > 0 && options.emitTelemetry !== false) {
     emitNervesEvent({
       component: "heart",
       event: "heart.structured_output_extracted",
@@ -221,7 +226,10 @@ export function extractStructuredOutputsFromText(
   return outputs
 }
 
-export function extractStructuredOutputsFromEvents(events: StructuredOutputSourceEvent[]): StructuredOutput[] {
+export function extractStructuredOutputsFromEvents(
+  events: StructuredOutputSourceEvent[],
+  options: ExtractStructuredOutputEventsOptions = {},
+): StructuredOutput[] {
   return events.flatMap((event) => {
     if (event.role !== "assistant") return []
     const text = [contentToText(event.content), extractVisibleTextFromAssistantToolCalls(event.toolCalls)]
@@ -231,6 +239,7 @@ export function extractStructuredOutputsFromEvents(events: StructuredOutputSourc
     return extractStructuredOutputsFromText(text, {
       eventId: event.id,
       recordedAt: event.time?.recordedAt ?? new Date(0).toISOString(),
+      emitTelemetry: options.emitTelemetry,
     })
   })
 }
