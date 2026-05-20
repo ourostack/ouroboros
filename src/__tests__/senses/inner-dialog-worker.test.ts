@@ -623,6 +623,45 @@ describe("inner-dialog-worker", () => {
       )
     })
 
+    it("accepts habit heartbeat fires without another model turn after clean HEARTBEAT_OK", async () => {
+      const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      let now = 11_500_000
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+      now += 60_000
+      await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+    })
+
+    it("accepts queued heartbeat fires without another model turn after clean HEARTBEAT_OK", async () => {
+      let now = 11_750_000
+      let worker!: ReturnType<typeof createInnerDialogWorker>
+      const runTurn = vi.fn().mockImplementation(async () => {
+        if (runTurn.mock.calls.length === 1) {
+          now += 60_000
+          await worker.handleMessage({ type: "heartbeat" })
+        }
+        return { turnOutcome: "rested", restStatus: "HEARTBEAT_OK" }
+      })
+      const hasPendingWork = vi.fn().mockReturnValue(false)
+      worker = createInnerDialogWorker(runTurn, hasPendingWork, () => now)
+
+      await worker.handleMessage({ type: "heartbeat" })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ event: "senses.heartbeat_ok_rest_reused" }),
+      )
+    })
+
     it("lets heartbeat run again after the HEARTBEAT_OK quiet window expires", async () => {
       const runTurn = vi.fn().mockResolvedValue({ turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
       const hasPendingWork = vi.fn().mockReturnValue(false)
