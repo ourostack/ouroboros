@@ -41,5 +41,6 @@ export const githubToolDefinitions: ToolDefinition[] = [
     },
     integration: "github",
     summaryKeys: ["title"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "files a GitHub issue" },
   },
 ]

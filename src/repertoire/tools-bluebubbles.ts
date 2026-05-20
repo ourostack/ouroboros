@@ -92,5 +92,6 @@ export const bluebubblesToolDefinitions: ToolDefinition[] = [
       return "target must be one of: current_lane, top_level, thread."
     },
     summaryKeys: ["target", "threadOriginatorGuid"],
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "changes the outbound iMessage reply route" },
   },
 ]

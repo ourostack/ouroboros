@@ -346,6 +346,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         ctx?.currentSession?.channel ?? null,
       )
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "files a durable await condition" },
   },
   {
     tool: {
@@ -369,6 +370,11 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName)
     },
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "records await observations and may deliver an alert",
+    },
   },
   {
     tool: {
@@ -391,5 +397,6 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       return cancelAwaitTool(a.name, a.reason, agentRoot, agentName)
     },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "archives a durable await condition" },
   },
 ]

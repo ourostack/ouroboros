@@ -1329,6 +1329,7 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["to", "subject"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "creates an outbound mail draft" },
   },
   {
     tool: {
@@ -1396,6 +1397,11 @@ export const mailToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["draft_id"],
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "sends outbound mail and records send state",
+    },
   },
   {
     tool: {
@@ -2073,6 +2079,11 @@ export const mailToolDefinitions: ToolDefinition[] = [
       ].join("\n")
     },
     summaryKeys: ["candidate_id", "message_id", "action"],
+    riskProfile: {
+      mutates: ["durable_state_write", "external_side_effect"] as const,
+      risk: "high",
+      reason: "applies mailbox screener and sender policy decisions",
+    },
   },
   {
     tool: {

@@ -96,10 +96,13 @@ export interface ToolContext {
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
 export type ToolMutationKind = "none" | "durable_state_write" | "external_side_effect"
+export type ToolHighRiskMutationKind = Exclude<ToolMutationKind, "none">
 
 export type ToolRiskProfile =
   | { mutates: "none"; risk: "low"; reason?: string }
-  | { mutates: Exclude<ToolMutationKind, "none">; risk: "high"; reason: string }
+  | { mutates: ToolHighRiskMutationKind | readonly ToolHighRiskMutationKind[]; risk: "high"; reason: string }
+
+export type ToolRiskProfileResolver = (args: Record<string, string>) => ToolRiskProfile
 
 export interface ToolDefinition {
   tool: OpenAI.ChatCompletionFunctionTool;
@@ -107,7 +110,7 @@ export interface ToolDefinition {
   integration?: Integration;
   requiredCapability?: import("../heart/core").ProviderCapability;
   summaryKeys?: string[];
-  riskProfile?: ToolRiskProfile;
+  riskProfile?: ToolRiskProfile | ToolRiskProfileResolver;
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
 }

@@ -147,6 +147,7 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       return restartRuntime({ reason: args.reason }, agentName)
     },
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts the hosting runtime" },
   },
   {
     tool: {
@@ -178,5 +179,6 @@ export const runtimeToolDefinitions: ToolDefinition[] = [
       const agentName = getAgentName()
       return reviveSense({ agent: args.agent, sense: args.sense, reason: args.reason }, agentName)
     },
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "revives a managed runtime sense" },
   },
 ]

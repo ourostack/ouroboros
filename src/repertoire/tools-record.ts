@@ -397,6 +397,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["content", "tags"],
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes canonical note memory" },
   },
   {
     tool: {
