@@ -186,6 +186,35 @@ describe("BlueBubbles near-duplicate outward send guard (post-#699 evt-001814/00
 })
 
 describe("BlueBubbles status surfaces stay out of iMessage", () => {
+  it("suppresses duplicate silence-watchdog status sends", async () => {
+    vi.useFakeTimers()
+    ;(emitNervesEvent as ReturnType<typeof vi.fn>).mockClear()
+
+    try {
+      const { client, sendText } = makeStubClient()
+      const callbacks = createBlueBubblesCallbacks(client as never, CHAT, TOP_LEVEL_REPLY_TARGET, false)
+
+      callbacks.onModelStart()
+
+      await vi.advanceTimersByTimeAsync(75_000)
+      await callbacks.flush()
+
+      await vi.advanceTimersByTimeAsync(75_000)
+      await callbacks.finish()
+
+      const statusSends = sendText.mock.calls.filter((call) => call[0]?.text === "still working on this...")
+      expect(statusSends).toHaveLength(1)
+      expect(emitNervesEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "bluebubbles.duplicate_outward_suppressed",
+          meta: expect.objectContaining({ site: "status" }),
+        }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("does not send callback error status text that near-duplicates an already-spoken answer", async () => {
     const { client, sendText } = makeStubClient()
     const callbacks = createBlueBubblesCallbacks(client as never, CHAT, TOP_LEVEL_REPLY_TARGET, false)
