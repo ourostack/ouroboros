@@ -6,7 +6,8 @@
       "changes": [
         "Expand correction hold risk metadata across mutation, messaging, mail, runtime, and integration tools so disorientation freezes high-risk actions before handlers run.",
         "Run the `claude` orientation tool through Claude Code plan mode with only read/search/list tools so it remains a mechanically read-only second-opinion path during correction holds.",
-        "Require preview tokens from trip replacement, leg update, and leg removal preview tools before those semantic trip mutations can commit, forcing agents to inspect the exact diff for current itinerary state before writing; missing-token refusals also render the attempted change so the agent can recover without losing orientation."
+        "Require preview tokens from trip replacement, leg update, and leg removal preview tools before those semantic trip mutations can commit, forcing agents to inspect the exact diff for current itinerary state before writing; missing-token refusals also render the attempted change so the agent can recover without losing orientation.",
+        "BlueBubbles/iMessage now keeps tool activity, raw MCP/browser tool names, callback errors, and live-turn timeout recovery mechanics out of the human chat thread. Long turns still use native read/typing signals, the generic silence watchdog, runtime state, and nerves telemetry, while final answers and explicit BlueBubbles sends remain deliverable."
       ]
     },
     {
