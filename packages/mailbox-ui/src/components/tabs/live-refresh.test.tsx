@@ -1211,7 +1211,7 @@ describe("Mailbox deep-tab live refresh", () => {
     const ui = render(<NotesTab agentName="slugger" refreshGeneration={0} />)
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
-    fireEvent.click(ui.getByRole("button", { name: /Notes \(0\)/ }))
+    fireEvent.click(await ui.findByRole("button", { name: /Notes \(0\)/ }))
 
     expect(ui.getByText(/No canonical notes yet/i)).toBeTruthy()
   })
