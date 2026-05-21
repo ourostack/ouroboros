@@ -47,8 +47,6 @@ import {
   noteBlueBubblesActiveTurnVisibleActivity,
   snapshotBlueBubblesActiveTurns,
 } from "./active-turns"
-import { createToolActivityCallbacks } from "../../heart/tool-activity-callbacks"
-import { getDebugMode } from "../commands"
 import { enforceTrustGate } from "../trust-gate"
 import { handleInboundTurn, type FailoverState } from "../pipeline"
 
@@ -753,17 +751,6 @@ export function createBlueBubblesCallbacks(
     })
   }
 
-  const statusBatcher = createStatusBatcher((text) => sendStatus(text), 500)
-
-  const toolCallbacks = createToolActivityCallbacks({
-    onDescription: (text) => statusBatcher.add(text),
-    /* v8 ignore next -- onResult only called in debug mode; tested via tool-activity-callbacks.test.ts @preserve */
-    onResult: (text) => { statusBatcher.flush(); sendStatus(text) },
-    /* v8 ignore next -- onFailure only called on tool failure; tested via tool-activity-callbacks.test.ts @preserve */
-    onFailure: (text) => { statusBatcher.flush(); sendStatus(text) },
-    isDebug: getDebugMode,
-  })
-
   return {
     onModelStart(): void {
       startSilenceWatchdog()
@@ -793,24 +780,11 @@ export function createBlueBubblesCallbacks(
     onReasoningChunk(_text: string): void {},
 
     onToolStart(name: string, _args: Record<string, string>): void {
-      // observe + speak are flow-control: their visible output (or lack of it) is
-      // handled outside the tool-activity callbacks. speak in particular delivers
-      // its message via onTextChunk/flushNow — we MUST NOT enqueue a "speaking..."
-      // status sendText here, which would arrive as a separate iMessage right
-      // before the actual speak content.
-      if (name === "observe" || name === "speak") {
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.bluebubbles_tool_start",
-          message: "bluebubbles tool execution started",
-          meta: { name },
-        })
-        return
-      }
-
-      // Tool activity is a reply commitment — start typing if not already
-      if (!typingActive) startTypingNow()
-      toolCallbacks.onToolStart(name, _args)
+      // Tool activity is a reply commitment, but iMessage is not a tool-progress
+      // console. Keep the human-facing thread quiet until the agent has real
+      // text (or the generic silence watchdog fires), while preserving native
+      // read/typing signals and nerves telemetry for debugging.
+      if (!typingActive && name !== "observe" && name !== "speak") startTypingNow()
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_start",
@@ -820,10 +794,6 @@ export function createBlueBubblesCallbacks(
     },
 
     onToolEnd(name: string, summary: string, success: boolean): void {
-      // observe + speak skip the tool-activity end callback (no ✓/✗ status sent).
-      if (name !== "observe" && name !== "speak") {
-        toolCallbacks.onToolEnd(name, summary, success)
-      }
       emitNervesEvent({
         component: "senses",
         event: "senses.bluebubbles_tool_end",
@@ -833,7 +803,6 @@ export function createBlueBubblesCallbacks(
     },
 
     onError(error: Error, severity: "transient" | "terminal"): void {
-      sendStatus(`\u2717 ${error.message}`)
       emitNervesEvent({
         level: severity === "terminal" ? "error" : "warn",
         component: "senses",
@@ -887,7 +856,6 @@ export function createBlueBubblesCallbacks(
     },
 
     async flush(): Promise<void> {
-      statusBatcher.flush()
       await queue
       const trimmed = textBuffer.trim()
       if (!trimmed) {
@@ -930,7 +898,6 @@ export function createBlueBubblesCallbacks(
 
     async finish(): Promise<void> {
       stopSilenceWatchdog()
-      statusBatcher.flush()
       if (!typingActive) {
         await queue
         return
@@ -1468,10 +1435,18 @@ async function handleBlueBubblesNormalizedEvent(
           return await Promise.race([turnPromise, timeoutPromise])
         } catch (error) {
           if (error instanceof BlueBubblesRecoveryTurnTimeoutError) {
-            callbacks.onError(
-              new Error("live iMessage turn timed out; I captured it for recovery instead of silently hanging"),
-              "terminal",
-            )
+            emitNervesEvent({
+              level: "warn",
+              component: "senses",
+              event: "senses.bluebubbles_timeout_notice_suppressed",
+              message: "bluebubbles timeout notice suppressed from iMessage",
+              meta: {
+                messageGuid: event.messageGuid,
+                sessionKey: event.chat.sessionKey,
+                source,
+                timeoutMs,
+              },
+            })
           }
           throw error
         }

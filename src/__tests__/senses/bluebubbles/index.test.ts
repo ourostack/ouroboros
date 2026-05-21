@@ -1327,10 +1327,8 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("surfaces only concrete tool activity messages for a tool-heavy turn", async () => {
+  it("keeps tool activity private for a tool-heavy turn and sends only the final reply", async () => {
     mocks.sendText
-      .mockResolvedValueOnce({ messageGuid: "tool-guid" })
-      .mockResolvedValueOnce({ messageGuid: "tool-done-guid" })
       .mockResolvedValueOnce({ messageGuid: "final-guid" })
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
@@ -1353,17 +1351,11 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
-    // Default mode: only tool START description + final response (no tool END)
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "reading notes.txt...",
+    }))
     expect(mocks.sendText).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "reading notes.txt...",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenNthCalledWith(
-      2,
       expect.objectContaining({
         chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
         replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
@@ -1371,9 +1363,37 @@ describe("BlueBubbles sense runtime", () => {
       }),
     )
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    // After status sendText, typing is re-enabled; then stopped before final text
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(3, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+  })
+
+  it("suppresses raw browser MCP tool progress in BlueBubbles", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      callbacks.onToolStart("browser_navigate", { url: "https://www.sbb.ch/en" })
+      callbacks.onToolEnd("browser_navigate", "ok", true)
+      callbacks.onToolStart("browser_snapshot", { depth: "3" })
+      callbacks.onToolEnd("browser_snapshot", "ok", true)
+      callbacks.onToolStart("browser_click", { element: "Reject cookies" })
+      callbacks.onToolEnd("browser_click", "ok", true)
+      callbacks.onToolStart("browser_type", { element: "From", text: "Basel SBB" })
+      callbacks.onToolEnd("browser_type", "ok", true)
+      callbacks.onToolStart("browser_wait_for", { time: "2" })
+      callbacks.onToolEnd("browser_wait_for", "ok", true)
+      callbacks.onTextChunk("I found the best train.")
+      return {
+        content: "I found the best train.",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+
+    const sentTexts = mocks.sendText.mock.calls.map((call: any[]) => call[0]?.text)
+    expect(sentTexts).toEqual(["I found the best train."])
+    expect(sentTexts.join("\n")).not.toMatch(/browser_(navigate|snapshot|click|type|wait_for)/)
   })
 
   it("uses typing only for the first phase of a short turn and sends only the final reply visibly", async () => {
@@ -1443,12 +1463,14 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("surfaces string-thrown activity transport failures explicitly", async () => {
+  it("surfaces string-thrown watchdog status transport failures explicitly", async () => {
+    vi.useFakeTimers()
     mocks.sendText
       .mockRejectedValueOnce("status send failure")
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
-      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      await vi.advanceTimersByTimeAsync(75_000)
+      await flushAsyncWork()
       return {
         content: "done",
         toolCalls: [],
@@ -1458,7 +1480,11 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    try {
+      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    } finally {
+      vi.useRealTimers()
+    }
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1472,12 +1498,14 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
-  it("surfaces Error-thrown activity transport failures explicitly too", async () => {
+  it("surfaces Error-thrown watchdog status transport failures explicitly too", async () => {
+    vi.useFakeTimers()
     mocks.sendText
       .mockRejectedValueOnce(new Error("status send error object"))
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
-      callbacks.onToolStart("read_file", { path: "notes.txt" })
+      await vi.advanceTimersByTimeAsync(75_000)
+      await flushAsyncWork()
       return {
         content: "done",
         toolCalls: [],
@@ -1487,7 +1515,11 @@ describe("BlueBubbles sense runtime", () => {
     })
 
     const bluebubbles = await import("../../../senses/bluebubbles")
-    await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    try {
+      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    } finally {
+      vi.useRealTimers()
+    }
 
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1551,7 +1583,7 @@ describe("BlueBubbles sense runtime", () => {
       message: "bluebubbles recovery turn timed out after 120000ms",
     }))
 
-    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("live iMessage turn timed out"),
     }))
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
@@ -1593,25 +1625,19 @@ describe("BlueBubbles sense runtime", () => {
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
   })
 
-  it("treats group chat tool progress as reply commitment before final text", async () => {
-    vi.useFakeTimers()
+  it("treats group chat tool progress as reply commitment without sending tool-status text", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
       expect(mocks.markChatRead).not.toHaveBeenCalled()
       expect(mocks.setTyping).not.toHaveBeenCalled()
 
       callbacks.onToolStart("query_session", {})
-      // Advance past status batcher debounce window (500ms)
-      vi.advanceTimersByTime(500)
       await flushAsyncWork()
       await flushAsyncWork()
 
-      expect(mocks.sendText).toHaveBeenCalledWith(
-        expect.objectContaining({
-          chat: expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
-          text: "checking session history...",
-        }),
-      )
+      expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+        text: "checking session history...",
+      }))
       expect(mocks.markChatRead).toHaveBeenCalledTimes(1)
       expect(mocks.setTyping).toHaveBeenCalledWith(
         expect.objectContaining({ chatGuid: "any;+;35820e69c97c459992d29a334f412979" }),
@@ -1635,38 +1661,26 @@ describe("BlueBubbles sense runtime", () => {
     const toolStatusCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "checking session history...")
     const finalReplyCall = mocks.sendText.mock.calls.find((call: any[]) => call[0]?.text === "got it")
 
-    expect(toolStatusCall).toBeTruthy()
+    expect(toolStatusCall).toBeFalsy()
     expect(finalReplyCall).toBeTruthy()
     expect(mocks.markChatRead.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
     expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(finalReplyCall[0].chat ? mocks.sendText.mock.invocationCallOrder[mocks.sendText.mock.calls.indexOf(finalReplyCall)] : Number.MAX_SAFE_INTEGER)
-    vi.useRealTimers()
   })
 
-  it("re-enables typing indicator after each status message", async () => {
-    vi.useFakeTimers()
+  it("does not re-enable typing for suppressed tool status messages", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
       callbacks.onToolStart("query_session", {})
-      // Advance past status batcher debounce window
-      vi.advanceTimersByTime(500)
       await flushAsyncWork()
       await flushAsyncWork()
 
-      // After the status sendText, setTyping(true) should be called again
-      // First setTyping(true) is from startTypingNow, second is after sendStatus
       const typingTrueCalls = mocks.setTyping.mock.calls.filter(
         (call: any[]) => call[1] === true,
       )
-      expect(typingTrueCalls.length).toBeGreaterThanOrEqual(2)
-
-      // Verify the second setTyping(true) happened after the status sendText
-      const statusSendOrder = mocks.sendText.mock.invocationCallOrder[0]
-      const secondTypingOrder = mocks.setTyping.mock.invocationCallOrder[
-        mocks.setTyping.mock.calls.findIndex(
-          (call: any[], idx: number) => idx > 0 && call[1] === true,
-        )
-      ]
-      expect(secondTypingOrder).toBeGreaterThan(statusSendOrder)
+      expect(typingTrueCalls).toHaveLength(1)
+      expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+        text: "checking session history...",
+      }))
 
       callbacks.onTextChunk("done")
       return {
@@ -1681,7 +1695,6 @@ describe("BlueBubbles sense runtime", () => {
 
     const bluebubbles = await import("../../../senses/bluebubbles")
     await bluebubbles.handleBlueBubblesEvent(groupThreadPayload)
-    vi.useRealTimers()
   })
 
   it("uses group chat identity rather than sender handle instability for group sessions", async () => {
@@ -2110,8 +2123,6 @@ describe("BlueBubbles sense runtime", () => {
   })
 
   it("stops typing even when the agent turn throws before a final answer is sent", async () => {
-    mocks.sendText
-      .mockResolvedValueOnce({ messageGuid: "error-guid" })
     mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
       callbacks.onModelStart()
       callbacks.onError(new Error("turn blew up"), "terminal")
@@ -2122,20 +2133,9 @@ describe("BlueBubbles sense runtime", () => {
     await expect(bluebubbles.handleBlueBubblesEvent(dmThreadPayload)).rejects.toThrow("turn blew up")
 
     expect(mocks.setTyping).toHaveBeenNthCalledWith(1, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
-    expect(mocks.sendText).toHaveBeenCalledTimes(1)
-    expect(mocks.setTyping.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendText.mock.invocationCallOrder[0])
-    expect(mocks.sendText).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        chat: expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }),
-        replyToMessageGuid: "C4B2E437-A373-43F6-9740-9CD84E5893A0",
-        text: "\u2717 turn blew up",
-      }),
-    )
+    expect(mocks.sendText).not.toHaveBeenCalled()
     expect(mocks.editMessage).not.toHaveBeenCalled()
-    // After error status sendText, typing is re-enabled; then stopped by finish
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), true)
-    expect(mocks.setTyping).toHaveBeenNthCalledWith(3, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
+    expect(mocks.setTyping).toHaveBeenNthCalledWith(2, expect.objectContaining({ chatGuid: "any;-;ari@mendelow.me" }), false)
   })
 
   it("can still run a turn when only chat identifier routing is present", async () => {
@@ -2230,22 +2230,15 @@ describe("BlueBubbles sense runtime", () => {
     await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
 
     expect(mocks.buildSystem).not.toHaveBeenCalled()
-    // Default mode: tool START sends description, tool END (success) is silent
-    expect(mocks.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "checking session history...",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "\u2717 temporary",
-      }),
-    )
-    expect(mocks.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: "\u2717 fatal",
-      }),
-    )
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "checking session history...",
+    }))
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "\u2717 temporary",
+    }))
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: "\u2717 fatal",
+    }))
     expect(mocks.postTurnTrim).toHaveBeenCalledTimes(1)
   })
 
