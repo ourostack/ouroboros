@@ -21,10 +21,6 @@ vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-vi.mock("../../../senses/commands", () => ({
-  getDebugMode: () => false,
-}))
-
 import {
   createBlueBubblesCallbacks,
   jaccardSimilarity,
