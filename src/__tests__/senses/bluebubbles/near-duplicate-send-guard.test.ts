@@ -185,8 +185,8 @@ describe("BlueBubbles near-duplicate outward send guard (post-#699 evt-001814/00
   })
 })
 
-describe("BlueBubbles status surface dedupe (post-#699 evt-001820/001821/001823)", () => {
-  it("suppresses a status surface that near-duplicates an already-spoken answer", async () => {
+describe("BlueBubbles status surfaces stay out of iMessage", () => {
+  it("does not send callback error status text that near-duplicates an already-spoken answer", async () => {
     const { client, sendText } = makeStubClient()
     const callbacks = createBlueBubblesCallbacks(client as never, CHAT, TOP_LEVEL_REPLY_TARGET, false)
 
@@ -196,9 +196,8 @@ describe("BlueBubbles status surface dedupe (post-#699 evt-001820/001821/001823)
     callbacks.onTextChunk(AUDACITY_A)
     await callbacks.flushNow!()
 
-    // Then a tool failure or watchdog tries to surface a status that is a
-    // near-rephrasing of the answer (this is the evt-001820/001821/001823
-    // shape — the agent reflects on the duplicate it just sent).
+    // Then a tool failure reports a near-rephrasing of the answer. iMessage
+    // should remain final-answer-only; the error belongs in nerves telemetry.
     callbacks.onError(new Error(AUDACITY_B), "transient")
 
     await callbacks.flush()
@@ -207,23 +206,22 @@ describe("BlueBubbles status surface dedupe (post-#699 evt-001820/001821/001823)
       typeof call[0]?.text === "string" && call[0].text.includes("Audacity"),
     )
     expect(audacitySends).toHaveLength(1)
-
-    const suppressed = (emitNervesEvent as ReturnType<typeof vi.fn>).mock.calls.find(
-      (call) => call[0]?.event === "bluebubbles.duplicate_outward_suppressed" && call[0]?.meta?.site === "status",
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "senses.bluebubbles_turn_error",
+        meta: expect.objectContaining({ severity: "transient", reason: AUDACITY_B }),
+      }),
     )
-    expect(suppressed).toBeDefined()
 
     await callbacks.finish()
   })
 
-  it("collapses repeated status messages within a turn", async () => {
+  it("keeps repeated callback errors out of iMessage while logging each one", async () => {
     const { client, sendText } = makeStubClient()
     const callbacks = createBlueBubblesCallbacks(client as never, CHAT, TOP_LEVEL_REPLY_TARGET, false)
 
     callbacks.onModelStart()
 
-    // Two onError calls with the same status text. Pre-fix sendStatus had no
-    // dedupe, so both would land. After the fix, the second is suppressed.
     callbacks.onError(new Error("network blip — retrying"), "transient")
     callbacks.onError(new Error("network blip — retrying"), "transient")
 
@@ -232,7 +230,12 @@ describe("BlueBubbles status surface dedupe (post-#699 evt-001820/001821/001823)
     const sends = sendText.mock.calls.filter((call) =>
       typeof call[0]?.text === "string" && call[0].text.includes("network blip"),
     )
-    expect(sends).toHaveLength(1)
+    expect(sends).toHaveLength(0)
+    const loggedErrors = (emitNervesEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => call[0]?.event === "senses.bluebubbles_turn_error"
+        && call[0]?.meta?.reason === "network blip — retrying",
+    )
+    expect(loggedErrors).toHaveLength(2)
 
     await callbacks.finish()
   })
