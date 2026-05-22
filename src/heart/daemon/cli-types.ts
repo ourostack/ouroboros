@@ -13,7 +13,6 @@ import type { DaemonCommand, DaemonResponse } from "./daemon"
 import type { HatchCredentialsInput, HatchFlowInput, HatchFlowResult } from "../hatch/hatch-flow"
 import type { RuntimeAuthInput, RuntimeAuthResult } from "../auth/auth-flow"
 import type { OuroPathInstallResult } from "../versioning/ouro-path-installer"
-import type { TaskModule } from "../../repertoire/tasks/types"
 import type { FriendStore } from "../../mind/friends/store"
 import type { CheckForUpdateResult } from "../versioning/update-checker"
 import type { DaemonHealthState } from "./daemon-health"
@@ -59,18 +58,9 @@ export type OuroCliCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "task.poke"; agent: string; taskId: string }
-  | { kind: "task.board"; status?: string; agent?: string }
-  | { kind: "task.create"; title: string; type?: string; agent?: string }
-  | { kind: "task.update"; id: string; status: string; agent?: string }
-  | { kind: "task.show"; id: string; agent?: string }
-  | { kind: "task.actionable"; agent?: string }
-  | { kind: "task.deps"; agent?: string }
-  | { kind: "task.sessions"; agent?: string }
-  | { kind: "task.fix"; mode: "dry-run" | "safe" | "single"; issueId?: string; option?: number; agent?: string }
   | { kind: "whoami"; agent?: string }
   | { kind: "session.list"; agent?: string }
   | { kind: "thoughts"; agent?: string; last?: number; json?: boolean; follow?: boolean }
-  | { kind: "reminder.create"; title: string; body: string; scheduledAt?: string; cadence?: string; category?: string; requester?: string; agent?: string }
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
@@ -137,7 +127,6 @@ export interface OuroCliDeps {
   startChat?: (agentName: string) => Promise<void>
   tailLogs?: (options?: { follow?: boolean; lines?: number; agentFilter?: string }) => () => void
   pruneDaemonLogs?: (options?: { logsDir?: string; agentName?: string }) => { filesCompacted: number; bytesFreed: number }
-  taskModule?: TaskModule
   friendStore?: FriendStore
   whoamiInfo?: () => { agentName: string; homePath: string; bonesVersion: string }
   scanSessions?: (agentName: string) => Promise<SessionEntry[]>
@@ -225,19 +214,6 @@ export interface DiscoveredCredential {
 }
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
-
-export type TaskCliCommand = Extract<OuroCliCommand,
-  | { kind: "task.board" }
-  | { kind: "task.create" }
-  | { kind: "task.update" }
-  | { kind: "task.show" }
-  | { kind: "task.actionable" }
-  | { kind: "task.deps" }
-  | { kind: "task.sessions" }
-  | { kind: "task.fix" }
->
-
-export type ReminderCliCommand = Extract<OuroCliCommand, { kind: "reminder.create" }>
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 export type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>

@@ -122,7 +122,7 @@ export function buildSpecialistSystemPrompt(
       "- `write_file`: Write a file to disk. Use this to write psyche files and agent.json to the temp directory.",
       "- `read_file`: Read a file from disk. Useful for reviewing existing agent bundles or migration sources.",
       "- `list_directory`: List directory contents. Useful for exploring existing agent bundles.",
-      "- I also have the normal local harness tools when useful here, including `shell`, `ouro task create`, `ouro reminder create`, note tools, coding tools, and repo helpers.",
+      "- I also have the normal local harness tools when useful here, including `shell`, note tools, coding tools, and repo helpers.",
       "- `complete_adoption`: Finalize the bundle. Validates, asks the harness to collect and confirm the hatchling vault unlock secret through hidden terminal prompts, scaffolds structural dirs, moves to ~/AgentBundles/, writes secrets, plays hatch animation. I call this with `name` (PascalCase) and `handoff_message` (warm message for the human).",
       "- The complete_adoption tool triggers hidden terminal prompts for the hatchling vault unlock secret. I must never ask the human to type the vault unlock secret into chat, and I must never include it in tool arguments.",
       "- `settle`: End the conversation with a final message. I call this after complete_adoption succeeds.",

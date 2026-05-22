@@ -119,13 +119,6 @@ export function usage(): string {
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>",
     "  ouro bluebubbles replay [--agent <name>] --message-guid <guid> [--event-type new-message|updated-message] [--json]",
-    "  ouro task board [<status>] [--agent <name>]",
-    "  ouro task create <title> [--type <type>] [--agent <name>]",
-    "  ouro task update <id> <status> [--agent <name>]",
-    "  ouro task show <id> [--agent <name>]",
-    "  ouro task fix [--safe|--all] [<id> [--option <N>]] [--agent <name>]",
-    "  ouro task actionable|deps|sessions [--agent <name>]",
-    "  ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>] [--category <category>] [--agent <name>]",
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
@@ -359,80 +352,6 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
     credentials: Object.keys(credentials).length > 0 ? credentials : undefined,
     migrationPath,
   }
-}
-
-function parseTaskCommand(args: string[]): OuroCliCommand {
-  const { agent, rest: cleaned } = extractAgentFlag(args)
-  const [sub, ...rest] = cleaned
-  if (!sub) throw new Error(`Usage\n${usage()}`)
-
-  if (sub === "board") {
-    const status = rest[0]
-    return status
-      ? { kind: "task.board", status, ...(agent ? { agent } : {}) }
-      : { kind: "task.board", ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "create") {
-    const title = rest[0]
-    if (!title) throw new Error(`Usage\n${usage()}`)
-    let type: string | undefined
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--type" && rest[i + 1]) {
-        type = rest[i + 1]
-        i += 1
-      }
-    }
-    return type
-      ? { kind: "task.create", title, type, ...(agent ? { agent } : {}) }
-      : { kind: "task.create", title, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "update") {
-    const id = rest[0]
-    const status = rest[1]
-    if (!id || !status) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.update", id, status, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "show") {
-    const id = rest[0]
-    if (!id) throw new Error(`Usage\n${usage()}`)
-    return { kind: "task.show", id, ...(agent ? { agent } : {}) }
-  }
-
-  if (sub === "actionable") return { kind: "task.actionable", ...(agent ? { agent } : {}) }
-  if (sub === "deps") return { kind: "task.deps", ...(agent ? { agent } : {}) }
-  if (sub === "sessions") return { kind: "task.sessions", ...(agent ? { agent } : {}) }
-
-  if (sub === "fix") {
-    // fix --safe | fix --all | fix <id> [--option N] | fix (dry-run)
-    if (rest.length === 0) return { kind: "task.fix", mode: "dry-run", ...(agent ? { agent } : {}) }
-
-    const first = rest[0]
-    if (first === "--safe" || first === "--all") {
-      return { kind: "task.fix", mode: "safe", ...(agent ? { agent } : {}) }
-    }
-
-    // first arg is an issue ID (contains a colon, e.g. schema-missing-kind:one-shots/foo.md)
-    const issueId = first
-    let option: number | undefined
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--option" && rest[i + 1]) {
-        option = parseInt(rest[i + 1], 10)
-        i += 1
-      }
-    }
-    return {
-      kind: "task.fix",
-      mode: "single",
-      issueId,
-      ...(option !== undefined ? { option } : {}),
-      ...(agent ? { agent } : {}),
-    }
-  }
-
-  throw new Error(`Usage\n${usage()}`)
 }
 
 function parseAuthCommand(args: string[]): OuroCliCommand {
@@ -1091,58 +1010,6 @@ function parseProviderCommand(args: string[]): OuroCliCommand {
   throw new Error("Usage: ouro provider refresh [--agent <name>]")
 }
 
-function parseReminderCommand(args: string[]): OuroCliCommand {
-  const { agent, rest: cleaned } = extractAgentFlag(args)
-  const [sub, ...rest] = cleaned
-  if (!sub) throw new Error(`Usage\n${usage()}`)
-
-  if (sub === "create") {
-    const title = rest[0]
-    if (!title) throw new Error(`Usage\n${usage()}`)
-
-    let body: string | undefined
-    let scheduledAt: string | undefined
-    let cadence: string | undefined
-    let category: string | undefined
-    let requester: string | undefined
-
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--body" && rest[i + 1]) {
-        body = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--at" && rest[i + 1]) {
-        scheduledAt = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--cadence" && rest[i + 1]) {
-        cadence = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--category" && rest[i + 1]) {
-        category = rest[i + 1]
-        i += 1
-      } else if (rest[i] === "--requester" && rest[i + 1]) {
-        requester = rest[i + 1]
-        i += 1
-      }
-    }
-
-    if (!body) throw new Error(`Usage\n${usage()}`)
-    if (!scheduledAt && !cadence) throw new Error(`Usage\n${usage()}`)
-
-    return {
-      kind: "reminder.create" as const,
-      title,
-      body,
-      ...(scheduledAt ? { scheduledAt } : {}),
-      ...(cadence ? { cadence } : {}),
-      ...(category ? { category } : {}),
-      ...(requester ? { requester } : {}),
-      ...(agent ? { agent } : {}),
-    }
-  }
-
-  throw new Error(`Usage\n${usage()}`)
-}
-
 function parseSessionCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   const [sub] = cleaned
@@ -1563,8 +1430,6 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "account") return parseAccountCommand(args.slice(1))
   if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
-  if (head === "task") return parseTaskCommand(args.slice(1))
-  if (head === "reminder") return parseReminderCommand(args.slice(1))
   if (head === "habit") return parseHabitCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))

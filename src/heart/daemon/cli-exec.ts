@@ -25,12 +25,10 @@ import { applyPendingUpdates, registerUpdateHook } from "../versioning/update-ho
 import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
-import { createTaskModule } from "../../repertoire/tasks"
 import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
-import type { TaskModule } from "../../repertoire/tasks/types"
 import { uninstallLaunchAgent, isDaemonInstalled, type LaunchdDeps } from "./launchd"
 import {
   resolveHatchCredentials,
@@ -86,8 +84,6 @@ import type {
   EnsureDaemonResult,
   GithubCopilotModel,
   SessionEntry,
-  TaskCliCommand,
-  ReminderCliCommand,
   FriendCliCommand,
   AuthCliCommand,
   AuthVerifyCliCommand,
@@ -416,15 +412,6 @@ async function listCliAgents(deps: OuroCliDeps): Promise<string[]> {
 
 type AgentResolutionFailureMode = "throw" | "return-message"
 type MissingAgentResolvableKind =
-  | "task.board"
-  | "task.create"
-  | "task.update"
-  | "task.show"
-  | "task.actionable"
-  | "task.deps"
-  | "task.sessions"
-  | "task.fix"
-  | "reminder.create"
   | "friend.list"
   | "friend.show"
   | "friend.create"
@@ -522,15 +509,6 @@ function invalidAgentSelectionMessage(agentNames: string[]): string {
 
 function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFailureMode | undefined {
   switch (command.kind) {
-    case "task.board":
-    case "task.create":
-    case "task.update":
-    case "task.show":
-    case "task.actionable":
-    case "task.deps":
-    case "task.sessions":
-    case "task.fix":
-    case "reminder.create":
     case "friend.list":
     case "friend.show":
     case "friend.create":
@@ -1582,7 +1560,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | TaskCliCommand | ReminderCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -6083,129 +6061,6 @@ async function performSystemSetup(deps: OuroCliDeps): Promise<void> {
   await registerOuroBundleTypeNonBlocking(deps)
 }
 
-// ── Task command execution ──
-
-function executeTaskCommand(command: TaskCliCommand, taskMod: TaskModule): string {
-  if (command.kind === "task.board") {
-    if (command.status) {
-      const lines = taskMod.boardStatus(command.status)
-      return lines.length > 0 ? lines.join("\n") : "no tasks in that status"
-    }
-    const board = taskMod.getBoard()
-    return board.full || board.compact || "no tasks found"
-  }
-
-  if (command.kind === "task.create") {
-    try {
-      const created = taskMod.createTask({
-        title: command.title,
-        type: command.type ?? "one-shot",
-        category: "general",
-        body: "",
-      })
-      return `created: ${created}`
-    } catch (error) {
-      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-    }
-  }
-
-  if (command.kind === "task.update") {
-    const result = taskMod.updateStatus(command.id, command.status)
-    if (!result.ok) {
-      return `error: ${result.reason ?? "status update failed"}`
-    }
-    const archivedSuffix = result.archived && result.archived.length > 0
-      ? ` | archived: ${result.archived.join(", ")}`
-      : ""
-    return `updated: ${command.id} -> ${result.to}${archivedSuffix}`
-  }
-
-  if (command.kind === "task.show") {
-    const task = taskMod.getTask(command.id)
-    if (!task) return `task not found: ${command.id}`
-    return [
-      `title: ${task.title}`,
-      `type: ${task.type}`,
-      `status: ${task.status}`,
-      `category: ${task.category}`,
-      `created: ${task.created}`,
-      `updated: ${task.updated}`,
-      `path: ${task.path}`,
-      task.body ? `\n${task.body}` : "",
-    ].filter(Boolean).join("\n")
-  }
-
-  if (command.kind === "task.actionable") {
-    const lines = taskMod.boardAction()
-    return lines.length > 0 ? lines.join("\n") : "no action required"
-  }
-
-  if (command.kind === "task.deps") {
-    const lines = taskMod.boardDeps()
-    return lines.length > 0 ? lines.join("\n") : "no unresolved dependencies"
-  }
-
-  if (command.kind === "task.fix") {
-    try {
-      const fixOptions: import("../../repertoire/tasks/types").FixOptions = {
-        mode: command.mode,
-        ...(command.issueId ? { issueId: command.issueId } : {}),
-        ...(command.option !== undefined ? { option: command.option } : {}),
-      }
-      const result = taskMod.fix(fixOptions)
-
-      if (command.mode === "dry-run") {
-        if (result.remaining.length === 0) {
-          return `task health: clean`
-        }
-        const safeIssues = result.remaining.filter((i) => i.confidence === "safe")
-        const reviewIssues = result.remaining.filter((i) => i.confidence === "needs_review")
-        const lines: string[] = [`${result.remaining.length} issues found`]
-        if (safeIssues.length > 0) {
-          lines.push("", `safe fixes (${safeIssues.length}):`)
-          for (const issue of safeIssues) {
-            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-          }
-        }
-        if (reviewIssues.length > 0) {
-          lines.push("", `needs review (${reviewIssues.length}):`)
-          for (const issue of reviewIssues) {
-            lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-          }
-        }
-        lines.push("", `task health: ${result.health}`)
-        return lines.join("\n")
-      }
-
-      // safe, single, or --all modes: show what was done
-      const lines: string[] = []
-      if (result.applied.length > 0) {
-        lines.push(`${result.applied.length} applied:`)
-        for (const issue of result.applied) {
-          lines.push(`  ${issue.code}:${issue.target}`)
-        }
-      }
-      if (result.remaining.length > 0) {
-        lines.push(`${result.remaining.length} remaining:`)
-        for (const issue of result.remaining) {
-          lines.push(`  ${issue.code}:${issue.target} -- ${issue.description}`)
-        }
-      }
-      if (result.applied.length === 0 && result.remaining.length === 0) {
-        lines.push("no issues")
-      }
-      lines.push(`task health: ${result.health}`)
-      return lines.join("\n")
-    } catch (error) {
-      return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-    }
-  }
-
-  // command.kind === "task.sessions"
-  const lines = taskMod.boardSessions()
-  return lines.length > 0 ? lines.join("\n") : "no active sessions"
-}
-
 // ── Friend command execution ──
 
 const TRUST_RANK: Record<string, number> = { family: 4, friend: 3, acquaintance: 2, stranger: 1 }
@@ -6330,25 +6185,6 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   const filtered = current.externalIds.filter((_, i) => i !== idx)
   await store.put(command.friendId, { ...current, externalIds: filtered, updatedAt: now })
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
-}
-
-// ── Reminder command execution ──
-
-function executeReminderCommand(command: ReminderCliCommand, taskMod: TaskModule): string {
-  try {
-    const created = taskMod.createTask({
-      title: command.title,
-      type: command.cadence ? "ongoing" : "one-shot",
-      category: command.category ?? "reminder",
-      body: command.body,
-      scheduledAt: command.scheduledAt,
-      cadence: command.cadence,
-      requester: command.requester,
-    })
-    return `created: ${created}`
-  } catch (error) {
-    return `error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)}`
-  }
 }
 
 // ── Dev mode helpers ──
@@ -7620,36 +7456,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       return message
     }
     const message = formatMcpResponse(command, response)
-    deps.writeStdout(message)
-    return message
-  }
-
-  // ── task subcommands (local, no daemon socket needed) ──
-  if (command.kind === "task.board" || command.kind === "task.create" || command.kind === "task.update" ||
-      command.kind === "task.show" || command.kind === "task.actionable" || command.kind === "task.deps" ||
-      command.kind === "task.sessions" || command.kind === "task.fix") {
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? createTaskModule(path.join(
-      deps.bundlesRoot ?? getAgentBundlesRoot(),
-      `${command.agent}.ouro`,
-      "tasks",
-    ))
-    /* v8 ignore stop */
-    const message = executeTaskCommand(command, taskMod)
-    deps.writeStdout(message)
-    return message
-  }
-
-  // ── reminder subcommands (local, no daemon socket needed) ──
-  if (command.kind === "reminder.create") {
-    /* v8 ignore start -- production default: requires full identity setup @preserve */
-    const taskMod = deps.taskModule ?? createTaskModule(path.join(
-      deps.bundlesRoot ?? getAgentBundlesRoot(),
-      `${command.agent}.ouro`,
-      "tasks",
-    ))
-    /* v8 ignore stop */
-    const message = executeReminderCommand(command, taskMod)
     deps.writeStdout(message)
     return message
   }
