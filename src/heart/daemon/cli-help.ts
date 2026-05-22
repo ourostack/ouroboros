@@ -167,6 +167,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro task list",
     subcommands: ["list", "new", "done", "archive", "show"],
   },
+  "migrate-to-desk": {
+    category: "Tasks",
+    description: "Migrate a legacy `tasks/` tree into the new `desk/` shape (copy semantics — source untouched).",
+    usage: "ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
+    example: "ouro migrate-to-desk --agent slugger --dry-run",
+  },
   friend: {
     category: "Friends",
     description: "Manage agent friends and identity links",
