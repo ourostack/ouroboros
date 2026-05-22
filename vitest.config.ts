@@ -38,7 +38,6 @@ export default defineConfig({
         "src/reflection/*-entry.ts",
         "src/repertoire/coding/types.ts",
         "src/mind/friends/store.ts",
-        "src/repertoire/tasks/types.ts",
         "src/arc/attention-types.ts",
         "src/nerves/coverage/cli-main.ts",
         "src/heart/session-playback-cli-main.ts",

@@ -116,17 +116,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: getBoardMock,
-    createTask: vi.fn(),
-    updateStatus: vi.fn(),
-    boardStatus: vi.fn(),
-    boardAction: vi.fn(),
-    boardDeps: vi.fn(),
-    boardSessions: vi.fn(),
-  }),
-}))
 
 vi.mock("../../heart/identity", () => ({
   getAgentRoot: vi.fn(() => "/mock/agent-root"),

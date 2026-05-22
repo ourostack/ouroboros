@@ -8,7 +8,6 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.doUnmock("../../../heart/session-activity")
   vi.doUnmock("../../../arc/obligations")
-  vi.doUnmock("../../../repertoire/tasks/scanner")
 })
 
 describe("continuity readers defensive fallbacks", () => {
@@ -108,25 +107,4 @@ describe("continuity readers defensive fallbacks", () => {
     }
   })
 
-  it("falls back to an inactive self-fix view when task scanning throws", async () => {
-    vi.doMock("../../../repertoire/tasks/scanner", async () => {
-      const actual = await vi.importActual<typeof import("../../../repertoire/tasks/scanner")>("../../../repertoire/tasks/scanner")
-      return {
-        ...actual,
-        scanTasks: () => {
-          throw new Error("boom")
-        },
-      }
-    })
-
-    const { readSelfFixView } = await import("../../../heart/mailbox/readers/continuity-readers")
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "self-fix-throw-"))
-
-    try {
-      const view = readSelfFixView(agentRoot)
-      expect(view).toEqual({ active: false, currentStep: null, steps: [] })
-    } finally {
-      fs.rmSync(agentRoot, { recursive: true, force: true })
-    }
-  })
 })

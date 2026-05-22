@@ -59,9 +59,6 @@ const mockTaskModule = {
   boardSessions: vi.fn(),
 }
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => mockTaskModule,
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {

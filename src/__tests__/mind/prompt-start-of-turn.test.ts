@@ -31,11 +31,6 @@ vi.mock("../../repertoire/skills", () => ({
 }))
 
 const mockGetBoard = vi.fn()
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: mockGetBoard,
-  }),
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = {
