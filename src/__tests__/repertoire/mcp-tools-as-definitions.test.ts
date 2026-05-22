@@ -12,7 +12,7 @@ import type { McpManager } from "../../repertoire/mcp-manager"
 import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
 
 function makeMockMcpManager(
-  allTools: Array<{ server: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> }>,
+  allTools: Array<{ server: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>; pluginId?: string }>,
   callToolResult?: { content: Array<{ type: string; text: string }> },
   callToolError?: Error,
 ): McpManager {
@@ -259,6 +259,64 @@ describe("mcpToolsAsDefinitions", () => {
 
       const result = mcpToolsAsDefinitions(mgr)
       expect(result[0].tool.function.name).toBe("browser")
+    })
+  })
+
+  // W6 Unit 9: plugin-sourced servers use the Anthropic public naming
+  // convention `mcp__<server>__<tool>`, matching the desk-section.ts prompt
+  // and Claude Code's external convention. Builtin servers keep the legacy
+  // `<server>_<tool>` shape for backward compatibility.
+  describe("plugin-sourced server naming (mcp__<server>__<tool>)", () => {
+    it("names plugin tools as mcp__<server>__<tool>", () => {
+      const mgr = makeMockMcpManager([{
+        server: "desk",
+        pluginId: "desk",
+        tools: [
+          { name: "task_create", description: "Create a task", inputSchema: { type: "object" } },
+          { name: "desk_search", description: "Search desk", inputSchema: { type: "object" } },
+        ],
+      }])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result).toHaveLength(2)
+      expect(result[0].tool.function.name).toBe("mcp__desk__task_create")
+      // Plugin servers do NOT strip pre-existing server prefix — the mcp__ form
+      // is canonical and unambiguous.
+      expect(result[1].tool.function.name).toBe("mcp__desk__desk_search")
+      expect(result[0].mcpServer).toBe("desk")
+    })
+
+    it("handler calls callTool with the original tool name (not the prefixed one)", async () => {
+      const mgr = makeMockMcpManager([{
+        server: "desk",
+        pluginId: "desk",
+        tools: [{ name: "task_create", description: "x", inputSchema: { type: "object" } }],
+      }], { content: [{ type: "text", text: "ok" }] })
+
+      const result = mcpToolsAsDefinitions(mgr)
+      await result[0].handler({})
+      // mgr.callTool gets called with the un-prefixed name
+      expect(mgr.callTool).toHaveBeenCalledWith("desk", "task_create", {})
+    })
+
+    it("mixes builtin (no pluginId) + plugin tools in one listing", () => {
+      const mgr = makeMockMcpManager([
+        {
+          server: "calc",
+          tools: [{ name: "add", description: "Add", inputSchema: { type: "object" } }],
+        },
+        {
+          server: "desk",
+          pluginId: "desk",
+          tools: [{ name: "task_create", description: "Create", inputSchema: { type: "object" } }],
+        },
+      ])
+
+      const result = mcpToolsAsDefinitions(mgr)
+      expect(result.map((r) => r.tool.function.name).sort()).toEqual([
+        "calc_add",
+        "mcp__desk__task_create",
+      ])
     })
   })
 })
