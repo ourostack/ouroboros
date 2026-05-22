@@ -31,7 +31,6 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     bridgeSuggestion: null,
     ...overrides,
@@ -249,12 +248,10 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(result).toContain("relates to bridge bridge-1")
   })
 
-  it("renders live tasks", () => {
-    const result = formatActiveWorkFrame(makeFrame({
-      taskPressure: { compactBoard: "", liveTaskNames: ["shared-relay", "daily-standup"], activeBridges: [] },
-    }))
-    expect(result).toContain("also tracking: shared-relay, daily-standup")
-  })
+  // W6 Unit 8a: removed `renders live tasks` test — the `also tracking:`
+  // line came from `taskPressure.liveTaskNames`, which went away with the
+  // built-in task module. The desk-section in the prompt covers task surface
+  // now (see src/mind/desk-section.ts).
 
   it("renders 'not in a conversation' when no currentSession", () => {
     const result = formatActiveWorkFrame(makeFrame({
@@ -491,11 +488,6 @@ describe("resume handle contract", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -526,11 +518,6 @@ describe("resume handle contract", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -548,11 +535,6 @@ describe("resume handle contract", () => {
       mustResolveBeforeHandoff: true,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -589,11 +571,6 @@ describe("resume handle contract", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -635,11 +612,6 @@ describe("resume handle contract", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 

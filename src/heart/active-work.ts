@@ -1,6 +1,5 @@
 import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { BoardResult } from "../repertoire/tasks/types"
 import type { CodingSession } from "../repertoire/coding/types"
 import type { ReturnObligation } from "../arc/obligations"
 import { bridgeStateLabel } from "./bridges/state-machine"
@@ -68,11 +67,6 @@ export interface ActiveWorkFrame {
     job: InnerJob
   }
   bridges: BridgeRecord[]
-  taskPressure: {
-    compactBoard: string
-    liveTaskNames: string[]
-    activeBridges: string[]
-  }
   friendActivity: {
     freshestForCurrentFriend: SessionActivityRecord | null
     otherLiveSessionsForCurrentFriend: SessionActivityRecord[]
@@ -99,7 +93,6 @@ interface BuildActiveWorkFrameInput {
   backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
-  taskBoard: BoardResult
   friendActivity: SessionActivityRecord[]
   targetCandidates?: TargetSessionCandidate[]
   innerReturnObligations?: ReturnObligation[]
@@ -111,7 +104,6 @@ export interface BridgeSuggestionInput {
   mustResolveBeforeHandoff: boolean
   bridges: BridgeRecord[]
   pendingObligations?: Obligation[]
-  taskBoard: BoardResult
   targetCandidates?: TargetSessionCandidate[]
 }
 
@@ -125,22 +117,12 @@ function compareActivity(a: SessionActivityRecord, b: SessionActivityRecord): nu
   return b.lastActivityMs - a.lastActivityMs
 }
 
-function summarizeLiveTasks(taskBoard: BoardResult): string[] {
-  const live = [
-    ...taskBoard.byStatus.processing,
-    ...taskBoard.byStatus.validating,
-    ...taskBoard.byStatus.collaborating,
-  ]
-  return [...new Set(live)]
-}
-
 function isActiveBridge(bridge: BridgeRecord): boolean {
   return bridge.lifecycle === "active"
 }
 
-function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mustResolveBeforeHandoff" | "taskBoard" | "pendingObligations">): boolean {
+function hasSharedObligationPressure(input: Pick<BuildActiveWorkFrameInput, "mustResolveBeforeHandoff" | "pendingObligations">): boolean {
   return input.mustResolveBeforeHandoff
-    || summarizeLiveTasks(input.taskBoard).length > 0
     || activeObligationCount(input.pendingObligations) > 0
 }
 
@@ -706,7 +688,6 @@ export function suggestBridgeForActiveWork(input: BridgeSuggestionInput): Bridge
     })
   if (!hasSharedObligationPressure({
     mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
-    taskBoard: input.taskBoard,
     pendingObligations: input.pendingObligations,
   }) || targetCandidates.length === 0) {
     return null
@@ -799,7 +780,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       .sort(compareActivity)
     : []
 
-  const liveTaskNames = summarizeLiveTasks(input.taskBoard)
   const activeBridgePresent = input.bridges.some(isActiveBridge)
   const liveCodingSessions = input.codingSessions ?? []
   const allOtherLiveSessions = [...input.friendActivity].sort(compareActivity)
@@ -822,11 +802,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
     centerOfGravity,
     inner: input.inner,
     bridges: input.bridges,
-    taskPressure: {
-      compactBoard: input.taskBoard.compact,
-      liveTaskNames,
-      activeBridges: input.taskBoard.activeBridges,
-    },
     friendActivity: {
       freshestForCurrentFriend: friendSessions[0] ?? null,
       otherLiveSessionsForCurrentFriend: friendSessions,
@@ -844,7 +819,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
       bridges: input.bridges,
       pendingObligations,
-      taskBoard: input.taskBoard,
       targetCandidates: input.targetCandidates,
     }),
     primaryObligation,
@@ -859,7 +833,6 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       centerOfGravity: frame.centerOfGravity,
       friendId: frame.currentSession?.friendId ?? null,
       bridges: frame.bridges.length,
-      liveTasks: frame.taskPressure.liveTaskNames.length,
       liveSessions: frame.friendActivity.otherLiveSessionsForCurrentFriend.length,
       codingSessions: frame.codingSessions.length,
       otherLiveSessions: allOtherLiveSessions.length,
@@ -997,12 +970,6 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
     lines.push("")
     lines.push("## other active sessions")
     lines.push(...otherActiveSessions)
-  }
-
-  // Task pressure
-  if ((frame.taskPressure?.liveTaskNames ?? []).length > 0) {
-    lines.push("")
-    lines.push(`i'm also tracking: ${frame.taskPressure.liveTaskNames.join(", ")}.`)
   }
 
   // Bridges

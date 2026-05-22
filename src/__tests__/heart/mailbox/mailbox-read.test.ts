@@ -392,7 +392,8 @@ describe("mailbox direct reads", () => {
     expect(machine.agents[0]).toMatchObject({
       agentName: "alpha",
       freshness: { status: "fresh" },
-      tasks: { liveCount: 2, blockedCount: 1 },
+      // W6 Unit 8a: task surface reports zeros until desk-side wiring lands.
+      tasks: { liveCount: 0, blockedCount: 0 },
       obligations: { openCount: 2 },
       coding: { activeCount: 1, blockedCount: 1 },
     })
@@ -409,10 +410,8 @@ describe("mailbox direct reads", () => {
 
     expect(alpha.agentName).toBe("alpha")
     expect(alpha.senses).toEqual(["cli", "teams"])
-    expect(alpha.tasks.liveTaskNames).toEqual([
-      "agent-dashboard",
-      "cross-session-followup",
-    ])
+    // W6 Unit 8a: task summary returns empty until desk MCP wiring lands.
+    expect(alpha.tasks.liveTaskNames).toEqual([])
     expect(alpha.obligations.items.map((item) => item.id)).toEqual(["ob-1", "ob-0"])
     expect(alpha.sessions.liveCount).toBe(2)
     expect(alpha.sessions.items[0]).toMatchObject({
@@ -486,7 +485,11 @@ describe("mailbox direct reads", () => {
       bundlesRoot,
       now: () => new Date("2026-03-29T12:00:00.000Z"),
     })
-    expect(first.tasks.liveCount).toBe(1)
+    // W6 Unit 8a: task summary returns zero until desk MCP wiring lands.
+    // This test originally verified that task state was re-read from disk on
+    // each request; the assertion now anchors the empty steady state and is
+    // expected to be rewritten in a follow-up unit to read from desk/.
+    expect(first.tasks.liveCount).toBe(0)
 
     writeTask(path.join(alphaRoot, "tasks"), "one-shots", "2026-03-29-1100-agent-dashboard", {
       type: "one-shot",
@@ -502,7 +505,7 @@ describe("mailbox direct reads", () => {
       now: () => new Date("2026-03-29T12:00:00.000Z"),
     })
     expect(second.tasks.liveCount).toBe(0)
-    expect(second.tasks.byStatus.done).toBe(1)
+    expect(second.tasks.byStatus.done).toBe(0)
   })
 
   it("surfaces the held-work-items queue from arc/obligations/inner/", async () => {
@@ -3272,6 +3275,12 @@ describe("mailbox deep readers", () => {
       }
     })
 
+    // W6 Unit 8a: readSelfFixView used to scan tasks/ for fix-named tasks.
+    // The built-in task module is being retired in favor of the desk MCP
+    // server. The self-fix surface now always returns inactive until a
+    // follow-up unit rewires it to read from desk/. These two tests
+    // anchor the empty steady state and are expected to be rewritten
+    // against the desk-side surface in that follow-up.
     it("derives active self-fix steps from matching tasks", async () => {
       const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "self-fix-full-"))
       try {
@@ -3283,21 +3292,10 @@ describe("mailbox deep readers", () => {
           created: "2026-04-03",
           updated: "2026-04-03",
         })
-        writeTask(path.join(agentRoot, "tasks"), "one-shots", "2026-04-03-0915-fix-coverage-gap", {
-          type: "one-shot",
-          category: "infrastructure",
-          title: "Fix coverage gap",
-          status: "done",
-          created: "2026-04-03",
-          updated: "2026-04-03",
-        })
 
         const view = readSelfFixView(agentRoot)
 
-        expect(view.active).toBe(true)
-        expect(view.currentStep).toBe("Self-fix daemon startup")
-        expect(view.steps).toHaveLength(2)
-        expect(view.steps[1]).toMatchObject({ status: "done" })
+        expect(view).toEqual({ active: false, currentStep: null, steps: [] })
       } finally {
         fs.rmSync(agentRoot, { recursive: true, force: true })
       }
@@ -3317,15 +3315,7 @@ describe("mailbox deep readers", () => {
 
         const view = readSelfFixView(agentRoot)
 
-        expect(view.active).toBe(false)
-        expect(view.currentStep).toBeNull()
-        expect(view.steps).toEqual([
-          {
-            label: "Fix followup",
-            status: "pending",
-            detail: "task 2026-04-03-0930-fix-followup.md: paused",
-          },
-        ])
+        expect(view).toEqual({ active: false, currentStep: null, steps: [] })
       } finally {
         fs.rmSync(agentRoot, { recursive: true, force: true })
       }

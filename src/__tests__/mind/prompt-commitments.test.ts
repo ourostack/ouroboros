@@ -31,7 +31,6 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     bridgeSuggestion: null,
     ...overrides,
@@ -78,7 +77,7 @@ describe("commitmentsSection", () => {
     expect(result).toContain("- fulfill my outstanding obligations")
     expect(result).toContain("## what i can let go of")
     expect(result).toContain("- no shared work to coordinate")
-    expect(result).toContain("- no active tasks to track")
+    // W6 Unit 8a: "- no active tasks to track" removed with taskPressure.
   })
 
   it("surfaces obligation with status, surface, and derived completion criteria", () => {
@@ -105,15 +104,16 @@ describe("commitmentsSection", () => {
     expect(result).toContain("## what i can let go of")
   })
 
-  it("includes bridge and task commitments with their completion criteria", () => {
+  it("includes bridge commitments with their completion criteria", () => {
+    // W6 Unit 8a: removed task-tracking assertion — the `taskPressure` field
+    // and its `i'm tracking: <name>` rendering went away with the built-in
+    // task module. Bridges remain.
     const result = commitmentsSection({
       activeWorkFrame: makeFrame({
         bridges: [{ id: "b-1", summary: "align on naming", objective: "naming obj", sessions: [], createdAt: "" }] as any,
-        taskPressure: { compactBoard: "", liveTaskNames: ["deploy auth service"], activeBridges: [] },
       }),
     })
     expect(result).toContain("- i have shared work: align on naming")
-    expect(result).toContain("- i'm tracking: deploy auth service")
     expect(result).toContain("- keep shared work aligned across sessions")
   })
 

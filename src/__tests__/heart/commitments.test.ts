@@ -31,9 +31,13 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
     centerOfGravity: "local-turn",
     inner: { status: "idle", hasPending: false, job: makeIdleJob() },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
     bridgeSuggestion: null,
+    codingSessions: [],
+    pendingObligations: [],
+    innerReturnObligations: [],
+    primaryObligation: null,
+    resumeHandle: null,
     ...overrides,
   }
 }
@@ -52,7 +56,6 @@ describe("deriveCommitments", () => {
     expect(result.completionCriteria).toEqual(["just be present in this conversation"])
     expect(result.safeToIgnore).toContain("no private thinking in progress")
     expect(result.safeToIgnore).toContain("no shared work to coordinate")
-    expect(result.safeToIgnore).toContain("no active tasks to track")
   })
 
   it("does not treat raw current-turn text as a persisted commitment", () => {
@@ -108,14 +111,6 @@ describe("deriveCommitments", () => {
     expect(result.completionCriteria).toContain("keep shared work aligned across sessions")
   })
 
-  it("includes live tasks in committedTo", () => {
-    const result = deriveCommitments(
-      makeFrame({ taskPressure: { compactBoard: "", liveTaskNames: ["daily-standup"], activeBridges: [] } }),
-      makeIdleJob(),
-    )
-    expect(result.committedTo).toContain("i'm tracking: daily-standup")
-  })
-
   it("includes pending obligation in completionCriteria with origin name", () => {
     const result = deriveCommitments(
       makeFrame(),
@@ -138,11 +133,10 @@ describe("deriveCommitments", () => {
           updatedAt: "",
           attachedSessions: [],
         }],
-        taskPressure: { compactBoard: "", liveTaskNames: ["task-1"], activeBridges: [] },
       }),
       makeIdleJob({ status: "running", content: "thinking" }),
     )
-    expect(result.committedTo.length).toBeGreaterThanOrEqual(3)
+    expect(result.committedTo.length).toBeGreaterThanOrEqual(2)
     expect(result.completionCriteria.length).toBeGreaterThanOrEqual(2)
   })
 
@@ -179,13 +173,6 @@ describe("deriveCommitments", () => {
       makeIdleJob({ obligationStatus: "pending", origin: null }),
     )
     expect(result.completionCriteria).toContain("bring my answer back to them")
-  })
-
-  it("no taskPressure property uses empty fallback", () => {
-    const frame = makeFrame()
-    delete (frame as any).taskPressure
-    const result = deriveCommitments(frame, makeIdleJob())
-    expect(result.safeToIgnore).toContain("no active tasks to track")
   })
 
   it("emits nerves event reference", () => {

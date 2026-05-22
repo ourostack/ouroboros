@@ -12,7 +12,6 @@ import type { CodingSession } from "../repertoire/coding/types"
 import type { Obligation, ReturnObligation } from "../arc/obligations"
 import type { SessionActivityRecord } from "./session-activity"
 import type { TargetSessionCandidate } from "./target-resolution"
-import type { BoardResult } from "../repertoire/tasks/types"
 import type { InnerJob } from "./daemon/thoughts"
 import type { SyncConfig } from "./config"
 import type { DaemonHealthState } from "./daemon/daemon-health"
@@ -26,7 +25,6 @@ import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { createBridgeManager } from "./bridges/manager"
 import { getAgentName, getAgentRoot, loadAgentConfig, type AgentSensesConfig, type SenseName } from "./identity"
-import { getTaskModule } from "../repertoire/tasks"
 import { getCodingSessionManager } from "../repertoire/coding"
 import { listSessionActivity } from "./session-activity"
 import { readInnerDialogRawData, deriveInnerDialogStatus, deriveInnerJob, getInnerDialogSessionPath } from "./daemon/thoughts"
@@ -72,8 +70,6 @@ export interface TurnContext {
   backgroundOperations: BackgroundOperationRecord[]
   /** Inner dialog work state. */
   innerWorkState: InnerWorkState
-  /** Task board snapshot. */
-  taskBoard: BoardResult
   /** Active return obligations. */
   returnObligations: ReturnObligation[]
   /** Recent episodes for continuity. */
@@ -123,28 +119,6 @@ function isLiveCodingSessionStatus(status: CodingSessionStatus): boolean {
     || status === "running"
     || status === "waiting_input"
     || status === "stalled"
-}
-
-function emptyTaskBoard(): BoardResult {
-  return {
-    compact: "",
-    full: "",
-    byStatus: {
-      drafting: [],
-      processing: [],
-      validating: [],
-      collaborating: [],
-      paused: [],
-      blocked: [],
-      done: [],
-      cancelled: [],
-    },
-    issues: [],
-    actionRequired: [],
-    unresolvedDependencies: [],
-    activeSessions: [],
-    activeBridges: [],
-  }
 }
 
 function readInnerWorkState(): InnerWorkState {
@@ -410,15 +384,6 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   // Inner work state
   const innerWorkState = readInnerWorkState()
 
-  // Task board
-  let taskBoard: BoardResult
-  try {
-    taskBoard = getTaskModule().getBoard()
-  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
-    taskBoard = emptyTaskBoard()
-  /* v8 ignore stop */
-  }
-
   // Return obligations
   let returnObligations: ReturnObligation[] = []
   try {
@@ -490,7 +455,6 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     otherCodingSessions,
     backgroundOperations,
     innerWorkState,
-    taskBoard,
     returnObligations,
     recentEpisodes,
     activeCares,

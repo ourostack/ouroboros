@@ -650,7 +650,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     backgroundOperations,
     otherCodingSessions,
     pendingObligations,
-    taskBoard: ctx.taskBoard,
     friendActivity: sessionActivity,
     targetCandidates: ctx.targetCandidates,
     innerReturnObligations: ctx.returnObligations,
