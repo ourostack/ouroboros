@@ -83,7 +83,6 @@ import * as daemonThoughts from "../../../heart/daemon/thoughts"
 import * as identity from "../../../heart/identity"
 import * as sessionActivity from "../../../heart/session-activity"
 import { readAgentProviderSelectionFixture } from "../../helpers/agent-provider-selection"
-import { createTaskModule } from "../../../repertoire/tasks"
 import { createTmpBundle } from "../../test-helpers/tmpdir-bundle"
 import { checkAgentConfigWithProviderHealth } from "../../../heart/daemon/agent-config-check"
 
@@ -432,213 +431,16 @@ describe("ouro CLI parsing", () => {
     })
   })
 
-  it("parses task subcommands", () => {
-    // ouro task board (no status filter)
-    expect(parseOuroCommand(["task", "board"])).toEqual({ kind: "task.board" })
+  // task.* and reminder.create CLI verbs were removed in W6 Unit 8b — the
+  // built-in task module is being retired in favor of the desk substrate.
+  // `task poke` survives as a poke-routing convenience and is covered by
+  // the poke-subcommand tests above.
 
-    // ouro task board <status> (positional status filter -- maps from task_board_status)
-    expect(parseOuroCommand(["task", "board", "processing"])).toEqual({
-      kind: "task.board",
-      status: "processing",
-    })
-
-    // ouro task create <title> --type <type>
-    expect(parseOuroCommand(["task", "create", "My Task", "--type", "feature"])).toEqual({
-      kind: "task.create",
-      title: "My Task",
-      type: "feature",
-    })
-
-    // ouro task create <title> with defaults (type defaults to one-shot)
-    expect(parseOuroCommand(["task", "create", "Quick Task"])).toEqual({
-      kind: "task.create",
-      title: "Quick Task",
-    })
-
-    // ouro task create <title> --type without value (ignores incomplete flag)
-    expect(parseOuroCommand(["task", "create", "Quick Task", "--type"])).toEqual({
-      kind: "task.create",
-      title: "Quick Task",
-    })
-
-    // ouro task update <id> <status>
-    expect(parseOuroCommand(["task", "update", "task-123", "in-progress"])).toEqual({
-      kind: "task.update",
-      id: "task-123",
-      status: "in-progress",
-    })
-
-    // ouro task show <id> (NEW -- read and format a task file)
-    expect(parseOuroCommand(["task", "show", "task-123"])).toEqual({
-      kind: "task.show",
-      id: "task-123",
-    })
-
-    // ouro task actionable
-    expect(parseOuroCommand(["task", "actionable"])).toEqual({ kind: "task.actionable" })
-
-    // ouro task deps
-    expect(parseOuroCommand(["task", "deps"])).toEqual({ kind: "task.deps" })
-
-    // ouro task sessions
-    expect(parseOuroCommand(["task", "sessions"])).toEqual({ kind: "task.sessions" })
-
-    // ouro task fix (dry-run by default)
-    expect(parseOuroCommand(["task", "fix"])).toEqual({ kind: "task.fix", mode: "dry-run" })
-
-    // ouro task fix --safe (apply safe fixes)
-    expect(parseOuroCommand(["task", "fix", "--safe"])).toEqual({ kind: "task.fix", mode: "safe" })
-
-    // ouro task fix --all (alias for --safe)
-    expect(parseOuroCommand(["task", "fix", "--all"])).toEqual({ kind: "task.fix", mode: "safe" })
-
-    // ouro task fix <id> (single issue detail)
-    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md"])).toEqual({
-      kind: "task.fix",
-      mode: "single",
-      issueId: "schema-missing-kind:one-shots/foo.md",
-    })
-
-    // ouro task fix <id> --option <N> (apply specific option)
-    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option", "1"])).toEqual({
-      kind: "task.fix",
-      mode: "single",
-      issueId: "schema-missing-kind:one-shots/foo.md",
-      option: 1,
-    })
-
-    // ouro task fix <id> --option without value (ignores incomplete flag)
-    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option"])).toEqual({
-      kind: "task.fix",
-      mode: "single",
-      issueId: "schema-missing-kind:one-shots/foo.md",
-    })
-
-    // ouro task fix with --agent flag
-    expect(parseOuroCommand(["task", "fix", "--agent", "slugger"])).toEqual({
-      kind: "task.fix",
-      mode: "dry-run",
-      agent: "slugger",
-    })
-
-    // ouro task fix --safe with --agent flag
-    expect(parseOuroCommand(["task", "fix", "--safe", "--agent", "slugger"])).toEqual({
-      kind: "task.fix",
-      mode: "safe",
-      agent: "slugger",
-    })
-
-    // ouro task fix <id> with --agent flag
-    expect(parseOuroCommand(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--agent", "slugger"])).toEqual({
-      kind: "task.fix",
-      mode: "single",
-      issueId: "schema-missing-kind:one-shots/foo.md",
-      agent: "slugger",
-    })
-  })
-
-  it("rejects malformed task subcommands", () => {
-    // bare "task" with no subcommand
-    expect(() => parseOuroCommand(["task"])).toThrow("Usage")
-
-    // task create with no title
-    expect(() => parseOuroCommand(["task", "create"])).toThrow("Usage")
-
-    // task update with no id
-    expect(() => parseOuroCommand(["task", "update"])).toThrow("Usage")
-
-    // task update with no status
-    expect(() => parseOuroCommand(["task", "update", "task-123"])).toThrow("Usage")
-
-    // task show with no id
-    expect(() => parseOuroCommand(["task", "show"])).toThrow("Usage")
-
-    // unknown task subcommand
-    expect(() => parseOuroCommand(["task", "unknown"])).toThrow("Usage")
-  })
-
-  it("parses reminder subcommands", () => {
-    // ouro reminder create <title> --body <body> --at <iso>
-    expect(parseOuroCommand(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"])).toEqual({
-      kind: "reminder.create",
-      title: "Ping Ari",
-      body: "Check daemon status",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    // ouro reminder create <title> --body <body> --cadence <cadence>
-    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"])).toEqual({
-      kind: "reminder.create",
-      title: "Heartbeat",
-      body: "Run heartbeat",
-      cadence: "30m",
-    })
-
-    // ouro reminder create <title> --body <body> --cadence <cadence> --category <category>
-    expect(parseOuroCommand(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m", "--category", "operations"])).toEqual({
-      kind: "reminder.create",
-      title: "Heartbeat",
-      body: "Run heartbeat",
-      cadence: "30m",
-      category: "operations",
-    })
-
-    // ouro reminder create <title> --body <body> --at <iso> (one-shot with no cadence)
-    expect(parseOuroCommand(["reminder", "create", "Wake up", "--body", "Morning alarm", "--at", "2026-03-11T08:00:00.000Z"])).toEqual({
-      kind: "reminder.create",
-      title: "Wake up",
-      body: "Morning alarm",
-      scheduledAt: "2026-03-11T08:00:00.000Z",
-    })
-
-    // ouro reminder create --agent slugger <title> --body <body> --cadence <cadence>
-    expect(parseOuroCommand(["reminder", "create", "--agent", "slugger", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"])).toEqual({
-      kind: "reminder.create",
-      title: "Heartbeat",
-      body: "Run heartbeat",
-      cadence: "30m",
-      agent: "slugger",
-    })
-
-    // ouro reminder create with --requester flag
-    expect(parseOuroCommand(["reminder", "create", "PR Review", "--body", "Check PR #47", "--at", "2026-03-12T09:00:00.000Z", "--requester", "arimendelow/cli"])).toEqual({
-      kind: "reminder.create",
-      title: "PR Review",
-      body: "Check PR #47",
-      scheduledAt: "2026-03-12T09:00:00.000Z",
-      requester: "arimendelow/cli",
-    })
-  })
-
-  it("rejects malformed reminder subcommands", () => {
-    // bare "reminder" with no subcommand
-    expect(() => parseOuroCommand(["reminder"])).toThrow("Usage")
-
-    // reminder create with no title
-    expect(() => parseOuroCommand(["reminder", "create"])).toThrow("Usage")
-
-    // reminder create with no --body
-    expect(() => parseOuroCommand(["reminder", "create", "Title only"])).toThrow("Usage")
-
-    // reminder create with --body but no schedule
-    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text"])).toThrow("Usage")
-
-    // reminder create with --category but no value (ignores incomplete flag)
-    expect(parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at", "2026-03-10T17:00:00.000Z", "--category"])).toEqual({
-      kind: "reminder.create",
-      title: "Title",
-      body: "body text",
-      scheduledAt: "2026-03-10T17:00:00.000Z",
-    })
-
-    // reminder create with --cadence but no value (ignores incomplete flag, then fails on missing schedule)
-    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--cadence"])).toThrow("Usage")
-
-    // reminder create with --at but no value (ignores incomplete flag, then fails on missing schedule)
-    expect(() => parseOuroCommand(["reminder", "create", "Title", "--body", "body text", "--at"])).toThrow("Usage")
-
-    // unknown reminder subcommand
-    expect(() => parseOuroCommand(["reminder", "unknown"])).toThrow("Usage")
+  it("rejects task/reminder subcommands now that the built-in task module is retired", () => {
+    expect(() => parseOuroCommand(["task", "board"])).toThrow("Unknown command")
+    expect(() => parseOuroCommand(["task", "create", "title"])).toThrow("Unknown command")
+    expect(() => parseOuroCommand(["task", "fix"])).toThrow("Unknown command")
+    expect(() => parseOuroCommand(["reminder", "create", "title", "--body", "x", "--at", "2026-03-10T17:00:00.000Z"])).toThrow("Unknown command")
   })
 
   it("parses whoami and session subcommands", () => {
@@ -4347,20 +4149,14 @@ describe("ouro --help completeness (H10)", () => {
     }
   }
 
-  it("includes task command in help output", async () => {
+  // task and reminder umbrella verbs were retired in W6 Unit 8b. `ouro poke`
+  // still routes task pokes, which is covered by the poke-help test below.
+  it("does not advertise the retired task/reminder umbrella verbs", async () => {
     const deps = makeHelpDeps()
     const result = await runOuroCli(["--help"], deps)
-
-    expect(result).toContain("task")
-    expect(result).toContain("Tasks")
-    expect(result).toContain("reminder")
-  })
-
-  it("includes reminder command in help output", async () => {
-    const deps = makeHelpDeps()
-    const result = await runOuroCli(["--help"], deps)
-
-    expect(result).toContain("reminder")
+    expect(result).not.toContain("ouro task board")
+    expect(result).not.toContain("ouro task create")
+    expect(result).not.toContain("ouro reminder create")
   })
 
   it("includes friend command in help output", async () => {
@@ -6263,508 +6059,18 @@ describe("daemon command protocol", () => {
   })
 })
 
-describe("ouro task CLI execution", () => {
-  const mockTaskModule = {
-    getBoard: vi.fn(),
-    createTask: vi.fn(),
-    updateStatus: vi.fn(),
-    getTask: vi.fn(),
-    boardStatus: vi.fn(),
-    boardAction: vi.fn(),
-    boardDeps: vi.fn(),
-    boardSessions: vi.fn(),
-    fix: vi.fn(),
-  }
+// `ouro task CLI execution` and `ouro reminder CLI execution` describe
+// blocks were removed in W6 Unit 8b: the `task.*` and `reminder.create`
+// CLI verbs were retired alongside the built-in task module. Coverage of
+// the new desk-backed runtime moves into the desk MCP server's own test
+// suite (lives outside this repo).
 
-  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
-    return {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
-      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => true),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-
-      taskModule: mockTaskModule as any,
-      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
-      ...overrides,
-    }
-  }
-
-  it("ouro task board returns full board output", async () => {
-    mockTaskModule.getBoard.mockReturnValueOnce({
-      compact: "[Tasks] processing:1",
-      full: "## processing\n- sample-task",
-      byStatus: { drafting: [], processing: ["sample-task"], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "board"], deps)
-    expect(result).toContain("## processing")
-    expect(result).toContain("sample-task")
-    // Should NOT send to daemon
-    expect(deps.sendCommand).not.toHaveBeenCalled()
-  })
-
-  it("ouro task board returns no-tasks fallback when board is empty", async () => {
-    mockTaskModule.getBoard.mockReturnValueOnce({
-      compact: "",
-      full: "",
-      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "board"], deps)
-    expect(result).toBe("no tasks found")
-  })
-
-  it("ouro task board <status> returns status-filtered board", async () => {
-    mockTaskModule.boardStatus.mockReturnValueOnce(["task-a", "task-b"])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "board", "processing"], deps)
-    expect(result).toBe("task-a\ntask-b")
-    expect(mockTaskModule.boardStatus).toHaveBeenCalledWith("processing")
-  })
-
-  it("ouro task board <status> returns fallback when no tasks in status", async () => {
-    mockTaskModule.boardStatus.mockReturnValueOnce([])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "board", "blocked"], deps)
-    expect(result).toBe("no tasks in that status")
-  })
-
-  it("ouro task create returns file path and initial content", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-my-task.md")
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "create", "My Task", "--type", "one-shot"], deps)
-    expect(result).toContain("created:")
-    expect(result).toContain("/mock/tasks/one-shots/2026-03-09-my-task.md")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "My Task", type: "one-shot" }),
-    )
-  })
-
-  it("ouro task create defaults type when --type not specified", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-09-quick-task.md")
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "create", "Quick Task"], deps)
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Quick Task", type: "one-shot" }),
-    )
-  })
-
-  it("ouro task create surfaces module exceptions", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw new Error("create failed")
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "create", "Bad Task", "--type", "one-shot"], deps)
-    expect(result).toContain("error: create failed")
-  })
-
-  it("ouro task update delegates to updateStatus", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({ ok: true, from: "drafting", to: "processing" })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "update", "my-task", "processing"], deps)
-    expect(result).toContain("updated: my-task -> processing")
-    expect(mockTaskModule.updateStatus).toHaveBeenCalledWith("my-task", "processing")
-  })
-
-  it("ouro task update surfaces module errors", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: false,
-      from: "drafting",
-      to: "done",
-      reason: "invalid transition",
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
-    expect(result).toContain("error: invalid transition")
-  })
-
-  it("ouro task update uses default failure reason when module omits one", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: false,
-      from: "drafting",
-      to: "done",
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
-    expect(result).toContain("error: status update failed")
-  })
-
-  it("ouro task update includes archive details", async () => {
-    mockTaskModule.updateStatus.mockReturnValueOnce({
-      ok: true,
-      from: "validating",
-      to: "done",
-      archived: ["/mock/archive/task.md"],
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "update", "my-task", "done"], deps)
-    expect(result).toContain("updated: my-task -> done")
-    expect(result).toContain("archived:")
-  })
-
-  it("ouro task show reads and formats a task file", async () => {
-    mockTaskModule.getTask.mockReturnValueOnce({
-      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
-      name: "2026-03-09-my-task.md",
-      stem: "2026-03-09-my-task",
-      type: "one-shot",
-      collection: "one-shots",
-      category: "infrastructure",
-      title: "My Task",
-      status: "processing",
-      created: "2026-03-09",
-      updated: "2026-03-09",
-      frontmatter: { type: "one-shot", title: "My Task", status: "processing" },
-      body: "## scope\ndo the thing",
-      hasWorkDir: false,
-      workDirFiles: [],
-      derivedChildren: [],
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "show", "my-task"], deps)
-    expect(result).toContain("My Task")
-    expect(result).toContain("processing")
-    expect(result).toContain("one-shot")
-    expect(mockTaskModule.getTask).toHaveBeenCalledWith("my-task")
-  })
-
-  it("ouro task show formats task with empty body (no trailing body section)", async () => {
-    mockTaskModule.getTask.mockReturnValueOnce({
-      path: "/mock/tasks/one-shots/2026-03-09-my-task.md",
-      name: "2026-03-09-my-task.md",
-      stem: "2026-03-09-my-task",
-      type: "one-shot",
-      collection: "one-shots",
-      category: "infrastructure",
-      title: "My Task",
-      status: "drafting",
-      created: "2026-03-09",
-      updated: "2026-03-09",
-      frontmatter: {},
-      body: "",
-      hasWorkDir: false,
-      workDirFiles: [],
-      derivedChildren: [],
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "show", "my-task"], deps)
-    expect(result).toContain("My Task")
-    expect(result).toContain("drafting")
-    // Empty body should not produce a trailing newline section
-    expect(result).not.toContain("\n\n")
-  })
-
-  it("ouro task show returns not-found when task does not exist", async () => {
-    mockTaskModule.getTask.mockReturnValueOnce(null)
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "show", "nonexistent"], deps)
-    expect(result).toContain("not found")
-  })
-
-  it("ouro task actionable returns actionable items", async () => {
-    mockTaskModule.boardAction.mockReturnValueOnce(["blocked tasks: task-a"])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "actionable"], deps)
-    expect(result).toBe("blocked tasks: task-a")
-  })
-
-  it("ouro task actionable returns fallback when no action required", async () => {
-    mockTaskModule.boardAction.mockReturnValueOnce([])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "actionable"], deps)
-    expect(result).toBe("no action required")
-  })
-
-  it("ouro task deps returns dependency info", async () => {
-    mockTaskModule.boardDeps.mockReturnValueOnce(["task-a -> missing task-z"])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "deps"], deps)
-    expect(result).toBe("task-a -> missing task-z")
-  })
-
-  it("ouro task deps returns fallback when no dependencies", async () => {
-    mockTaskModule.boardDeps.mockReturnValueOnce([])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "deps"], deps)
-    expect(result).toBe("no unresolved dependencies")
-  })
-
-  it("ouro task sessions returns active sessions", async () => {
-    mockTaskModule.boardSessions.mockReturnValueOnce(["task-a"])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "sessions"], deps)
-    expect(result).toBe("task-a")
-  })
-
-  it("ouro task sessions returns fallback when no sessions", async () => {
-    mockTaskModule.boardSessions.mockReturnValueOnce([])
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "sessions"], deps)
-    expect(result).toBe("no active sessions")
-  })
-
-  it("ouro task fix dry-run shows issue summary", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [
-        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
-        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
-      ],
-      skipped: [],
-      health: "2 migration",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix"], deps)
-    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "dry-run" })
-    expect(result).toContain("schema-missing-kind")
-    expect(result).toContain("org-root-level-doc")
-    expect(result).toContain("safe fixes")
-    expect(result).toContain("needs review")
-    expect(result).toContain("2 migration")
-  })
-
-  it("ouro task fix dry-run with only safe issues omits review section", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [
-        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task", confidence: "safe", category: "migration" },
-      ],
-      skipped: [],
-      health: "1 migration",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix"], deps)
-    expect(result).toContain("safe fixes (1)")
-    expect(result).not.toContain("needs review")
-    expect(result).toContain("1 migration")
-  })
-
-  it("ouro task fix dry-run with only review issues omits safe section", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [
-        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection", confidence: "needs_review", category: "migration" },
-      ],
-      skipped: [],
-      health: "1 migration",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix"], deps)
-    expect(result).not.toContain("safe fixes")
-    expect(result).toContain("needs review (1)")
-    expect(result).toContain("1 migration")
-  })
-
-  it("ouro task fix dry-run shows clean when no issues", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [],
-      skipped: [],
-      health: "clean",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix"], deps)
-    expect(result).toContain("clean")
-  })
-
-  it("ouro task fix --safe applies safe fixes and shows results", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [
-        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
-      ],
-      remaining: [
-        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
-      ],
-      skipped: [
-        { target: "orphan.md", code: "org-root-level-doc", description: "root-level orphan doc", fix: "move to collection or remove", confidence: "needs_review", category: "migration" },
-      ],
-      health: "1 migration",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix", "--safe"], deps)
-    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "safe" })
-    expect(result).toContain("1 applied")
-    expect(result).toContain("1 remaining")
-    expect(result).toContain("1 migration")
-  })
-
-  it("ouro task fix --all is alias for --safe", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [],
-      skipped: [],
-      health: "clean",
-    })
-
-    const deps = makeDeps()
-    await runOuroCli(["task", "fix", "--all"], deps)
-    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "safe" })
-  })
-
-  it("ouro task fix <id> shows issue details", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [],
-      remaining: [
-        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
-      ],
-      skipped: [],
-      health: "1 migration",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix", "schema-missing-kind:one-shots/foo.md"], deps)
-    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "single", issueId: "schema-missing-kind:one-shots/foo.md" })
-    expect(result).toContain("schema-missing-kind")
-    expect(result).toContain("one-shots/foo.md")
-  })
-
-  it("ouro task fix <id> --option N applies specific option", async () => {
-    mockTaskModule.fix.mockReturnValueOnce({
-      applied: [
-        { target: "one-shots/foo.md", code: "schema-missing-kind", description: "missing kind: task", fix: "add kind: task to frontmatter", confidence: "safe", category: "migration" },
-      ],
-      remaining: [],
-      skipped: [],
-      health: "clean",
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix", "schema-missing-kind:one-shots/foo.md", "--option", "1"], deps)
-    expect(mockTaskModule.fix).toHaveBeenCalledWith({ mode: "single", issueId: "schema-missing-kind:one-shots/foo.md", option: 1 })
-    expect(result).toContain("1 applied")
-    expect(result).toContain("clean")
-  })
-
-  it("ouro task fix surfaces fix module exceptions", async () => {
-    mockTaskModule.fix.mockImplementationOnce(() => {
-      throw new Error("fix failed")
-    })
-
-    const deps = makeDeps()
-    const result = await runOuroCli(["task", "fix"], deps)
-    expect(result).toContain("error: fix failed")
-  })
-})
-
-describe("ouro reminder CLI execution", () => {
-  const mockTaskModule = {
-    getBoard: vi.fn(),
-    createTask: vi.fn(),
-    updateStatus: vi.fn(),
-    getTask: vi.fn(),
-    boardStatus: vi.fn(),
-    boardAction: vi.fn(),
-    boardDeps: vi.fn(),
-    boardSessions: vi.fn(),
-  }
-
-  function makeDeps(overrides?: Partial<OuroCliDeps>): OuroCliDeps {
-    return {
-      socketPath: "/tmp/ouro-test.sock",
-      sendCommand: vi.fn(),
-      startDaemonProcess: vi.fn(async () => ({ pid: 1 })),
-      writeStdout: vi.fn(),
-      checkSocketAlive: vi.fn(async () => true),
-      cleanupStaleSocket: vi.fn(),
-      fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
-
-      taskModule: mockTaskModule as any,
-      listDiscoveredAgents: vi.fn(async () => ["slugger"]),
-      ...overrides,
-    }
-  }
-
-  it("ouro reminder create creates a one-shot reminder", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
-    const deps = makeDeps()
-    const result = await runOuroCli(["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"], deps)
-    expect(result).toContain("created:")
-    expect(result).toContain("/mock/tasks/one-shots/2026-03-10-ping-ari.md")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Ping Ari",
-        type: "one-shot",
-        category: "reminder",
-        body: "Check daemon status",
-        scheduledAt: "2026-03-10T17:00:00.000Z",
-      }),
-    )
-    // Should NOT send to daemon
-    expect(deps.sendCommand).not.toHaveBeenCalled()
-  })
-
-  it("ouro reminder create creates a recurring habit", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/heartbeat.md")
-    const deps = makeDeps()
-    const result = await runOuroCli(["reminder", "create", "Heartbeat", "--body", "Run heartbeat", "--cadence", "30m"], deps)
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Heartbeat",
-        type: "ongoing",
-        category: "reminder",
-        body: "Run heartbeat",
-        cadence: "30m",
-      }),
-    )
-  })
-
-  it("ouro reminder create uses custom category", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/habits/ops.md")
-    const deps = makeDeps()
-    const result = await runOuroCli(["reminder", "create", "Ops check", "--body", "Check ops", "--cadence", "1h", "--category", "operations"], deps)
-    expect(result).toContain("created:")
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "operations",
-      }),
-    )
-  })
-
-  it("ouro reminder create surfaces task module exceptions", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw new Error("scheduler exploded")
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
-    expect(result).toContain("error: scheduler exploded")
-  })
-
-  it("ouro reminder create passes requester to task module", async () => {
-    mockTaskModule.createTask.mockReturnValueOnce("/mock/tasks/one-shots/remind.md")
-    const deps = makeDeps()
-    await runOuroCli(["reminder", "create", "PR Review", "--body", "Check PR #47", "--at", "2026-03-12T09:00:00.000Z", "--requester", "arimendelow/cli"], deps)
-    expect(mockTaskModule.createTask).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requester: "arimendelow/cli",
-      }),
-    )
-  })
-
-  it("ouro reminder create surfaces non-Error exceptions", async () => {
-    mockTaskModule.createTask.mockImplementationOnce(() => {
-      throw "scheduler exploded string"
-    })
-    const deps = makeDeps()
-    const result = await runOuroCli(["reminder", "create", "Broken", "--body", "This will fail", "--at", "2026-03-10T17:00:00.000Z"], deps)
-    expect(result).toContain("error: scheduler exploded string")
+describe("ouro task CLI execution (retired)", () => {
+  // Body removed in W6 Unit 8b. The task.* and reminder.create CLI verbs
+  // were retired with the built-in task module; new desk-backed coverage
+  // lives in the desk MCP server's test suite.
+  it("placeholder — task and reminder umbrella verbs are retired", () => {
+    expect(true).toBe(true)
   })
 })
 
@@ -7360,66 +6666,8 @@ describe("--agent flag parsing for identity-dependent commands", () => {
     })
   })
 
-  it("parses task board with --agent flag", () => {
-    expect(parseOuroCommand(["task", "board", "--agent", "slugger"])).toEqual({
-      kind: "task.board",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task board with status and --agent flag", () => {
-    expect(parseOuroCommand(["task", "board", "processing", "--agent", "slugger"])).toEqual({
-      kind: "task.board",
-      status: "processing",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task create with --agent flag", () => {
-    expect(parseOuroCommand(["task", "create", "My Task", "--agent", "slugger"])).toEqual({
-      kind: "task.create",
-      title: "My Task",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task update with --agent flag", () => {
-    expect(parseOuroCommand(["task", "update", "task-123", "in-progress", "--agent", "slugger"])).toEqual({
-      kind: "task.update",
-      id: "task-123",
-      status: "in-progress",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task show with --agent flag", () => {
-    expect(parseOuroCommand(["task", "show", "task-123", "--agent", "slugger"])).toEqual({
-      kind: "task.show",
-      id: "task-123",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task actionable with --agent flag", () => {
-    expect(parseOuroCommand(["task", "actionable", "--agent", "slugger"])).toEqual({
-      kind: "task.actionable",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task deps with --agent flag", () => {
-    expect(parseOuroCommand(["task", "deps", "--agent", "slugger"])).toEqual({
-      kind: "task.deps",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task sessions with --agent flag", () => {
-    expect(parseOuroCommand(["task", "sessions", "--agent", "slugger"])).toEqual({
-      kind: "task.sessions",
-      agent: "slugger",
-    })
-  })
+  // `parses task <verb> with --agent flag` cases removed in W6 Unit 8b
+  // alongside the verbs themselves.
 
   it("parses session list with --agent flag", () => {
     expect(parseOuroCommand(["session", "list", "--agent", "slugger"])).toEqual({
@@ -7441,15 +6689,6 @@ describe("--agent flag parsing for identity-dependent commands", () => {
     expect(parseOuroCommand(["friend", "create", "--name", "Charlie", "--agent", "slugger"])).toEqual({
       kind: "friend.create",
       name: "Charlie",
-      agent: "slugger",
-    })
-  })
-
-  it("parses task create with both --type and --agent flags", () => {
-    expect(parseOuroCommand(["task", "create", "My Task", "--type", "feature", "--agent", "slugger"])).toEqual({
-      kind: "task.create",
-      title: "My Task",
-      type: "feature",
       agent: "slugger",
     })
   })
@@ -7542,68 +6781,10 @@ describe("--agent flag CLI execution", () => {
     expect(result).toContain("ouro clone")
   })
 
-  it("task board without --agent prompts and reads the selected agent bundle", async () => {
-    const tmp = createTmpBundle({ agentName: "slugger" })
-    try {
-      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
-      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
-      createTaskModule(path.join(tmp.agentRoot, "tasks")).createTask({
-        title: "Slugger task",
-        type: "one-shot",
-        category: "general",
-        body: "",
-      })
-      createTaskModule(path.join(otherAgentRoot, "tasks")).createTask({
-        title: "Ouroboros task",
-        type: "one-shot",
-        category: "general",
-        body: "",
-      })
-
-      const deps = makeDeps({
-        bundlesRoot: tmp.bundlesRoot,
-        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
-        promptInput: vi.fn(async () => "ouroboros"),
-      })
-      const result = await runOuroCli(["task", "board"], deps)
-
-      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
-      expect(result).toContain("ouroboros-task")
-      expect(result).not.toContain("Slugger task")
-    } finally {
-      tmp.cleanup()
-    }
-  })
-
-  it("reminder create without --agent prompts and writes into the selected agent bundle", async () => {
-    const tmp = createTmpBundle({ agentName: "slugger" })
-    try {
-      const agentJsonRaw = fs.readFileSync(tmp.agentConfigPath, "utf-8")
-      const otherAgentRoot = addBundleToRoot(tmp.bundlesRoot, "ouroboros", agentJsonRaw)
-      const deps = makeDeps({
-        bundlesRoot: tmp.bundlesRoot,
-        listDiscoveredAgents: vi.fn(async () => ["slugger", "ouroboros"]),
-        promptInput: vi.fn(async () => "ouroboros"),
-      })
-
-      const result = await runOuroCli(
-        ["reminder", "create", "Ping Ari", "--body", "Check daemon status", "--at", "2026-03-10T17:00:00.000Z"],
-        deps,
-      )
-
-      const sluggerOneShots = path.join(tmp.agentRoot, "tasks", "one-shots")
-      const ouroborosOneShots = path.join(otherAgentRoot, "tasks", "one-shots")
-      const sluggerFiles = fs.existsSync(sluggerOneShots) ? fs.readdirSync(sluggerOneShots) : []
-      const ouroborosFiles = fs.existsSync(ouroborosOneShots) ? fs.readdirSync(ouroborosOneShots) : []
-
-      expect(deps.promptInput).toHaveBeenCalledWith(expect.stringContaining("Which agent should this use?"))
-      expect(result).toContain("ouroboros.ouro/tasks")
-      expect(sluggerFiles).toHaveLength(0)
-      expect(ouroborosFiles.length).toBeGreaterThan(0)
-    } finally {
-      tmp.cleanup()
-    }
-  })
+  // `task board without --agent` and `reminder create without --agent`
+  // tests removed in W6 Unit 8b — those CLI verbs were retired alongside
+  // the built-in task module. The friend/session/habit/await flows below
+  // continue to exercise the missing-agent prompt path.
 
   it("friend list with --agent creates store for correct agent dir", async () => {
     const mockFriendStore = {
@@ -7685,22 +6866,8 @@ describe("--agent flag CLI execution", () => {
     }
   })
 
-  it("task board with --agent uses agent-scoped task module", async () => {
-    const taskMod = {
-      getBoard: vi.fn(() => ({ full: "task board output", compact: "compact" })),
-      boardStatus: vi.fn(),
-      boardAction: vi.fn(),
-      boardDeps: vi.fn(),
-      boardSessions: vi.fn(),
-      createTask: vi.fn(),
-      updateStatus: vi.fn(),
-      getTask: vi.fn(),
-    }
-    const deps = makeDeps({ taskModule: taskMod as any })
-    const result = await runOuroCli(["task", "board", "--agent", "slugger"], deps)
-
-    expect(result).toContain("task board output")
-  })
+  // `task board with --agent uses agent-scoped task module` removed in W6
+  // Unit 8b alongside the retired task.* verbs.
 
   it("session list without --agent prompts and passes the selected agent to the scanner", async () => {
     const scanSessions = vi.fn(async (agentName: string) => [
@@ -9039,8 +8206,8 @@ describe("OURO_CLI_TRUST_MANIFEST", () => {
     const { OURO_CLI_TRUST_MANIFEST } = await import("../../../repertoire/guardrails")
     expect(OURO_CLI_TRUST_MANIFEST.whoami).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST.changelog).toBe("acquaintance")
-    expect(OURO_CLI_TRUST_MANIFEST["task board"]).toBe("friend")
-    expect(OURO_CLI_TRUST_MANIFEST["task fix"]).toBe("friend")
+    expect(OURO_CLI_TRUST_MANIFEST["task board"]).toBeUndefined()
+    expect(OURO_CLI_TRUST_MANIFEST["task fix"]).toBeUndefined()
     expect(OURO_CLI_TRUST_MANIFEST["friend list"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["session list"]).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST["config model"]).toBe("friend")

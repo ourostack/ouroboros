@@ -140,25 +140,11 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     example: "ouro msg --to ouroboros hello there",
   },
-  task: {
-    category: "Tasks",
-    description: "Manage agent tasks",
-    usage: "ouro task <subcommand> [--agent <name>]",
-    example: "ouro task board",
-    subcommands: ["board", "create", "update", "show", "actionable", "deps", "sessions", "fix"],
-  },
   poke: {
     category: "Tasks",
     description: "Poke an agent about a task or habit",
     usage: "ouro poke <agent> --task <task-id> | --habit <name>",
     example: "ouro poke ouroboros --task abc123",
-  },
-  reminder: {
-    category: "Tasks",
-    description: "Create reminders for an agent",
-    usage: "ouro reminder create <title> --body <body> [--at <iso>] [--cadence <interval>]",
-    example: "ouro reminder create standup --body 'daily standup' --cadence '1d'",
-    subcommands: ["create"],
   },
   habit: {
     category: "Habits",

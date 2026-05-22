@@ -3,7 +3,7 @@ import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { renderHabitFile } from "./habit-parser"
 import { writeHabitLastRun } from "./habit-runtime-state"
-import { parseFrontmatter } from "../../repertoire/tasks/parser"
+import { parseFrontmatter } from "../../util/frontmatter"
 
 /** Fields that belong to the task system and should be stripped from migrated habits. */
 const TASK_ONLY_FIELDS = new Set([

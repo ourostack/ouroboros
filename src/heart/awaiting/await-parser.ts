@@ -1,5 +1,5 @@
 import * as path from "path"
-import { parseFrontmatter } from "../../repertoire/tasks/parser"
+import { parseFrontmatter } from "../../util/frontmatter"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export type AwaitStatus = "pending" | "resolved" | "expired" | "canceled"

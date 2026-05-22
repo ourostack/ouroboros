@@ -23,15 +23,19 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("contains all top-level commands from parseOuroCommand", () => {
+    // W6 Unit 8b retired the `task` and `reminder` umbrella verbs alongside
+    // the built-in task module; `poke` still routes task pokes.
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
-      "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg", "task",
-      "reminder", "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
+      "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
+      "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
     ]
     for (const cmd of expectedCommands) {
       expect(COMMAND_REGISTRY).toHaveProperty(cmd)
     }
+    expect(COMMAND_REGISTRY).not.toHaveProperty("task")
+    expect(COMMAND_REGISTRY).not.toHaveProperty("reminder")
   })
 
   it("each entry has required fields", () => {
@@ -53,8 +57,9 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("entries with subcommands have a non-empty array", () => {
-    // task, friend, habit, auth, attention, mcp should have subcommands
-    const commandsWithSubcommands = ["task", "friend", "habit", "auth", "attention", "mcp"]
+    // friend, habit, auth, attention, mcp should have subcommands
+    // (task umbrella retired in W6 Unit 8b)
+    const commandsWithSubcommands = ["friend", "habit", "auth", "attention", "mcp"]
     for (const cmd of commandsWithSubcommands) {
       const entry = COMMAND_REGISTRY[cmd]
       expect(entry.subcommands).toBeDefined()
@@ -99,8 +104,8 @@ describe("getGroupedHelp()", () => {
     expect(result).toContain("stop")
     // chat should appear in the Chat section
     expect(result).toContain("chat")
-    // task should appear in the Tasks section
-    expect(result).toContain("task")
+    // poke should appear in the Tasks section
+    expect(result).toContain("poke")
     // connect should appear in the Auth section
     expect(result).toContain("connect")
     expect(result).toContain("Set up providers, portable integrations, and local senses from one guided screen")
@@ -169,14 +174,14 @@ describe("getCommandHelp()", () => {
   })
 
   it("includes usage for known command", () => {
-    const result = getCommandHelp("task")!
-    expect(result).toContain(COMMAND_REGISTRY["task"].usage)
+    const result = getCommandHelp("friend")!
+    expect(result).toContain(COMMAND_REGISTRY["friend"].usage)
   })
 
   it("includes subcommands when present", () => {
-    const result = getCommandHelp("task")!
-    const taskEntry = COMMAND_REGISTRY["task"]
-    for (const sub of taskEntry.subcommands!) {
+    const result = getCommandHelp("friend")!
+    const friendEntry = COMMAND_REGISTRY["friend"]
+    for (const sub of friendEntry.subcommands!) {
       expect(result).toContain(sub)
     }
   })
