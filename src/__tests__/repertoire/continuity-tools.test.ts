@@ -81,11 +81,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn().mockReturnValue(null),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn().mockReturnValue({ items: [] }),
-  }),
-}))
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn(async () => null),

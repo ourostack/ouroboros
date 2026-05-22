@@ -8035,7 +8035,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const agentRoot = deps.agentBundleRoot ?? getAgentRoot(command.agent)
       const { buildInnerStatusOutput } = await import("./inner-status")
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
-      const { parseFrontmatter } = await import("../../repertoire/tasks/parser")
+      const { parseFrontmatter } = await import("../../util/frontmatter")
       const { listActiveReturnObligations } = await import("../../arc/obligations")
 
       // Read runtime state

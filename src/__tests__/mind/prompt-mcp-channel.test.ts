@@ -29,11 +29,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn().mockReturnValue({ compact: "", full: "", byStatus: {}, actionRequired: [], unresolvedDependencies: [], activeSessions: [], activeBridges: [] }),
-  }),
-}))
 
 vi.mock("../../heart/identity", () => {
   const DEFAULT_AGENT_CONTEXT = { maxTokens: 80000, contextMargin: 20 }

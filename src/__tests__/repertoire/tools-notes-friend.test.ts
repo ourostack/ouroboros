@@ -16,9 +16,6 @@ const mockTaskModule = {
 
 let agentRoot = ""
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => mockTaskModule,
-}))
 
 // Hard-mock the daemon socket client. The runtime guard in socket-client.ts
 // already prevents real socket calls under vitest (by detecting process.argv),
