@@ -79,8 +79,13 @@ describe("bundle skeleton contract", () => {
         readFileSync(join(roots.ouroboros, "agent.json"), "utf-8"),
       ) as Record<string, unknown>
 
-      // Slugger's config may have optional keys (e.g., mcpServers) beyond the template
+      // Slugger's config may have optional keys (e.g., mcpServers) beyond the template.
+      // The `plugins` key is per-agent by design — desk + custom plugins enabled
+      // for one agent don't need to be enabled for the other. Exclude it from
+      // the parity check.
+      const PER_AGENT_KEYS = new Set(["plugins"])
       for (const key of Object.keys(ouroborosConfig)) {
+        if (PER_AGENT_KEYS.has(key)) continue
         expect(sluggerConfig).toHaveProperty(key)
       }
     }

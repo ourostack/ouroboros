@@ -26,6 +26,37 @@ interface ServerEntry {
 const MAX_RESTART_RETRIES = 5
 const RESTART_DELAY_MS = 1000
 
+/**
+ * Merge builtin (agent.json mcpServers) + plugin-declared (.mcp.json) servers.
+ *
+ * Builtin wins on name collision. Returns the merged config map plus a
+ * `pluginOrigins` map (server-name → plugin-id) for tools-surfacing namespace.
+ *
+ * Shared by `getSharedMcpManager()` (initial start) and `McpManager.reconcile()`
+ * (re-read on each turn). Both code paths MUST use the same merge logic — if
+ * reconcile reads only builtin, plugin servers get classified as "removed"
+ * on the second turn and torn down. See alpha.635 fix.
+ */
+function buildMergedServerConfig(): {
+  mergedServers: Record<string, McpServerConfig>
+  pluginOrigins: Record<string, string>
+} {
+  const config = loadAgentConfig()
+  const builtinServers = config.mcpServers ?? {}
+  const pluginServers = listPluginMcpServers()
+  const mergedServers: Record<string, McpServerConfig> = {}
+  const pluginOrigins: Record<string, string> = {}
+  for (const p of pluginServers) {
+    if (builtinServers[p.serverName] !== undefined) continue
+    mergedServers[p.serverName] = pluginMcpServerToConfig(p)
+    pluginOrigins[p.serverName] = p.pluginId
+  }
+  for (const [name, cfg] of Object.entries(builtinServers)) {
+    mergedServers[name] = cfg
+  }
+  return { mergedServers, pluginOrigins }
+}
+
 export class McpManager {
   private servers = new Map<string, ServerEntry>()
   private shuttingDown = false
@@ -120,16 +151,18 @@ export class McpManager {
   }
 
   /* v8 ignore start — reconcile: dynamic MCP server management, tested via integration @preserve */
-  /** Re-read agent config and connect new servers / disconnect removed ones. */
+  /** Re-read agent config AND enabled-plugin .mcp.json files, then connect new
+   *  servers / disconnect removed ones. Must include plugin-declared servers
+   *  in the desired set — otherwise plugin servers (e.g. mcp__desk__*) are
+   *  treated as "removed" on every call and get torn down between turns. */
   async reconcile(): Promise<void> {
     try {
-      const config = loadAgentConfig()
-      const servers = config.mcpServers ?? {}
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig()
       const currentNames = new Set(this.servers.keys())
-      const desiredNames = new Set(Object.keys(servers))
+      const desiredNames = new Set(Object.keys(mergedServers))
 
       // Connect new servers
-      for (const [name, cfg] of Object.entries(servers)) {
+      for (const [name, cfg] of Object.entries(mergedServers)) {
         if (!currentNames.has(name)) {
           emitNervesEvent({
             event: "mcp.server_added",
@@ -137,7 +170,7 @@ export class McpManager {
             message: `connecting new MCP server: ${name}`,
             meta: { server: name, command: cfg.command },
           })
-          await this.connectServer(name, cfg)
+          await this.connectServer(name, cfg, pluginOrigins[name])
         }
       }
 
@@ -379,26 +412,7 @@ export async function getSharedMcpManager(): Promise<McpManager | null> {
 
   _sharedManagerPromise = (async () => {
     try {
-      const config = loadAgentConfig()
-      const builtinServers = config.mcpServers ?? {}
-
-      // W6 Unit 9: every enabled plugin can declare its own MCP servers in
-      // `<plugin-root>/.mcp.json` (Anthropic public spec shape). Merge those
-      // into the start() call so they spawn alongside agent.json mcpServers.
-      // Builtin entries win on name collision (deterministic + reproducible —
-      // operator's explicit agent.json overrides plugin defaults).
-      const pluginServers = listPluginMcpServers()
-      const mergedServers: Record<string, McpServerConfig> = {}
-      const pluginOrigins: Record<string, string> = {}
-      for (const p of pluginServers) {
-        if (builtinServers[p.serverName] !== undefined) continue
-        mergedServers[p.serverName] = pluginMcpServerToConfig(p)
-        pluginOrigins[p.serverName] = p.pluginId
-      }
-      for (const [name, cfg] of Object.entries(builtinServers)) {
-        mergedServers[name] = cfg
-      }
-
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig()
       if (Object.keys(mergedServers).length === 0) return null
 
       const manager = new McpManager()
