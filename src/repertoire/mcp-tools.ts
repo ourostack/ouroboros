@@ -9,20 +9,33 @@ import { emitNervesEvent } from "../nerves/runtime"
 
 /**
  * Convert all tools from an McpManager into ToolDefinition objects.
- * Each tool gets named `{server}_{tool}` (e.g., `browser_navigate`).
- * The handler calls `mcpManager.callTool()` and returns concatenated text content.
+ *
+ * Naming rules:
+ *  - Builtin servers (agent.json `mcpServers`) — legacy `{server}_{tool}`
+ *    shape (e.g., `browser_navigate`), with double-prefix avoidance when
+ *    the tool already starts with the server name.
+ *  - Plugin servers (from `<plugin>/.mcp.json`, W6 Unit 9) — Anthropic public
+ *    convention `mcp__{server}__{tool}` (e.g., `mcp__desk__task_create`).
+ *    This matches Claude Code's external naming and the on-prompt promise
+ *    in `desk-section.ts` (`mcp__desk__*`).
+ *
+ * The handler always calls `mcpManager.callTool()` with the un-prefixed
+ * `(server, tool)` pair regardless of how the surfaced name was shaped.
  */
 export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] {
   if (!mcpManager) return []
 
-  return mcpManager.listAllTools().flatMap((entry) =>
-    entry.tools.map((tool) => ({
+  return mcpManager.listAllTools().flatMap((entry) => {
+    const isPluginSourced = Boolean(entry.pluginId)
+    return entry.tools.map((tool) => ({
       tool: {
         type: "function" as const,
         function: {
-          name: tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
-            ? tool.name
-            : `${entry.server}_${tool.name}`,
+          name: isPluginSourced
+            ? `mcp__${entry.server}__${tool.name}`
+            : tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
+              ? tool.name
+              : `${entry.server}_${tool.name}`,
           description: tool.description || `MCP tool: ${tool.name} (server: ${entry.server})`,
           parameters: tool.inputSchema ?? { type: "object", properties: {} },
         },
@@ -68,6 +81,6 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
         }
       },
       mcpServer: entry.server,
-    })),
-  )
+    }))
+  })
 }
