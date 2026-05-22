@@ -513,11 +513,8 @@ describe("migrate-to-desk", () => {
       path.join(bundle, "desk/legacy/rest-loop-incident/iterations/log.txt"),
       "utf-8",
     )
-    // Non-md sub-artifact landed verbatim (we don't add schema_version to txt files,
-    // but since the iteration writer treats it as the iteration's child we currently
-    // do call ensureSchemaVersion — content is the original prepended with the FM block,
-    // OR identical content depending on path. Verify the original lines survive.
-    expect(migratedLog).toContain(originalLog.trim())
+    // Non-markdown iteration artifacts ride through untouched (byte-for-byte).
+    expect(migratedLog).toBe(originalLog)
   })
 
   it("writes the legacy track.md with the expected frontmatter", async () => {

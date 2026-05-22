@@ -411,7 +411,7 @@ function applyPairingRules(entries: ClassifiedEntry[]): GroupedEntry[] {
 type PlanAction =
   | { kind: "copy_to_archive"; src: string; outputPath: string; relPath: string; markdown: boolean }
   | { kind: "write_task"; outputPath: string; sources: GroupedEntry[]; relPath: string }
-  | { kind: "copy_to_iteration"; src: string; outputPath: string; relPath: string }
+  | { kind: "copy_to_iteration"; src: string; outputPath: string; relPath: string; markdown: boolean }
   | { kind: "europe_trip"; relPath: string }
 
 function buildPlan(grouped: GroupedEntry[], deskRoot: string): PlanAction[] {
@@ -477,6 +477,7 @@ function buildPlan(grouped: GroupedEntry[], deskRoot: string): PlanAction[] {
             src: entry.absPath,
             outputPath: path.join(taskDir, "iterations", iterBase),
             relPath: entry.relPath,
+            markdown: iterBase.endsWith(".md"),
           })
         }
         break
@@ -557,9 +558,13 @@ function applyPlanAction(action: PlanAction): void {
     }
     case "copy_to_iteration": {
       fs.mkdirSync(path.dirname(action.outputPath), { recursive: true })
-      const raw = fs.readFileSync(action.src, "utf-8")
-      const withSchema = ensureSchemaVersion(raw)
-      fs.writeFileSync(action.outputPath, withSchema, "utf-8")
+      if (action.markdown) {
+        const raw = fs.readFileSync(action.src, "utf-8")
+        const withSchema = ensureSchemaVersion(raw)
+        fs.writeFileSync(action.outputPath, withSchema, "utf-8")
+      } else {
+        fs.copyFileSync(action.src, action.outputPath)
+      }
       break
     }
     case "write_task": {
