@@ -23,7 +23,6 @@ import {
 import { listSessionActivity } from "../heart/session-activity";
 import { buildActiveWorkFrame, formatActiveWorkFrame, type ActiveWorkFrame } from "../heart/active-work";
 import { getCodingSessionManager, type CodingSessionStatus } from "./coding";
-import { getTaskModule } from "./tasks";
 import { getPendingDir, getInnerDialogPendingDir } from "../mind/pending";
 import type { PendingMessage } from "../mind/pending";
 import { createReturnObligation, generateObligationId, createObligation, readPendingObligations } from "../arc/obligations";
@@ -169,28 +168,6 @@ function parseVoiceInitialAudio(args: Record<string, string>): VoiceCallAudioReq
 }
 /* v8 ignore stop */
 
-function emptyTaskBoard() {
-  return {
-    compact: "",
-    full: "",
-    byStatus: {
-      drafting: [],
-      processing: [],
-      validating: [],
-      collaborating: [],
-      paused: [],
-      blocked: [],
-      done: [],
-      cancelled: [],
-    },
-    issues: [],
-    actionRequired: [],
-    unresolvedDependencies: [],
-    activeSessions: [],
-    activeBridges: [],
-  }
-}
-
 function isLiveCodingSessionStatus(status: CodingSessionStatus): boolean {
   return status === "spawning"
     || status === "running"
@@ -329,13 +306,6 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
     backgroundOperations,
     otherCodingSessions,
     pendingObligations,
-    taskBoard: (() => {
-      try {
-        return getTaskModule().getBoard()
-      } catch {
-        return emptyTaskBoard()
-      }
-    })(),
     friendActivity,
     targetCandidates: [],
   })

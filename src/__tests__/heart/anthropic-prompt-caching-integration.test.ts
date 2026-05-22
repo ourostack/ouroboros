@@ -46,13 +46,6 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
 vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(), loadSkill: vi.fn() }))
 
-const mockGetBoard = vi.fn()
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: mockGetBoard,
-  }),
-}))
-
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({
     name: "testagent",
@@ -135,17 +128,6 @@ describe("Anthropic prompt caching integration", () => {
     vi.resetModules()
     capturedAnthropicParams = null
     mockAnthropicMessagesCreate.mockClear()
-    mockGetBoard.mockReset().mockReturnValue({
-      compact: "",
-      full: "",
-      byStatus: {
-        drafting: [], processing: [], validating: [], collaborating: [],
-        paused: [], blocked: [], done: [], cancelled: [],
-      },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
   })
 
   it("buildSystem stable prefix does NOT contain date/time or rhythm status", async () => {

@@ -1098,7 +1098,6 @@ const DELEGATION_REASON_PROSE_HINT: Record<import("../heart/delegation").Delegat
   explicit_reflection: "something here calls for reflection",
   cross_session: "this touches other conversations i'm in",
   bridge_state: "there's shared work spanning sessions",
-  task_state: "this relates to tasks i'm tracking",
   non_fast_path_tool: "this needs more than a simple reply",
   unresolved_obligation: "i have an unresolved commitment from earlier",
 }

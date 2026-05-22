@@ -41,11 +41,6 @@ function makeInput(overrides: Partial<BridgeSuggestionInput> = {}): BridgeSugges
         updatedAt: "2026-01-01T00:00:01Z",
       },
     ],
-    taskBoard: {
-      compact: "",
-      activeBridges: [],
-      byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-    },
     ...overrides,
   }
 }
@@ -100,11 +95,6 @@ describe("suggestBridgeForActiveWork threshold relaxation", () => {
       currentObligation: null,
       mustResolveBeforeHandoff: false,
       pendingObligations: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       targetCandidates: [
         makeCandidate({ friendId: "friend-2" }),
         makeCandidate({ friendId: "friend-3" }),
