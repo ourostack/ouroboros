@@ -34,6 +34,8 @@ describe("COMMAND_REGISTRY", () => {
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
       // W6 Unit 10
       "desk", "task",
+      // W6 Unit 11
+      "migrate-to-desk",
     ]
     for (const cmd of expectedCommands) {
       expect(COMMAND_REGISTRY).toHaveProperty(cmd)
