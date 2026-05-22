@@ -1028,47 +1028,29 @@ describe("buildSystem", () => {
     expect(result).toContain("- web_search:")
   })
 
-  it("includes task board section when compact board text exists", async () => {
+  it("includes desk section with the Candidate D body", async () => {
     setupReadFileSync()
-    mockGetBoard.mockReturnValueOnce({
-      compact: "[Tasks] processing:1 drafting:0",
-      full: "full",
-      byStatus: {
-        drafting: [],
-        processing: ["sample-task"],
-        "validating": [],
-        collaborating: [],
-        paused: [],
-        blocked: [],
-        done: [],
-        cancelled: [],
-      },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
-    expect(result).toContain("## task board")
-    expect(result).toContain("[Tasks] processing:1 drafting:0")
+    expect(result).toContain("## my desk")
+    expect(result).toContain("every ouro agent has a desk")
+    expect(result).toContain("### currently")
   })
 
-  it("omits task board section when board lookup throws", async () => {
+  it("desk section emits empty-stub when no desk/ dir exists", async () => {
     setupReadFileSync()
-    mockGetBoard.mockImplementationOnce(() => {
-      throw new Error("board unavailable")
-    })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
-    expect(result).not.toContain("## task board")
+    // In test runs the mocked agent root has no desk/, so we expect the stub.
+    expect(result).toContain("empty — no tracks yet.")
   })
 
   it("includes skills section from listSkills", async () => {
@@ -2975,17 +2957,9 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my aspirations")
   })
 
-  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, taskBoardSection, skillsSection, diaryFriendToolContractSection", async () => {
+  it("buildSystem('inner') includes runtimeInfoSection, toolsSection, deskSection, skillsSection, diaryFriendToolContractSection", async () => {
     setupReadFileSync()
     vi.mocked(listSkills).mockReturnValue(["code-review"])
-    mockGetBoard.mockReturnValueOnce({
-      compact: "[Tasks] processing:1",
-      full: "full",
-      byStatus: { drafting: [], processing: ["t"], "validating": [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      actionRequired: [],
-      unresolvedDependencies: [],
-      activeSessions: [],
-    })
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
@@ -2994,7 +2968,7 @@ describe("buildSystem with context", () => {
     const result = flattenSystemPrompt(await buildSystem("inner"))
     expect(result).toContain("## runtime")
     expect(result).toContain("## my tools")
-    expect(result).toContain("## task board")
+    expect(result).toContain("## my desk")
     expect(result).toContain("## my skills")
     expect(result).toContain("## tool contracts")
     expect(result).toContain("search_notes")
@@ -3163,7 +3137,7 @@ describe("buildSystem with context", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli"))
     expect(result).toContain("ouro whoami")
-    expect(result).toContain("ouro task board")
+    expect(result).toContain("ouro desk")
     expect(result).toContain("ouro friend list")
     expect(result).toContain("ouro --help")
   })
@@ -4321,7 +4295,7 @@ describe("system prompt group headers", () => {
       "# how i work",
       "# dynamic state for this turn",
       "# friend context",
-      "# task context",
+      "# desk",
     ]
 
     for (const header of expectedHeaders) {
@@ -4402,7 +4376,7 @@ describe("system prompt group headers", () => {
     expect(lines.some(l => l.trim() === "# how i work")).toBe(true)
     expect(lines.some(l => l.trim() === "# dynamic state for this turn")).toBe(true)
     expect(lines.some(l => l.trim() === "# friend context")).toBe(true)
-    expect(lines.some(l => l.trim() === "# task context")).toBe(true)
+    expect(lines.some(l => l.trim() === "# desk")).toBe(true)
   })
 
   it("sections appear within their correct groups", async () => {
@@ -5106,7 +5080,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     expect(result).toContain("My psyche files are always loaded")
   })
 
-  it("includes 'My task board is always loaded'", async () => {
+  it("includes 'My desk is always loaded'", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)
     vi.mocked(fs.readdirSync).mockReturnValue([])
@@ -5117,7 +5091,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
-    expect(result).toContain("My task board is always loaded")
+    expect(result).toContain("My desk is always loaded")
   })
 })
 
