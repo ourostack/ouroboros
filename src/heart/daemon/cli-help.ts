@@ -153,6 +153,20 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro habit list",
     subcommands: ["list", "create", "poke"],
   },
+  desk: {
+    category: "Tasks",
+    description: "Manage the agent's desk — tasks, tracks, friction, lessons, search, and recall (routes through the desk MCP server).",
+    usage: "ouro desk <task|track|friction|lesson|search|recall|reindex|thread> ...",
+    example: "ouro desk task list",
+    subcommands: ["task", "track", "friction", "lesson", "search", "recall", "reindex", "thread"],
+  },
+  task: {
+    category: "Tasks",
+    description: "Alias for `ouro desk task ...`.",
+    usage: "ouro task <list|new|done|archive|show> [...]",
+    example: "ouro task list",
+    subcommands: ["list", "new", "done", "archive", "show"],
+  },
   friend: {
     category: "Friends",
     description: "Manage agent friends and identity links",

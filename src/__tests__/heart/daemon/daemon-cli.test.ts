@@ -431,15 +431,22 @@ describe("ouro CLI parsing", () => {
     })
   })
 
-  // task.* and reminder.create CLI verbs were removed in W6 Unit 8b — the
-  // built-in task module is being retired in favor of the desk substrate.
-  // `task poke` survives as a poke-routing convenience and is covered by
-  // the poke-subcommand tests above.
+  // Legacy `task.*` verbs (board/create/fix) and `reminder` were removed in
+  // W6 Unit 8b. W6 Unit 10 then restored `task` as an alias surface that
+  // routes the *new* desk subverbs (list/new/done/archive/show) through the
+  // desk MCP server. Legacy subverb names must still be rejected — the
+  // alias only honours the new shape — but they now fail with a desk usage
+  // hint rather than a "Unknown command" top-level error. `task poke`
+  // survives as a poke-routing convenience and is covered by the
+  // poke-subcommand tests above.
 
-  it("rejects task/reminder subcommands now that the built-in task module is retired", () => {
-    expect(() => parseOuroCommand(["task", "board"])).toThrow("Unknown command")
-    expect(() => parseOuroCommand(["task", "create", "title"])).toThrow("Unknown command")
-    expect(() => parseOuroCommand(["task", "fix"])).toThrow("Unknown command")
+  it("rejects legacy task subverbs (board/create/fix) under the new alias", () => {
+    expect(() => parseOuroCommand(["task", "board"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["task", "create", "title"])).toThrow(/usage/i)
+    expect(() => parseOuroCommand(["task", "fix"])).toThrow(/usage/i)
+  })
+
+  it("still rejects the retired top-level `reminder` verb", () => {
     expect(() => parseOuroCommand(["reminder", "create", "title", "--body", "x", "--at", "2026-03-10T17:00:00.000Z"])).toThrow("Unknown command")
   })
 

@@ -15,6 +15,7 @@ import type { HatchCredentialsInput } from "../hatch/hatch-flow"
 import type { DnsWorkflowAction, OuroCliCommand } from "./cli-types"
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
+import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -1431,6 +1432,8 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "connect") return parseConnectCommand(args.slice(1))
   if (head === "vault") return parseVaultCommand(args.slice(1))
   if (head === "habit") return parseHabitCommand(args.slice(1))
+  if (head === "desk") return parseDeskCommand(args.slice(1))
+  if (head === "task") return parseTaskAliasCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
