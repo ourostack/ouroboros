@@ -23,18 +23,21 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("contains all top-level commands from parseOuroCommand", () => {
-    // W6 Unit 8b retired the `task` and `reminder` umbrella verbs alongside
-    // the built-in task module; `poke` still routes task pokes.
+    // W6 Unit 8b retired the legacy `task` and `reminder` umbrella verbs
+    // alongside the built-in task module; W6 Unit 10 restored `task` as
+    // an alias that routes through the desk MCP server (verb-and-router
+    // layer — no business logic in the harness).
     const expectedCommands = [
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
       "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
       "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
+      // W6 Unit 10
+      "desk", "task",
     ]
     for (const cmd of expectedCommands) {
       expect(COMMAND_REGISTRY).toHaveProperty(cmd)
     }
-    expect(COMMAND_REGISTRY).not.toHaveProperty("task")
     expect(COMMAND_REGISTRY).not.toHaveProperty("reminder")
   })
 
@@ -57,9 +60,9 @@ describe("COMMAND_REGISTRY", () => {
   })
 
   it("entries with subcommands have a non-empty array", () => {
-    // friend, habit, auth, attention, mcp should have subcommands
-    // (task umbrella retired in W6 Unit 8b)
-    const commandsWithSubcommands = ["friend", "habit", "auth", "attention", "mcp"]
+    // friend, habit, auth, attention, mcp, desk, task should have subcommands
+    // (legacy task umbrella retired in W6 Unit 8b; restored as alias in W6 Unit 10)
+    const commandsWithSubcommands = ["friend", "habit", "auth", "attention", "mcp", "desk", "task"]
     for (const cmd of commandsWithSubcommands) {
       const entry = COMMAND_REGISTRY[cmd]
       expect(entry.subcommands).toBeDefined()
