@@ -596,9 +596,9 @@ describe("guardInvocation — trust-level guardrails", () => {
     expect(OURO_CLI_TRUST_MANIFEST.whoami).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST.changelog).toBe("acquaintance")
     expect(OURO_CLI_TRUST_MANIFEST["session list"]).toBe("acquaintance")
-    expect(OURO_CLI_TRUST_MANIFEST["task board"]).toBe("friend")
     expect(OURO_CLI_TRUST_MANIFEST["friend list"]).toBe("friend")
-    expect(OURO_CLI_TRUST_MANIFEST["reminder create"]).toBe("friend")
+    expect(OURO_CLI_TRUST_MANIFEST["task board"]).toBeUndefined()
+    expect(OURO_CLI_TRUST_MANIFEST["reminder create"]).toBeUndefined()
   })
 
   // --- additional read-only shell commands for acquaintance ---

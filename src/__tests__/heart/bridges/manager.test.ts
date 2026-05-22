@@ -5,16 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../../helpers/content-cap"
 
 let agentStateRoot = ""
-const mockCreateTask = vi.fn()
+const mockWriteDeskTask = vi.fn()
 
 vi.mock("../../../heart/identity", () => ({
   getAgentStateRoot: () => agentStateRoot,
-}))
-
-vi.mock("../../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    createTask: (...args: any[]) => mockCreateTask(...args),
-  }),
 }))
 
 vi.mock("../../../nerves/runtime", () => ({
@@ -38,7 +32,10 @@ function deferred<T = void>() {
 describe("bridge manager", () => {
   beforeEach(() => {
     agentStateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-manager-"))
-    mockCreateTask.mockReset().mockReturnValue("/tmp/tasks/ongoing/2026-03-13-1600-shared-relay.md")
+    mockWriteDeskTask.mockReset().mockReturnValue({
+      taskName: "2026-03-13-1600-shared-relay",
+      path: "/tmp/desk/bridges/2026-03-13-1600-shared-relay/task.md",
+    })
   })
 
   afterEach(() => {
@@ -55,6 +52,7 @@ describe("bridge manager", () => {
       store,
       now: () => "2026-03-13T16:00:00.000Z",
       idFactory: () => "bridge-1",
+      writeDeskTask: mockWriteDeskTask,
     })
 
     const bridge = manager.beginBridge({
@@ -119,6 +117,7 @@ describe("bridge manager", () => {
       store: createBridgeStore(),
       now: () => "2026-05-13T00:00:00.000Z",
       idFactory: () => "bridge-cap",
+      writeDeskTask: mockWriteDeskTask,
     })
 
     manager.beginBridge({
@@ -149,6 +148,7 @@ describe("bridge manager", () => {
       store,
       now: () => "2026-03-13T16:00:00.000Z",
       idFactory: () => "bridge-2",
+      writeDeskTask: mockWriteDeskTask,
     })
 
     manager.beginBridge({
@@ -165,16 +165,17 @@ describe("bridge manager", () => {
     const promoted = manager.promoteBridgeToTask("bridge-2", {
       title: "Shared Relay",
     })
-    expect(mockCreateTask).toHaveBeenCalledWith(
+    expect(mockWriteDeskTask).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Shared Relay",
+        category: "coordination",
         activeBridge: "bridge-2",
         bridgeSessions: ["friend-1/cli/session"],
       }),
     )
     expect(promoted.task).toEqual({
       taskName: "2026-03-13-1600-shared-relay",
-      path: "/tmp/tasks/ongoing/2026-03-13-1600-shared-relay.md",
+      path: "/tmp/desk/bridges/2026-03-13-1600-shared-relay/task.md",
       mode: "promoted",
       boundAt: "2026-03-13T16:00:00.000Z",
     })
@@ -205,7 +206,7 @@ describe("bridge manager", () => {
     const { createBridgeManager, formatBridgeStatus, formatBridgeContext } = await import("../../../heart/bridges/manager")
     const { enqueueSharedFollowUp } = await import("../../../heart/turn-coordinator")
 
-    const manager = createBridgeManager()
+    const manager = createBridgeManager({ writeDeskTask: mockWriteDeskTask })
     const created = manager.beginBridge({
       objective: "edge bridge",
       summary: "",
@@ -233,9 +234,12 @@ describe("bridge manager", () => {
 
     const detached = manager.detachSession(created.id, { friendId: "friend-7", channel: "cli", key: "session" })
     expect(detached.attachedSessions).toEqual([])
-    mockCreateTask.mockReturnValueOnce("/tmp/tasks/ongoing/edge-bridge.md")
+    mockWriteDeskTask.mockReturnValueOnce({
+      taskName: "edge-bridge",
+      path: "/tmp/desk/bridges/edge-bridge/task.md",
+    })
     const promotedDefaults = manager.promoteBridgeToTask(created.id)
-    expect(mockCreateTask).toHaveBeenCalledWith(
+    expect(mockWriteDeskTask).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "edge bridge",
         category: "coordination",
@@ -243,7 +247,7 @@ describe("bridge manager", () => {
         bridgeSessions: [],
       }),
     )
-    expect(String(mockCreateTask.mock.calls.at(-1)?.[0]?.body ?? "")).not.toContain("sessions:")
+    expect(String(mockWriteDeskTask.mock.calls.at(-1)?.[0]?.body ?? "")).not.toContain("sessions:")
     expect(promotedDefaults.task?.taskName).toBe("edge-bridge")
 
     let suspendedCurrent = {
@@ -260,7 +264,7 @@ describe("bridge manager", () => {
       list: vi.fn(() => []),
       findBySession: vi.fn(() => []),
     }
-    const suspendedManager = createBridgeManager({ store: suspendedStore as any, now: () => "2026-03-13T16:00:00.000Z" })
+    const suspendedManager = createBridgeManager({ store: suspendedStore as any, now: () => "2026-03-13T16:00:00.000Z", writeDeskTask: mockWriteDeskTask })
     await suspendedManager.runBridgeTurn(created.id, async () => undefined)
     expect(suspendedStore.save).toHaveBeenCalled()
 
@@ -274,7 +278,7 @@ describe("bridge manager", () => {
       list: vi.fn(() => []),
       findBySession: vi.fn(() => []),
     }
-    const terminalManager = createBridgeManager({ store: terminalStore as any, now: () => "2026-03-13T16:00:00.000Z" })
+    const terminalManager = createBridgeManager({ store: terminalStore as any, now: () => "2026-03-13T16:00:00.000Z", writeDeskTask: mockWriteDeskTask })
     await expect(terminalManager.runBridgeTurn(created.id, async () => undefined)).rejects.toThrow("bridge is terminal")
     expect(() =>
       terminalManager.attachSession(created.id, {
@@ -304,7 +308,7 @@ describe("bridge manager", () => {
       list: vi.fn(() => [withTask]),
       findBySession: vi.fn(() => [withTask, { ...withTask, id: "bridge-terminal", lifecycle: "cancelled" }]),
     }
-    const taskManager = createBridgeManager({ store: taskStore as any, now: () => "2026-03-13T16:00:00.000Z" })
+    const taskManager = createBridgeManager({ store: taskStore as any, now: () => "2026-03-13T16:00:00.000Z", writeDeskTask: mockWriteDeskTask })
     expect(taskManager.promoteBridgeToTask(withTask.id)).toEqual(withTask)
     expect(taskManager.findBridgesForSession({ friendId: "friend-7", channel: "cli", key: "session" })).toEqual([withTask])
 
@@ -312,6 +316,7 @@ describe("bridge manager", () => {
       store: (await import("../../../heart/bridges/store")).createBridgeStore(),
       now: () => "2026-03-13T16:00:00.000Z",
       idFactory: () => "bridge-follow-up",
+      writeDeskTask: mockWriteDeskTask,
     })
     realStoreManager.beginBridge({
       objective: "queued bridge",
@@ -338,7 +343,7 @@ describe("bridge manager", () => {
     expect(runs).toBe(2)
   })
 
-  it("reconciles bridge lifecycle from live session activity, linked task state, and current-session reactivation", async () => {
+  it("reconciles bridge lifecycle from live session activity and current-session reactivation", async () => {
     const { createBridgeStore } = await import("../../../heart/bridges/store")
     const { createBridgeManager } = await import("../../../heart/bridges/manager")
 
@@ -347,6 +352,7 @@ describe("bridge manager", () => {
       store,
       now: () => "2026-03-13T16:00:00.000Z",
       idFactory: () => "bridge-life",
+      writeDeskTask: mockWriteDeskTask,
     })
 
     const bridge = manager.beginBridge({
@@ -363,20 +369,6 @@ describe("bridge manager", () => {
     const suspended = manager.reconcileLifecycles({
       currentSession: null,
       sessionActivity: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
     })
     expect(suspended[0]).toEqual(expect.objectContaining({
       id: bridge.id,
@@ -397,67 +389,20 @@ describe("bridge manager", () => {
           activitySource: "friend-facing",
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
     })
     expect(reactivatedBySession[0]).toEqual(expect.objectContaining({
       id: bridge.id,
       lifecycle: "active",
     }))
 
-    const promoted = manager.promoteBridgeToTask("bridge-life", { title: "Shared Relay" })
-    const keptActiveByTask = manager.reconcileLifecycles({
-      currentSession: null,
-      sessionActivity: [],
-      taskBoard: {
-        compact: "[Tasks] processing:1 blocked:0",
-        activeBridges: [`${promoted.task?.taskName} -> ${bridge.id}`],
-        byStatus: {
-          drafting: [],
-          processing: [promoted.task!.taskName],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
-    })
-    expect(keptActiveByTask[0]).toEqual(expect.objectContaining({
-      id: bridge.id,
-      lifecycle: "active",
-    }))
+    manager.promoteBridgeToTask("bridge-life", { title: "Shared Relay" })
 
+    // After Unit 8b: reconciliation no longer cross-references task-board
+    // state. A promoted bridge with no live session activity suspends just
+    // like an un-promoted one — the desk substrate owns task liveness now.
     const suspendedAgain = manager.reconcileLifecycles({
       currentSession: null,
       sessionActivity: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
     })
     expect(suspendedAgain[0]).toEqual(expect.objectContaining({
       id: bridge.id,
@@ -471,20 +416,6 @@ describe("bridge manager", () => {
         key: "session",
       },
       sessionActivity: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
     })
     expect(reactivatedByCurrentSession[0]).toEqual(expect.objectContaining({
       id: bridge.id,

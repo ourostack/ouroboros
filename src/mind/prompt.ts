@@ -297,7 +297,6 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro friend show --agent ${agentName} <id>
   ouro friend update --agent ${agentName} <id> --trust <level>
   ouro session list --agent ${agentName}
-  ouro reminder create --agent ${agentName} <title> --body <body>
   ouro habit list --agent ${agentName}
   ouro habit create --agent ${agentName} <name> --cadence <interval>
   ouro inner --agent ${agentName}

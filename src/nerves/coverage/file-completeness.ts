@@ -145,6 +145,11 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // AbortController + setTimeout. Callers (boot-sync-probe.ts and any
   // future consumer) own observability; the wrapper itself is mechanical.
   "heart/timeouts",
+  // Shared frontmatter parser: pure YAML-ish parser used by habit-parser,
+  // habit-migration, await-parser, and any other small markdown reader.
+  // No side effects of its own; callers emit nerves events around their
+  // parse calls (e.g. daemon.habit_parse, daemon.await_parse).
+  "util/frontmatter",
 ]
 
 function isDispatchExempt(filePath: string): boolean {
