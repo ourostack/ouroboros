@@ -124,6 +124,7 @@ function readTaskFile(taskDir: string): TaskRecord | null {
 }
 
 function listSubdirs(parent: string): string[] {
+  /* v8 ignore start -- defensive readdir catch only fires on transient FS errors @preserve */
   try {
     return fs
       .readdirSync(parent, { withFileTypes: true })
@@ -133,6 +134,7 @@ function listSubdirs(parent: string): string[] {
   } catch {
     return [];
   }
+  /* v8 ignore stop @preserve */
 }
 
 function readTrack(deskRoot: string, slug: string): TrackRecord | null {
@@ -140,9 +142,11 @@ function readTrack(deskRoot: string, slug: string): TrackRecord | null {
   try {
     const stat = fs.statSync(trackDir);
     if (!stat.isDirectory()) return null;
+    /* v8 ignore start -- defensive statSync catch on stale featured slug @preserve */
   } catch {
     return null;
   }
+  /* v8 ignore stop @preserve */
   const { status } = readTrackFile(trackDir);
   const taskSlugs = listSubdirs(trackDir);
   const tasks: TaskRecord[] = [];
