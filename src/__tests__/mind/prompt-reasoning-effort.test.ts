@@ -47,9 +47,6 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 
 vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
 vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(() => []), loadSkill: vi.fn() }))
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({ getBoard: () => ({ compact: "" }) }),
-}))
 
 vi.mock("../../heart/identity", () => ({
   loadAgentConfig: vi.fn(() => ({

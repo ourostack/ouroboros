@@ -18,17 +18,6 @@ vi.mock("../../repertoire/skills", () => ({
   loadSkill: vi.fn(),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn(),
-    createTask: vi.fn(),
-    updateStatus: vi.fn(),
-    boardStatus: vi.fn(),
-    boardAction: vi.fn(),
-    boardDeps: vi.fn(),
-    boardSessions: vi.fn(),
-  }),
-}))
 
 const mockRunInnerDialogTurn = vi.fn()
 const mockRequestInnerWake = vi.fn()

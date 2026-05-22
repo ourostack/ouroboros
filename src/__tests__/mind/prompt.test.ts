@@ -37,11 +37,6 @@ vi.mock("../../repertoire/skills", () => ({
 }))
 
 const mockGetBoard = vi.fn()
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: mockGetBoard,
-  }),
-}))
 
 vi.mock("../../trips/store", () => tripStoreMocks)
 
