@@ -92,6 +92,7 @@ export type OuroCliCommand =
   | { kind: "habit.poke"; agent: string; habitName: string }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "desk"; agent?: string; tool: string; toolArgs: Record<string, unknown> }
+  | { kind: "migrate-to-desk"; agent: string; root?: string; force?: boolean; dryRun?: boolean }
   | { kind: "doctor"; json?: boolean; category?: string; strict?: boolean }
   | { kind: "bluebubbles.replay"; agent?: string; messageGuid: string; eventType: "new-message" | "updated-message"; json?: boolean }
   | { kind: "clone"; remote: string; agent?: string }
@@ -238,6 +239,7 @@ export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" }>
 export type DeskCliCommand = Extract<OuroCliCommand, { kind: "desk" }>
+export type MigrateToDeskCliCommand = Extract<OuroCliCommand, { kind: "migrate-to-desk" }>
 export type McpListCliCommand = Extract<OuroCliCommand, { kind: "mcp.list" }>
 export type McpCallCliCommand = Extract<OuroCliCommand, { kind: "mcp.call" }>
 export type McpCanaryCliCommand = Extract<OuroCliCommand, { kind: "mcp.canary" }>

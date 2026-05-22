@@ -1301,6 +1301,49 @@ function parsePluginCommand(args: string[]): OuroCliCommand {
   )
 }
 
+function parseMigrateToDeskCommand(args: string[]): OuroCliCommand {
+  let agent: string | undefined
+  let root: string | undefined
+  let force = false
+  let dryRun = false
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]
+    if (token === "--agent" && args[i + 1]) {
+      agent = args[++i]
+      continue
+    }
+    if (token === "--root" && args[i + 1]) {
+      root = args[++i]
+      continue
+    }
+    if (token === "--force") {
+      force = true
+      continue
+    }
+    if (token === "--dry-run") {
+      dryRun = true
+      continue
+    }
+    throw new Error(
+      "Usage: ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
+    )
+  }
+
+  if (!agent) {
+    throw new Error(
+      "Usage: ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
+    )
+  }
+  return {
+    kind: "migrate-to-desk",
+    agent,
+    ...(root ? { root } : {}),
+    ...(force ? { force: true } : {}),
+    ...(dryRun ? { dryRun: true } : {}),
+  }
+}
+
 function parseBlueBubblesCommand(args: string[]): OuroCliCommand {
   const subcommand = args[0]
   if (subcommand !== "replay") {
@@ -1434,6 +1477,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "habit") return parseHabitCommand(args.slice(1))
   if (head === "desk") return parseDeskCommand(args.slice(1))
   if (head === "task") return parseTaskAliasCommand(args.slice(1))
+  if (head === "migrate-to-desk") return parseMigrateToDeskCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))

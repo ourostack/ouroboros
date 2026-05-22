@@ -105,6 +105,7 @@ import type {
   HookCliCommand,
   HabitLocalCliCommand,
   DeskCliCommand,
+  MigrateToDeskCliCommand,
   WhoamiCliCommand,
   SessionCliCommand,
   ThoughtsCliCommand,
@@ -122,6 +123,7 @@ import {
   executePluginRemove,
 } from "./plugin-cli"
 import { executeDeskCommand } from "./cli-desk"
+import { runMigrateToDesk } from "./migrate-to-desk"
 import {
   parseStatusPayload,
   formatDaemonStatusOutput,
@@ -1562,7 +1564,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -7465,6 +7467,23 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
   // ── desk umbrella (routed through daemon socket as mcp.call to "desk" server) ──
   if (command.kind === "desk") {
     return executeDeskCommand(command, deps)
+  }
+
+  // ── migrate-to-desk (local, no daemon needed) ──
+  if (command.kind === "migrate-to-desk") {
+    /* v8 ignore start -- production default: uses real bundles root @preserve */
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    /* v8 ignore stop */
+    const result = await runMigrateToDesk({
+      agent: command.agent,
+      ...(command.root ? { root: command.root } : {}),
+      bundlesRoot,
+      ...(command.force ? { force: true } : {}),
+      ...(command.dryRun ? { dryRun: true } : {}),
+    })
+    deps.writeStdout(result.summary)
+    if (result.abortedExisting) deps.setExitCode?.(1)
+    return result.summary
   }
 
   // ── habit subcommands (local, no daemon socket needed) ──
