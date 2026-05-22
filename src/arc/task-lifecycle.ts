@@ -3,9 +3,9 @@ import { emitNervesEvent } from "../nerves/runtime"
 /**
  * Shared lifecycle grammar for task-shaped work.
  *
- * Ponder packets in arc/ and task docs in repertoire/tasks both use this
- * status universe. Keep it here so continuity state does not need to reach
- * back into repertoire/ just to validate status transitions.
+ * Ponder packets in arc/ use this status universe to validate state
+ * transitions. Other surfaces (desk task.md files) duck-type the same
+ * vocabulary; no cross-reference required.
  */
 export type TaskStatus =
   | "drafting"
@@ -81,10 +81,3 @@ export function validateTransition(from: TaskStatus, to: TaskStatus): Transition
   return { ok: true, from, to }
 }
 
-export function renderTaskTransitionLines(): string[] {
-  return TASK_VALID_STATUSES.map((from) => {
-    const to = TASK_STATUS_TRANSITIONS[from]
-    const rendered = to.length > 0 ? to.map((next) => `\`${next}\``).join(", ") : "(terminal)"
-    return `- \`${from}\` -> ${rendered}`
-  })
-}
