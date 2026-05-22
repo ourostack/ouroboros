@@ -291,7 +291,6 @@ describe("buildSystem", () => {
           currentObligation: "carry Ari across cli and teams",
           inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
           bridges: [],
-          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
           friendActivity: {
             freshestForCurrentFriend: {
               channel: "cli",
@@ -337,7 +336,6 @@ describe("buildSystem", () => {
           mustResolveBeforeHandoff: false,
           inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
           bridges: [],
-          taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
           friendActivity: {
             freshestForCurrentFriend: null,
             otherLiveSessionsForCurrentFriend: [],
@@ -427,11 +425,6 @@ describe("buildSystem", () => {
           mustResolveBeforeHandoff: false,
           inner: { status: "idle", hasPending: false },
           bridges: [],
-          taskPressure: {
-            compactBoard: "",
-            liveTaskNames: [],
-            activeBridges: [],
-          },
           friendActivity: {
             freshestForCurrentFriend: null,
             otherLiveSessionsForCurrentFriend: [],
@@ -3012,7 +3005,7 @@ describe("buildSystem with context", () => {
     const result = flattenSystemPrompt(await buildSystem("cli", {
       delegationDecision: {
         target: "delegate-inward",
-        reasons: ["cross_session", "task_state"],
+        reasons: ["cross_session", "bridge_state"],
         outwardClosureRequired: true,
       },
     } as any))
@@ -3957,11 +3950,6 @@ describe("active-work prompting", () => {
           },
         },
         bridges: [],
-        taskPressure: {
-          compactBoard: "",
-          liveTaskNames: [],
-          activeBridges: [],
-        },
         friendActivity: {
           freshestForCurrentFriend: null,
           otherLiveSessionsForCurrentFriend: [],
@@ -4462,7 +4450,6 @@ describe("liveWorldStateSection (Unit 1.3)", () => {
     currentObligation: null,
     inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [] },
     codingSessions: [],
     otherCodingSessions: [],
@@ -4953,7 +4940,6 @@ describe("familyCrossSessionTruthSection trimmed (Unit 1.7)", () => {
     currentObligation: null,
     inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
     bridges: [],
-    taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
     friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [] },
     codingSessions: [],
     otherCodingSessions: [],

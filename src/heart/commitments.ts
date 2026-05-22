@@ -85,11 +85,6 @@ export function deriveCommitments(
     completionCriteria.push("keep shared work aligned across sessions")
   }
 
-  // Tasks
-  for (const taskName of activeWorkFrame.taskPressure?.liveTaskNames ?? []) {
-    committedTo.push(`i'm tracking: ${taskName}`)
-  }
-
   // Obligation completion criteria
   if (innerJob.obligationStatus === "pending") {
     const name = innerJob.origin?.friendName ?? innerJob.origin?.friendId ?? "them"
@@ -107,9 +102,6 @@ export function deriveCommitments(
   }
   if (activeWorkFrame.bridges.length === 0) {
     safeToIgnore.push("no shared work to coordinate")
-  }
-  if ((activeWorkFrame.taskPressure?.liveTaskNames ?? []).length === 0) {
-    safeToIgnore.push("no active tasks to track")
   }
 
   emitNervesEvent({

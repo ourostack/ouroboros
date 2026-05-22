@@ -5,7 +5,6 @@ import { readActiveCares } from "../../../arc/cares"
 import { readRecentEpisodes } from "../../../arc/episodes"
 import { isOpenObligation, readObligations } from "../../../arc/obligations"
 import { readPeerPresence, readPresence } from "../../../arc/presence"
-import { scanTasks } from "../../../repertoire/tasks/scanner"
 import { detectActiveWorkChanges, formatActiveWorkChanges, type ActiveWorkSnapshot } from "../../active-work"
 import { listSessionActivity } from "../../session-activity"
 import { readObligationSummary } from "./agent-machine"
@@ -17,7 +16,6 @@ import {
   type MailboxObligationDetailItem,
   type MailboxObligationDetailView,
   type MailboxOrientationView,
-  type MailboxSelfFixStep,
   type MailboxSelfFixView,
 } from "../mailbox-types"
 
@@ -262,41 +260,18 @@ export function readChangesView(agentRoot: string): MailboxChangesView {
   }
 }
 
-export function readSelfFixView(agentRoot: string): MailboxSelfFixView {
-  let tasks: { name: string; title: string; status: string }[] = []
-  try {
-    const scanned = scanTasks(path.join(agentRoot, "tasks"))
-    tasks = scanned.tasks.map((t) => ({ name: t.name, title: t.title, status: t.status }))
-  } catch {
-    tasks = []
-  }
-
-  const selfFixTasks = tasks.filter((t) => t.title.toLowerCase().includes("fix"))
-
-  if (selfFixTasks.length === 0) {
-    return { active: false, currentStep: null, steps: [] }
-  }
-
-  const steps: MailboxSelfFixStep[] = selfFixTasks.map((t) => ({
-    label: t.title,
-    status: t.status === "done" ? "done" : t.status === "processing" ? "active" : "pending",
-    detail: `task ${t.name}: ${t.status}`,
-  }))
-
-  const activeStep = steps.find((s) => s.status === "active")
-
+export function readSelfFixView(_agentRoot: string): MailboxSelfFixView {
+  // W6 Unit 8a: self-fix view used to scan `tasks/` for fix-named tasks.
+  // The built-in task module is being retired; the desk MCP server owns
+  // task state now. The self-fix surface will be re-derived from desk in a
+  // follow-up unit. Return inactive until that wiring lands.
   emitNervesEvent({
     component: "heart",
     event: "heart.mailbox_selffix_read",
-    message: `mailbox self-fix: ${selfFixTasks.length} tasks`,
-    meta: { taskCount: selfFixTasks.length, active: !!activeStep },
+    message: "mailbox self-fix: inactive (desk wiring pending)",
+    meta: { taskCount: 0, active: false },
   })
-
-  return {
-    active: !!activeStep,
-    currentStep: activeStep?.label ?? null,
-    steps,
-  }
+  return { active: false, currentStep: null, steps: [] }
 }
 
 export function readNoteDecisionView(agentRoot: string, limit = 50): MailboxNoteDecisionView {

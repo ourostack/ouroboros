@@ -60,12 +60,6 @@ vi.mock("../../repertoire/skills", () => ({
   listSkills: vi.fn(() => []),
 }))
 
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({
-    getBoard: vi.fn(() => ({ compact: "" })),
-  }),
-}))
-
 vi.mock("../../mind/friends/channel", () => ({
   getChannelCapabilities: vi.fn(() => ({
     channel: "cli",

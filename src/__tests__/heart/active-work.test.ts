@@ -12,7 +12,11 @@ describe("active work frame", () => {
         sessionPath: "/tmp/state/sessions/friend-1/bluebubbles/chat.json",
       },
       currentObligation: "carry Ari across our live chats",
-      mustResolveBeforeHandoff: false,
+      // W6 Unit 8a: this test used to drive shared-work pressure via a live
+      // taskBoard entry. With the built-in task module retired,
+      // mustResolveBeforeHandoff is the equivalent in-process pressure
+      // signal for verifying the attach-existing bridge-suggestion path.
+      mustResolveBeforeHandoff: true,
       inner: { status: "idle", hasPending: false },
       bridges: [
         {
@@ -39,20 +43,6 @@ describe("active work frame", () => {
           },
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:1 blocked:0",
-        activeBridges: ["2026-03-13-2000-shared-relay -> bridge-1"],
-        byStatus: {
-          drafting: [],
-          processing: ["shared-relay"],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -93,7 +83,6 @@ describe("active work frame", () => {
     })
 
     expect(frame.centerOfGravity).toBe("shared-work")
-    expect(frame.taskPressure.liveTaskNames).toEqual(["shared-relay"])
     expect(frame.friendActivity.freshestForCurrentFriend?.channel).toBe("cli")
     expect(frame.bridgeSuggestion).toEqual({
       kind: "attach-existing",
@@ -120,20 +109,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: true,
       inner: { status: "running", hasPending: true },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       pendingObligations: [
         {
           id: "ob-bridge",
@@ -200,11 +175,6 @@ describe("active work frame", () => {
           originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -252,11 +222,6 @@ describe("active work frame", () => {
           originSession: { friendId: "friend-1", channel: "bluebubbles", key: "chat" },
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
-      },
       friendActivity: [],
     })
 
@@ -297,11 +262,6 @@ describe("active work frame", () => {
           originSession: { friendId: "friend-1", channel: "cli", key: "session" },
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -343,11 +303,6 @@ describe("active work frame", () => {
           failure: null,
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -371,20 +326,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -456,20 +397,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -541,20 +468,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:1 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: ["shared-relay"],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -606,11 +519,6 @@ describe("active work frame", () => {
       centerOfGravity: "shared-work",
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskPressure: {
-        compactBoard: "",
-        liveTaskNames: [],
-        activeBridges: [],
-      },
       friendActivity: {
         freshestForCurrentFriend: null,
         otherLiveSessionsForCurrentFriend: [],
@@ -660,20 +568,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       pendingObligations: [
         {
           id: "ob-multi",
@@ -739,20 +633,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: true,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -806,7 +686,7 @@ describe("active work frame", () => {
     expect(rendered).toContain("should connect these threads")
   })
 
-  it("can suggest a bridge from live task pressure even when there is no obligation text", async () => {
+  it("can suggest a bridge from must-resolve-before-handoff pressure even when there is no obligation text", async () => {
     const { buildActiveWorkFrame } = await import("../../heart/active-work")
 
     const frame = buildActiveWorkFrame({
@@ -817,23 +697,9 @@ describe("active work frame", () => {
         sessionPath: "/tmp/state/sessions/friend-1/teams/conv-1.json",
       },
       currentObligation: null,
-      mustResolveBeforeHandoff: false,
+      mustResolveBeforeHandoff: true,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:1 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: ["shared-relay"],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -917,20 +783,6 @@ describe("active work frame", () => {
           task: null,
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -986,20 +838,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: true },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -1043,20 +881,6 @@ describe("active work frame", () => {
           task: null,
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       pendingObligations: [
         {
           id: "ob-attach",
@@ -1158,11 +982,6 @@ describe("active work frame", () => {
           task: null,
         },
       ],
-      taskPressure: {
-        compactBoard: "[Tasks] processing:0 blocked:0",
-        liveTaskNames: [],
-        activeBridges: [],
-      },
       friendActivity: {
         freshestForCurrentFriend: {
           friendId: "friend-1",
@@ -1205,20 +1024,6 @@ describe("active work frame", () => {
           updatedAt: recentIso,
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
       targetCandidates: [
         {
@@ -1288,20 +1093,6 @@ describe("active work frame", () => {
       currentObligation: "keep Ari aligned across chats",
       mustResolveBeforeHandoff: false,
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       targetCandidates: [
         {
           friendId: "group-1",
@@ -1373,20 +1164,6 @@ describe("active work frame", () => {
           updatedAt: "2026-03-13T20:01:00.000Z",
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       targetCandidates: [
         {
           friendId: "group-1",
@@ -1438,20 +1215,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -1484,20 +1247,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-2",
@@ -1540,20 +1289,6 @@ describe("active work frame", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-1",
@@ -1604,20 +1339,6 @@ describe("delegation router", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -1649,20 +1370,6 @@ describe("delegation router", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:1 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: ["shared-relay"],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -1678,7 +1385,6 @@ describe("delegation router", () => {
         "explicit_reflection",
         "cross_session",
         "non_fast_path_tool",
-        "task_state",
         "unresolved_obligation",
       ]),
       outwardClosureRequired: true,
@@ -1700,20 +1406,6 @@ describe("delegation router", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -1757,20 +1449,6 @@ describe("delegation router", () => {
           task: null,
         },
       ],
-      taskBoard: {
-        compact: "[Tasks] processing:0 blocked:0",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -1801,15 +1479,6 @@ describe("delegation router", () => {
         obligationPending: true,
       },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        full: "",
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-        actionRequired: [],
-        unresolvedDependencies: [],
-        activeSessions: [],
-        activeBridges: [],
-      },
       friendActivity: [],
     })
 
@@ -1845,7 +1514,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       bridgeSuggestion: null,
     } as any)
@@ -1893,11 +1561,6 @@ describe("delegation router", () => {
           updatedAt: recentIso,
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -1947,11 +1610,6 @@ describe("delegation router", () => {
           updatedAt: new Date().toISOString(),
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -1998,11 +1656,6 @@ describe("delegation router", () => {
           updatedAt: new Date().toISOString(),
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
     })
 
@@ -2042,7 +1695,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2096,7 +1748,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [],
       bridgeSuggestion: null,
@@ -2130,7 +1781,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [],
       bridgeSuggestion: null,
@@ -2165,7 +1815,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [],
       bridgeSuggestion: null,
@@ -2200,7 +1849,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [],
       bridgeSuggestion: null,
@@ -2235,7 +1883,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [],
       bridgeSuggestion: null,
@@ -2269,7 +1916,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [
         {
@@ -2329,7 +1975,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [
         {
@@ -2390,7 +2035,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [
         {
@@ -2437,7 +2081,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [
         {
@@ -2486,7 +2129,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [
         {
@@ -2535,7 +2177,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2565,7 +2206,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2594,7 +2234,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2628,7 +2267,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2657,7 +2295,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2686,7 +2323,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2715,7 +2351,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2746,7 +2381,6 @@ describe("delegation router", () => {
       centerOfGravity: "inward-work",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2780,7 +2414,6 @@ describe("delegation router", () => {
       centerOfGravity: "local-turn",
       inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } as any },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       codingSessions: [],
       pendingObligations: [
@@ -2828,7 +2461,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [
         {
@@ -2871,7 +2503,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [
         {
@@ -2914,7 +2545,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [
         {
@@ -2965,7 +2595,6 @@ describe("delegation router", () => {
         },
       },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       pendingObligations: [
         {
@@ -3033,7 +2662,6 @@ describe("delegation router", () => {
       centerOfGravity: "local-turn",
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskPressure: { compactBoard: "", liveTaskNames: [], activeBridges: [] },
       friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [] },
       bridgeSuggestion: null,
     } as any)
@@ -3069,20 +2697,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false, job: idleJob },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -3122,20 +2736,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
         job: runningJob,
       },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
     })
 
@@ -3158,20 +2758,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [
         {
           friendId: "friend-2",
@@ -3263,20 +2849,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3357,20 +2929,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
           updatedAt: "2026-03-21T11:05:00.000Z",
         },
       ],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       targetCandidates: [
         {
           friendId: "friend-2",
@@ -3422,20 +2980,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       },
       mustResolveBeforeHandoff: true,
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: {
-          drafting: [],
-          processing: [],
-          validating: [],
-          collaborating: [],
-          paused: [],
-          blocked: [],
-          done: [],
-          cancelled: [],
-        },
-      },
       targetCandidates: [
         {
           friendId: "friend-9",
@@ -3488,11 +3032,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "running", hasPending: true },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
-      },
       friendActivity: [],
       innerReturnObligations: [
         {
@@ -3537,11 +3076,6 @@ describe("ActiveWorkFrame.inner with InnerJob", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [] },
-      },
       friendActivity: [],
       innerReturnObligations: [],
     })
@@ -3569,11 +3103,6 @@ describe("obligation truth audit: primary obligation selection", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3611,11 +3140,6 @@ describe("obligation truth audit: primary obligation selection", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3665,11 +3189,6 @@ describe("obligation truth audit: deterministic conflict rendering", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -3698,11 +3217,6 @@ describe("obligation truth audit: deterministic conflict rendering", () => {
       mustResolveBeforeHandoff: true,
       inner: { status: "idle" as const, hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3754,11 +3268,6 @@ describe("obligation truth audit: vague fallback suppression", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -3784,11 +3293,6 @@ describe("obligation truth audit: vague fallback suppression", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -3817,11 +3321,6 @@ describe("obligation truth audit: session-bound obligations", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3865,11 +3364,6 @@ describe("lane and obligation precedence rules", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3899,11 +3393,6 @@ describe("lane and obligation precedence rules", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [
         {
@@ -3950,11 +3439,6 @@ describe("lane and obligation precedence rules", () => {
         lastActivityAt: recentIso(1),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -3985,11 +3469,6 @@ describe("lane and obligation precedence rules", () => {
       mustResolveBeforeHandoff: false,
       inner: { status: "idle", hasPending: false },
       bridges: [],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",
@@ -4025,11 +3504,6 @@ describe("lane and obligation precedence rules", () => {
         lastActivityAt: recentIso(2),
         failure: null,
       }],
-      taskBoard: {
-        compact: "",
-        activeBridges: [],
-        byStatus: { drafting: [], processing: [], validating: [], collaborating: [], paused: [], blocked: [], done: [], cancelled: [] },
-      },
       friendActivity: [],
       pendingObligations: [{
         id: "ob-1",

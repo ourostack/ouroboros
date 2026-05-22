@@ -78,23 +78,6 @@ vi.mock("../../mind/pending", () => ({
   getInnerDialogPendingDir: () => "/mock/pending",
 }))
 
-const mockGetBoard = vi.fn().mockReturnValue({
-  compact: "test",
-  full: "test full",
-  byStatus: {
-    drafting: [], processing: [], validating: [], collaborating: [],
-    paused: [], blocked: [], done: [], cancelled: [],
-  },
-  issues: [],
-  actionRequired: [],
-  unresolvedDependencies: [],
-  activeSessions: [],
-  activeBridges: [],
-})
-vi.mock("../../repertoire/tasks", () => ({
-  getTaskModule: () => ({ getBoard: mockGetBoard }),
-}))
-
 const mockReadRecentEpisodes = vi.fn().mockReturnValue([])
 vi.mock("../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
@@ -198,15 +181,6 @@ describe("buildTurnContext", () => {
     mockReadPendingObligations.mockReturnValue([])
     mockListActiveReturnObligations.mockReturnValue([])
     mockListSessions.mockReturnValue([])
-    mockGetBoard.mockReturnValue({
-      compact: "", full: "",
-      byStatus: {
-        drafting: [], processing: [], validating: [], collaborating: [],
-        paused: [], blocked: [], done: [], cancelled: [],
-      },
-      issues: [], actionRequired: [], unresolvedDependencies: [],
-      activeSessions: [], activeBridges: [],
-    })
     mockReadRecentEpisodes.mockReturnValue([])
     mockReadActiveCares.mockReturnValue([])
     mockGetSyncConfig.mockReturnValue({ enabled: false, remote: "origin" })
@@ -260,7 +234,6 @@ describe("buildTurnContext", () => {
     expect(ctx.backgroundOperations).toEqual([])
     expect(ctx.innerWorkState.status).toBe("idle")
     expect(ctx.innerWorkState.hasPending).toBe(false)
-    expect(ctx.taskBoard.compact).toBe("")
     expect(ctx.returnObligations).toEqual([])
     expect(ctx.recentEpisodes).toEqual([])
     expect(ctx.activeCares).toEqual([])
@@ -417,7 +390,6 @@ describe("buildTurnContext", () => {
     mockListTargetSessionCandidates.mockRejectedValue(new Error("target fail"))
     mockReadPendingObligations.mockImplementation(() => { throw new Error("obligation fail") })
     mockListSessions.mockImplementation(() => { throw new Error("coding fail") })
-    mockGetBoard.mockImplementation(() => { throw new Error("task fail") })
     mockListActiveReturnObligations.mockImplementation(() => { throw new Error("return fail") })
 
     // Should not throw — graceful degradation
@@ -427,7 +399,6 @@ describe("buildTurnContext", () => {
     expect(ctx.pendingObligations).toEqual([])
     expect(ctx.codingSessions).toEqual([])
     expect(ctx.otherCodingSessions).toEqual([])
-    expect(ctx.taskBoard.compact).toBe("")
     expect(ctx.returnObligations).toEqual([])
   })
 

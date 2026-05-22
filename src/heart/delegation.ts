@@ -6,7 +6,6 @@ export type DelegationReason =
   | "explicit_reflection"
   | "cross_session"
   | "bridge_state"
-  | "task_state"
   | "non_fast_path_tool"
   | "unresolved_obligation"
 
@@ -58,9 +57,6 @@ export function decideDelegation(input: DelegationInput): DelegationDecision {
   }
   if (input.activeWork.centerOfGravity === "shared-work" || input.activeWork.bridges.some((bridge) => bridge.lifecycle === "active")) {
     reasons.push("bridge_state")
-  }
-  if (input.activeWork.taskPressure.liveTaskNames.length > 0) {
-    reasons.push("task_state")
   }
   if (hasNonFastPathToolRequest(requestedToolNames)) {
     reasons.push("non_fast_path_tool")

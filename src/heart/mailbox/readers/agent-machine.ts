@@ -3,8 +3,6 @@ import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import { readPendingObligations } from "../../../arc/obligations"
 import type { TaskStatus } from "../../../arc/task-lifecycle"
-import { buildTaskBoard } from "../../../repertoire/tasks/board"
-import { scanTasks } from "../../../repertoire/tasks/scanner"
 import { listSessionActivity } from "../../session-activity"
 import { getAgentBundlesRoot } from "../../identity"
 import { listEnabledBundleAgents } from "../../daemon/agent-discovery"
@@ -38,8 +36,6 @@ import {
   type MailboxReadOptions,
   issue,
 } from "./shared"
-
-const LIVE_TASK_STATUSES: TaskStatus[] = ["processing", "validating", "collaborating", "blocked"]
 
 interface AgentConfigSummary {
   enabled: boolean
@@ -95,32 +91,23 @@ function readAgentConfig(agentRoot: string): { summary: AgentConfigSummary; issu
   }
 }
 
-function readTaskSummary(agentRoot: string): { summary: MailboxTaskSummary; issues: MailboxIssue[] } {
-  const taskRoot = path.join(agentRoot, "tasks")
-  const index = scanTasks(taskRoot)
-  const board = buildTaskBoard(index)
-  const byStatus = emptyByStatus()
-
-  for (const status of Object.keys(byStatus) as TaskStatus[]) {
-    byStatus[status] = board.byStatus[status].length
-  }
-
-  const liveTaskNames = LIVE_TASK_STATUSES.flatMap((status) => board.byStatus[status])
-  const issues: MailboxIssue[] = index.issues.map((taskIssue) =>
-    issue(taskIssue.code, `${taskIssue.target}: ${taskIssue.description}`),
-  )
-
+// W6 Unit 8a: built-in task module reads removed; mailbox surface keeps
+// MailboxTaskSummary shape but reports zero counts. The desk MCP server is
+// the new source of truth — its read surface will be wired into mailbox in
+// a follow-up unit (8b). For now consumers see "no tasks tracked" which is
+// the correct steady state until desk-side reads are in place.
+function readTaskSummary(_agentRoot: string): { summary: MailboxTaskSummary; issues: MailboxIssue[] } {
   return {
     summary: {
-      totalCount: index.tasks.length,
-      liveCount: liveTaskNames.length,
-      blockedCount: board.byStatus.blocked.length,
-      byStatus,
-      liveTaskNames,
-      actionRequired: [...board.actionRequired],
-      activeBridges: [...board.activeBridges],
+      totalCount: 0,
+      liveCount: 0,
+      blockedCount: 0,
+      byStatus: emptyByStatus(),
+      liveTaskNames: [],
+      actionRequired: [],
+      activeBridges: [],
     },
-    issues,
+    issues: [],
   }
 }
 
