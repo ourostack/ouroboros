@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { getAgentRoot } from "../heart/identity";
+import { emitNervesEvent } from "../nerves/runtime";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Static body — Candidate D synthesis (verbatim from
@@ -278,6 +279,12 @@ function renderCurrently(deskRoot: string, now: Date = new Date()): string {
 // ──────────────────────────────────────────────────────────────────────────────
 
 export function deskSection(now: Date = new Date()): string {
+  emitNervesEvent({
+    event: "prompt.desk_section_assembled",
+    component: "mind",
+    message: "assembling ## my desk section",
+    meta: { operation: "deskSection" },
+  });
   const deskRoot = readDeskRoot();
   if (!deskRoot) {
     return `${STATIC_BODY}\n\n### currently\nempty — no tracks yet.`;
