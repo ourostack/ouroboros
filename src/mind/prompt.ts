@@ -17,7 +17,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
-import { getTaskModule } from "../repertoire/tasks";
+import { deskSection } from "./desk-section";
 import { listSessionActivity, type SessionActivityQuery } from "../heart/session-activity";
 import { formatActiveWorkFrame, formatLiveWorldStateCheckpoint, formatOtherActiveSessionSummaries, type ActiveWorkFrame } from "../heart/active-work";
 import type { DelegationDecision } from "../heart/delegation";
@@ -212,7 +212,7 @@ my home is fully mine — who i am, everything i know, everything i've built:
   journal/   my desk. working notes, thinking-in-progress, drafts.
   habits/    my rhythms. heartbeat, reflections, check-ins — patterns i choose.
   friends/   people i know and what i know about them.
-  tasks/     what i'm working on.
+  desk/      where i manage my work — tracks, tasks, iterations.
   skills/    capabilities i've picked up beyond my core tools.
 
 these are the standard folders every bundle has. my home MAY also contain
@@ -292,9 +292,7 @@ i don't touch them directly, but they're what make me, me.
 my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro whoami --agent ${agentName}
   ouro changelog --agent ${agentName}
-  ouro task board --agent ${agentName}
-  ouro task create --agent ${agentName} --type <type> <title>
-  ouro task update --agent ${agentName} <id> <status>
+  ouro desk --agent ${agentName}                       # umbrella verb for desk work (full subcommand surface lands later)
   ouro friend list --agent ${agentName}
   ouro friend show --agent ${agentName} <id>
   ouro friend update --agent ${agentName} <id> --trust <level>
@@ -628,7 +626,7 @@ export function toolRestrictionSection(context?: ResolvedContext): string {
     lines.push(`what needs a closer relationship:`)
     lines.push(`- writing or editing files outside my home`)
     lines.push(`- shell commands that modify things or access the network`)
-    lines.push(`- ouro commands that touch personal data (friend list, task board)`)
+    lines.push(`- ouro commands that touch personal data (friend list, desk)`)
     lines.push(`- compound shell commands (&&, ;, |)`)
     lines.push(``)
     lines.push(`i adjust naturally based on trust — no need to explain the system unless asked.`)
@@ -668,16 +666,6 @@ function skillsSection(): string {
   const names = listSkills() || [];
   if (!names.length) return "";
   return `## my skills (use load_skill to activate)\n${names.join(", ")}`;
-}
-
-function taskBoardSection(): string {
-  try {
-    const board = getTaskModule().getBoard().compact.trim();
-    if (!board) return "";
-    return `## task board\n${board}`;
-  } catch {
-    return "";
-  }
 }
 
 function toolContractsSection(channel: Channel, options?: BuildSystemOptions): string {
@@ -1274,7 +1262,7 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   lines.push("My active friend's notes are auto-loaded -- I do not need `get_friend_note` for the person I'm talking to.")
   lines.push("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material; the explicit note search tool is there when I need something specific.")
   lines.push("My psyche files are always loaded -- I already know who I am.")
-  lines.push("My task board is always loaded -- I already know my work.")
+  lines.push("My desk is always loaded -- I already know my work.")
 
   return lines.join("\n")
 }
@@ -1620,9 +1608,9 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     contextSection(context, options),
     familyCrossSessionTruthSection(context, options),
 
-    // Group 9: task context
-    "# task context",
-    taskBoardSection(),
+    // Group 9: desk
+    "# desk",
+    deskSection(),
   ];
 
   const result: SystemPrompt = {
