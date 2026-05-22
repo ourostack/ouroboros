@@ -173,6 +173,6 @@ describe("prompt note/friend contracts", () => {
     expect(system).toContain("My active friend's notes are auto-loaded")
     expect(system).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
     expect(system).toContain("My psyche files")
-    expect(system).toContain("My task board")
+    expect(system).toContain("My desk")
   })
 })

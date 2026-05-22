@@ -251,7 +251,7 @@ describe("buildSystem returns SystemPrompt", () => {
     // Group 8: friend context
     expect(result.volatile).toContain("# friend context")
 
-    // Group 9: task context
-    expect(result.volatile).toContain("# task context")
+    // Group 9: desk
+    expect(result.volatile).toContain("# desk")
   })
 })
