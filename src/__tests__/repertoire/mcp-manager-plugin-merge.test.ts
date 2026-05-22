@@ -240,4 +240,89 @@ describe("getSharedMcpManager + plugin .mcp.json merge", () => {
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
   })
+
+  // ──── regression: alpha.635 fix — reconcile() must keep plugin servers ────
+  it("plugin servers survive across reconcile() — second getSharedMcpManager() call keeps them", async () => {
+    // Bug pre-fix: getSharedMcpManager() returns existing manager + calls
+    // reconcile(). Reconcile read ONLY builtin servers from agent.json, treating
+    // plugin servers as "removed" and tearing them down. After ONE turn the
+    // mcp__desk__* tools would be gone.
+    vi.resetModules()
+
+    const connects: string[] = []
+    const shutdowns: string[] = []
+    const McpClientMock = class {
+      connect: () => Promise<void>
+      listTools: () => Promise<unknown[]>
+      callTool = vi.fn()
+      shutdown: () => void
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {
+        this.connect = async () => { connects.push(this.config.command) }
+        this.listTools = async () => []
+        this.shutdown = () => { shutdowns.push(this.config.command) }
+      }
+    }
+
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({
+        mcpServers: { calc: { command: "builtin-calc", args: [] } },
+        plugins: [{ id: "desk", enabled: true }],
+      }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => [
+        {
+          pluginId: "desk",
+          serverName: "desk",
+          command: "plugin-desk",
+          args: ["./mcp.js"],
+          env: {},
+          cwd: "/mock/plugins/desk",
+        },
+      ],
+      pluginMcpServerToConfig: (s: any) => ({
+        command: s.command,
+        args: s.args,
+        env: s.env,
+        cwd: s.cwd,
+      }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+
+    // First call: start() — both servers connect
+    const manager1 = await mod.getSharedMcpManager()
+    expect(manager1).not.toBeNull()
+    expect(connects.sort()).toEqual(["builtin-calc", "plugin-desk"])
+    expect(shutdowns).toEqual([])
+    expect(manager1!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "desk"])
+
+    // Second call: cached manager → reconcile()
+    // BUG would do: see only "calc" in desired (config.mcpServers), treat
+    // "desk" as removed, shutdown the desk client.
+    // FIX: reconcile() re-merges via buildMergedServerConfig() — both stay.
+    const manager2 = await mod.getSharedMcpManager()
+    expect(manager2).toBe(manager1) // same singleton
+    expect(shutdowns).toEqual([]) // desk was NOT torn down
+    expect(manager2!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "desk"])
+
+    // Third call for good measure — same outcome
+    await mod.getSharedMcpManager()
+    expect(shutdowns).toEqual([])
+
+    mod.resetSharedMcpManager()
+    vi.doUnmock("../../repertoire/mcp-client")
+    vi.doUnmock("../../heart/identity")
+    vi.doUnmock("../../repertoire/plugin-mcp")
+  })
 })
