@@ -449,6 +449,45 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(result).not.toContain("Closed loop")
   })
 
+  it("omits evolution sections when there are no open evolution cases", () => {
+    const full = formatActiveWorkFrame(makeFrame({
+      evolutionCases: [
+        makeEvolutionCase({ id: "evo-closed", title: "Closed loop", status: "closed" }),
+      ],
+    }))
+    const checkpoint = formatLiveWorldStateCheckpoint(makeFrame({
+      evolutionCases: [],
+    }))
+
+    expect(full).not.toContain("## evolution cases")
+    expect(full).not.toContain("Closed loop")
+    expect(checkpoint).not.toContain("- evolution case:")
+  })
+
+  it("keeps a single open evolution case compact in both render surfaces", () => {
+    const frame = makeFrame({
+      evolutionCases: [
+        makeEvolutionCase({ id: "evo-single", status: "verifying", nextAction: "record verification evidence" }),
+      ],
+    })
+
+    expect(formatActiveWorkFrame(frame)).toContain("- [verifying] evo-single: Teach Ouro to keep evolution work visible; next: record verification evidence; budget: conservative")
+    expect(formatLiveWorldStateCheckpoint(frame)).toContain("- evolution case: [verifying] evo-single Teach Ouro to keep evolution work visible; next record verification evidence")
+    expect(formatLiveWorldStateCheckpoint(frame)).not.toContain("open cases)")
+  })
+
+  it("shows when multiple open evolution cases are present without listing all of them in the checkpoint", () => {
+    const checkpoint = formatLiveWorldStateCheckpoint(makeFrame({
+      evolutionCases: [
+        makeEvolutionCase({ id: "evo-first", status: "capturing", nextAction: "capture the source packet" }),
+        makeEvolutionCase({ id: "evo-second", title: "Second live case", status: "scoped", nextAction: "choose a budget" }),
+      ],
+    }))
+
+    expect(checkpoint).toContain("- evolution case: [capturing] evo-first Teach Ouro to keep evolution work visible; next capture the source packet (2 open cases)")
+    expect(checkpoint).not.toContain("Second live case")
+  })
+
   it("frames running background mail imports as wake-driven work instead of a polling loop", () => {
     const result = formatActiveWorkFrame(makeFrame({
       currentSession: null,
