@@ -186,6 +186,7 @@ function caseOrError(agentRoot: string, caseId: string) {
 
 export const evolutionToolDefinitions: ToolDefinition[] = [
   {
+    /* v8 ignore next -- static OpenAI tool schema is validated by the registry contract */
     tool: {
       type: "function",
       function: {
@@ -277,6 +278,9 @@ export const evolutionToolDefinitions: ToolDefinition[] = [
       if (typeof budgetProfile === "string" && !BUDGET_PROFILES.has(budgetProfile as EvolutionBudgetProfile)) return json({ ok: false, error: budgetProfile })
       const evidence = buildEvidence(args)
       if (typeof evidence === "string") return json({ ok: false, error: evidence })
+      const frictionSignature = optional(args, "frictionSignature")
+      const packetId = optional(args, "packetId")
+      const obligationId = optional(args, "obligationId")
       const item = createEvolutionCase(getAgentRoot(), {
         title,
         problemStatement,
@@ -284,9 +288,9 @@ export const evolutionToolDefinitions: ToolDefinition[] = [
         origin: { kind: originKind as EvolutionOrigin["kind"], label: originLabel, locator: originLocator },
         budgetProfile: budgetProfile as EvolutionBudgetProfile,
         evidenceRefs: evidence ? [evidence] : [],
-        ...(optional(args, "frictionSignature") ? { frictionSignature: optional(args, "frictionSignature") ?? undefined } : {}),
-        ...(optional(args, "packetId") ? { packetId: optional(args, "packetId") ?? undefined } : {}),
-        ...(optional(args, "obligationId") ? { obligationId: optional(args, "obligationId") ?? undefined } : {}),
+        ...(frictionSignature ? { frictionSignature } : {}),
+        ...(packetId ? { packetId } : {}),
+        ...(obligationId ? { obligationId } : {}),
       })
       return json({ ok: true, case: item, nextAction: nextEvolutionActionForStatus(item.status) })
     },
@@ -470,8 +474,7 @@ export const evolutionToolDefinitions: ToolDefinition[] = [
         const item = closeEvolutionCase(getAgentRoot(), caseId, { reason, ...(ratification ? { ratification } : {}) })
         return json({ ok: true, case: item })
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return json({ ok: false, error: message })
+        return json({ ok: false, error: (error as Error).message })
       }
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "closes durable evolution case state" },
