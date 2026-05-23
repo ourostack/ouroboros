@@ -1,5 +1,6 @@
 import type { Channel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { EvolutionCaseSummary, EvolutionCaseStatus } from "../arc/evolution"
 import type { CodingSession } from "../repertoire/coding/types"
 import type { ReturnObligation } from "../arc/obligations"
 import { bridgeStateLabel } from "./bridges/state-machine"
@@ -73,6 +74,7 @@ export interface ActiveWorkFrame {
     allOtherLiveSessions?: SessionActivityRecord[]
   }
   codingSessions: CodingSession[]
+  evolutionCases?: EvolutionCaseSummary[]
   backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations: Obligation[]
@@ -90,6 +92,7 @@ interface BuildActiveWorkFrameInput {
   inner: ActiveWorkFrame["inner"]
   bridges: BridgeRecord[]
   codingSessions?: CodingSession[]
+  evolutionCases?: EvolutionCaseSummary[]
   backgroundOperations?: BackgroundOperationRecord[]
   otherCodingSessions?: CodingSession[]
   pendingObligations?: Obligation[]
@@ -151,6 +154,23 @@ function describeCodingSessionScope(session: CodingSession, currentSession: Acti
 
 function activeObligationCount(obligations: Obligation[] | undefined): number {
   return (obligations ?? []).filter((ob) => isOpenObligationStatus(ob.status)).length
+}
+
+const TERMINAL_EVOLUTION_CASE_STATUSES: ReadonlySet<EvolutionCaseStatus> = new Set(["closed", "blocked", "deferred"])
+
+function liveEvolutionCases(cases: EvolutionCaseSummary[] | undefined): EvolutionCaseSummary[] {
+  return (cases ?? []).filter((evolutionCase) => !TERMINAL_EVOLUTION_CASE_STATUSES.has(evolutionCase.status))
+}
+
+function formatEvolutionCaseLine(evolutionCase: EvolutionCaseSummary): string {
+  return `- [${evolutionCase.status}] ${evolutionCase.id}: ${evolutionCase.title}; next: ${evolutionCase.nextAction}; budget: ${evolutionCase.budgetProfile}`
+}
+
+function formatEvolutionCheckpointLine(cases: EvolutionCaseSummary[]): string | null {
+  const [currentCase, ...otherCases] = cases
+  if (!currentCase) return null
+  const suffix = otherCases.length > 0 ? ` (${otherCases.length + 1} open cases)` : ""
+  return `- evolution case: [${currentCase.status}] ${currentCase.id} ${currentCase.title}; next ${currentCase.nextAction}${suffix}`
 }
 
 function obligationOriginKey(obligation: Obligation): string {
@@ -782,6 +802,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
 
   const activeBridgePresent = input.bridges.some(isActiveBridge)
   const liveCodingSessions = input.codingSessions ?? []
+  const openEvolutionCases = liveEvolutionCases(input.evolutionCases)
   const allOtherLiveSessions = [...input.friendActivity].sort(compareActivity)
   const otherCodingSessions = input.otherCodingSessions ?? []
   const pendingObligations = normalizePendingObligations(input.pendingObligations, liveCodingSessions, otherCodingSessions)
@@ -808,6 +829,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       allOtherLiveSessions,
     },
     codingSessions: liveCodingSessions,
+    evolutionCases: openEvolutionCases,
     backgroundOperations: input.backgroundOperations ?? [],
     otherCodingSessions,
     pendingObligations,
@@ -838,6 +860,7 @@ export function buildActiveWorkFrame(input: BuildActiveWorkFrameInput): ActiveWo
       otherLiveSessions: allOtherLiveSessions.length,
       otherCodingSessions: otherCodingSessions.length,
       pendingObligations: openObligations,
+      evolutionCases: openEvolutionCases.length,
       hasBridgeSuggestion: frame.bridgeSuggestion !== null,
     },
   })
@@ -937,6 +960,15 @@ export function formatActiveWorkFrame(frame: ActiveWorkFrame, options?: { obliga
         lines.push(`  branch: ${id.branch ?? "unknown"} commit: ${id.commit ?? "unknown"} ${id.dirty ? "dirty" : "clean"} verification: ${id.verificationStatus}`)
       }
       /* v8 ignore stop */
+    }
+  }
+
+  const evolutionCases = liveEvolutionCases(frame.evolutionCases)
+  if (evolutionCases.length > 0) {
+    lines.push("")
+    lines.push("## evolution cases")
+    for (const evolutionCase of evolutionCases) {
+      lines.push(formatEvolutionCaseLine(evolutionCase))
     }
   }
 
@@ -1051,6 +1083,11 @@ export function formatLiveWorldStateCheckpoint(frame: ActiveWorkFrame): string {
   ]
   if (frame.resumeHandle?.lastVerifiedCheckpoint) {
     lines.push(`- last checkpoint: ${frame.resumeHandle.lastVerifiedCheckpoint}`)
+  }
+
+  const evolutionCheckpointLine = formatEvolutionCheckpointLine(liveEvolutionCases(frame.evolutionCases))
+  if (evolutionCheckpointLine) {
+    lines.push(evolutionCheckpointLine)
   }
 
   if (otherActiveSessions.length > 0) {
