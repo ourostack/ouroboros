@@ -5,6 +5,7 @@ import * as path from "path"
 
 const {
   buildLocalInstallArgs,
+  localSmokeEnv,
   runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runPackageE2ESuite,
@@ -14,10 +15,10 @@ const {
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 function makeDeps(outputs: Array<string | Error>) {
-  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const calls: Array<{ command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv }> = []
   const deps = {
-    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string }) => {
-      calls.push({ command, args, cwd: options.cwd })
+    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      calls.push({ command, args, cwd: options.cwd, env: options.env })
       const next = outputs.shift()
       if (next instanceof Error) throw next
       return next
@@ -39,10 +40,10 @@ function writeRequiredPackageAssets(packageRoot: string): void {
 
 function makePackageInstallDeps(outputs: Array<string | Error>) {
   const prefixDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-package-e2e-test-"))
-  const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+  const calls: Array<{ command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv }> = []
   const deps = {
-    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string }) => {
-      calls.push({ command, args, cwd: options.cwd })
+    execFileSync: vi.fn((command: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
+      calls.push({ command, args, cwd: options.cwd, env: options.env })
       if (command === "npm" && args[0] === "install") {
         writeRequiredPackageAssets(path.join(prefixDir, "node_modules", "@ouro.bot", "cli"))
       }
@@ -54,6 +55,7 @@ function makePackageInstallDeps(outputs: Array<string | Error>) {
     rmSync: vi.fn((target: string, options: fs.RmOptions) => fs.rmSync(target, options)),
     tmpdir: vi.fn(() => os.tmpdir()),
     platform: process.platform,
+    env: { HOME: "/Users/real-human", USERPROFILE: "/Users/real-human" },
   }
   return { deps, calls, prefixDir }
 }
@@ -68,6 +70,18 @@ describe("package-e2e", () => {
       "/tmp/ouro-package-e2e-abcd",
       "/tmp/ouro-cli-0.1.0.tgz",
     ])
+  })
+
+  it("builds an isolated HOME for installed-binary smoke commands", () => {
+    const env = localSmokeEnv("/tmp/ouro-package-e2e-abcd", {
+      HOME: "/Users/real-human",
+      USERPROFILE: "/Users/real-human",
+      PATH: "/usr/bin",
+    })
+
+    expect(env.HOME).toBe("/tmp/ouro-package-e2e-abcd/home")
+    expect(env.USERPROFILE).toBe("/tmp/ouro-package-e2e-abcd/home")
+    expect(env.PATH).toBe("/usr/bin")
   })
 
   it("verifies a local tarball-installed ouro binary from an isolated prefix", () => {
@@ -89,6 +103,8 @@ describe("package-e2e", () => {
       command: path.join("/tmp/ouro-package-e2e-abcd", "node_modules", ".bin", "ouro"),
       cwd: "/tmp/ouro-package-e2e-abcd",
     })
+    expect(calls[1].env?.HOME).toBe("/tmp/ouro-package-e2e-abcd/home")
+    expect(calls[1].env?.USERPROFILE).toBe("/tmp/ouro-package-e2e-abcd/home")
     expect(deps.rmSync).toHaveBeenCalledWith("/tmp/ouro-package-e2e-abcd", { recursive: true, force: true })
   })
 
@@ -126,6 +142,7 @@ describe("package-e2e", () => {
       command: path.join("/tmp/ouro-package-e2e-abcd", "node_modules", ".bin", "ouro"),
       args: ["help"],
     })
+    expect(calls[1].env?.HOME).toBe("/tmp/ouro-package-e2e-abcd/home")
   })
 
   it("runs the current local package e2e suite", () => {

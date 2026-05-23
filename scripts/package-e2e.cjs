@@ -21,6 +21,15 @@ function localBinPath(prefixDir, binName, platform = process.platform) {
   return path.join(prefixDir, "node_modules", ".bin", executable)
 }
 
+function localSmokeEnv(prefixDir, env = process.env) {
+  const homeDir = path.join(prefixDir, "home")
+  return {
+    ...env,
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+  }
+}
+
 function runLocalTarballBinVersionSmoke(input, deps = defaultDeps()) {
   const prefixDir = deps.mkdtempSync(path.join(deps.tmpdir(), "ouro-package-e2e-"))
 
@@ -34,6 +43,7 @@ function runLocalTarballBinVersionSmoke(input, deps = defaultDeps()) {
     const resolvedPath = localBinPath(prefixDir, input.binName, deps.platform)
     const output = deps.execFileSync(resolvedPath, ["--version"], {
       cwd: prefixDir,
+      env: localSmokeEnv(prefixDir, deps.env),
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -74,6 +84,7 @@ function runLocalTarballCommandSmoke(input, deps = defaultDeps()) {
     const resolvedPath = localBinPath(prefixDir, input.binName, deps.platform)
     const output = deps.execFileSync(resolvedPath, input.args, {
       cwd: prefixDir,
+      env: localSmokeEnv(prefixDir, deps.env),
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -177,6 +188,7 @@ function defaultDeps() {
     rmSync: fs.rmSync,
     tmpdir: os.tmpdir,
     platform: process.platform,
+    env: process.env,
   }
 }
 
@@ -216,6 +228,7 @@ if (require.main === module) {
 module.exports = {
   buildLocalInstallArgs,
   localBinPath,
+  localSmokeEnv,
   runLocalTarballCommandSmoke,
   runLocalTarballBinVersionSmoke,
   runLocalTarballAssetSmoke,
