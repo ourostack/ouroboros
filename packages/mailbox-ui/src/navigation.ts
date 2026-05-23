@@ -21,11 +21,11 @@ export function useNavigate(): NavigateFn {
  * Format: #/agent/{name}/{tab}/{focus...}
  *
  * Examples:
- *   #/agent/slugger                              → overview
- *   #/agent/slugger/sessions                     → sessions tab
- *   #/agent/slugger/sessions/friendId/channel/key → session expanded
- *   #/agent/slugger/work/ob-123                  → work, focused on obligation
- *   #/agent/slugger/connections/bridge-1          → connections, focused on bridge
+ *   #/agent/sprout                              → overview
+ *   #/agent/sprout/sessions                     → sessions tab
+ *   #/agent/sprout/sessions/friendId/channel/key → session expanded
+ *   #/agent/sprout/work/ob-123                  → work, focused on obligation
+ *   #/agent/sprout/connections/bridge-1          → connections, focused on bridge
  */
 
 export interface RouteState {

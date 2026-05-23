@@ -1,11 +1,11 @@
 /**
- * Shared classifier for legacy `tasks/` → `desk/` migration (W6 Unit 11).
+ * Shared classifier for legacy `tasks/` → `desk/` migration.
  *
  * Pure data + parsing. Takes a file path relative to `<bundle>/tasks/` plus
  * its content, returns a classification bucket. Used by `migrate-to-desk.ts`
  * to decide where each file lands in the new `desk/` shape.
  *
- * Bucket definitions (per W6 planning Unit 11 + migration-manifest.md):
+ * Bucket definitions:
  * - **terminal** — explicit done/complete/approved/cancelled/fixed status (or
  *   synonyms). Always archived. Files under `tasks/archive/` are unconditionally
  *   terminal regardless of frontmatter.
@@ -16,7 +16,7 @@
  *   or empty file. → archive.
  * - **live_clear** — live status AND updated within the last 30 days AND
  *   coherent. → migrate to `legacy` track on the new desk.
- * - **special_europe_trip** — slugger-only `ongoing/2026-03-09-1410-summer-2026-europe-trip.md`.
+ * - **special_europe_trip** — historical one-off `ongoing/2026-03-09-1410-summer-2026-europe-trip.md` from the initial bundle that authored this migrator; kept as a labelled special case until the bundle is deprecated.
  *
  * Effective `updated` resolution priority: YAML `updated` → `approved` →
  * `created` → body `**Updated**:` → date prefix in filename → file mtime.
@@ -126,7 +126,7 @@ function isInArchiveSubdir(relPath: string): boolean {
 }
 
 /**
- * Detect the slugger-only europe-trip task. Per the lift plan:
+ * Detect the historical europe-trip task. Per the lift plan:
  * `ongoing/2026-03-09-1410-summer-2026-europe-trip.md` is the only
  * special-cased file.
  */

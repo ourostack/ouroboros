@@ -571,7 +571,7 @@ describe("daemon command plane branches", () => {
 
     const hatch = await daemon.handleCommand({ kind: "hatch.start" })
     expect(hatch.ok).toBe(true)
-    expect(hatch.message).toContain("Gate 6")
+    expect(hatch.message).toContain("hatch flow is stubbed")
   })
 
   it("revives a managed sense by resetting failure state, starting it, and returning its fresh snapshot", async () => {

@@ -190,7 +190,7 @@ without any phone provider at all.
 
 ## No-Human Voice Evals
 
-Voice should not rely on Ari answering a phone as the main regression suite.
+Voice should not rely on a human answering a phone as the main regression suite.
 Live calls are audition and confidence checks; they are not the first proof.
 
 The no-human eval ladder is:
@@ -259,9 +259,9 @@ Current direction:
   identity; keep it conservative because phone calls need clarity.
 - `marin` and `cedar` are the quality-first OpenAI Realtime voice candidates,
   but agents may audition another supported voice when identity fit matters.
-- Slugger's current phone direction is a Realtime audition shaped as scrappy,
+- An example phone direction is a Realtime audition shaped as scrappy,
   upbeat, warm, lightly British, masculine/neutral-masc, and not posh or
-  announcer-like.
+  announcer-like — each agent picks its own identity fit.
 - ElevenLabs is legacy cascade compatibility unless a future non-redundant use
   earns it a specific role.
 
@@ -285,8 +285,8 @@ The SIP thin slice proves:
 
 1. A Twilio-routed phone call reaches OpenAI SIP.
 2. Ouro receives and verifies `realtime.call.incoming`.
-3. Ouro accepts the call with Slugger's voice-native session configuration.
-4. Slugger greets and converses through the same stable Voice session.
+3. Ouro accepts the call with the agent's voice-native session configuration.
+4. The agent greets and converses through the same stable Voice session.
 5. Transcripts persist in the same overview-visible text path.
 6. `voice_end_call` maps to the OpenAI call-control API.
 7. Twilio Media Streams remains available as fallback until SIP has parity for

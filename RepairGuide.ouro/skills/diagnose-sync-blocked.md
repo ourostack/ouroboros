@@ -39,10 +39,10 @@ For all four, `advisory` is `true` (warn-and-continue: the agent likely still wo
 All four classifications require human-driven resolution. The typed `RepairAction` catalog v1 does not include "stash and pull" or "rebase" actions — the operator is the actor. Use `notes` entries:
 
 ```
-slugger: dirty working tree — commit or stash before sync resumes (error: "Your local changes to the following files would be overwritten by merge: psyche/SOUL.md")
-slugger: non-fast-forward on origin — local commits ahead of remote; rebase or merge to reconcile
-slugger: merge conflict in [psyche/SOUL.md, skills/diagnose-broken-remote.md] — resolve and `git rebase --continue`
-slugger: pull was slow (>8s) on this boot — investigate if persistent
+<agent>: dirty working tree — commit or stash before sync resumes (error: "Your local changes to the following files would be overwritten by merge: psyche/SOUL.md")
+<agent>: non-fast-forward on origin — local commits ahead of remote; rebase or merge to reconcile
+<agent>: merge conflict in [psyche/SOUL.md, skills/diagnose-broken-remote.md] — resolve and `git rebase --continue`
+<agent>: pull was slow (>8s) on this boot — investigate if persistent
 ```
 
 ## Cross-skill boundary

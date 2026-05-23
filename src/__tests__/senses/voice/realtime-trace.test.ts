@@ -127,9 +127,9 @@ describe("voice realtime trace replay", () => {
         {
           atMs: 20,
           event: "voice.context.injected",
-          friendId: "friend-ari",
-          sessionKey: "twilio-phone-friend-ari-via-ouro",
-          text: "Resolved voice friend: Ari (friendId=friend-ari, trust=family).",
+          friendId: "friend-example",
+          sessionKey: "twilio-phone-friend-example-via-ouro",
+          text: "Resolved voice friend: Example (friendId=friend-example, trust=family).",
           source: { transport: "voice-eval" },
         },
         {

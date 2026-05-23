@@ -62,8 +62,9 @@ const bbFailoverStates = new Map<string, FailoverState>()
  *
  * Rationale: `handleBlueBubblesNormalizedEvent` has many exit paths and a leak
  * on any one of them strands the marker forever (until BB sense process restart),
- * which silently halts forward progress on the recovery queue. Slugger lost
- * BlueBubbles inbound for 12+ hours on 2026-05-11 because of exactly this.
+ * which silently halts forward progress on the recovery queue. A real
+ * agent lost BlueBubbles inbound for 12+ hours on 2026-05-11 because of
+ * exactly this.
  *
  * The TTL bounds the worst case: a leaked marker self-clears after
  * BB_IN_FLIGHT_MAX_AGE_MS, and the next recovery pass can retry. This is
@@ -1057,7 +1058,7 @@ async function handleBlueBubblesNormalizedEvent(
   // Fallback self-detection: BlueBubbles sometimes broadcasts a group-chat
   // outbound message back through the webhook with `isFromMe` missing/false.
   // Without this guard the agent ingests its own message and replies to it
-  // ("Slugger talking to himself"). Compare the sender's externalId against
+  // ("the agent talking to itself"). Compare the sender's externalId against
   // the agent's known iMessage handles. Keep this group-only: 1:1 outbound
   // echoes can be attributed to the peer handle, and stale ownHandles entries
   // must not make real DMs disappear.

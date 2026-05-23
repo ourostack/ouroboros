@@ -86,7 +86,7 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
     // PPID means the process belongs to another daemon instance (parallel
     // test run, sibling worktree, another user of /tmp/ouroboros-daemon.sock).
     // Killing those will crash unrelated harnesses — we saw this in B6
-    // when a vitest worker's daemon killed slugger's production children.
+    // when a vitest worker's daemon killed a production agent's children.
     if (ppid !== 1) continue
     orphans.push(pid)
   }
@@ -1501,7 +1501,7 @@ export class OuroDaemon {
         }
       }
       case "mcp.list": {
-        setAgentName(command.agent ?? "slugger")
+        setAgentName(command.agent ?? "default")
         const mcpManager = await getSharedMcpManager()
         if (!mcpManager) {
           return { ok: true, data: [], message: "no MCP servers configured" }
@@ -1509,7 +1509,7 @@ export class OuroDaemon {
         return { ok: true, data: mcpManager.listAllTools() }
       }
       case "mcp.call": {
-        setAgentName(command.agent ?? "slugger")
+        setAgentName(command.agent ?? "default")
         const mcpCallManager = await getSharedMcpManager()
         if (!mcpCallManager) {
           return { ok: false, error: "no MCP servers configured" }
@@ -1526,7 +1526,7 @@ export class OuroDaemon {
       case "hatch.start":
         return {
           ok: true,
-          message: "hatch flow is stubbed in Gate 3 and completed in Gate 6",
+          message: "hatch flow is stubbed; the interactive implementation lands in a later milestone",
         }
       default:
         return {

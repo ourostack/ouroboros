@@ -93,7 +93,7 @@ Task directories belong in the agent bundle, not in this repo.
 - Use a dedicated git worktree per active agent task so multiple agents can work in parallel without sharing one checkout.
 - Unless the human explicitly asks to control branch naming or worktree layout, the agent may create its own agent-specific branch/worktree as long as the branch follows `<agent>/<slug>`.
 - Default `<agent>` from the current git branch using this shape: `<agent>[/<slug>]`.
-  - The first path segment is always the agent name (e.g., `ouroboros`, `slugger`).
+  - The first path segment is always the agent name (e.g., `<agent-a>`, `<agent-b>`).
   - If the branch has no `/`, the entire branch name is the agent.
   - Any segments after the first `/` are the feature slug and are not part of `<agent>`.
   - The old `codex/<agent>` prefix convention is deprecated. All agents use `<agent>/<slug>` directly.

@@ -7,7 +7,7 @@ working from mail alone.
 
 ## Why this exists
 
-Slugger named the gap during a planning conversation in April 2026:
+An agent named the gap during a planning conversation in April 2026:
 
 > "Today, doc-edits-from-mail keep falling back on freeform parsing
 > because there is no structured object between 'mail body' and 'travel
@@ -15,8 +15,8 @@ Slugger named the gap during a planning conversation in April 2026:
 > misread or a confirmation is ambiguous, there is no authoritative
 > source to cross-check against."
 
-The trip ledger is that authoritative source. When Ari forwards a
-booking confirmation, Slugger extracts the structured facts (dates,
+The trip ledger is that authoritative source. When the human forwards a
+booking confirmation, the agent extracts the structured facts (dates,
 confirmation codes, traveller names, amounts) into a `TripRecord` whose
 provenance is traceable back to the source mail message. Future edits,
 cross-references, and itinerary builds all read from the ledger, not
@@ -58,7 +58,7 @@ each entry is non-optional provenance:
   "rebooked after cancellation")
 - `recordedAt` — when the agent recorded this fact
 - `discoveryMethod` — `extracted` (parsed from mail), `inferred`
-  (deduced from itinerary gap), or `operator_supplied` (Ari said so)
+  (deduced from itinerary gap), or `operator_supplied` (the operator said so)
 - `excerpt?` — optional snippet from the source
 
 The provenance is what makes the ledger trustworthy. Any fact in any
@@ -189,8 +189,8 @@ Azure (with the `AzureBlobTripLedgerStore` and etag concurrency for the
 registry), but the harness tools don't talk to it yet. This is
 **deliberate**, not an oversight:
 
-- Slugger currently runs on a single machine, so cross-machine sync
-  isn't a real benefit yet.
+- A given agent typically runs on a single machine at a time, so
+  cross-machine sync isn't a real benefit yet.
 - Local-first means trips work even when the hosted service is down
   or unreachable, matching the harness's general posture toward
   external services.
@@ -199,8 +199,8 @@ registry), but the harness tools don't talk to it yet. This is
   `TripLedgerStore` factory in `src/trips/store.ts` — no data shape
   change required.
 
-The cleanest moment to wire harness → hosted is when Slugger first
-needs to read his ledger from a second machine. At that point the
+The cleanest moment to wire harness → hosted is when an agent first
+needs to read its ledger from a second machine. At that point the
 work is: add an `AzureBlobTripStore` parallel to
 `AzureBlobMailroomStore`, add the trip-control coordinates to runtime
 config (the same pattern as mailroom), and swap the factory. The
@@ -223,4 +223,5 @@ substrate keep their own copies. The right time to extract is when a
 third use case proves which fields are universal — not before.
 
 If you're extending this and feel the abstraction wants to escape the
-travel domain, talk to Slugger first. He is the inhabitant.
+travel domain, talk to the agent that actually inhabits the ledger
+first. They are the inhabitant.

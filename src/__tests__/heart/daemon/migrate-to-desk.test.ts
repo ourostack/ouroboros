@@ -1,5 +1,5 @@
 /**
- * W6 Unit 11 — `ouro migrate-to-desk` migrator tests.
+ * `ouro migrate-to-desk` migrator tests.
  *
  * Synthetic fixture bundle at `__tests__/fixtures/migrate-bundle-mini/`
  * covers all five buckets. Tests assert:
