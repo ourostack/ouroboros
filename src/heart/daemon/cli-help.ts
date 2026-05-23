@@ -69,7 +69,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Lifecycle",
     description: "Create a new agent",
     usage: "ouro hatch [--agent <name>] [--human <name>] [--provider <provider>]",
-    example: "ouro hatch --agent Sprout --human Ari --provider anthropic",
+    example: "ouro hatch --agent Sprout --human <your-name> --provider anthropic",
   },
   rollback: {
     category: "Lifecycle",
@@ -171,7 +171,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Tasks",
     description: "Migrate a legacy `tasks/` tree into the new `desk/` shape (copy semantics — source untouched).",
     usage: "ouro migrate-to-desk --agent <name> [--root <path>] [--force] [--dry-run]",
-    example: "ouro migrate-to-desk --agent slugger --dry-run",
+    example: "ouro migrate-to-desk --agent <agent> --dry-run",
   },
   friend: {
     category: "Friends",
@@ -197,7 +197,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Auth",
     description: "Ensure the agent's vault-backed work substrate account, including Mailroom setup",
     usage: "ouro account ensure [--agent <name>]",
-    example: "ouro account ensure --agent slugger",
+    example: "ouro account ensure --agent <agent>",
     subcommands: ["ensure"],
   },
   connect: {
@@ -211,7 +211,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     category: "Auth",
     description: "Import delegated mail and repair hosted Mailroom mailbox indexes",
     usage: "ouro mail <import-mbox|backfill-indexes> [--agent <name>]",
-    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
+    example: "ouro mail import-mbox --discover --owner-email you@example.com --source hey --agent <agent>",
     subcommands: ["import-mbox", "backfill-indexes"],
   },
   use: {
@@ -345,22 +345,22 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "connect mail": {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
     usage: "ouro connect mail [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
-    example: "ouro connect mail --agent slugger --owner-email ari@mendelow.me --source hey",
+    example: "ouro connect mail --agent <agent> --owner-email you@example.com --source hey",
   },
   "account ensure": {
     description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
     usage: "ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
-    example: "ouro account ensure --agent slugger --owner-email ari@mendelow.me --source hey",
+    example: "ouro account ensure --agent <agent> --owner-email you@example.com --source hey",
   },
   "mail import-mbox": {
     description: "Import a HEY or other MBOX export into an existing delegated Mailroom source grant",
     usage: "ouro mail import-mbox (--file <path>|--discover) [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
-    example: "ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger",
+    example: "ouro mail import-mbox --discover --owner-email you@example.com --source hey --agent <agent>",
   },
   "mail backfill-indexes": {
     description: "Rebuild hosted blob mailbox indexes for faster recent-mail reads after large legacy imports or drift repair.",
     usage: "ouro mail backfill-indexes [--agent <name>] [--foreground]",
-    example: "ouro mail backfill-indexes --agent slugger",
+    example: "ouro mail backfill-indexes --agent <agent>",
   },
   "provider refresh": {
     description: "Reload this agent's provider credentials from its vault into the running daemon",
@@ -405,27 +405,27 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   "vault item set": {
     description: "Store an ordinary vault item / credential with no assumed use. Prompts for hidden secret fields, stores optional public fields and notes, and secret values are not printed.",
     usage: "ouro vault item set [--agent <name>] --item <path> (--secret-field <name>...|--template <template>) [--public-field <key=value>] [--note <text>]",
-    example: "ouro vault item set --agent slugger --item ops/porkbun/ari@mendelow.me --template porkbun-api",
+    example: "ouro vault item set --agent <agent> --item ops/porkbun/you@example.com --template porkbun-api",
   },
   "vault item status": {
     description: "Show metadata for an ordinary vault item without printing secret values",
     usage: "ouro vault item status [--agent <name>] --item <path>",
-    example: "ouro vault item status --agent slugger --item ops/porkbun/ari@mendelow.me",
+    example: "ouro vault item status --agent <agent> --item ops/porkbun/you@example.com",
   },
   "vault item list": {
     description: "List ordinary vault item names and metadata without printing secret values",
     usage: "ouro vault item list [--agent <name>] [--prefix <path-prefix>]",
-    example: "ouro vault item list --agent slugger --prefix ops/",
+    example: "ouro vault item list --agent <agent> --prefix ops/",
   },
   "vault ops porkbun set": {
     description: "deprecated compatibility alias for `ouro vault item set --template porkbun-api`; stores an ordinary vault item, not a special credential kind",
     usage: "ouro vault ops porkbun set [--agent <name>] --account <account>",
-    example: "ouro vault ops porkbun set --agent slugger --account ari@mendelow.me",
+    example: "ouro vault ops porkbun set --agent <agent> --account you@example.com",
   },
   "vault ops porkbun status": {
     description: "deprecated compatibility alias for checking the ordinary vault item used by the Porkbun API template",
     usage: "ouro vault ops porkbun status [--agent <name>] [--account <account>]",
-    example: "ouro vault ops porkbun status --agent slugger --account ari@mendelow.me",
+    example: "ouro vault ops porkbun status --agent <agent> --account you@example.com",
   },
 }
 

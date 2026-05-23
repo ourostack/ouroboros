@@ -6,21 +6,21 @@ import {
   renderDelegatedMailSourceNextStep,
 } from "../../mailroom/source-state"
 
-const ALIAS = "me.mendelow.ari.slugger@ouro.bot"
+const ALIAS = "hey.example-agent@ouro.bot"
 
 describe("delegated mail source setup state", () => {
-  it("starts HEY onboarding as a resumable Slugger-managed browser/MFA workflow", () => {
+  it("starts HEY onboarding as a resumable agent-managed browser/MFA workflow", () => {
     const state = createDelegatedMailSourceState({
-      agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      agentId: "example-agent",
+      ownerEmail: "you@example.com",
       source: "hey",
       aliasAddress: ALIAS,
     })
 
     expect(state).toMatchObject({
       schemaVersion: 1,
-      agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      agentId: "example-agent",
+      ownerEmail: "you@example.com",
       source: "hey",
       aliasAddress: ALIAS,
       backfill: {
@@ -35,17 +35,17 @@ describe("delegated mail source setup state", () => {
     })
 
     const nextStep = renderDelegatedMailSourceNextStep(state)
-    expect(nextStep).toContain("Slugger")
+    expect(nextStep).toContain("The agent should continue")
     expect(nextStep).toContain("browser automation")
     expect(nextStep).toContain("MFA")
     expect(nextStep).toContain(ALIAS)
-    expect(nextStep).not.toContain("to slugger@ouro.bot")
+    expect(nextStep).not.toContain("to example-agent@ouro.bot")
   })
 
   it("records archive backfill freshness without marking forwarding ready", () => {
     const state = createDelegatedMailSourceState({
-      agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      agentId: "example-agent",
+      ownerEmail: "you@example.com",
       source: "hey",
       aliasAddress: ALIAS,
     })
@@ -71,14 +71,14 @@ describe("delegated mail source setup state", () => {
 
   it("uses safe defaults and records forwarding probes that have no message id", () => {
     const state = createDelegatedMailSourceState({
-      agentId: " Slugger ",
-      ownerEmail: "ARI@MENDELOW.ME",
+      agentId: " Example-Agent ",
+      ownerEmail: "YOU@EXAMPLE.COM",
       source: "   ",
       aliasAddress: ALIAS,
     })
 
-    expect(state.agentId).toBe("slugger")
-    expect(state.ownerEmail).toBe("ari@mendelow.me")
+    expect(state.agentId).toBe("example-agent")
+    expect(state.ownerEmail).toBe("you@example.com")
     expect(state.source).toBe("hey")
 
     const ready = markForwardingProbeResult(state, {
@@ -94,12 +94,12 @@ describe("delegated mail source setup state", () => {
     expect(ready.forwarding).not.toHaveProperty("lastProbeMessageId")
 
     const wrongAlias = markForwardingProbeResult(state, {
-      observedRecipient: "slugger@ouro.bot",
+      observedRecipient: "example-agent@ouro.bot",
       checkedAt: "2026-04-22T21:09:00.000Z",
     })
     expect(wrongAlias.forwarding).toEqual(expect.objectContaining({
       status: "failed_recoverable",
-      observedRecipient: "slugger@ouro.bot",
+      observedRecipient: "example-agent@ouro.bot",
       expectedRecipient: ALIAS,
     }))
     expect(wrongAlias.forwarding).not.toHaveProperty("lastProbeMessageId")
@@ -107,8 +107,8 @@ describe("delegated mail source setup state", () => {
 
   it("distinguishes verified, pending, and wrong-alias forwarding probes", () => {
     const state = createDelegatedMailSourceState({
-      agentId: "slugger",
-      ownerEmail: "ari@mendelow.me",
+      agentId: "example-agent",
+      ownerEmail: "you@example.com",
       source: "hey",
       aliasAddress: ALIAS,
     })
@@ -131,19 +131,19 @@ describe("delegated mail source setup state", () => {
     })
     expect(pending.forwarding).toEqual(expect.objectContaining({
       status: "pending_propagation",
-      recoveryAction: "Wait briefly, then have Slugger re-check the delegated source alias before asking the human to change HEY again.",
+      recoveryAction: "Wait briefly, then have the agent re-check the delegated source alias before asking the human to change HEY again.",
     }))
 
     const wrongAlias = markForwardingProbeResult(state, {
-      observedRecipient: "slugger@ouro.bot",
+      observedRecipient: "example-agent@ouro.bot",
       messageId: "mail_wrong_lane",
       checkedAt: "2026-04-22T21:07:00.000Z",
     })
     expect(wrongAlias.forwarding).toEqual(expect.objectContaining({
       status: "failed_recoverable",
-      observedRecipient: "slugger@ouro.bot",
+      observedRecipient: "example-agent@ouro.bot",
       expectedRecipient: ALIAS,
-      recoveryAction: `HEY is forwarding to slugger@ouro.bot. Slugger must correct the HEY forwarding target to ${ALIAS}; do not import or label that probe as delegated Ari HEY mail.`,
+      recoveryAction: `HEY is forwarding to example-agent@ouro.bot. The agent must correct the HEY forwarding target to ${ALIAS}; do not import or label that probe as delegated human HEY mail.`,
     }))
   })
 })

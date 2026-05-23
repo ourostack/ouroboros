@@ -583,9 +583,9 @@ export function buildVoiceRealtimeEvalHappyPath(): VoiceRealtimeEvalTimelineEven
     {
       type: "voice.context.injected",
       atMs: 80,
-      friendId: "friend-ari",
-      sessionKey: "twilio-phone-friend-ari-via-ouro",
-      text: "Resolved voice friend: Ari (friendId=friend-ari, trust=family).",
+      friendId: "friend-example",
+      sessionKey: "twilio-phone-friend-example-via-ouro",
+      text: "Resolved voice friend: Example (friendId=friend-example, trust=family).",
       source: { transport: "voice-eval" },
     },
     {
@@ -601,7 +601,7 @@ export function buildVoiceRealtimeEvalHappyPath(): VoiceRealtimeEvalTimelineEven
       type: "assistant.transcript.done",
       atMs: 1_840,
       correlationId: "greeting",
-      text: "Hey Ari, I am checking the weather now.",
+      text: "Hey there, I am checking the weather now.",
       source: { transport: "openai-realtime-control", id: "ws-1" },
     },
     {
@@ -634,8 +634,8 @@ export function buildVoiceRealtimeEvalDefaultExpectation(): VoiceRealtimeEvalExp
     maxBargeInTruncateMs: 180,
     requireManualFloorControl: true,
     requireFriendContext: {
-      friendId: "friend-ari",
-      sessionKey: "twilio-phone-friend-ari-via-ouro",
+      friendId: "friend-example",
+      sessionKey: "twilio-phone-friend-example-via-ouro",
       marker: "trust=family",
     },
     requireHangup: true,

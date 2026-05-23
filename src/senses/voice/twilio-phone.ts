@@ -1768,7 +1768,7 @@ function looksLikeShortHumanPhoneGreeting(transcript: string): boolean {
   if (words.length === 0 || words.length > 6) return false
   const text = words.join(" ")
   if (/\b(voicemail|mailbox|unavailable|leave|message|reached|record)\b/.test(text)) return false
-  return /^(hi|hello|hey|yo|yes|yeah|yep|ari|slugger)(\b|$)/.test(text)
+  return /^(hi|hello|hey|yo|yes|yeah|yep)(\b|$)/.test(text)
 }
 
 async function readOptionalText(filePath: string, maxChars: number): Promise<string> {
@@ -2478,7 +2478,7 @@ class TwilioOpenAIRealtimeMediaStreamSession implements TwilioMediaStreamLifecyc
       // assistant.speech.done that eventually arrives leaves floorOwner=caller
       // permanently set (the reducer only flips owner away from "assistant"
       // when applying speech.done) and every subsequent caller turn hits the
-      // gate's caller_has_floor block. That is the "Slugger goes silent for
+      // gate's caller_has_floor block. That is the "agent goes silent for
       // the rest of the call" symptom. Emit a typed cancellation so the floor
       // model takes the interruption branch and the transcript that follows
       // can cleanly release the floor.

@@ -159,7 +159,7 @@ export function markForwardingProbeResult(
         status: "pending_propagation",
         observedRecipient: null,
         expectedRecipient,
-        recoveryAction: "Wait briefly, then have Slugger re-check the delegated source alias before asking the human to change HEY again.",
+        recoveryAction: "Wait briefly, then have the agent re-check the delegated source alias before asking the human to change HEY again.",
       },
     }
     emitNervesEvent({
@@ -188,7 +188,7 @@ export function markForwardingProbeResult(
         observedRecipient,
         expectedRecipient,
         ...(input.messageId ? { lastProbeMessageId: input.messageId } : {}),
-        recoveryAction: `HEY is forwarding to ${observedRecipient}. Slugger must correct the HEY forwarding target to ${expectedRecipient}; do not import or label that probe as delegated Ari HEY mail.`,
+        recoveryAction: `HEY is forwarding to ${observedRecipient}. The agent must correct the HEY forwarding target to ${expectedRecipient}; do not import or label that probe as delegated human HEY mail.`,
       },
     }
     emitNervesEvent({
@@ -243,7 +243,7 @@ export function renderDelegatedMailSourceNextStep(state: DelegatedMailSourceStat
     return `${state.source} forwarding is verified for ${state.aliasAddress}.`
   }
   return [
-    `Slugger should continue ${state.source.toUpperCase()} setup with browser automation where it is safe.`,
+    `The agent should continue ${state.source.toUpperCase()} setup with browser automation where it is safe.`,
     "The human remains at the keyboard for login, MFA/CAPTCHA, export download, and final forwarding confirmation.",
     `Forward ${state.ownerEmail}'s ${state.source} mailbox to ${state.aliasAddress}.`,
     "Do not use the native agent mailbox as the forwarding target.",

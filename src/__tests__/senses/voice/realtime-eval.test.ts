@@ -16,8 +16,8 @@ const baselineExpectation: VoiceRealtimeEvalExpectation = {
   maxBargeInTruncateMs: 180,
   requireManualFloorControl: true,
   requireFriendContext: {
-    friendId: "friend-ari",
-    sessionKey: "twilio-phone-friend-ari-via-ouro",
+    friendId: "friend-example",
+    sessionKey: "twilio-phone-friend-example-via-ouro",
     marker: "trust=family",
   },
   requireHangup: true,

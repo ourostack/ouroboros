@@ -3796,7 +3796,7 @@ async function executeConnectBlueBubbles(agent: string, deps: OuroCliDeps): Prom
   // Capture the operator's known iMessage handles so the BB ingest path can
   // filter group-chat echoes whose `isFromMe` flag was lost or never set.
   // Without this, the agent would ingest its own outbound message as inbound
-  // and reply to itself ("Slugger talking to himself" in groups).
+  // and reply to itself (the "agent talking to itself" failure mode in groups).
   const ownHandlesRaw = (await promptInput("Your iMessage handle(s) — phone(s) and/or email(s) BlueBubbles attributes to your sent messages (comma-separated; needed for the group self-talk filter; blank to skip): ")).trim()
   const ownHandles = ownHandlesRaw
     ? ownHandlesRaw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
@@ -5186,7 +5186,7 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioTransportMode --value media-stream`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioPlaybackMode --value stream`,
     `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioGreetingPrebufferMs --value 12000`,
-    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value ari`,
+    `  ouro vault config set --agent ${agent} --scope machine --key voice.twilioDefaultFriendId --value <friend-id>`,
     "Then enable agent.json: senses.voice.enabled = true and restart with `ouro up`.",
     `The managed Voice entrypoint will listen at POST <public-url>/voice/agents/${agentPathSegment}/twilio/incoming.`,
     `The OpenAI SIP webhook should be registered as POST <public-url>/voice/agents/${agentPathSegment}/sip/openai for realtime.call.incoming events.`,

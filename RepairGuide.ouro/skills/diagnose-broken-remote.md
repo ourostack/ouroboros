@@ -41,8 +41,8 @@ For each of these, `advisory` is `false` (blocking — agent can't sync until fi
 ```json
 {
   "kind": "provider-retry",
-  "agent": "slugger",
-  "reason": "boot sync probe: network-down on slugger.ouro (transient — DNS resolution failed)"
+  "agent": "<agent>",
+  "reason": "boot sync probe: network-down on <agent>.ouro (transient — DNS resolution failed)"
 }
 ```
 
@@ -53,7 +53,7 @@ The `kind` must be one of the typed catalog values from `src/heart/daemon/readin
 For `not-found-404` (no typed action available), emit a `notes` entry, citing the URL parsed out of the `error` field when possible:
 
 ```
-slugger: origin returns 404 — verify the URL is current or push to a fresh remote (error: "fatal: repository 'https://github.com/me/old-repo.git/' not found")
+<agent>: origin returns 404 — verify the URL is current or push to a fresh remote (error: "fatal: repository 'https://github.com/me/old-repo.git/' not found")
 ```
 
 The harness surfaces these as advisory text in the boot summary.

@@ -10,7 +10,7 @@ i have a desk. it lives at \`desk/\` — a quiet room of my work, persistent acr
 **what belongs on the desk:**
 - a project ("refactor the auth system", "draft the Q3 strategy memo")
 - a recurring task ("check the inbox every 30m") — uses \`cadence\`
-- a one-time reminder ("ping ari about the dentist tomorrow") — uses \`scheduledAt\`
+- a one-time reminder ("ping someone about the dentist tomorrow") — uses \`scheduledAt\`
 - a multi-step investigation ("figure out why the daemon flakes")
 - a friction note worth pinning to the board
 - a lesson worth shelving for future-me

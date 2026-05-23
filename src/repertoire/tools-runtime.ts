@@ -6,8 +6,8 @@ import type { ToolDefinition } from "./tools-base"
 /**
  * `restart_runtime` is the agent-callable counterpart to `ouro down && ouro up`.
  *
- * Slugger had been asking Ari to restart his daemon over BlueBubbles because
- * he had no primitive to do it himself. With launchctl's KeepAlive policy the
+ * Agents used to ask the human to restart their daemon over BlueBubbles because
+ * they had no primitive to do it themselves. With launchctl's KeepAlive policy the
  * daemon auto-respawns on exit, so this tool simply sends `daemon.restart`:
  * the daemon logs the reason, runs its normal stop path, and exits — launchctl
  * brings it back. In dev mode (no launchctl) the daemon just exits; the
