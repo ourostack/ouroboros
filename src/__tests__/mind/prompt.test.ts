@@ -1025,7 +1025,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
     expect(result).toContain("## my desk")
-    expect(result).toContain("every ouro agent has a desk")
+    expect(result).toContain("i have a desk")
     expect(result).toContain("### currently")
   })
 
@@ -1038,7 +1038,7 @@ describe("buildSystem", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem())
     // In test runs the mocked agent root has no desk/, so we expect the stub.
-    expect(result).toContain("empty — no tracks yet.")
+    expect(result).toContain("the desk is quiet today — no tracks yet.")
   })
 
   it("includes skills section from listSkills", async () => {
