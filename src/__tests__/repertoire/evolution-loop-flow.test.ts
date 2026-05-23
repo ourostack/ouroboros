@@ -78,6 +78,21 @@ async function invokeCodingSpawn(args: Record<string, string>) {
   return JSON.parse(await definition.handler(args))
 }
 
+function createHarnessFrictionCase(agentRoot: string, signature: string): string {
+  const packet = createPonderPacket(agentRoot, {
+    kind: "harness_friction",
+    objective: "Cover an evolution-loop edge",
+    summary: "The loop should stay accountable on edge paths.",
+    successCriteria: ["The case remains trace-backed"],
+    origin: { friendId: "ari", channel: "cli", key: "evolution-loop" },
+    payload: {
+      frictionSignature: signature,
+      userObjective: "Exercise the evolution loop edge",
+    },
+  })
+  return packet.payload.evolutionCaseId as string
+}
+
 describe("local evolution loop flow", () => {
   beforeEach(() => {
     mockRuntime.agentRoot = makeAgentRoot()
@@ -225,5 +240,89 @@ describe("local evolution loop flow", () => {
       "ratification_recorded",
       "closed",
     ]))
+  })
+
+  it("blocks coding delegation when the case has capture-only budget", async () => {
+    const evolutionCaseId = createHarnessFrictionCase(mockRuntime.agentRoot, "evolution-loop:no-coding-budget")
+    setEvolutionBudget(mockRuntime.agentRoot, evolutionCaseId, {
+      profile: "capture",
+      reason: "capture evidence only until a human grants coding budget",
+    })
+
+    const result = await invokeCodingSpawn({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "This should not spawn.",
+      taskRef: "blocked-budget",
+      evolutionCaseId,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      blocked: true,
+      action: "spawn_coding",
+      evolutionCaseId,
+      code: "budget_exhausted",
+    })
+    expect(mockRuntime.manager.spawnSession).not.toHaveBeenCalled()
+    expect(readEvolutionTrace(mockRuntime.agentRoot, evolutionCaseId)).toContainEqual(expect.objectContaining({
+      type: "delegation_blocked",
+    }))
+  })
+
+  it("blocks coding delegation when authority explicitly blocks spawn_coding", async () => {
+    const evolutionCaseId = createHarnessFrictionCase(mockRuntime.agentRoot, "evolution-loop:authority-blocked")
+    setEvolutionBudget(mockRuntime.agentRoot, evolutionCaseId, {
+      profile: "trusted-local",
+      reason: "budget exists but authority will block delegation",
+    })
+    setEvolutionAuthority(mockRuntime.agentRoot, evolutionCaseId, {
+      actions: { spawn_coding: "blocked" },
+      reason: "operator paused delegation",
+    })
+
+    const result = await invokeCodingSpawn({
+      runner: "codex",
+      workdir: "/Users/test/AgentWorkspaces/ouroboros",
+      prompt: "This should not spawn.",
+      taskRef: "blocked-authority",
+      evolutionCaseId,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      blocked: true,
+      action: "spawn_coding",
+      evolutionCaseId,
+      code: "blocked",
+      reason: "spawn_coding is blocked",
+    })
+    expect(mockRuntime.manager.spawnSession).not.toHaveBeenCalled()
+  })
+
+  it("records partial delivery but still refuses closure without ratification", async () => {
+    const evolutionCaseId = createHarnessFrictionCase(mockRuntime.agentRoot, "evolution-loop:partial-delivery")
+
+    const delivered = await invokeEvolutionTool("evolution_deliver", {
+      caseId: evolutionCaseId,
+      delivery: JSON.stringify({
+        commits: [{ sha: "def5678", message: "test(evolution): partial delivery" }],
+      }),
+    })
+    expect(delivered.case.delivery).toMatchObject({
+      commits: [{ sha: "def5678", message: "test(evolution): partial delivery" }],
+    })
+    expect(delivered.case.delivery.pullRequest).toBeUndefined()
+
+    const closeAttempt = await invokeEvolutionTool("evolution_close", {
+      caseId: evolutionCaseId,
+      reason: "cannot close without ratification",
+    })
+
+    expect(closeAttempt).toEqual({
+      ok: false,
+      error: "Evolution case closure requires ratification or none_needed",
+    })
+    expect(readEvolutionCase(mockRuntime.agentRoot, evolutionCaseId)?.status).not.toBe("closed")
   })
 })
