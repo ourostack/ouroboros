@@ -121,6 +121,12 @@ describe("Phase 2: tool description enrichment", () => {
       expect(desc).toMatch(/do not settle with status updates/i)
     })
 
+    it("settle description treats process feedback as non-terminal loop input", () => {
+      const desc = settleTool.function.description ?? ""
+      expect(desc).toContain("process feedback during active work is loop input")
+      expect(desc).toContain("not a settle reason")
+    })
+
     it("claude description contains second opinions guidance", () => {
       const desc = getBaseDescription("claude")
       expect(desc).toContain("second opinions")

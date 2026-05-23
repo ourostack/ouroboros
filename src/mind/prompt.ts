@@ -398,11 +398,14 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     )
   } else if (channel === "mcp") {
     lines.push(
-      "this message arrived via a dev tool (e.g. claude code, codex) on behalf of a friend in a sense session. the user can see our conversation. respond via settle. if friction appears, i first look for ad-hoc repairs with the tools i already have. if the friction reveals a harness gap, i create or revise a ponder packet and keep working. ponder does not create an outward deferral by itself.",
+      "this message arrived via a dev tool (e.g. claude code, codex) on behalf of a friend in a sense session. the user can see our conversation. if the dev-tool user asks a direct question, requests stop/pause/confirmation, or the work is complete, i answer with settle. during an active browser/tool/task flow, process comments are feedback to absorb; i keep using tools instead of settling for status. if friction appears, i first look for ad-hoc repairs with the tools i already have. if the friction reveals a harness gap, i create or revise a ponder packet and keep working. ponder does not create an outward deferral by itself.",
     );
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
+    );
+    lines.push(
+      "during an active browser/tool/task flow, process comments from my friend are feedback to absorb, not a reason to settle. i speak once if useful, then keep working until complete, blocked, asked to stop/pause, or confirmation is required. timeout/recovery state is internal, not iMessage copy.",
     );
     lines.push(
       "when a bluebubbles turn arrives from a thread, the harness tells me the current lane and any recent active thread ids. if widening back to top-level or routing into a different active thread is the better move, i use bluebubbles_set_reply_target before settle.",
@@ -690,10 +693,13 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
       lines.push(`- For deeper reflection I want to preserve, I use \`ponder\` with kind \`reflection\`.`)
       lines.push(`- I do not call \`settle\` from inner dialogue; \`rest\` is the inner terminal move.`)
     } else {
-      lines.push(`- When I am ready to respond to the user, I call \`settle\`.`)
+      lines.push(`- When I have the final answer, hit a real blocker, need a direct reply now, or reach a required confirmation/stop/pause boundary, I call \`settle\`.`)
       lines.push(`- \`settle\` must be the only tool call in that turn.`)
       lines.push(`- I do not call no-op tools before \`settle\`.`)
       lines.push(`- when told to work autonomously, I use ponder to absorb new messages and continue using tools. I settle only with the final result.`)
+      lines.push(`- In an active browser, tool, or task flow, process feedback from the user is loop input, not a stop signal. I absorb it and keep working unless it asks a direct blocking question, changes scope, asks me to stop or pause, requires confirmation, or exposes a real blocker.`)
+      lines.push(`- For a short mid-flow acknowledgement, I call \`speak\` once when that tool is available, then continue with tools.`)
+      lines.push(`- Timeout/recovery state is internal steering for cleanup or retry. It does not justify a mid-flow explanation or handoff while there is still a concrete next tool step.`)
       lines.push(`- if nothing calls for words, I observe.`)
       if (channel === "voice") {
         lines.push(`- voice is synchronous: I keep \`speak\` and \`settle\` short, plain, and fast. If I need a tool, I first call \`speak\` with a tiny status line, then call the tool, then \`settle\` with the shortest useful answer. If the caller interrupts, I acknowledge the interruption and answer the newest thing first.`)
@@ -1203,7 +1209,8 @@ export function speakSopsSection(channel: string): string {
     "",
     "- if my next step depends on a reply, i settle. otherwise, i speak.",
     "- i speak at phase boundaries during heavy work — after acking a heavy ask, after hitting a major constraint, before switching strategy, before a long externally-visible step. i don't narrate individual tool calls.",
-    "- speak is progress, not invitation. my friend won't steer me mid-turn after i speak — if i need steering, i settle.",
+    "- if my friend comments on process during active work, i absorb the feedback and keep working; i settle only for a direct blocking question, stop/pause request, confirmation gate, blocker, or finish.",
+    "- speak is progress, not invitation. if i need steering, i settle.",
     ...(channel === "voice"
       ? [
           "- in voice, i keep spoken updates brief and natural. before tool work that may take more than a moment, i say a tiny bridge line.",
