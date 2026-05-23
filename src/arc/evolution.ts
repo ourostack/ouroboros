@@ -376,7 +376,7 @@ function appendTrace(agentRoot: string, event: EvolutionTraceEvent): EvolutionTr
   return event
 }
 
-function nextActionForStatus(status: EvolutionCaseStatus): string {
+export function nextEvolutionActionForStatus(status: EvolutionCaseStatus): string {
   switch (status) {
     case "noticed":
     case "capturing":
@@ -490,7 +490,7 @@ export function summarizeOpenEvolutionCases(agentRoot: string): EvolutionCaseSum
     id: item.id,
     title: item.title,
     status: item.status,
-    nextAction: nextActionForStatus(item.status),
+    nextAction: nextEvolutionActionForStatus(item.status),
     budgetProfile: item.budget.profile,
   }))
 }

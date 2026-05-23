@@ -15,6 +15,7 @@ import {
   findOpenEvolutionCaseByFrictionSignature,
   listEvolutionCases,
   listOpenEvolutionCases,
+  nextEvolutionActionForStatus,
   readEvolutionCase,
   readEvolutionTrace,
   recordEvolutionDecision,
@@ -106,6 +107,25 @@ describe("evolution case store", () => {
     })
   })
 
+  it("allows a minimal case without optional evidence, packet, obligation, or friction bindings", () => {
+    const agentRoot = makeAgentRoot()
+    const created = createEvolutionCase(agentRoot, {
+      title: "Minimal capture",
+      problemStatement: "A raw observation needs a durable case",
+      desiredBehavior: "The case exists before downstream binding is known",
+      origin: {
+        kind: "session",
+        label: "manual notice",
+        locator: "session://current",
+      },
+    })
+
+    expect(created.evidenceRefs).toEqual([])
+    expect(created.packetId).toBeUndefined()
+    expect(created.obligationId).toBeUndefined()
+    expect(created.frictionSignature).toBeUndefined()
+  })
+
   it("lists only valid cases, omits malformed JSON, and summarizes open cases", () => {
     const agentRoot = makeAgentRoot()
     const first = createEvolutionCase(agentRoot, baseCaseInput())
@@ -194,6 +214,15 @@ describe("evolution case store", () => {
       residualRisk: "Ollama may still be stopped on another machine",
       missingChecks: ["fresh machine smoke"],
     })
+    recordEvolutionVerification(agentRoot, created.id, {
+      status: "passed",
+      checkedAt: "2026-05-23T20:16:00.000Z",
+      objective: "Semantic search works or degraded mode is documented",
+      commands: ["desk_search semantic query"],
+      evidenceRefs: ["mcp://desk/desk_search#passed"],
+      residualRisk: null,
+      missingChecks: [],
+    })
     recordEvolutionDelivery(agentRoot, created.id, {
       pullRequest: { url: "https://github.com/ourostack/ouroboros-skills/pull/61", openedAt: "2026-05-23T20:20:00.000Z" },
       merged: null,
@@ -208,7 +237,7 @@ describe("evolution case store", () => {
     })
 
     expect(ratified.decision?.decision).toBe("delegate")
-    expect(ratified.verification?.status).toBe("partial")
+    expect(ratified.verification?.status).toBe("passed")
     expect(ratified.delivery.pullRequest?.url).toContain("pull/61")
     expect(ratified.delivery.merged).toBeNull()
     expect(ratified.ratification?.destination).toBe("desk_lesson")
@@ -231,7 +260,10 @@ describe("evolution case store", () => {
       allowed: false,
       code: "budget_exhausted",
     })
-    expect(() => consumeEvolutionBudget(agentRoot, created.id, "spawn_coding", { reason: "second worker" })).toThrow(/budget/i)
+    expect(() => consumeEvolutionBudget(agentRoot, created.id, "spawn_coding", {
+      target: "coding-002",
+      reason: "second worker",
+    })).toThrow(/budget/i)
 
     setEvolutionAuthority(agentRoot, created.id, {
       actions: { open_pr: "ask_before_action", merge_pr: "human_required" },
@@ -273,5 +305,202 @@ describe("evolution case store", () => {
       allowed: false,
       code: "terminal_case",
     })
+  })
+
+  it("returns null or empty arrays for unreadable case and trace records", () => {
+    const agentRoot = makeAgentRoot()
+    const created = createEvolutionCase(agentRoot, baseCaseInput())
+
+    fs.writeFileSync(casePath(agentRoot, "bad-json"), "{bad", "utf-8")
+    fs.writeFileSync(casePath(agentRoot, "bad-shape"), JSON.stringify({ id: "bad-shape" }), "utf-8")
+    fs.appendFileSync(tracePath(agentRoot, created.id), [
+      "{bad",
+      JSON.stringify({ caseId: "someone-else", type: "noticed" }),
+      JSON.stringify({ caseId: created.id, reason: "missing type" }),
+      JSON.stringify({ caseId: created.id, type: "scoped", reason: "usable event" }),
+    ].join("\n"), "utf-8")
+
+    expect(readEvolutionCase(agentRoot, "missing")).toBeNull()
+    expect(readEvolutionCase(agentRoot, "bad-json")).toBeNull()
+    expect(readEvolutionCase(agentRoot, "bad-shape")).toBeNull()
+    expect(readEvolutionTrace(agentRoot, "missing")).toEqual([])
+    expect(readEvolutionTrace(agentRoot, created.id).map((event) => event.type)).toEqual(["noticed", "scoped"])
+  })
+
+  it("spends each enforceable budget lane and preserves non-initial status on rebudget", () => {
+    const agentRoot = makeAgentRoot()
+    const created = createEvolutionCase(agentRoot, {
+      ...baseCaseInput(),
+      budgetProfile: "trusted-local",
+    })
+
+    setEvolutionAuthority(agentRoot, created.id, {
+      actions: { merge_pr: "allowed", release_publish: "allowed", install_local: "allowed" },
+      reason: "exercise every enforceable local lane",
+    })
+    consumeEvolutionBudget(agentRoot, created.id, "spawn_coding", {
+      target: "coding-001",
+      reason: "first coding session",
+    })
+    const afterPr = consumeEvolutionBudget(agentRoot, created.id, "open_pr", {
+      target: "https://github.com/ourostack/ouroboros/pull/1",
+      reason: "first PR attempt",
+    })
+    const afterMerge = consumeEvolutionBudget(agentRoot, created.id, "merge_pr", {
+      target: "https://github.com/ourostack/ouroboros/pull/1",
+      reason: "first merge attempt",
+    })
+    const releaseReady = readEvolutionCase(agentRoot, created.id)
+    if (!releaseReady) throw new Error("expected trusted-local case to exist")
+    fs.writeFileSync(casePath(agentRoot, created.id), JSON.stringify({
+      ...releaseReady,
+      budget: {
+        ...releaseReady.budget,
+        limits: {
+          ...releaseReady.budget.limits,
+          releaseInstallAttempts: 2,
+        },
+      },
+    }, null, 2), "utf-8")
+    const afterRelease = consumeEvolutionBudget(agentRoot, created.id, "release_publish", {
+      reason: "release attempt after explicit limit bump",
+    })
+    const afterInstall = consumeEvolutionBudget(agentRoot, created.id, "install_local", {
+      target: "local://ouro",
+      reason: "install attempt after release",
+    })
+
+    expect(afterPr.budget.spent.prAttempts).toBe(1)
+    expect(afterMerge.budget.spent.mergeAttempts).toBe(1)
+    expect(afterRelease.budget.spent.releaseInstallAttempts).toBe(1)
+    expect(afterInstall.budget.spent.releaseInstallAttempts).toBe(2)
+    expect(() => consumeEvolutionBudget(agentRoot, created.id, "release_publish", { reason: "release anyway" })).toThrow(/budget/i)
+
+    recordEvolutionDecision(agentRoot, created.id, {
+      decision: "delegate",
+      reason: "case is already in motion",
+      authorityMode: "delegate_allowed",
+    })
+    const verifying = recordEvolutionVerification(agentRoot, created.id, {
+      status: "failed",
+      checkedAt: "2026-05-23T20:40:00.000Z",
+      objective: "Exercise failed verification branch",
+      commands: ["npm test"],
+      evidenceRefs: ["log://failed-verification"],
+      residualRisk: "Implementation still needs repair",
+      missingChecks: ["full suite"],
+    })
+    const rebudgeted = setEvolutionBudget(agentRoot, verifying.id, {
+      profile: "conservative",
+      reason: "tighten budget after failed verification",
+    })
+
+    expect(verifying.status).toBe("verifying")
+    expect(rebudgeted.status).toBe("verifying")
+    expect(readEvolutionTrace(agentRoot, created.id).map((event) => event.type)).toContain("delegation_blocked")
+  })
+
+  it("requires authority, case existence, and ratification before terminal closure", () => {
+    const agentRoot = makeAgentRoot()
+    const created = createEvolutionCase(agentRoot, baseCaseInput())
+
+    expect(() => setEvolutionBudget(agentRoot, "missing", {
+      profile: "conservative",
+      reason: "cannot budget a missing case",
+    })).toThrow(/not found/i)
+    expect(evaluateEvolutionAction(agentRoot, created.id, "write_desk")).toMatchObject({
+      allowed: true,
+      code: "allowed",
+    })
+    const withoutExplicitAction = readEvolutionCase(agentRoot, created.id)
+    if (!withoutExplicitAction) throw new Error("expected evolution case fixture to exist")
+    const { write_diary: _writeDiary, ...actionsWithoutWriteDiary } = withoutExplicitAction.authority.actions
+    fs.writeFileSync(casePath(agentRoot, created.id), JSON.stringify({
+      ...withoutExplicitAction,
+      authority: {
+        ...withoutExplicitAction.authority,
+        actions: actionsWithoutWriteDiary,
+      },
+    }, null, 2), "utf-8")
+    expect(evaluateEvolutionAction(agentRoot, created.id, "write_diary")).toMatchObject({
+      allowed: false,
+      code: "human_required",
+    })
+
+    setEvolutionAuthority(agentRoot, created.id, {
+      actions: { commit: "blocked" },
+      reason: "operator explicitly blocked commits",
+    })
+    expect(evaluateEvolutionAction(agentRoot, "missing", "commit")).toMatchObject({
+      allowed: false,
+      code: "case_not_found",
+    })
+    expect(evaluateEvolutionAction(agentRoot, created.id, "commit")).toMatchObject({
+      allowed: false,
+      code: "blocked",
+    })
+    expect(() => closeEvolutionCase(agentRoot, created.id, { reason: "too early" })).toThrow(/ratification/i)
+
+    const ratified = recordEvolutionRatification(agentRoot, created.id, {
+      destination: "none_needed",
+      locator: "case://none",
+      landedAt: "2026-05-23T20:50:00.000Z",
+      reason: "Synthetic case has no durable lesson",
+    })
+    const closed = closeEvolutionCase(agentRoot, ratified.id, { reason: "Ratified as none needed" })
+    const stillClosed = recordEvolutionRatification(agentRoot, closed.id, {
+      destination: "desk_lesson",
+      locator: "/Users/arimendelow/desk/_meta/tips/synthetic.md",
+      landedAt: "2026-05-23T20:55:00.000Z",
+      reason: "Late ratification update preserves closure",
+    })
+
+    expect(closed.status).toBe("closed")
+    expect(stillClosed.status).toBe("closed")
+  })
+
+  it("summarizes every non-initial status with a concrete next action", () => {
+    const agentRoot = makeAgentRoot()
+    const created = createEvolutionCase(agentRoot, baseCaseInput())
+    const expectedNextActionByStatus = new Map([
+      ["noticed", "scope and budget the case"],
+      ["capturing", "scope and budget the case"],
+      ["scoped", "set authority and budget"],
+      ["budgeted", "decide whether to delegate or ask"],
+      ["delegating", "monitor delegated coding work"],
+      ["verifying", "verify against the original objective"],
+      ["waiting_for_merge", "review merge authority and PR state"],
+      ["updating_runtime", "verify release or local install state"],
+      ["ratifying", "land or record ratification"],
+      ["evaluating", "record recurrence or improvement evidence"],
+      ["closed", "no action"],
+      ["blocked", "resolve blocker or authority gap"],
+      ["deferred", "resume only when the deferral condition changes"],
+    ] as const)
+
+    for (const [status, nextAction] of expectedNextActionByStatus) {
+      expect(nextEvolutionActionForStatus(status)).toBe(nextAction)
+
+      const record = readEvolutionCase(agentRoot, created.id)
+      if (!record) throw new Error("expected evolution case fixture to exist")
+      fs.writeFileSync(casePath(agentRoot, created.id), JSON.stringify({
+        ...record,
+        status,
+        closedAt: status === "closed" || status === "blocked" || status === "deferred" ? "2026-05-23T21:00:00.000Z" : null,
+      }, null, 2), "utf-8")
+
+      expect(summarizeOpenEvolutionCases(agentRoot)).toEqual(status === "closed" || status === "blocked" || status === "deferred"
+        ? []
+        : [{
+          id: created.id,
+          title: "Desk semantic fallback",
+          status,
+          nextAction,
+          budgetProfile: "conservative",
+        }])
+      if (status === "closed" || status === "blocked" || status === "deferred") {
+        expect(listEvolutionCases(agentRoot).map((item) => ({ status: item.status, nextAction: summarizeOpenEvolutionCases(agentRoot)[0]?.nextAction }))[0]?.status).toBe(status)
+      }
+    }
   })
 })
