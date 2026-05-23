@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  closeEvolutionCase,
   listEvolutionCases,
   readEvolutionCase,
   readEvolutionTrace,
@@ -169,6 +170,72 @@ describe("ponder packets", () => {
     expect(packet.payload.evolutionCaseId).toBeUndefined()
     expect(readPonderPacket(agentRoot, packet.id)?.payload.evolutionCaseId).toBeUndefined()
     expect(listEvolutionCases(agentRoot)).toEqual([])
+  })
+
+  it("leaves unsigned harness-friction packets unbound", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Notice vague harness friction",
+      summary: "The agent felt friction but did not produce a stable signature",
+      successCriteria: ["Capture the raw packet without pretending it is reusable"],
+      payload: { frictionSignature: "   " },
+    })
+
+    expect(packet.payload.evolutionCaseId).toBeUndefined()
+    expect(listEvolutionCases(agentRoot)).toEqual([])
+  })
+
+  it("uses runtime origin and fallback desired behavior when a signed harness-friction packet is sparse", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Capture sparse harness friction",
+      summary: "A packet can be material even before success criteria are crisp",
+      successCriteria: [],
+      payload: { frictionSignature: "harness:sparse-friction" },
+    })
+
+    const evolutionCase = readEvolutionCase(agentRoot, packet.payload.evolutionCaseId as string)
+
+    expect(evolutionCase).toMatchObject({
+      origin: {
+        kind: "runtime",
+        label: "ponder packet",
+        locator: `arc/packets/${packet.id}.json`,
+      },
+      desiredBehavior: "Resolve the captured harness friction.",
+    })
+  })
+
+  it("does not reuse terminal evolution cases for matching harness-friction signatures", () => {
+    const agentRoot = makeAgentRoot()
+    const first = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix closed friction",
+      summary: "First packet will close",
+      successCriteria: ["Close cleanly"],
+      payload: { frictionSignature: "harness:closed-friction" },
+    })
+    closeEvolutionCase(agentRoot, first.payload.evolutionCaseId as string, {
+      reason: "Synthetic case closed",
+      ratification: {
+        destination: "none_needed",
+        locator: "case://none",
+        landedAt: "2026-05-23T21:20:00.000Z",
+        reason: "No durable lesson for this packet fixture",
+      },
+    })
+    const second = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix closed friction again",
+      summary: "Terminal cases must not absorb fresh evidence",
+      successCriteria: ["Create a fresh case"],
+      payload: { frictionSignature: "harness:closed-friction" },
+    })
+
+    expect(second.payload.evolutionCaseId).not.toBe(first.payload.evolutionCaseId)
+    expect(listEvolutionCases(agentRoot)).toHaveLength(2)
   })
 
   it("caps oversized agent-authored packet fields before writing JSON", () => {
