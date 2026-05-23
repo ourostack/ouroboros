@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest"
 import * as path from "path"
 
 const packageJson = require(path.resolve(__dirname, "../../../package.json"))
+const {
+  PACKAGE_PAYLOAD_PATH_PREFIXES,
+} = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 describe("package metadata", () => {
   it("ships the RepairGuide bundle in the npm package", () => {
@@ -16,5 +19,12 @@ describe("package metadata", () => {
     expect(packageJson.scripts["package:verify-assets"]).toBe("node scripts/package-assets.cjs")
     expect(packageJson.scripts.prepack).toContain("npm run build")
     expect(packageJson.scripts.prepack).toContain("npm run package:verify-assets")
+  })
+
+  it("keeps package asset verification aligned with npm package files", () => {
+    expect([...packageJson.files].sort()).toEqual([
+      ...PACKAGE_PAYLOAD_PATH_PREFIXES,
+      "changelog.json",
+    ].sort())
   })
 })

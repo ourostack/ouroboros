@@ -16,6 +16,19 @@ const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
   "dist/outlook-ui/",
 ]
 
+const PACKAGE_PAYLOAD_PATH_PREFIXES = [
+  "assets/",
+  "dist/",
+  "RepairGuide.ouro/",
+  "SerpentGuide.ouro/",
+  "skills/",
+]
+
+const PACKAGE_PAYLOAD_FILE_PATHS = [
+  "changelog.json",
+  "package.json",
+]
+
 const IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES = [
   ".git/",
   "coverage/",
@@ -65,6 +78,20 @@ function toPackagePath(filePath) {
   return filePath.split(path.sep).join("/")
 }
 
+function canContainPackagePayload(relativePath) {
+  const directoryPrefix = `${toPackagePath(relativePath)}/`
+  return PACKAGE_PAYLOAD_PATH_PREFIXES.some(
+    (payloadPrefix) => payloadPrefix.startsWith(directoryPrefix) || directoryPrefix.startsWith(payloadPrefix),
+  )
+}
+
+function isPackagePayloadFile(relativePath) {
+  const packagePath = toPackagePath(relativePath)
+  return PACKAGE_PAYLOAD_FILE_PATHS.includes(packagePath) || PACKAGE_PAYLOAD_PATH_PREFIXES.some(
+    (payloadPrefix) => packagePath.startsWith(payloadPrefix),
+  )
+}
+
 function listPackageFiles(packageRoot, deps = defaultDeps()) {
   if (!deps.existsSync(packageRoot)) return []
 
@@ -80,8 +107,11 @@ function listPackageFiles(packageRoot, deps = defaultDeps()) {
         if (IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES.some((ignored) => `${relativePath}/`.startsWith(ignored))) {
           continue
         }
+        if (!canContainPackagePayload(relativePath)) {
+          continue
+        }
         walk(absolutePath, relativePath)
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() && isPackagePayloadFile(relativePath)) {
         files.push(toPackagePath(relativePath))
       }
     }
@@ -238,6 +268,8 @@ module.exports = {
   DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES,
   DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS,
   IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES,
+  PACKAGE_PAYLOAD_FILE_PATHS,
+  PACKAGE_PAYLOAD_PATH_PREFIXES,
   REQUIRED_PACKAGE_ASSET_PATHS,
   listPackageFiles,
   packageRootFromBinPath,

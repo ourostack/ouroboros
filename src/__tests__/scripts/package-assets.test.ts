@@ -8,6 +8,8 @@ const {
   DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES,
   DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS,
   IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES,
+  PACKAGE_PAYLOAD_FILE_PATHS,
+  PACKAGE_PAYLOAD_PATH_PREFIXES,
   listPackageFiles,
   packageRootFromBinPath,
   runPackageAssetsCli,
@@ -70,6 +72,20 @@ describe("package asset validation", () => {
     ])
   })
 
+  it("declares package payload roots that are safe to scan before npm pack", () => {
+    expect(PACKAGE_PAYLOAD_PATH_PREFIXES).toEqual([
+      "assets/",
+      "dist/",
+      "RepairGuide.ouro/",
+      "SerpentGuide.ouro/",
+      "skills/",
+    ])
+    expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
+      "changelog.json",
+      "package.json",
+    ])
+  })
+
   it("passes when required assets are present and no stale paths exist", () => {
     const root = makeRoot()
     writeRequiredAssets(root)
@@ -89,13 +105,13 @@ describe("package asset validation", () => {
 
   it("lists package files recursively and ignores non-file entries", () => {
     const root = makeRoot()
-    writeFile(root, "b/file.txt")
-    writeFile(root, "a/file.txt")
-    fs.symlinkSync(path.join(root, "a", "file.txt"), path.join(root, "linked-file.txt"))
+    writeFile(root, "dist/b/file.txt")
+    writeFile(root, "dist/a/file.txt")
+    fs.symlinkSync(path.join(root, "dist", "a", "file.txt"), path.join(root, "dist", "linked-file.txt"))
 
     expect(listPackageFiles(root)).toEqual([
-      "a/file.txt",
-      "b/file.txt",
+      "dist/a/file.txt",
+      "dist/b/file.txt",
     ])
   })
 
@@ -105,6 +121,10 @@ describe("package asset validation", () => {
     writeFile(root, "coverage/lcov-report/stale.html")
     writeFile(root, "node_modules/package/stale.js")
     writeFile(root, ".git/objects/stale")
+    writeFile(root, ".claude/worktrees/old/dist/stale.js")
+    writeFile(root, "src/senses/bluebubbles/index.ts")
+    writeFile(root, "docs/old.md")
+    writeFile(root, "packages/mailbox-ui/dist/stale.js")
 
     expect(listPackageFiles(root)).toEqual(["dist/current.js"])
   })
@@ -195,6 +215,36 @@ describe("package asset validation", () => {
     expect(result.disallowed).toEqual([
       "dist/senses/bluebubbles/index.js contains removed BlueBubbles timeout notice",
     ])
+  })
+
+  it("ignores removed BlueBubbles timeout notice in local artifacts outside the package payload", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    writeFile(
+      root,
+      ".claude/worktrees/bb-inflight-ttl/dist/senses/bluebubbles/index.js",
+      '"live iMessage turn timed out; I captured it for recovery instead of silently hanging"',
+    )
+    writeFile(
+      root,
+      ".claude/worktrees/bb-inflight-ttl/coverage/lcov-report/senses/bluebubbles/index.ts.html",
+      '"live iMessage turn timed out; I captured it for recovery instead of silently hanging"',
+    )
+    writeFile(
+      root,
+      "src/senses/bluebubbles/index.ts",
+      '"live iMessage turn timed out; I captured it for recovery instead of silently hanging"',
+    )
+
+    const result = validatePackageAssets(root)
+
+    expect(result).toEqual({
+      ok: true,
+      packageRoot: root,
+      missing: [],
+      disallowed: [],
+      message: "package assets verified",
+    })
   })
 
   it("returns success from the package asset CLI for a clean package root", () => {
