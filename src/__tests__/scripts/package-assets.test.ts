@@ -10,6 +10,7 @@ const {
   IGNORED_LOCAL_PACKAGE_ASSET_PATH_PREFIXES,
   listPackageFiles,
   packageRootFromBinPath,
+  runPackageAssetsCli,
   validatePackageAssets,
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
@@ -194,6 +195,55 @@ describe("package asset validation", () => {
     expect(result.disallowed).toEqual([
       "dist/senses/bluebubbles/index.js contains removed BlueBubbles timeout notice",
     ])
+  })
+
+  it("returns success from the package asset CLI for a clean package root", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = runPackageAssetsCli([root], {
+      cwd: () => root,
+      dirname: path.dirname,
+      existsSync: fs.existsSync,
+      join: path.join,
+      readFileSync: fs.readFileSync,
+      readdirSync: fs.readdirSync,
+      realpathSync: fs.realpathSync,
+      resolve: path.resolve,
+      statSync: fs.statSync,
+      writeStderr: (text: string) => stderr.push(text),
+      writeStdout: (text: string) => stdout.push(text),
+    })
+
+    expect(exitCode).toBe(0)
+    expect(stdout.join("")).toBe("package assets verified\n")
+    expect(stderr.join("")).toBe("")
+  })
+
+  it("returns failure from the package asset CLI for stale package roots", () => {
+    const root = makeRoot()
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = runPackageAssetsCli([root], {
+      cwd: () => root,
+      dirname: path.dirname,
+      existsSync: fs.existsSync,
+      join: path.join,
+      readFileSync: fs.readFileSync,
+      readdirSync: fs.readdirSync,
+      realpathSync: fs.realpathSync,
+      resolve: path.resolve,
+      statSync: fs.statSync,
+      writeStderr: (text: string) => stderr.push(text),
+      writeStdout: (text: string) => stdout.push(text),
+    })
+
+    expect(exitCode).toBe(1)
+    expect(stdout.join("")).toBe("")
+    expect(stderr.join("")).toContain("missing required package assets")
   })
 
   it("derives the package root from a symlinked npm .bin path", () => {
