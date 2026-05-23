@@ -124,7 +124,7 @@ describe("evolution tools", () => {
       originLabel: "desk-plugin/semantic-search-fallback",
       originLocator: "/Users/arimendelow/desk/desk-plugin/semantic-search-fallback/task.md",
       budgetProfile: "capture",
-      evidenceKind: "desk_task",
+      evidenceKind: "desk_doc",
       evidenceLocator: "desk-plugin/semantic-search-fallback/task.md",
       evidenceReason: "source backlog task",
       evidenceRedaction: "none",
@@ -138,7 +138,7 @@ describe("evolution tools", () => {
       budget: { profile: "capture" },
       evidenceRefs: [
         {
-          kind: "desk_task",
+          kind: "desk_doc",
           locator: "desk-plugin/semantic-search-fallback/task.md",
           redaction: "none",
           reason: "source backlog task",
