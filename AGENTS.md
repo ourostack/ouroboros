@@ -136,6 +136,7 @@ This replaces the old pattern of diffing against `subagents/*.md` files in this 
 These gates are defaults for autonomous operation. The human may shorten or skip them for any task -- that's normal, not exceptional. When gates are active:
 
 0. **Branch + worktree**: Verify the current branch follows `<agent>/<slug>` and that the task is running from a dedicated worktree. If on `main`, on an ambiguous branch, or in the wrong shared checkout, create/switch to the correct branch/worktree before proceeding. Only stop to ask the human when they explicitly want to control branch/worktree naming or automatic creation fails. This is always the first step — no planning, converting, or implementing without a proper branch/worktree.
+   - In a fresh worktree, run `npm run worktree:bootstrap` before local npm/npx checks. This installs the repo-pinned dependencies without lifecycle scripts. The repo `.npmrc` rejects new transient `npx` downloads, and Vitest config fails with bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
 1. **Plan**: Launch `work-planner`. It produces/updates a planning doc under `~/AgentBundles/<agent>.ouro/tasks/one-shots/`.
 2. **Review**: Show the user the planning doc path and STOP. Wait for explicit user approval.
 3. **Convert**: Only after user approves the planning doc, re-run `work-planner` to convert to a doing doc in the same bundle `one-shots/` directory. User must also review and sign off on the doing doc before implementation.
