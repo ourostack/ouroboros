@@ -197,6 +197,7 @@ describe("release-preflight", () => {
   })
 
   it("fails when releasable changes reuse an already-published cli version", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
@@ -205,8 +206,10 @@ describe("release-preflight", () => {
           publishedCliVersion: "0.1.0-alpha.407",
         }),
         readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
       },
     )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("@ouro.bot/cli@0.1.0-alpha.407 is already published on npm.")
@@ -234,6 +237,7 @@ describe("release-preflight", () => {
   })
 
   it("requires a release bump when releasable changes are only in the working tree", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
@@ -242,8 +246,10 @@ describe("release-preflight", () => {
           workingTreeChangedFiles: ["src/mailroom/core.ts", "changelog.json"],
         }),
         readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
       },
     )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(true)
     expect(result.changedFiles).toContain("src/mailroom/core.ts")
@@ -330,6 +336,7 @@ describe("release-preflight", () => {
   })
 
   it("fails when the current version is missing from the changelog", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
@@ -339,8 +346,10 @@ describe("release-preflight", () => {
         readFileSyncImpl: makeReadFileSyncImpl({
           changelogVersion: "0.1.0-alpha.406",
         }),
+        packageRoot,
       },
     )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(false)
     expect(result.errors[0]).toContain("0.1.0-alpha.407")
@@ -359,6 +368,7 @@ describe("release-preflight", () => {
   })
 
   it("fails when the wrapper package changed but the wrapper version is already published", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
     const result = runReleasePreflight(
       {},
       {
@@ -367,8 +377,10 @@ describe("release-preflight", () => {
           publishedWrapperVersion: "0.1.0-alpha.407",
         }),
         readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
       },
     )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
 
     expect(result.ok).toBe(false)
     expect(result.errors).toContain(
