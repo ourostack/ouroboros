@@ -22,6 +22,7 @@ export interface CodingSessionRequest {
   taskRef?: string
   originSession?: CodingSessionOrigin
   obligationId?: string
+  evolutionCaseId?: string
   sessionId?: string
   parentAgent?: string
   scopeFile?: string
@@ -62,6 +63,7 @@ export interface CodingSession {
   taskRef?: string
   originSession?: CodingSessionOrigin
   obligationId?: string
+  evolutionCaseId?: string
   scopeFile?: string
   stateFile?: string
   checkpoint?: string | null

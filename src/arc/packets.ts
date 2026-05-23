@@ -3,6 +3,14 @@ import { capStructuredRecordString, capStructuredRecordStringArray, capStructure
 import { emitNervesEvent } from "../nerves/runtime"
 import { isTaskStatus, type TaskStatus, validateTransition } from "./task-lifecycle"
 import { generateTimestampId, readJsonDir, readJsonFile, writeJsonFile } from "./json-store"
+import {
+  addEvolutionEvidence,
+  appendEvolutionTraceEvent,
+  createEvolutionCase,
+  findOpenEvolutionCaseByFrictionSignature,
+  type EvolutionEvidenceRef,
+  type EvolutionOrigin,
+} from "./evolution"
 
 export type PonderPacketKind = "harness_friction" | "research" | "reflection"
 export type PonderPacketSop = "harness_friction_v1" | "research_v1" | "reflection_v1"
@@ -58,6 +66,10 @@ export function getPonderPacketArtifactsDir(agentRoot: string, packetId: string)
   return path.join(agentRoot, "state", "packets", packetId)
 }
 
+function packetLocator(packetId: string): string {
+  return `arc/packets/${packetId}.json`
+}
+
 function packetSop(kind: PonderPacketKind): PonderPacketSop {
   switch (kind) {
     case "harness_friction":
@@ -86,6 +98,81 @@ function isPonderPacket(value: unknown): value is PonderPacket {
     && typeof packet.updatedAt === "number"
 }
 
+function payloadString(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key]
+  return typeof value === "string" && value.trim().length > 0 ? value : null
+}
+
+function evolutionOriginForPacket(packet: PonderPacket): EvolutionOrigin {
+  if (packet.origin) {
+    return {
+      kind: "session",
+      label: `${packet.origin.friendId}/${packet.origin.channel}/${packet.origin.key}`,
+      locator: packetLocator(packet.id),
+    }
+  }
+  return {
+    kind: "runtime",
+    label: "ponder packet",
+    locator: packetLocator(packet.id),
+  }
+}
+
+function desiredBehaviorForPacket(packet: PonderPacket): string {
+  return packet.successCriteria.length > 0
+    ? packet.successCriteria.join("; ")
+    : "Resolve the captured harness friction."
+}
+
+function evidenceForPacket(packet: PonderPacket, reason: string): EvolutionEvidenceRef {
+  return {
+    kind: "ponder_packet",
+    locator: packetLocator(packet.id),
+    capturedAt: new Date(packet.createdAt).toISOString(),
+    redaction: "summary",
+    reason,
+  }
+}
+
+function bindHarnessFrictionEvolutionCase(agentRoot: string, packet: PonderPacket): PonderPacket {
+  if (packet.kind !== "harness_friction") return packet
+  const frictionSignature = payloadString(packet.payload, "frictionSignature")
+  if (!frictionSignature) return packet
+
+  const existing = findOpenEvolutionCaseByFrictionSignature(agentRoot, frictionSignature)
+  const evidenceReason = existing
+    ? "Harness-friction ponder packet added evidence to this evolution case"
+    : "Harness-friction ponder packet created this evolution case"
+  const evidence = evidenceForPacket(packet, evidenceReason)
+  const evolutionCase = existing
+    ? addEvolutionEvidence(agentRoot, existing.id, evidence)
+    : createEvolutionCase(agentRoot, {
+      title: packet.objective,
+      problemStatement: packet.summary,
+      desiredBehavior: desiredBehaviorForPacket(packet),
+      origin: evolutionOriginForPacket(packet),
+      evidenceRefs: [evidence],
+      frictionSignature,
+      packetId: packet.id,
+    })
+
+  if (!existing) {
+    appendEvolutionTraceEvent(agentRoot, evolutionCase.id, {
+      type: "evidence_added",
+      reason: evidence.reason,
+      evidenceRefs: [evidence.locator],
+    })
+  }
+
+  return {
+    ...packet,
+    payload: {
+      ...packet.payload,
+      evolutionCaseId: evolutionCase.id,
+    },
+  }
+}
+
 export function listPonderPackets(agentRoot: string): PonderPacket[] {
   return readJsonDir<PonderPacket>(packetsDir(agentRoot))
     .filter(isPonderPacket)
@@ -99,7 +186,7 @@ export function readPonderPacket(agentRoot: string, packetId: string): PonderPac
 
 export function createPonderPacket(agentRoot: string, input: CreatePonderPacketInput): PonderPacket {
   const now = Date.now()
-  const packet: PonderPacket = {
+  const packet = bindHarnessFrictionEvolutionCase(agentRoot, {
     id: generateTimestampId("pkt"),
     kind: input.kind,
     sop: packetSop(input.kind),
@@ -114,7 +201,7 @@ export function createPonderPacket(agentRoot: string, input: CreatePonderPacketI
     payload: capStructuredRecordStringLeaves(input.payload),
     createdAt: now,
     updatedAt: now,
-  }
+  })
   writeJsonFile(packetsDir(agentRoot), packet.id, packet)
 
   emitNervesEvent({
