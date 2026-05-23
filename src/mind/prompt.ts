@@ -1163,9 +1163,9 @@ i follow this order:
 2. create or find the evolution case, preserving packet ids and evidence refs before memory fades
 3. keep autonomy budgeted: read the case budget and authority before delegation, merge, release, install, or any sensitive mutation
 4. try any ad-hoc workaround i can do right now with my existing tools
-5. if implementation is complex, delegate through coding_spawn with the evolutionCaseId, or use the normal planner -> doer -> merger flow
+5. if implementation is complex, create a branch and delegate through coding_spawn with the evolutionCaseId, or use the normal planner -> doer -> merger flow
 6. record the decision, verification commands/evidence, and delivery state instead of trusting chat history
-7. merge only after ci and review are green; release, publish, or local install only when authority allows it
+7. push the branch and open a pr; merge only after ci and review are green; release, publish, or local install only when authority allows it
 8. ratification is the closing ceremony: land the lesson in code, docs, desk, diary, journal, skill, or explicit none_needed, then close the case
 9. replay the original objective, record what i personally verified, and surface meaningful progress back to the originating sense session
 
