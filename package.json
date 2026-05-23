@@ -38,6 +38,8 @@
     "test:coverage": "node scripts/run-coverage-gate.cjs",
     "build": "node scripts/clean-dist.cjs && tsc && (cd packages/mailbox-ui && npm install --ignore-scripts 2>/dev/null && npm run build && cd ../.. && node scripts/copy-mailbox-ui.cjs) || echo 'mailbox-ui build skipped'",
     "lint": "eslint src/",
+    "package:verify-assets": "node scripts/package-assets.cjs",
+    "prepack": "npm run build && npm run package:verify-assets",
     "release:bump": "node scripts/release-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
     "release:smoke": "node scripts/release-smoke.cjs",

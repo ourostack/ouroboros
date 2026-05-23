@@ -205,6 +205,7 @@ function readMatchingPackageRoot(current, packageName, deps) {
 
 function defaultDeps() {
   return {
+    cwd: process.cwd,
     dirname: path.dirname,
     existsSync: fs.existsSync,
     join: path.join,
@@ -213,7 +214,24 @@ function defaultDeps() {
     realpathSync: fs.realpathSync,
     resolve: path.resolve,
     statSync: fs.statSync,
+    writeStderr: (text) => process.stderr.write(text),
+    writeStdout: (text) => process.stdout.write(text),
   }
+}
+
+function runPackageAssetsCli(argv = process.argv.slice(2), deps = defaultDeps()) {
+  const packageRoot = deps.resolve(argv[0] ?? deps.cwd())
+  const result = validatePackageAssets(packageRoot, deps)
+  if (result.ok) {
+    deps.writeStdout(`${result.message}\n`)
+    return 0
+  }
+  deps.writeStderr(`${result.message}\n`)
+  return 1
+}
+
+if (require.main === module) {
+  process.exitCode = runPackageAssetsCli()
 }
 
 module.exports = {
@@ -223,5 +241,6 @@ module.exports = {
   REQUIRED_PACKAGE_ASSET_PATHS,
   listPackageFiles,
   packageRootFromBinPath,
+  runPackageAssetsCli,
   validatePackageAssets,
 }
