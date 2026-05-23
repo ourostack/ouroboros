@@ -7,6 +7,7 @@ vi.mock("../../nerves/runtime", () => ({
 import { emitNervesEvent } from "../../nerves/runtime"
 import type { ActiveWorkFrame } from "../../heart/active-work"
 import type { InnerJob } from "../../heart/daemon/thoughts"
+import type { EvolutionCaseSummary } from "../../arc/evolution"
 
 function makeIdleJob(overrides: Partial<InnerJob> = {}): InnerJob {
   return {
@@ -37,12 +38,25 @@ function makeFrame(overrides: Partial<ActiveWorkFrame> = {}): ActiveWorkFrame {
   }
 }
 
+function makeEvolutionCase(overrides: Partial<EvolutionCaseSummary> = {}): EvolutionCaseSummary {
+  return {
+    id: "evo-001",
+    title: "Teach Ouro to keep evolution work visible",
+    status: "budgeted",
+    nextAction: "delegate the harness patch under budget",
+    budgetProfile: "conservative",
+    ...overrides,
+  }
+}
+
 describe("formatActiveWorkFrame (selfhood framing)", () => {
+  let buildActiveWorkFrame: typeof import("../../heart/active-work").buildActiveWorkFrame
   let formatActiveWorkFrame: (frame: ActiveWorkFrame) => string
   let formatLiveWorldStateCheckpoint: (frame: ActiveWorkFrame) => string
 
   beforeAll(async () => {
     const mod = await import("../../heart/active-work")
+    buildActiveWorkFrame = mod.buildActiveWorkFrame
     formatActiveWorkFrame = mod.formatActiveWorkFrame
     formatLiveWorldStateCheckpoint = mod.formatLiveWorldStateCheckpoint
   })
@@ -342,6 +356,97 @@ describe("formatActiveWorkFrame (selfhood framing)", () => {
     expect(checkpoint).toContain("- active lane: codex coding-101 for this thread")
     expect(checkpoint).toContain("- current artifact: /tmp/artifacts/coding-101.md")
     expect(checkpoint).toContain("- next action: finish the coding pass and bring the result back here")
+  })
+
+  it("renders open evolution cases without replacing existing live work sections", () => {
+    const result = formatActiveWorkFrame(makeFrame({
+      evolutionCases: [
+        makeEvolutionCase(),
+        makeEvolutionCase({
+          id: "evo-closed",
+          title: "Already ratified runtime lesson",
+          status: "closed",
+          nextAction: "none",
+        }),
+        makeEvolutionCase({
+          id: "evo-deferred",
+          title: "Deferred hosted-substrate research",
+          status: "deferred",
+          nextAction: "wait for hosted scope",
+        }),
+      ],
+      codingSessions: [
+        {
+          id: "coding-101",
+          runner: "codex",
+          workdir: "/tmp/workspaces/ouroboros",
+          taskRef: "task-101",
+          checkpoint: "editing active-work renderer",
+          artifactPath: "/tmp/artifacts/coding-101.md",
+          status: "running",
+          stdoutTail: "working",
+          stderrTail: "",
+          pid: 101,
+          startedAt: "2026-03-21T10:00:00.000Z",
+          lastActivityAt: "2026-03-21T10:05:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          failure: null,
+          originSession: { friendId: "friend-1", channel: "cli", key: "session" },
+        },
+      ],
+      pendingObligations: [
+        {
+          id: "ob-session",
+          origin: { friendId: "friend-1", channel: "cli", key: "session" },
+          content: "bring the evolution patch back",
+          status: "investigating",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+    }))
+
+    expect(result).toContain("## evolution cases")
+    expect(result).toContain("- [budgeted] evo-001: Teach Ouro to keep evolution work visible")
+    expect(result).toContain("next: delegate the harness patch under budget")
+    expect(result).toContain("budget: conservative")
+    expect(result).toContain("## live coding work")
+    expect(result).toContain("## return obligations")
+    expect(result).not.toContain("Already ratified runtime lesson")
+    expect(result).not.toContain("Deferred hosted-substrate research")
+  })
+
+  it("carries open evolution cases through buildActiveWorkFrame and omits terminal ones", () => {
+    const frame = buildActiveWorkFrame({
+      currentSession: { friendId: "friend-1", channel: "cli", key: "session", sessionPath: "/tmp/s.json" },
+      mustResolveBeforeHandoff: false,
+      inner: { status: "idle", hasPending: false },
+      bridges: [],
+      friendActivity: [],
+      evolutionCases: [
+        makeEvolutionCase({ id: "evo-open", title: "Open loop", status: "scoped" }),
+        makeEvolutionCase({ id: "evo-blocked", title: "Blocked loop", status: "blocked" }),
+      ],
+    })
+
+    expect(frame.evolutionCases).toEqual([
+      makeEvolutionCase({ id: "evo-open", title: "Open loop", status: "scoped" }),
+    ])
+  })
+
+  it("includes the current evolution case in compact live world-state checkpoints", () => {
+    const result = formatLiveWorldStateCheckpoint(makeFrame({
+      evolutionCases: [
+        makeEvolutionCase({ id: "evo-urgent", status: "delegating", nextAction: "verify the delegated patch" }),
+        makeEvolutionCase({ id: "evo-closed", title: "Closed loop", status: "closed" }),
+      ],
+    }))
+
+    expect(result).toContain("- evolution case: [delegating] evo-urgent Teach Ouro to keep evolution work visible; next verify the delegated patch")
+    expect(result).not.toContain("Closed loop")
   })
 
   it("frames running background mail imports as wake-driven work instead of a polling loop", () => {
