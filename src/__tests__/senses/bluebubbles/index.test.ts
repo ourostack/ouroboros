@@ -1533,6 +1533,44 @@ describe("BlueBubbles sense runtime", () => {
     )
   })
 
+  it("bounds stuck watchdog status transport before the live turn timeout", async () => {
+    vi.useFakeTimers()
+    mocks.sendText.mockImplementationOnce(() => new Promise(() => undefined))
+    mocks.runAgent.mockImplementationOnce(async (_messages, callbacks) => {
+      callbacks.onModelStart()
+      await vi.advanceTimersByTimeAsync(75_000)
+      await flushAsyncWork()
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flushAsyncWork()
+      callbacks.onTextChunk("done")
+      return {
+        content: "done",
+        toolCalls: [],
+        outputItems: [],
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    try {
+      await bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        event: "senses.bluebubbles_activity_error",
+        meta: expect.objectContaining({
+          operation: "send_status",
+          reason: "bluebubbles send_status activity timed out after 20000ms",
+        }),
+      }),
+    )
+    expect(mocks.sendText).toHaveBeenCalledWith(expect.objectContaining({ text: "done" }))
+  })
+
   it("still attempts mark-read when typing-start transport fails and surfaces the activity warning", async () => {
     mocks.setTyping.mockRejectedValueOnce(new Error("typing transport down"))
 
@@ -1663,6 +1701,120 @@ describe("BlueBubbles sense runtime", () => {
     expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
     const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
     expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+  })
+
+  it("suppresses notifyable mutation turns that resolve after the timeout", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const lateTurn = createDeferred<any>()
+    mocks.handleInboundTurn.mockImplementationOnce(() => lateTurn.promise)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(reactionPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    lateTurn.resolve({
+      resolvedContext: defaultFriendContext,
+      gateResult: { allowed: true },
+      usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      sessionPath: "/tmp/bluebubbles-session.json",
+      messages: [],
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_timed_out_turn_suppressed",
+      meta: expect.objectContaining({
+        messageGuid: reactionPayload.data.guid,
+        source: "webhook",
+      }),
+    }))
+  })
+
+  it("logs notifyable mutation turns that reject after the timeout", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const lateTurn = createDeferred<any>()
+    mocks.handleInboundTurn.mockImplementationOnce(() => lateTurn.promise)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(reactionPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    lateTurn.reject(new Error("late pipeline failure"))
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_recovery_error",
+      meta: expect.objectContaining({
+        messageGuid: reactionPayload.data.guid,
+        reason: "late pipeline failure",
+        source: "webhook",
+      }),
+    }))
+  })
+
+  it("suppresses successful final sends that resolve after the timeout", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    const lateSend = createDeferred<{ messageGuid: string }>()
+    mocks.sendText.mockImplementationOnce(() => lateSend.promise)
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.sendText.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    lateSend.resolve({ messageGuid: "late-sent-guid" })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsyncWork()
+
+    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_timed_out_turn_suppressed",
+      meta: expect.objectContaining({
+        messageGuid: dmThreadPayload.data.guid,
+        source: "webhook",
+      }),
+    }))
   })
 
   it("starts group chat typing only after the agent commits to replying", async () => {
@@ -2287,6 +2439,7 @@ describe("BlueBubbles sense runtime", () => {
       callbacks.onError(new Error("fatal"), "terminal")
       callbacks.onTextChunk("discard me")
       callbacks.onClearText()
+      await callbacks.finish()
       await options.toolContext.signin("graph")
       return {
         usage: {
@@ -7305,6 +7458,31 @@ describe("BlueBubbles sense runtime", () => {
       expect.anything(),
       false,
     )
+  })
+
+  it("drops buffered callback text once outbound delivery is closed", async () => {
+    mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
+      callbacks.onModelStart()
+      callbacks.onTextChunk("this should be discarded")
+      callbacks.cancelOutbound("turn_timeout")
+      callbacks.onModelStart()
+      callbacks.onToolStart("query_session", {})
+      await callbacks.flushNow()
+      callbacks.onTextChunk("this should also be discarded")
+      await callbacks.flush()
+      return {
+        usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 },
+      }
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    await bluebubbles.handleBlueBubblesEvent(identifierOnlyPayload)
+
+    expect(mocks.sendText).not.toHaveBeenCalled()
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_outbound_closed",
+      meta: expect.objectContaining({ chatGuid: null, reason: "turn_timeout" }),
+    }))
   })
 
   it("calls finish but not flush when gate rejects", async () => {

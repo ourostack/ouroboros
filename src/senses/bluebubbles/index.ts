@@ -314,6 +314,17 @@ class BlueBubblesRecoveryTurnTimeoutError extends Error {
   }
 }
 
+function getBlueBubblesTimeoutReason(
+  timeoutReason: BlueBubblesRecoveryTurnTimeoutError | null,
+  timeoutMs: number,
+): BlueBubblesRecoveryTurnTimeoutError {
+  /* v8 ignore next 3 -- timeoutReason is set atomically with recoveryTimedOut; fallback keeps the invariant fail-closed @preserve */
+  if (!timeoutReason) {
+    return new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+  }
+  return timeoutReason
+}
+
 class BlueBubblesActivityTimeoutError extends Error {
   constructor(operation: string, timeoutMs: number) {
     super(`bluebubbles ${operation} activity timed out after ${timeoutMs}ms`)
@@ -348,6 +359,7 @@ function withBlueBubblesActivityTimeout<T>(
       }
     }),
   ]).finally(() => {
+    /* v8 ignore next -- timer is assigned unless a callback task throws synchronously; callback tasks are async @preserve */
     if (timer !== null) clearTimeout(timer)
   })
 }
@@ -372,6 +384,7 @@ async function waitForBlueBubblesCallbackCleanup(
       }
     }),
   ]).finally(() => {
+    /* v8 ignore next -- timer is assigned for the cleanup race; null only protects unusual synchronous construction failure @preserve */
     if (timer !== null) clearTimeout(timer)
   })
   if (!timedOut) return
@@ -709,23 +722,25 @@ export function createBlueBubblesCallbacks(
   const sentOutwardTokenSets: Array<Set<string>> = []
 
   function enqueue(operation: string, task: () => Promise<void>, options: { allowAfterClose?: boolean } = {}): void {
+    /* v8 ignore next -- defensive guard: public callback entrypoints already drop after outbound close @preserve */
     if (outboundClosed && !options.allowAfterClose) return
     queue = queue
       .then(() => withBlueBubblesActivityTimeout(operation, BLUEBUBBLES_ACTIVITY_OPERATION_TIMEOUT_MS, task))
       .catch((error) => {
-      emitNervesEvent({
-        level: "warn",
-        component: "senses",
-        event: "senses.bluebubbles_activity_error",
-        message: "bluebubbles activity transport failed",
-        meta: { operation, reason: error instanceof Error ? error.message : String(error) },
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_activity_error",
+          message: "bluebubbles activity transport failed",
+          meta: { operation, reason: error instanceof Error ? error.message : String(error) },
+        })
       })
-    })
   }
 
   function startTypingNow(): void {
     /* v8 ignore next -- defensive guard: callers already check typingActive @preserve */
     if (typingActive) return
+    /* v8 ignore next -- defensive guard: public callback entrypoints already drop after outbound close @preserve */
     if (outboundClosed) return
     typingActive = true
     enqueue("typing_start", async () => {
@@ -804,6 +819,7 @@ export function createBlueBubblesCallbacks(
   }
 
   function sendStatus(text: string): void {
+    /* v8 ignore next -- defensive guard: cancelOutbound stops the only status caller before it can fire @preserve */
     if (outboundClosed) return
     const trimmed = text.trim()
     /* v8 ignore next -- defensive guard; current status callers always provide non-empty text @preserve */
@@ -1290,11 +1306,11 @@ async function handleBlueBubblesNormalizedEvent(
       })
     }
 
-	    return await withSharedTurnLock("bluebubbles", sessPath, async () => {
-	    if (event.kind === "message" && activeTurnId === null) {
-	      activeTurnId = beginBlueBubblesActiveTurn(agentName, event)
-	    }
-	    // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
+    return await withSharedTurnLock("bluebubbles", sessPath, async () => {
+      if (event.kind === "message" && activeTurnId === null) {
+        activeTurnId = beginBlueBubblesActiveTurn(agentName, event)
+      }
+      // Pre-load session inside the turn lock so same-chat deliveries cannot race on stale trunk state.
     const existing = resolvedDeps.loadSession(sessPath)
     const mcpManager = await getSharedMcpManager() ?? undefined
     const sessionMessages: OpenAI.ChatCompletionMessageParam[] =
@@ -1374,21 +1390,22 @@ async function handleBlueBubblesNormalizedEvent(
       source: buildBlueBubblesOrientationSource(event, priorMessages, repliedToText),
     })
 
+    const visibleActivityTurnId = activeTurnId
     const callbacks = createBlueBubblesCallbacks(
       client,
       event.chat,
       replyTarget,
       event.chat.isGroup,
-      activeTurnId
-        ? () => noteBlueBubblesActiveTurnVisibleActivity(agentName, activeTurnId!)
+      visibleActivityTurnId
+        ? () => noteBlueBubblesActiveTurnVisibleActivity(agentName, visibleActivityTurnId)
         : undefined,
     )
     const controller = new AbortController()
     let timeoutTimer!: ReturnType<typeof setTimeout>
-	    let timeoutPromise!: Promise<never>
-	    let timeoutReject: ((error: Error) => void) | undefined
-	    let recoveryTimedOut = false
-	    let timeoutReason: BlueBubblesRecoveryTurnTimeoutError | null = null
+    let timeoutPromise!: Promise<never>
+    let timeoutReject: ((error: Error) => void) | undefined
+    let recoveryTimedOut = false
+    let timeoutReason: BlueBubblesRecoveryTurnTimeoutError | null = null
 
     // BB-specific tool context wrappers
     const summarize = createSummarize("human")
@@ -1422,20 +1439,20 @@ async function handleBlueBubblesNormalizedEvent(
     /* v8 ignore stop */
 
     try {
-	      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
+      const timeoutMs = options.timeoutMs ?? BLUEBUBBLES_LIVE_TURN_TIMEOUT_MS
       timeoutPromise = new Promise<never>((_, reject) => {
         timeoutReject = reject
       })
-	      timeoutTimer = setTimeout(() => {
-	        const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
-	        timeoutReason = reason
-	        recoveryTimedOut = true
-	        callbacks.cancelOutbound("turn_timeout")
-	        if (ownsInFlightMessage && inFlightKey) {
-	          endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
-	          ownsInFlightMessage = false
-	        }
-	        controller.abort(reason)
+      timeoutTimer = setTimeout(() => {
+        const reason = new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+        timeoutReason = reason
+        recoveryTimedOut = true
+        callbacks.cancelOutbound("turn_timeout")
+        if (ownsInFlightMessage && inFlightKey) {
+          endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
+          ownsInFlightMessage = false
+        }
+        controller.abort(reason)
         timeoutReject?.(reason)
         emitNervesEvent({
           level: "warn",
@@ -1534,89 +1551,89 @@ async function handleBlueBubblesNormalizedEvent(
             },
           })
         })
-	      /* v8 ignore stop */
-	      const runTurn = (async (): Promise<BlueBubblesHandleResult> => {
-	        const result = await turnPromise
-	        if (recoveryTimedOut) throw timeoutReason ?? new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
+      /* v8 ignore stop */
+      const runTurn = (async (): Promise<BlueBubblesHandleResult> => {
+        const result = await turnPromise
+        if (recoveryTimedOut) throw getBlueBubblesTimeoutReason(timeoutReason, timeoutMs)
 
-	        /* v8 ignore start -- failover display + error replay @preserve */
-	        if (result.failoverMessage) {
-	          // Failover handled it — show the failover message, skip the buffered error
-	          await client.sendText({ chat: event.chat, text: result.failoverMessage })
-	        } else if (bufferedTerminalError) {
-	          // No failover — replay the buffered terminal error
-	          callbacks.onError(bufferedTerminalError, "terminal")
-	        }
-	        /* v8 ignore stop */
+        /* v8 ignore start -- failover display + error replay @preserve */
+        if (result.failoverMessage) {
+          // Failover handled it — show the failover message, skip the buffered error
+          await client.sendText({ chat: event.chat, text: result.failoverMessage })
+        } else if (bufferedTerminalError) {
+          // No failover — replay the buffered terminal error
+          callbacks.onError(bufferedTerminalError, "terminal")
+        }
+        /* v8 ignore stop */
 
-	        // ── Handle gate result ────────────────────────────────────────
+        // ── Handle gate result ────────────────────────────────────────
 
-	        if (!result.gateResult.allowed) {
-	          // Send auto-reply via BB API if the gate provides one
-	          if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
-	            await client.sendText({
-	              chat: event.chat,
-	              text: result.gateResult.autoReply,
-	            })
-	          }
-	          if (event.kind === "message") {
-	            recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
-	          }
+        if (!result.gateResult.allowed) {
+          // Send auto-reply via BB API if the gate provides one
+          if ("autoReply" in result.gateResult && result.gateResult.autoReply) {
+            await client.sendText({
+              chat: event.chat,
+              text: result.gateResult.autoReply,
+            })
+          }
+          if (event.kind === "message") {
+            recordProcessedBlueBubblesMessage(agentName, event, source, "trust-gated")
+          }
 
-	          return {
-	            handled: true,
-	            notifiedAgent: false,
-	            kind: event.kind,
-	          }
-	        }
+          return {
+            handled: true,
+            notifiedAgent: false,
+            kind: event.kind,
+          }
+        }
 
-	        // Gate allowed — flush the agent's reply
-	        await callbacks.flush()
-	        if (recoveryTimedOut) throw timeoutReason ?? new BlueBubblesRecoveryTurnTimeoutError(timeoutMs)
-	        if (event.kind === "message") {
-	          recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
-	        }
+        // Gate allowed — flush the agent's reply
+        await callbacks.flush()
+        if (recoveryTimedOut) throw getBlueBubblesTimeoutReason(timeoutReason, timeoutMs)
+        if (event.kind === "message") {
+          recordProcessedBlueBubblesMessage(agentName, event, source, "turn-complete")
+        }
 
-	        emitNervesEvent({
-	          component: "senses",
-	          event: "senses.bluebubbles_turn_end",
-	          message: "bluebubbles event handled",
-	          meta: {
-	            messageGuid: event.messageGuid,
-	            kind: event.kind,
-	            sessionKey: event.chat.sessionKey,
-	          },
-	        })
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.bluebubbles_turn_end",
+          message: "bluebubbles event handled",
+          meta: {
+            messageGuid: event.messageGuid,
+            kind: event.kind,
+            sessionKey: event.chat.sessionKey,
+          },
+        })
 
-	        return {
-	          handled: true,
-	          notifiedAgent: true,
-	          kind: event.kind,
-	        }
-	      })()
-	      /* v8 ignore start -- detached post-timeout suppression telemetry @preserve */
-	      void runTurn.catch((error) => {
-	        if (!recoveryTimedOut) return
-	        emitNervesEvent({
-	          level: "warn",
-	          component: "senses",
-	          event: "senses.bluebubbles_timed_out_turn_suppressed",
-	          message: "suppressed late bluebubbles turn result after timeout",
-	          meta: {
-	            messageGuid: event.messageGuid,
-	            sessionKey: event.chat.sessionKey,
-	            source,
-	            reason: error instanceof Error ? error.message : String(error),
-	          },
-	        })
-	      })
-	      /* v8 ignore stop */
-	      return await (async () => {
-	        try {
-	          return await Promise.race([runTurn, timeoutPromise])
-	        } catch (error) {
-	          if (isBlueBubblesRecoveryTurnTimeout(error)) {
-	            emitNervesEvent({
+        return {
+          handled: true,
+          notifiedAgent: true,
+          kind: event.kind,
+        }
+      })()
+      /* v8 ignore start -- detached post-timeout suppression telemetry @preserve */
+      void runTurn.catch((error) => {
+        if (!recoveryTimedOut) return
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.bluebubbles_timed_out_turn_suppressed",
+          message: "suppressed late bluebubbles turn result after timeout",
+          meta: {
+            messageGuid: event.messageGuid,
+            sessionKey: event.chat.sessionKey,
+            source,
+            reason: error instanceof Error ? error.message : String(error),
+          },
+        })
+      })
+      /* v8 ignore stop */
+      return await (async () => {
+        try {
+          return await Promise.race([runTurn, timeoutPromise])
+        } catch (error) {
+          if (isBlueBubblesRecoveryTurnTimeout(error)) {
+            emitNervesEvent({
               level: "warn",
               component: "senses",
               event: "senses.bluebubbles_timeout_notice_suppressed",
@@ -1629,10 +1646,10 @@ async function handleBlueBubblesNormalizedEvent(
               },
             })
           }
-	          throw error
-	        }
-	      })()
-	    } finally {
+          throw error
+        }
+      })()
+    } finally {
       // If a terminal error was buffered and never replayed (e.g., handleInboundTurn threw),
       // replay it now so the user still sees the error.
       /* v8 ignore start -- error replay on throw: tested via BB error test @preserve */
@@ -1640,20 +1657,20 @@ async function handleBlueBubblesNormalizedEvent(
         callbacks.onError(bufferedTerminalError, "terminal")
         bufferedTerminalError = null
       }
-	      /* v8 ignore stop */
-	      clearTimeout(timeoutTimer)
-	      if (activeTurnId) {
-	        finishBlueBubblesActiveTurn(agentName, activeTurnId)
-	        activeTurnId = null
-	      }
-	      await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
-	    }
+      /* v8 ignore stop */
+      clearTimeout(timeoutTimer)
+      if (activeTurnId) {
+        finishBlueBubblesActiveTurn(agentName, activeTurnId)
+        activeTurnId = null
+      }
+      await callbacks.finish({ timeoutMs: BLUEBUBBLES_CALLBACK_CLEANUP_TIMEOUT_MS })
+    }
     })
-	  } finally {
-	    if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)
-	    if (ownsInFlightMessage && inFlightKey) {
-	      endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
-	    }
+  } finally {
+    if (activeTurnId) finishBlueBubblesActiveTurn(agentName, activeTurnId)
+    if (ownsInFlightMessage && inFlightKey) {
+      endBlueBubblesMessageInFlight(inFlightKey.sessionKey, inFlightKey.messageGuid)
+    }
   }
 }
 
