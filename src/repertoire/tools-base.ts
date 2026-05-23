@@ -24,6 +24,7 @@ import { mailToolDefinitions } from "./tools-mail"
 import { tripToolDefinitions } from "./tools-trip"
 import { awaitingToolDefinitions } from "./tools-awaiting"
 import { obligationToolDefinitions } from "./tools-obligations"
+import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
 import type { OrientationFrame } from "../heart/orientation-frame"
@@ -142,6 +143,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...tripToolDefinitions,
   ...awaitingToolDefinitions,
   ...obligationToolDefinitions,
+  ...evolutionToolDefinitions,
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
 ];

@@ -4,6 +4,12 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  closeEvolutionCase,
+  listEvolutionCases,
+  readEvolutionCase,
+  readEvolutionTrace,
+} from "../../arc/evolution"
+import {
   advancePonderPacket,
   createPonderPacket,
   findHarnessFrictionPacket,
@@ -64,6 +70,172 @@ describe("ponder packets", () => {
       kind: "harness_friction",
       objective: "Make screenshot interrogation bulletproof",
     })
+  })
+
+  it("creates an evolution case for harness-friction packets with a friction signature", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Make screenshot interrogation bulletproof",
+      summary: "Large TIFF image friction should become a harness fix candidate",
+      successCriteria: [
+        "All inbound images remain reachable",
+        "The original task gets replayed after the fix lands",
+      ],
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      payload: {
+        frictionSignature: "describe_image:image/tiff:oversize",
+        userObjective: "Read the booking screenshot correctly",
+      },
+    })
+
+    expect(packet.payload.evolutionCaseId).toMatch(/^evo-/)
+    const evolutionCaseId = packet.payload.evolutionCaseId as string
+    const storedPacket = readPonderPacket(agentRoot, packet.id)
+    const evolutionCase = readEvolutionCase(agentRoot, evolutionCaseId)
+
+    expect(storedPacket?.payload.evolutionCaseId).toBe(evolutionCaseId)
+    expect(evolutionCase).toMatchObject({
+      id: evolutionCaseId,
+      title: "Make screenshot interrogation bulletproof",
+      problemStatement: "Large TIFF image friction should become a harness fix candidate",
+      desiredBehavior: "All inbound images remain reachable; The original task gets replayed after the fix lands",
+      packetId: packet.id,
+      frictionSignature: "describe_image:image/tiff:oversize",
+      origin: {
+        kind: "session",
+        label: "ari/bluebubbles/chat",
+        locator: `arc/packets/${packet.id}.json`,
+      },
+    })
+    expect(evolutionCase?.evidenceRefs).toEqual([
+      {
+        kind: "ponder_packet",
+        locator: `arc/packets/${packet.id}.json`,
+        capturedAt: new Date(packet.createdAt).toISOString(),
+        redaction: "summary",
+        reason: "Harness-friction ponder packet created this evolution case",
+      },
+    ])
+    expect(readEvolutionTrace(agentRoot, evolutionCaseId).map((event) => ({
+      type: event.type,
+      evidenceRefs: event.evidenceRefs,
+    }))).toContainEqual({
+      type: "evidence_added",
+      evidenceRefs: [`arc/packets/${packet.id}.json`],
+    })
+  })
+
+  it("reuses an open evolution case for later harness-friction packets with the same signature", () => {
+    const agentRoot = makeAgentRoot()
+    const first = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix image retry behavior",
+      summary: "First friction packet",
+      successCriteria: ["No more raw TIFF dead-ends"],
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      payload: { frictionSignature: "describe_image:image/tiff:oversize" },
+    })
+    const second = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix image retry behavior again",
+      summary: "Second friction packet",
+      successCriteria: ["Still no raw TIFF dead-ends"],
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      payload: { frictionSignature: "describe_image:image/tiff:oversize" },
+    })
+
+    expect(second.payload.evolutionCaseId).toBe(first.payload.evolutionCaseId)
+    expect(listEvolutionCases(agentRoot)).toHaveLength(1)
+    expect(readEvolutionCase(agentRoot, first.payload.evolutionCaseId as string)?.evidenceRefs.map((ref) => ref.locator)).toEqual([
+      `arc/packets/${first.id}.json`,
+      `arc/packets/${second.id}.json`,
+    ])
+    expect(readEvolutionTrace(agentRoot, first.payload.evolutionCaseId as string).map((event) => event.evidenceRefs?.[0]).filter(Boolean)).toEqual([
+      `arc/packets/${first.id}.json`,
+      `arc/packets/${second.id}.json`,
+    ])
+  })
+
+  it("does not attach evolution state to non-harness-friction packets", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "research",
+      objective: "Map attachment ingress",
+      summary: "Research packet",
+      successCriteria: ["Collect ingress points"],
+      payload: { frictionSignature: "research:attachment-map" },
+    })
+
+    expect(packet.payload.evolutionCaseId).toBeUndefined()
+    expect(readPonderPacket(agentRoot, packet.id)?.payload.evolutionCaseId).toBeUndefined()
+    expect(listEvolutionCases(agentRoot)).toEqual([])
+  })
+
+  it("leaves unsigned harness-friction packets unbound", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Notice vague harness friction",
+      summary: "The agent felt friction but did not produce a stable signature",
+      successCriteria: ["Capture the raw packet without pretending it is reusable"],
+      payload: { frictionSignature: "   " },
+    })
+
+    expect(packet.payload.evolutionCaseId).toBeUndefined()
+    expect(listEvolutionCases(agentRoot)).toEqual([])
+  })
+
+  it("uses runtime origin and fallback desired behavior when a signed harness-friction packet is sparse", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Capture sparse harness friction",
+      summary: "A packet can be material even before success criteria are crisp",
+      successCriteria: [],
+      payload: { frictionSignature: "harness:sparse-friction" },
+    })
+
+    const evolutionCase = readEvolutionCase(agentRoot, packet.payload.evolutionCaseId as string)
+
+    expect(evolutionCase).toMatchObject({
+      origin: {
+        kind: "runtime",
+        label: "ponder packet",
+        locator: `arc/packets/${packet.id}.json`,
+      },
+      desiredBehavior: "Resolve the captured harness friction.",
+    })
+  })
+
+  it("does not reuse terminal evolution cases for matching harness-friction signatures", () => {
+    const agentRoot = makeAgentRoot()
+    const first = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix closed friction",
+      summary: "First packet will close",
+      successCriteria: ["Close cleanly"],
+      payload: { frictionSignature: "harness:closed-friction" },
+    })
+    closeEvolutionCase(agentRoot, first.payload.evolutionCaseId as string, {
+      reason: "Synthetic case closed",
+      ratification: {
+        destination: "none_needed",
+        locator: "case://none",
+        landedAt: "2026-05-23T21:20:00.000Z",
+        reason: "No durable lesson for this packet fixture",
+      },
+    })
+    const second = createPonderPacket(agentRoot, {
+      kind: "harness_friction",
+      objective: "Fix closed friction again",
+      summary: "Terminal cases must not absorb fresh evidence",
+      successCriteria: ["Create a fresh case"],
+      payload: { frictionSignature: "harness:closed-friction" },
+    })
+
+    expect(second.payload.evolutionCaseId).not.toBe(first.payload.evolutionCaseId)
+    expect(listEvolutionCases(agentRoot)).toHaveLength(2)
   })
 
   it("caps oversized agent-authored packet fields before writing JSON", () => {

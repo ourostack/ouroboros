@@ -3152,6 +3152,41 @@ describe("buildSystem with context", () => {
     expect(result).toContain("mine to explore and evolve")
   })
 
+  it("buildSystem teaches the evidence-backed evolution-case workflow before GEPA-style optimization", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("evolution case")
+    expect(result).toContain("evidence refs")
+    expect(result).toContain("budget")
+    expect(result).toContain("delegation")
+    expect(result).toContain("verification")
+    expect(result).toContain("delivery state")
+    expect(result).toContain("ratification")
+    expect(result).toContain("trace quality")
+    expect(result).toContain("GEPA")
+    expect(result).not.toMatch(/GEPA[^\n.]*before[^\n.]*trace quality/i)
+  })
+
+  it("buildSystem keeps sensitive evolution surfaces human-gated and desk non-authoritative", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    expect(result).toContain("identity, voice, credentials, provider config, outbound messages, and hosted infrastructure require human authority")
+    expect(result).toContain("desk is the cockpit and mirror, not runtime authority")
+    expect(result).toContain("runtime truth lives in the evolution case and trace")
+  })
+
   it("buildSystem('inner') includes body map (foundational anatomy for all channels)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
