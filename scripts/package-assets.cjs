@@ -31,6 +31,10 @@ const removedProviderModule = ["provider", "state"].join("-")
 const removedProviderCamel = ["provider", "State"].join("")
 const removedProviderPascal = ["Provider", "State"].join("")
 const removedDriftModule = ["drift", "detection"].join("-")
+const removedBlueBubblesTimeoutNotice = [
+  "live iMessage turn timed out",
+  "I captured it for recovery instead of silently hanging",
+].join("; ")
 
 const DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS = [
   { label: "removed provider selection file", pattern: new RegExp(escapedRegExp(removedProviderSelectionFile)) },
@@ -43,6 +47,7 @@ const DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS = [
     ].join("|")),
   },
   { label: "removed drift module", pattern: new RegExp(escapedRegExp(removedDriftModule)) },
+  { label: "removed BlueBubbles timeout notice", pattern: new RegExp(escapedRegExp(removedBlueBubblesTimeoutNotice)) },
 ]
 
 const TEXT_PACKAGE_ASSET_EXTENSIONS = new Set([
@@ -200,6 +205,7 @@ function readMatchingPackageRoot(current, packageName, deps) {
 
 function defaultDeps() {
   return {
+    cwd: process.cwd,
     dirname: path.dirname,
     existsSync: fs.existsSync,
     join: path.join,
@@ -208,7 +214,24 @@ function defaultDeps() {
     realpathSync: fs.realpathSync,
     resolve: path.resolve,
     statSync: fs.statSync,
+    writeStderr: (text) => process.stderr.write(text),
+    writeStdout: (text) => process.stdout.write(text),
   }
+}
+
+function runPackageAssetsCli(argv = process.argv.slice(2), deps = defaultDeps()) {
+  const packageRoot = deps.resolve(argv[0] ?? deps.cwd())
+  const result = validatePackageAssets(packageRoot, deps)
+  if (result.ok) {
+    deps.writeStdout(`${result.message}\n`)
+    return 0
+  }
+  deps.writeStderr(`${result.message}\n`)
+  return 1
+}
+
+if (require.main === module) {
+  process.exitCode = runPackageAssetsCli()
 }
 
 module.exports = {
@@ -218,5 +241,6 @@ module.exports = {
   REQUIRED_PACKAGE_ASSET_PATHS,
   listPackageFiles,
   packageRootFromBinPath,
+  runPackageAssetsCli,
   validatePackageAssets,
 }
