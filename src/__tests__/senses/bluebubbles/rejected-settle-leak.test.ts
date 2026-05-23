@@ -53,7 +53,7 @@ describe("BlueBubbles: rejected settle args do NOT leak into visible chat", () =
       getReplyToMessageGuid: vi.fn(() => "reply-guid"),
       setSelection: vi.fn(() => "ok"),
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test setup mirrors tool-callbacks.test.ts
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test setup mirrors callbacks.test.ts
     const callbacks = createBlueBubblesCallbacks(client as any, chat as any, replyTarget as any, false)
     return { callbacks, sendText, setTyping }
   }
