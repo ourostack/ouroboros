@@ -218,6 +218,16 @@ describe("tool registry contract", () => {
     // Added in let_go primitive: 1 obligation-release tool
     expect(names).toContain("let_go");
 
+    // Added in evolution loop foundation: 8 local case/trace tools
+    expect(names).toContain("evolution_status");
+    expect(names).toContain("evolution_case");
+    expect(names).toContain("evolution_capture");
+    expect(names).toContain("evolution_decide");
+    expect(names).toContain("evolution_verify");
+    expect(names).toContain("evolution_deliver");
+    expect(names).toContain("evolution_ratify");
+    expect(names).toContain("evolution_close");
+
     // Added in agent self-maintenance: 2 runtime tools
     expect(names).toContain("restart_runtime");
     expect(names).toContain("revive_sense");
@@ -225,7 +235,7 @@ describe("tool registry contract", () => {
     // Added in orientation substrate: 1 turn-frame inspection tool
     expect(names).toContain("orientation_get");
 
-    // Exact count: 92 tools (89 prior + trip semantic-write preview tools)
-    expect(names).toHaveLength(92);
+    // Exact count: 100 tools (92 prior + 8 evolution loop tools)
+    expect(names).toHaveLength(100);
   });
 });
