@@ -15,6 +15,14 @@ Do not lower thresholds. If a change touches code, the changed behavior needs co
 
 ## Required Commands
 
+In a fresh worktree, install the repo-pinned local toolchain first:
+
+```bash
+npm run worktree:bootstrap
+```
+
+This runs `npm install --ignore-scripts` without lifecycle scripts. Do not use direct `npx vitest`, `npx tsc`, or other local tool commands before bootstrapping; the repo `.npmrc` rejects new transient `npx` downloads, and Vitest config prints bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
+
 For runtime code changes, keep these green:
 
 ```bash
