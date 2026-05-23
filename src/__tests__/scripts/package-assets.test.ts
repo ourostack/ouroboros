@@ -57,6 +57,7 @@ describe("package asset validation", () => {
       "removed provider selection file",
       "removed provider state module",
       "removed drift module",
+      "removed BlueBubbles timeout notice",
     ])
   })
 
@@ -175,6 +176,23 @@ describe("package asset validation", () => {
       "dist/heart/daemon/doctor.js contains removed provider selection file",
       "dist/heart/provider-binding-resolver.js contains removed provider state module",
       "dist/nerves/coverage/file-completeness.js contains removed drift module",
+    ])
+  })
+
+  it("fails when removed BlueBubbles timeout notice remains in package assets", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    writeFile(
+      root,
+      "dist/senses/bluebubbles/index.js",
+      '"live iMessage turn timed out; I captured it for recovery instead of silently hanging"',
+    )
+
+    const result = validatePackageAssets(root)
+
+    expect(result.ok).toBe(false)
+    expect(result.disallowed).toEqual([
+      "dist/senses/bluebubbles/index.js contains removed BlueBubbles timeout notice",
     ])
   })
 

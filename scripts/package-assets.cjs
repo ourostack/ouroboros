@@ -31,6 +31,10 @@ const removedProviderModule = ["provider", "state"].join("-")
 const removedProviderCamel = ["provider", "State"].join("")
 const removedProviderPascal = ["Provider", "State"].join("")
 const removedDriftModule = ["drift", "detection"].join("-")
+const removedBlueBubblesTimeoutNotice = [
+  "live iMessage turn timed out",
+  "I captured it for recovery instead of silently hanging",
+].join("; ")
 
 const DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS = [
   { label: "removed provider selection file", pattern: new RegExp(escapedRegExp(removedProviderSelectionFile)) },
@@ -43,6 +47,7 @@ const DISALLOWED_PACKAGE_ASSET_TEXT_PATTERNS = [
     ].join("|")),
   },
   { label: "removed drift module", pattern: new RegExp(escapedRegExp(removedDriftModule)) },
+  { label: "removed BlueBubbles timeout notice", pattern: new RegExp(escapedRegExp(removedBlueBubblesTimeoutNotice)) },
 ]
 
 const TEXT_PACKAGE_ASSET_EXTENSIONS = new Set([

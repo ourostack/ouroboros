@@ -1593,6 +1593,78 @@ describe("BlueBubbles sense runtime", () => {
     expect(recovery).toEqual(expect.objectContaining({ recovered: 1, failed: 0 }))
   })
 
+  it("releases the live webhook lane when timeout cleanup transport hangs", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.setTyping.mockImplementation(() => new Promise(() => undefined))
+    mocks.handleInboundTurn.mockImplementationOnce((input: any) => {
+      input.callbacks.onModelStart()
+      return new Promise(() => undefined)
+    })
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.handleInboundTurn.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.handleInboundTurn).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(2_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    const { snapshotBlueBubblesActiveTurns } = await import("../../../senses/bluebubbles/active-turns")
+    expect(snapshotBlueBubblesActiveTurns("testagent", 1)).toEqual(expect.objectContaining({
+      activeTurnCount: 0,
+      stalledTurnCount: 0,
+    }))
+    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    expect(mocks.sendText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("live iMessage turn timed out"),
+    }))
+    expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.bluebubbles_activity_cleanup_timeout",
+      meta: expect.objectContaining({ operation: "finish" }),
+    }))
+  })
+
+  it("times out the full live turn when final iMessage delivery hangs after the model returns", async () => {
+    vi.useFakeTimers()
+    const tempAgentRoot = makeTempDir()
+    const { getAgentRoot } = await import("../../../heart/identity")
+    vi.mocked(getAgentRoot).mockReturnValue(tempAgentRoot)
+    mocks.sendText.mockImplementation(() => new Promise(() => undefined))
+
+    const bluebubbles = await import("../../../senses/bluebubbles")
+    const handling = bluebubbles.handleBlueBubblesEvent(dmThreadPayload)
+      .then(() => null, (error: unknown) => error)
+    for (let attempt = 0; attempt < 10 && mocks.sendText.mock.calls.length === 0; attempt++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await flushAsyncWork()
+    }
+    expect(mocks.sendText).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(120_000)
+    await expect(handling).resolves.toEqual(expect.objectContaining({
+      message: "bluebubbles recovery turn timed out after 120000ms",
+    }))
+
+    const { snapshotBlueBubblesActiveTurns } = await import("../../../senses/bluebubbles/active-turns")
+    expect(snapshotBlueBubblesActiveTurns("testagent", 1)).toEqual(expect.objectContaining({
+      activeTurnCount: 0,
+      stalledTurnCount: 0,
+    }))
+    expect(bluebubbles.isBlueBubblesMessageInFlight("chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+    const { hasProcessedBlueBubblesMessage } = await import("../../../senses/bluebubbles/processed-log")
+    expect(hasProcessedBlueBubblesMessage("testagent", "chat:any;-;ari@mendelow.me", dmThreadPayload.data.guid)).toBe(false)
+  })
+
   it("starts group chat typing only after the agent commits to replying", async () => {
     mocks.runAgent.mockImplementationOnce(async (_messages: any, callbacks: any) => {
       callbacks.onModelStart()
@@ -3216,7 +3288,7 @@ describe("BlueBubbles sense runtime", () => {
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"mutation-timeout-guid\"")
     const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
-    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 1 }))
+    expect(queued).toEqual(expect.objectContaining({ recovered: 1, failed: 0, pendingRecoveryCount: 0 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "senses.bluebubbles_recovery_error",
       meta: expect.objectContaining({
@@ -5609,7 +5681,7 @@ describe("BlueBubbles sense runtime", () => {
     const processedLog = fs.existsSync(processedLogPath) ? fs.readFileSync(processedLogPath, "utf-8") : ""
     expect(processedLog).not.toContain("\"messageGuid\":\"captured-timeout-guid\"")
     const queued = await bluebubbles.recoverQueuedBlueBubblesMessages()
-    expect(queued).toEqual(expect.objectContaining({ recovered: 0, failed: 0, pendingRecoveryCount: 1 }))
+    expect(queued).toEqual(expect.objectContaining({ recovered: 1, failed: 0, pendingRecoveryCount: 0 }))
     expect(mocks.emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "senses.bluebubbles_turn_timeout",
