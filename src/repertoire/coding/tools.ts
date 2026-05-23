@@ -5,6 +5,7 @@ import { prepareCodingContextPack } from "./context-pack"
 import type { ToolContext, ToolDefinition } from "../tools-base"
 import { getAgentRoot } from "../../heart/identity"
 import { advanceObligation, createObligation, findPendingObligationForOrigin } from "../../arc/obligations"
+import { consumeEvolutionBudget, evaluateEvolutionAction, type EvolutionActionDecision } from "../../arc/evolution"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getCodingCompletionScrutiny } from "../../mind/scrutiny"
 import type { CodingRunner, CodingSession, CodingSessionRequest } from "./types"
@@ -23,7 +24,7 @@ function parseRunner(value: string): CodingRunner | null {
   return RUNNERS.includes(value as CodingRunner) ? (value as CodingRunner) : null
 }
 
-function optionalArg(args: Record<string, string>, key: "taskRef" | "scopeFile" | "stateFile"): string | undefined {
+function optionalArg(args: Record<string, string>, key: string): string | undefined {
   const raw = args[key]
   if (!raw) return undefined
   const trimmed = raw.trim()
@@ -84,6 +85,7 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
 
   const scopeMatches = request.scopeFile ? session.scopeFile === request.scopeFile : true
   const stateMatches = request.stateFile ? session.stateFile === request.stateFile : true
+  const evolutionCaseMatches = request.evolutionCaseId ? session.evolutionCaseId === request.evolutionCaseId : true
 
   return (
     session.runner === request.runner &&
@@ -91,6 +93,7 @@ function matchesReusableCodingSession(session: CodingSession, request: CodingSes
     session.taskRef === request.taskRef &&
     scopeMatches &&
     stateMatches &&
+    evolutionCaseMatches &&
     session.obligationId === request.obligationId &&
     sameOriginSession(request.originSession, session.originSession)
   )
@@ -168,6 +171,28 @@ function buildCodingObligationContent(taskRef: string): string {
   return `finish ${taskRef} and bring the result back`
 }
 
+function blockedEvolutionSpawnResult(evolutionCaseId: string, decision: EvolutionActionDecision): string {
+  return JSON.stringify({
+    ok: false,
+    blocked: true,
+    action: "spawn_coding",
+    evolutionCaseId,
+    code: decision.code,
+    reason: decision.reason,
+  })
+}
+
+function recordBlockedEvolutionSpawn(agentRoot: string, evolutionCaseId: string, decision: EvolutionActionDecision): void {
+  if (decision.code === "case_not_found") return
+  try {
+    consumeEvolutionBudget(agentRoot, evolutionCaseId, "spawn_coding", {
+      reason: `coding_spawn blocked: ${decision.reason}`,
+    })
+  } catch {
+    // consumeEvolutionBudget records the block before throwing.
+  }
+}
+
 const codingSpawnTool: OpenAI.ChatCompletionTool = {
   type: "function",
   function: {
@@ -182,6 +207,7 @@ const codingSpawnTool: OpenAI.ChatCompletionTool = {
         taskRef: { type: "string" },
         scopeFile: { type: "string" },
         stateFile: { type: "string" },
+        evolutionCaseId: { type: "string" },
       },
       required: ["runner", "workdir", "prompt", "taskRef"],
     },
@@ -273,6 +299,8 @@ export const codingToolDefinitions: ToolDefinition[] = [
         prompt,
         taskRef,
       }
+      const evolutionCaseId = optionalArg(args, "evolutionCaseId")
+      if (evolutionCaseId) request.evolutionCaseId = evolutionCaseId
 
       if (ctx?.currentSession && ctx.currentSession.channel !== "inner") {
         request.originSession = {
@@ -307,6 +335,14 @@ export const codingToolDefinitions: ToolDefinition[] = [
         return JSON.stringify({ ...existingSession, reused: true })
       }
 
+      if (request.evolutionCaseId) {
+        const decision = evaluateEvolutionAction(getAgentRoot(), request.evolutionCaseId, "spawn_coding")
+        if (!decision.allowed) {
+          recordBlockedEvolutionSpawn(getAgentRoot(), request.evolutionCaseId, decision)
+          return blockedEvolutionSpawnResult(request.evolutionCaseId, decision)
+        }
+      }
+
       if (request.originSession && !request.obligationId) {
         const created = createObligation(getAgentRoot(), {
           origin: request.originSession,
@@ -326,6 +362,12 @@ export const codingToolDefinitions: ToolDefinition[] = [
       }
 
       const session = await manager.spawnSession(request)
+      if (request.evolutionCaseId) {
+        consumeEvolutionBudget(getAgentRoot(), request.evolutionCaseId, "spawn_coding", {
+          target: session.id,
+          reason: `coding session ${session.id} spawned`,
+        })
+      }
       if (session.obligationId) {
         advanceObligation(getAgentRoot(), session.obligationId, {
           status: "investigating",
