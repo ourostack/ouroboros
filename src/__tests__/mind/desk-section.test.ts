@@ -63,27 +63,27 @@ describe("deskSection", () => {
     vi.clearAllMocks()
   })
 
-  it("always includes the static Candidate D body and all three 'what doesn't' bullets", () => {
+  it("always includes the static desk-room body and all three 'what doesn't' bullets", () => {
     const result = deskSection(NOW)
     expect(result).toContain("## my desk")
-    expect(result).toContain("every ouro agent has a desk")
+    expect(result).toContain("i have a desk")
     // all three "what doesn't" bullets including the first-class systems one
     expect(result).toContain("- a single-turn answer")
     expect(result).toContain("- ephemeral debugging that resolves in the same exchange")
-    expect(result).toContain("work that has its own first-class system")
-    expect(result).toContain("trips, habits, attention items, diary entries, journal entries")
+    expect(result).toContain("work that has its own room")
+    expect(result).toContain("trips live in a travel folder")
   })
 
   it("returns empty-desk stub when no <bundle>/desk/ dir exists", () => {
     // no desk/ directory under tmpDir
     const result = deskSection(NOW)
-    expect(result).toContain("### currently\nempty — no tracks yet.")
+    expect(result).toContain("### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.")
   })
 
   it("returns empty-desk stub when desk/ exists but contains no tracks", () => {
     fs.mkdirSync(path.join(tmpDir, "desk"), { recursive: true })
     const result = deskSection(NOW)
-    expect(result).toContain("### currently\nempty — no tracks yet.")
+    expect(result).toContain("### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.")
   })
 
   it("single-track desk with no featured.md falls back to alphabetical first", () => {
@@ -91,9 +91,9 @@ describe("deskSection", () => {
     const trackDir = writeTrack(deskRoot, "harness-care")
     writeTask(trackDir, "rewrite-bridges", { status: "processing", updated: "2026-05-22T10:00:00Z" })
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: harness-care   (status: active)")
+    expect(result).toContain("nearest the front of the desk: harness-care   (status: active)")
     expect(result).toContain("→ rewrite-bridges")
-    expect(result).toContain("non-terminal tasks: 1")
+    expect(result).toContain("tasks still open: 1")
   })
 
   it("single-track desk with featured.md uses the featured slug", () => {
@@ -102,7 +102,7 @@ describe("deskSection", () => {
     writeTask(trackDir, "fix-thing", { status: "processing", updated: "2026-05-22T10:00:00Z" })
     writeFeatured(deskRoot, ["harness-care"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: harness-care   (status: active)")
+    expect(result).toContain("nearest the front of the desk: harness-care   (status: active)")
   })
 
   it("multi-track desk: featured.md picks one, others appear alphabetically in 'other active tracks'", () => {
@@ -115,9 +115,9 @@ describe("deskSection", () => {
     writeTask(t3, "task-z", { status: "processing", updated: "2026-05-22T11:00:00Z" })
     writeFeatured(deskRoot, ["harness-care"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: harness-care")
-    expect(result).toContain("other active tracks: alpha-track, zulu-track")
-    expect(result).toContain("non-terminal tasks: 3")
+    expect(result).toContain("nearest the front of the desk: harness-care")
+    expect(result).toContain("also open on the desk: alpha-track, zulu-track")
+    expect(result).toContain("tasks still open: 3")
   })
 
   it("stale featured slug (listed but no track dir) falls back to next entry then alphabetical", () => {
@@ -126,7 +126,7 @@ describe("deskSection", () => {
     writeTrack(deskRoot, "beta")
     writeFeatured(deskRoot, ["ghost-track", "beta"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: beta")
+    expect(result).toContain("nearest the front of the desk: beta")
     // and never crashes
   })
 
@@ -136,7 +136,7 @@ describe("deskSection", () => {
     writeTrack(deskRoot, "beta")
     writeFeatured(deskRoot, ["ghost-1", "ghost-2"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: alpha")
+    expect(result).toContain("nearest the front of the desk: alpha")
   })
 
   it("closed featured track is skipped; falls back to alphabetical first active", () => {
@@ -145,9 +145,9 @@ describe("deskSection", () => {
     writeTrack(deskRoot, "beta", "active")
     writeFeatured(deskRoot, ["alpha"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: beta   (status: active)")
+    expect(result).toContain("nearest the front of the desk: beta   (status: active)")
     // closed track NOT in other active tracks either
-    expect(result).not.toContain("other active tracks: alpha")
+    expect(result).not.toContain("also open on the desk: alpha")
   })
 
   it("emits top-N (N=3) non-terminal tasks oldest-updated first; skips done/cancelled", () => {
@@ -177,7 +177,7 @@ describe("deskSection", () => {
     expect(result).not.toContain("→ old-done")
     expect(result).not.toContain("→ old-cancelled")
     // count of non-terminal across all tracks
-    expect(result).toContain("non-terminal tasks: 5")
+    expect(result).toContain("tasks still open: 5")
   })
 
   it("schema_version: 0 (no field) parses identically to schema_version: 1", () => {
@@ -188,9 +188,9 @@ describe("deskSection", () => {
     writeTask(t2, "task-v1", { status: "processing", updated: "2026-05-22T10:00:00Z", schemaVersion: 1 })
     writeFeatured(deskRoot, ["alpha-v0"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: alpha-v0")
+    expect(result).toContain("nearest the front of the desk: alpha-v0")
     expect(result).toContain("→ task-v0")
-    expect(result).toContain("non-terminal tasks: 2")
+    expect(result).toContain("tasks still open: 2")
   })
 
   it("golden snapshot of an assembled body for a small representative fixture desk", () => {
@@ -256,7 +256,7 @@ describe("deskSection — coverage-gate edge cases", () => {
     writeTrack(path.join(tmpDir, "desk"), "harness-care", "active")
     writeFeatured(path.join(tmpDir, "desk"), ["not-a-real-track", "harness-care"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: harness-care")
+    expect(result).toContain("nearest the front of the desk: harness-care")
   })
 
   it("pickFeatured loop iterates past an ineligible featured entry to the next", () => {
@@ -265,7 +265,7 @@ describe("deskSection — coverage-gate edge cases", () => {
     writeTrack(path.join(tmpDir, "desk"), "second-active", "active")
     writeFeatured(path.join(tmpDir, "desk"), ["first-closed", "second-active"])
     const result = deskSection(NOW)
-    expect(result).toContain("FEATURED: second-active")
+    expect(result).toContain("nearest the front of the desk: second-active")
   })
 
   it("pickFeatured returns null when no eligible track exists anywhere", () => {
@@ -273,7 +273,7 @@ describe("deskSection — coverage-gate edge cases", () => {
     writeTrack(path.join(tmpDir, "desk"), "all-closed-a", "closed")
     writeTrack(path.join(tmpDir, "desk"), "all-closed-b", "closed")
     const result = deskSection(NOW)
-    expect(result).toContain("empty — no tracks yet")
+    expect(result).toContain("the desk is quiet today — no tracks yet. a good time to lay something down.")
   })
 
   it("readTrackFile catch fires when track dir has no track.md (defaults to active)", () => {
@@ -286,7 +286,7 @@ describe("deskSection — coverage-gate edge cases", () => {
     })
     const result = deskSection(NOW)
     // Track defaults to "active" → eligible as featured fallback → surfaces
-    expect(result).toContain("FEATURED: no-track-md-here")
+    expect(result).toContain("nearest the front of the desk: no-track-md-here")
   })
 
   it("sortOldestUpdatedFirst handles invalid Date strings (NaN times)", () => {

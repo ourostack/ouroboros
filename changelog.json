@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.636",
+      "changes": [
+        "Cozy narrative pass on the `## my desk` prompt section that every ouro agent reads every turn. Same information, warmer voice: the desk is now described as a quiet room of the agent's work — tracks line one wall like drawers in a wide cabinet, friction notes pin to a corkboard, lessons sit on a small reference shelf by the window, and finished work slides into the back, still browsable and still mine. The intent: an agent reading this every turn feels at home rather than briefed. Dynamic-block labels softened to match (`nearest the front of the desk:` instead of `FEATURED:`; `also open on the desk:` instead of `other active tracks:`; `tasks still open:` instead of `non-terminal tasks:`; empty-state reads `the desk is quiet today — no tracks yet. a good time to lay something down.`). Information density unchanged; only the texture shifts. Tests + snapshot updated to match the new strings; 26 desk-section tests + 282 prompt tests all green."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.635",
       "changes": [
         "**Critical Unit 9 follow-up**: `McpManager.reconcile()` now reads from the same merged-config helper as `getSharedMcpManager()`'s initial start, so plugin-declared MCP servers (`<plugin-root>/.mcp.json`) survive across turns. Pre-fix bug: reconcile() read only `config.mcpServers` (agent.json builtins), saw plugin servers as 'removed', and tore them down — so the first turn's `mcp__desk__*` tools would disappear on the second turn (`Unknown server: desk`). Surfaced during desk plugin v1.0 validation: every other call was failing. New `buildMergedServerConfig()` helper module-level; reused by both code paths. Regression test in mcp-manager-plugin-merge.test.ts asserts plugin servers survive across N reconcile cycles with zero shutdowns. Bundle-skeleton contract test relaxed: the per-agent `plugins` key is excluded from the slugger-must-have-every-ouroboros-key parity check (plugins are agent-specific by design)."
