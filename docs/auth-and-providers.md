@@ -161,7 +161,7 @@ For example, a DNS workflow binding may say:
 ```yaml
 domain: ouro.bot
 driver: porkbun
-credentialItem: ops/registrars/porkbun/accounts/ari@mendelow.me
+credentialItem: ops/registrars/porkbun/accounts/you@example.com
 resourceAllowlist:
   - ouro.bot
 ```
@@ -254,10 +254,10 @@ Why I cannot fix this automatically:
   OpenAI Codex auth requires a human browser login or refreshed OAuth credentials.
 
 Do this in your terminal:
-  ouro auth --agent slugger --provider openai-codex
+  ouro auth --agent <agent> --provider openai-codex
 
 Then verify:
-  ouro auth verify --agent slugger --provider openai-codex
+  ouro auth verify --agent <agent> --provider openai-codex
 ```
 
 Example manual API-key repair:
@@ -271,7 +271,7 @@ Why I cannot fix this automatically:
 Do this:
   1. Create a new Anthropic API key in the Anthropic console.
   2. Run:
-     ouro auth --agent slugger --provider anthropic
+     ouro auth --agent <agent> --provider anthropic
   3. Paste the key into the terminal prompt, not into chat.
 ```
 
@@ -284,7 +284,7 @@ The system prompt should render a small provider section from current runtime st
 ```text
 runtime uses provider bindings from agent.json:
 - outward: minimax / MiniMax-M2.5 [ready; credentials: vault]
-- inner: openai-codex / gpt-5.4 [failed: auth; repair: ouro auth --agent slugger --provider openai-codex]
+- inner: openai-codex / gpt-5.4 [failed: auth; repair: ouro auth --agent <agent> --provider openai-codex]
 ```
 
 When provider readiness is degraded, prompt guidance should include:
@@ -304,7 +304,7 @@ SerpentGuide needs provider credentials to run the adoption conversation.
 Interactive hatch should bootstrap SerpentGuide like this:
 
 1. Discover usable provider credentials from already installed agents whose vaults are unlockable on this machine.
-2. Show where each option came from, such as `minimax from slugger` or `anthropic from ouroboros`.
+2. Show where each option came from, such as `minimax from <agent-a>` or `anthropic from <agent-b>`.
 3. If no usable credentials are found, prompt the human: "No credentials found. What should your new agent use?"
 4. Guide the human through provider-specific auth without asking for secrets in chat.
 5. Ping-check the selected provider credentials.

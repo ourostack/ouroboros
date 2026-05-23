@@ -764,8 +764,8 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       //   2. /health probe times out at 5s
       //   3. Daemon declares the sense "critical" → SIGTERMs it mid-work
       //   4. Sense respawns, recovery loop replays the same inbound message
-      //      into the agent's BB session (visible side-effect — slugger saw
-      //      the same user text injected 76 times)
+      //      into the agent's BB session (visible side-effect — an affected
+      //      agent saw the same user text injected 76 times)
       //   5. New sense hits the same VLM call, gets killed at 5s, repeat
       //
       // The probe was redundant supervision: dead processes are already

@@ -106,7 +106,7 @@ function resolveAgentNameForPaths(explicit?: string): string {
   try {
     return getAgentName()
   } catch {
-    return "slugger"
+    return "default"
   }
 }
 

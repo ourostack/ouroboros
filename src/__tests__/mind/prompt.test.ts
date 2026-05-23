@@ -1016,7 +1016,7 @@ describe("buildSystem", () => {
     expect(result).toContain("- web_search:")
   })
 
-  it("includes desk section with the Candidate D body", async () => {
+  it("includes desk section with the desk-vocab body", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()

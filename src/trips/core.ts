@@ -1,7 +1,7 @@
 // Harness-side trip ledger primitive.
 //
 // Mirrors the substrate's @ouro/work-protocol/src/trip.ts contract (vendored
-// the same way mailroom/core.ts vendors mail). Slugger's framing: today,
+// the same way mailroom/core.ts vendors mail). Original framing of the gap: today,
 // doc-edits-from-mail keep falling back on freeform parsing because there is
 // no structured object between "mail body" and "travel doc". TripRecord +
 // TripLeg are that object — every leg fact carries non-optional provenance

@@ -21,8 +21,6 @@ This file is the practical companion, not the source of truth.
 
 Use an agent-specific branch:
 
-- `ouroboros/<slug>`
-- `slugger/<slug>`
 - `<agent>/<slug>`
 
 Do not work directly on `main`.
@@ -33,7 +31,7 @@ Planning and doing docs live in the owning bundle, not in this repo:
 
 `~/AgentBundles/<agent>.ouro/tasks/one-shots/`
 
-Do not create new repo-local task directories like `slugger/tasks/`.
+Do not create new repo-local task directories like `<agent>/tasks/`.
 
 ## Commits
 

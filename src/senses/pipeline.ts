@@ -245,7 +245,7 @@ function formatFailoverSwitchLabel(action: Extract<FailoverAction, { action: "sw
 
 /**
  * Build the operational refusal context message handed back to the agent when
- * a failover switch is rejected by the preflight ping. Slugger-tested format:
+ * a failover switch is rejected by the preflight ping. Field-tested format:
  * lead with the refusal + reason, restate the lane that's still standing, then
  * list remaining ready alternatives so the next turn doesn't have to re-enter
  * discovery mode.

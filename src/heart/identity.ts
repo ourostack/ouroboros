@@ -82,9 +82,9 @@ export interface AgentConfig {
   /**
    * Plugins this agent has enabled. Plugins are machine-installed at
    * ~/.ouro-cli/plugins/<plugin-id>/ via `ouro plugin install`; this list
-   * declares which of them apply to this agent. Added 2026-05-18 for
-   * worker-generalization W5 plugin support. desk plugin is the first
-   * use-case.
+   * declares which of them apply to this agent. Added 2026-05-18 to support
+   * generalizing the bundle layout so external plugins can ship reusable
+   * work-organization workspaces (the desk plugin is the first such use case).
    */
   plugins?: PluginConfig[]
 }
@@ -317,7 +317,7 @@ function resolveOptionalAgentName(agentName?: string): string {
   try {
     return getAgentName()
   } catch {
-    return "slugger"
+    return "default"
   }
 }
 

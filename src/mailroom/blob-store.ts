@@ -25,7 +25,7 @@ const MESSAGE_INDEX_PREFIX = "message-index"
 const MESSAGE_INDEX_SORT_MAX_MS = 9_999_999_999_999
 const MESSAGE_INDEX_SORT_WIDTH = 13
 const MESSAGE_INDEX_NO_SOURCE = "~"
-// Bumped from 20s after Slugger's HEY-corpus validation revealed that
+// Bumped from 20s after real HEY-corpus validation revealed that
 // real-world mail bodies (HTML-heavy booking confirmations, MBOX-imported
 // large messages) regularly exceed the original 20s ceiling. 60s with 2
 // attempts = 120s max wait, which is closer to what Azure Blob actually

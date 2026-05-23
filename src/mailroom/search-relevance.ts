@@ -2,7 +2,7 @@
 //
 // Today the agent's mail search ranks by recency only — `searchText.includes(term)`
 // then `receivedAt` desc. That works for "give me the latest message" but fails
-// the workflow Slugger actually does most: "find the decisive booking message
+// the workflow agents actually do most: "find the decisive booking message
 // in this delegated mailbox so I can update a travel doc from real evidence."
 // Recent newsletter / itinerary chatter from the same sender drowns the older
 // confirmation.

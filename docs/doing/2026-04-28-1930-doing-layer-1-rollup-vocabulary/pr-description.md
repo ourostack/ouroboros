@@ -12,7 +12,7 @@ First in the four-PR harness-hardening sequence (1 → 4 → 2 → 3). Replaces 
 | `safe-mode` | rollup fn | Crash-loop tripped (3 in 5min). Overrides everything else. |
 | `down` | caller (daemon-entry pre-inventory failure path) | Daemon process can't start / can't read inventory. NOT returned by `computeDaemonRollup` — by the time the rollup function is reachable the daemon is post-inventory. |
 
-After this PR, `degraded` means "zero enabled agents serving" — not "any one agent is unhealthy." The slugger-symptom (one sick agent tipping the whole harness to `degraded`) is fixed at the rollup layer.
+After this PR, `degraded` means "zero enabled agents serving" — not "any one agent is unhealthy." The one-sick-agent-poisons-the-whole-harness symptom (one sick agent tipping the whole harness to `degraded`) is fixed at the rollup layer.
 
 ## Type structure
 

@@ -1,5 +1,5 @@
 /**
- * W6 Unit 11 — `ouro migrate-to-desk` migrator.
+ * `ouro migrate-to-desk` migrator.
  *
  * Reads `<bundle>/tasks/**` recursively, classifies each file per the
  * shared triage rules (see `src/repertoire/desk/classifier.ts`), and writes
@@ -53,7 +53,7 @@ import {
 // ── Public command shape ──
 
 export interface MigrateToDeskOptions {
-  /** Agent bundle name (e.g. "slugger"). Used to derive default root. */
+  /** Agent bundle name (e.g. "MyAgent"). Used to derive default root. */
   agent: string
   /**
    * Override for the bundle root. When set, the migrator reads
@@ -525,7 +525,7 @@ function pickCanonical(candidates: GroupedEntry[]): GroupedEntry {
   const role = (rel: string): number => {
     const base = path.basename(rel)
     if (/\b-doing-/.test(base) || /^doing-/.test(base.replace(/^\d{4}-\d{2}-\d{2}(?:-\d{4})?-/, ""))) return 0
-    /* v8 ignore start -- the `^planning-` post-strip alternative and the `return 2` other-role fallthrough only fire for undated filenames (no `YYYY-MM-DD-` prefix). Slugger + ouroboros bundles use the dated convention exclusively. @preserve */
+    /* v8 ignore start -- the `^planning-` post-strip alternative and the `return 2` other-role fallthrough only fire for undated filenames (no `YYYY-MM-DD-` prefix). Real bundles use the dated convention exclusively. @preserve */
     if (/\b-planning-/.test(base) || /^planning-/.test(base.replace(/^\d{4}-\d{2}-\d{2}(?:-\d{4})?-/, ""))) return 1
     return 2
     /* v8 ignore stop */
@@ -614,7 +614,7 @@ function renderTaskMd(sources: GroupedEntry[], primaryRelPath: string): string {
   // Footer noting the migration provenance.
   const trailer = [
     "",
-    "<!-- migrated from `tasks/" + primaryRelPath + "` on 2026-05-22 (W6 Unit 11) -->",
+    "<!-- migrated from `tasks/" + primaryRelPath + "` on 2026-05-22 -->",
     "",
   ].join("\n")
   return withSchema.endsWith("\n") ? withSchema + trailer : withSchema + "\n" + trailer
@@ -632,7 +632,7 @@ function renderLegacyTrackMd(today: Date): string {
     "",
     "# legacy",
     "",
-    `Migrated from \`tasks/\` on ${dateStr} as part of W6 Unit 11.`,
+    `Migrated from \`tasks/\` on ${dateStr} by the legacy-tasks-to-desk migrator.`,
     "",
     "## triage rules",
     "",
@@ -684,7 +684,7 @@ function renderEuropeTripTrackMd(today: Date): string {
     "",
     "## status",
     "",
-    "Migrated as part of W6 Unit 11 from `tasks/ongoing/2026-03-09-1410-summer-2026-europe-trip.md`. Flesh out from original sources + `travel/2026-summer-trip/` state.",
+    "Migrated by the legacy-tasks-to-desk migrator from `tasks/ongoing/2026-03-09-1410-summer-2026-europe-trip.md`. Flesh out from original sources + `travel/2026-summer-trip/` state.",
     "",
     "## links into trip-tools",
     "",
@@ -718,7 +718,7 @@ function renderEuropeTripOverview(): string {
     "",
     "This desk track owns only the project-management overlay: the weekly pulse and the open chase items. It LINKS to trip-tools files; it does not duplicate them.",
     "",
-    "Migrated as a minimal stub per W6 Unit 11. Flesh out content from `tasks/ongoing/2026-03-09-1410-summer-2026-europe-trip.md` + the latest gap-fill.",
+    "Migrated as a minimal stub by the legacy-tasks-to-desk migrator. Flesh out content from `tasks/ongoing/2026-03-09-1410-summer-2026-europe-trip.md` + the latest gap-fill.",
     "",
   ].join("\n")
 }
@@ -734,9 +734,9 @@ function renderEuropeTripNextActions(): string {
     "Project-management actions that trip-tools don't naturally model:",
     "",
     "- (placeholder) Surface 3-5 replacement-flight candidates",
-    "- (placeholder) Confirm Italy/wedding lodging artifact from Ari",
+    "- (placeholder) Confirm Italy/wedding lodging artifact from the operator",
     "",
-    "Stub per W6 Unit 11 — operator can hand-edit content in a follow-up.",
+    "Stub left by the migrator — operator can hand-edit content in a follow-up.",
     "",
   ].join("\n")
 }
@@ -762,7 +762,7 @@ function renderEuropeTripOutboundTask(today: Date): string {
     "",
     "Hotel Märthof check-in is 15:00 on Aug 2.",
     "",
-    "Stub per W6 Unit 11 — operator can hand-edit content in a follow-up.",
+    "Stub left by the migrator — operator can hand-edit content in a follow-up.",
     "",
   ].join("\n")
 }
@@ -786,7 +786,7 @@ function renderEuropeTripWeeklyTask(today: Date): string {
     "",
     "Recurring project-level pulse. Each tick: walk `travel/2026-summer-trip/bookings.md`, list open slots and any `target_date` inside the next interval, append a one-line entry to `_planning/next-actions.md`. Post-departure: auto-archive.",
     "",
-    "Stub per W6 Unit 11 — operator can hand-edit content in a follow-up.",
+    "Stub left by the migrator — operator can hand-edit content in a follow-up.",
     "",
   ].join("\n")
 }

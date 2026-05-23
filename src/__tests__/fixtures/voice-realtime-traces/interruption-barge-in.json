@@ -6,7 +6,7 @@
   "expectationProfile": "voice-phone-default",
   "events": [
     { "atMs": 0, "event": "twilio.media.start", "source": { "transport": "twilio-media-stream", "id": "stream-barge" } },
-    { "atMs": 50, "event": "voice.context.injected", "friendId": "friend-ari", "sessionKey": "twilio-phone-friend-ari-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-ari, trust=family).", "source": { "transport": "voice-eval" } },
+    { "atMs": 50, "event": "voice.context.injected", "friendId": "friend-example", "sessionKey": "twilio-phone-friend-example-via-ouro", "text": "Resolved voice friend: Ari (friendId=friend-example, trust=family).", "source": { "transport": "voice-eval" } },
     { "atMs": 80, "event": "openai.realtime.session.updated", "session": { "turnDetection": { "createResponse": false, "interruptResponse": false } }, "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
     { "atMs": 120, "event": "openai.realtime.response.create.sent", "correlationId": "greeting", "source": { "transport": "openai-realtime-control", "id": "ws-barge" } },
     { "atMs": 520, "event": "openai.realtime.output_audio.delta", "correlationId": "greeting", "source": { "transport": "openai-sip", "id": "sip-barge" } },

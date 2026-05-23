@@ -150,7 +150,7 @@ const DISPATCH_EXEMPT_PATTERNS = [
   // No side effects of its own; callers emit nerves events around their
   // parse calls (e.g. daemon.habit_parse, daemon.await_parse).
   "util/frontmatter",
-  // W6 Unit 11 migration classifier: pure-data per-file bucketing function.
+  // Legacy-tasks-to-desk migration classifier: pure-data per-file bucketing function.
   // The caller (migrate-to-desk.ts) owns observability via
   // daemon.migrate_to_desk_* events around the runMigrateToDesk() entry
   // points.

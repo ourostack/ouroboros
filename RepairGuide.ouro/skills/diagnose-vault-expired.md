@@ -31,7 +31,7 @@ The LLM has to decide between these based on the `actualRevision` value (present
 ```json
 {
   "kind": "vault-unlock",
-  "agent": "slugger",
+  "agent": "<agent>",
   "provider": "anthropic",
   "reason": "credential-revision-changed: pinned rev abc123, current rev def456"
 }
@@ -40,7 +40,7 @@ The LLM has to decide between these based on the `actualRevision` value (present
 ```json
 {
   "kind": "vault-replace",
-  "agent": "slugger",
+  "agent": "<agent>",
   "provider": "anthropic",
   "reason": "credential-revision-changed: provider revoked rev abc123, no replacement in vault"
 }
@@ -49,7 +49,7 @@ The LLM has to decide between these based on the `actualRevision` value (present
 ```json
 {
   "kind": "vault-create",
-  "agent": "slugger",
+  "agent": "<agent>",
   "provider": "anthropic",
   "reason": "credential-revision-changed: vault has no credential for this provider"
 }

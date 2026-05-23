@@ -32,9 +32,9 @@ describe("COMMAND_REGISTRY", () => {
       "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
       "habit", "poke", "friend", "link", "auth", "thoughts", "inner",
       "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
-      // W6 Unit 10
+      // desk umbrella CLI + task alias
       "desk", "task",
-      // W6 Unit 11
+      // legacy-tasks-to-desk migrator
       "migrate-to-desk",
     ]
     for (const cmd of expectedCommands) {

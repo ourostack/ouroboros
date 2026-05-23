@@ -50,7 +50,7 @@ function letGo(args: LetGoArgs, agentRoot: string, agentName: string): string {
     ? args.reason.trim()
     : null
 
-  // 1. ReturnObligation (inner) first — these are what slugger sees in "held work items".
+  // 1. ReturnObligation (inner) first — these are what the agent sees in "held work items".
   const ret = readReturnObligation(agentName, id)
   if (ret) {
     if (ret.status === "returned" || ret.status === "deferred") {

@@ -22,7 +22,7 @@ Your response must contain exactly one JSON block, delimited by triple-backtick 
 ```json
 {
   "actions": [
-    { "kind": "vault-unlock", "agent": "slugger", "reason": "credential expired" }
+    { "kind": "vault-unlock", "agent": "<agent>", "reason": "credential expired" }
   ]
 }
 ```

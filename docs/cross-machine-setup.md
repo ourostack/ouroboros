@@ -203,7 +203,7 @@ The guided flow handles platform differences automatically: `ouro clone` works o
 
 **"git is not installed"** — Install git for your platform. The error message includes instructions.
 
-**Clone fails with auth error** — Make sure you can access the remote. Run `gh auth login` or set up git credentials for the account that owns the bundle repo. If the bundle is on an Enterprise Managed User (EMU) GitHub account, you may need to switch accounts first: `gh auth switch` (or `gh auth login` with the EMU account if not yet added).
+**Clone fails with auth error** — Make sure you can access the remote. Run `gh auth login` or set up git credentials for the account that owns the bundle repo. If the bundle lives on an account that requires switching (for example, a managed work account distinct from your personal one), do that first with `gh auth switch` (or `gh auth login` with the work account if not yet added).
 
 **"ouro: command not found" after install** — Open a new terminal or run the `source` command printed during install.
 
