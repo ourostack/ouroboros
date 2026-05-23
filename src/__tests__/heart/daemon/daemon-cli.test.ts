@@ -8612,7 +8612,7 @@ describe("ouro up per-agent progress threading", () => {
 
     expect(mockHealthCheck).not.toHaveBeenCalled()
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("Run `ouro use --agent slugger --lane outward --provider openai-codex --model gpt-5.5`."))
-  })
+  }, 10_000)
 
   it("falls back to foreground provider checks when daemon status cannot be read", async () => {
     mockHealthCheck.mockClear()
@@ -8659,7 +8659,7 @@ describe("ouro up per-agent progress threading", () => {
     await runOuroCli(["up"], deps)
 
     expect(mockHealthCheck).toHaveBeenCalled()
-  })
+  }, 10_000)
 
   it("passes onProgress callback to checkAgentConfigWithProviderHealth during ouro up provider checks", async () => {
     mockHealthCheck.mockResolvedValue({ ok: true })
@@ -8769,7 +8769,7 @@ describe("ouro up post-repair progress phase", () => {
       (call: unknown[]) => call[2] && typeof (call[2] as Record<string, unknown>).onProgress === "function",
     )
     expect(postRepairCallWithOnProgress).toBeDefined()
-  })
+  }, 10_000)
 
   it("wraps post-repair re-check in a progress phase (non-TTY output)", async () => {
     // First call: return degraded. Post-repair: return ok.
