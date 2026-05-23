@@ -4,37 +4,42 @@ import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Static body — Candidate D synthesis (verbatim from
-// worker-generalization/2026-05-20-w6-desk-as-universal-substrate/design-decisions.md §10)
+// Static body — the agent's daily-read description of its desk.
+//
+// This is the room every ouro agent sits down in at the top of every turn.
+// The voice is intentional: lowercase, second-person-implied, physical
+// metaphor (drawers, corkboard, reference shelf, back-of-room archive). The
+// goal is that an agent reading this every turn feels at home rather than
+// being briefed — the desk is the agent's place, not a system being
+// explained to it.
 // ──────────────────────────────────────────────────────────────────────────────
 
 const STATIC_BODY = `## my desk
 
-every ouro agent has a desk. mine is at \`desk/\`. it's where my work lives across sessions — the source of truth for what i'm doing, what's queued, what's paused, what's done.
+i have a desk. it lives at \`desk/\` — a quiet room of my work, persistent across sessions. tracks line one wall like drawers in a wide cabinet; each drawer holds tasks in their own folders. friction notes pin to the corkboard where i won't lose them. the lessons i've kept sit on a small reference shelf by the window. nothing here gets thrown away — when a task is done it slides into the back, still browsable, still mine. semantic search reaches every surface: active work, the archive at the back, the corkboard, the lessons shelf.
 
-**the reflex:** if work spans more than this turn, OR i'd forget it after this turn, OR it's something the operator will ask about later — it goes on desk *now*, before i start.
+**the reflex.** when something belongs on the desk, i put it down before i start — anything that spans more than this turn, anything i'd forget by tomorrow, anything the operator will ask about later. laying it down builds the room around future-me.
 
-**what belongs:**
+**what belongs on the desk:**
 - a project ("refactor the auth system", "draft the Q3 strategy memo")
 - a recurring task ("check the inbox every 30m") — uses \`cadence\`
 - a one-time reminder ("ping ari about the dentist tomorrow") — uses \`scheduledAt\`
 - a multi-step investigation ("figure out why the daemon flakes")
-- a friction note or lesson worth keeping
+- a friction note worth pinning to the board
+- a lesson worth shelving for future-me
 
 **what doesn't:**
-- a single-turn answer
+- a single-turn answer — it'll be done before the page turns
 - ephemeral debugging that resolves in the same exchange
-- work that has its own first-class system (trips, habits, attention items, diary entries, journal entries — those have their own homes; desk LINKS to them when relevant)
+- work that has its own room. trips live in a travel folder; habits keep their own ledger; attention items, diary entries, journal entries — each has a separate home. the desk *links* to them when relevant; it doesn't absorb them.
 
-**shape:** tracks group related work (e.g. "harness-care", "summer-2026-europe-trip", or one per repo / feature area). tasks live in tracks. each task has iterations — one per work session, with \`planning.md\` and \`doing.md\`.
+**shape.** tracks group related work — drawers in the cabinet, or sections of a shelf if you prefer the library framing. tasks live in tracks. each task has iterations: one per work session, with \`planning.md\` and \`doing.md\` laid side-by-side on the page.
 
-**states:** \`drafting\` → \`processing\` → \`validating\` → \`done\`. plus \`collaborating\` (waiting on a human or peer agent), \`paused\` (operator deferred), \`blocked\` (external dependency), \`cancelled\`. external trackers (ADO, GitHub issues) get linked from the task, not replaced by it.
+**states.** every task moves: \`drafting\` → \`processing\` → \`validating\` → \`done\`. some pause along the way: \`collaborating\` when i'm waiting on a human or peer agent, \`paused\` when the operator set it down, \`blocked\` when something outside is in the way, \`cancelled\` when we stopped wanting it. external trackers (ADO work items, GitHub issues) get *linked* from a task, not *replaced* by one — the desk holds my view of the work; the trackers hold the team's.
 
-**how i interact:**
-- \`desk\` skills walk me through the moments: \`session-start\` (top of every session), \`task-lifecycle\` (on state change), \`start-task\`, \`friction-management\`, \`lesson-capture\`.
-- \`mcp__desk__*\` tools (search/recall/similar/timeline/thread/task_*) for runtime ops.
+**how i tend the desk.** the \`desk\` skills walk me through the small ceremonies — \`session-start\` when i sit down, \`task-lifecycle\` when a status shifts, \`start-task\` when i lay something new on the page, \`friction-management\` when i pin a card, \`lesson-capture\` when something earns the reference shelf. the \`mcp__desk__*\` tools (search / recall / similar / timeline / thread / task_*) are the hands for finding, writing, and threading work together.
 
-if i catch myself thinking "i should remember to…" — that's the desk signal. add the task first, then keep going.`;
+if i catch myself thinking "i should remember to…" — that's the desk asking for the task. put it down first, then keep going.`;
 
 const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled"]);
 const TERMINAL_TRACK_STATUSES = new Set(["closed"]);
@@ -238,14 +243,14 @@ function renderCurrently(deskRoot: string, now: Date = new Date()): string {
   }
 
   if (tracks.length === 0) {
-    return "### currently\nempty — no tracks yet.";
+    return "### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.";
   }
 
   const featuredList = readFeaturedList(deskRoot);
   const featured = pickFeatured(tracks, featuredList);
 
   if (!featured) {
-    return "### currently\nempty — no tracks yet.";
+    return "### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.";
   }
 
   const featuredTasks = sortOldestUpdatedFirst(nonTerminalTasks(featured)).slice(
@@ -254,7 +259,7 @@ function renderCurrently(deskRoot: string, now: Date = new Date()): string {
   );
 
   const lines: string[] = ["### currently"];
-  lines.push(`FEATURED: ${featured.slug}   (status: ${featured.status})`);
+  lines.push(`nearest the front of the desk: ${featured.slug}   (status: ${featured.status})`);
   for (const task of featuredTasks) {
     lines.push(
       `  → ${task.slug}   (status: ${task.status}, updated: ${formatRelative(task.updated, now)})`,
@@ -265,11 +270,11 @@ function renderCurrently(deskRoot: string, now: Date = new Date()): string {
     .filter((t) => t.slug !== featured.slug && !TERMINAL_TRACK_STATUSES.has(t.status))
     .map((t) => t.slug);
   if (otherActive.length > 0) {
-    lines.push(`other active tracks: ${otherActive.join(", ")}`);
+    lines.push(`also open on the desk: ${otherActive.join(", ")}`);
   }
 
   const nonTerminalCount = tracks.reduce((sum, t) => sum + nonTerminalTasks(t).length, 0);
-  lines.push(`non-terminal tasks: ${nonTerminalCount}`);
+  lines.push(`tasks still open: ${nonTerminalCount}`);
 
   return lines.join("\n");
 }
@@ -287,7 +292,7 @@ export function deskSection(now: Date = new Date()): string {
   });
   const deskRoot = readDeskRoot();
   if (!deskRoot) {
-    return `${STATIC_BODY}\n\n### currently\nempty — no tracks yet.`;
+    return `${STATIC_BODY}\n\n### currently\nthe desk is quiet today — no tracks yet. a good time to lay something down.`;
   }
   const currently = renderCurrently(deskRoot, now);
   return `${STATIC_BODY}\n\n${currently}`;
