@@ -11,8 +11,14 @@ import {
   type EvolutionCase,
 } from "../../arc/evolution"
 
+const { nervesEvents } = vi.hoisted(() => ({
+  nervesEvents: [] as Array<Record<string, unknown>>,
+}))
+
 vi.mock("../../nerves/runtime", () => ({
-  emitNervesEvent: vi.fn(),
+  emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
+    nervesEvents.push(event)
+  }),
 }))
 
 let agentRoot = ""
@@ -47,6 +53,7 @@ function makeCase(overrides: Partial<Parameters<typeof createEvolutionCase>[1]> 
 describe("evolution tools", () => {
   beforeEach(() => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-evolution-tools-"))
+    nervesEvents.length = 0
   })
 
   it("registers the expected tool names", () => {
@@ -79,6 +86,16 @@ describe("evolution tools", () => {
     for (const name of writeTools) {
       expect(findTool(name).riskProfile).toMatchObject({ mutates: "durable_state_write", risk: "high" })
     }
+  })
+
+  it("emits a tool-level nerves event when invoked", async () => {
+    await invoke("evolution_status")
+
+    expect(nervesEvents).toContainEqual(expect.objectContaining({
+      component: "repertoire",
+      event: "repertoire.evolution_tool_call",
+      meta: expect.objectContaining({ toolName: "evolution_status" }),
+    }))
   })
 
   it("evolution_status returns open case summaries and omits closed cases", async () => {

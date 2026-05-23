@@ -21,7 +21,8 @@ import {
   type EvolutionRatification,
   type EvolutionRedaction,
 } from "../arc/evolution"
-import type { ToolDefinition } from "./tools-base"
+import { emitNervesEvent } from "../nerves/runtime"
+import type { ToolDefinition, ToolHandler } from "./tools-base"
 
 const EVOLUTION_ACTIONS: ReadonlySet<EvolutionActionClass> = new Set([
   "create_case",
@@ -96,6 +97,18 @@ function nowIso(): string {
 
 function json(value: unknown): string {
   return JSON.stringify(value)
+}
+
+function withEvolutionToolTelemetry(toolName: string, handler: ToolHandler): ToolHandler {
+  return (args, ctx) => {
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.evolution_tool_call",
+      message: "evolution tool invoked",
+      meta: { toolName },
+    })
+    return handler(args, ctx)
+  }
 }
 
 function required(args: Record<string, string>, name: string): string | null {
@@ -184,7 +197,7 @@ function caseOrError(agentRoot: string, caseId: string) {
   return { ok: true, case: item }
 }
 
-export const evolutionToolDefinitions: ToolDefinition[] = [
+const rawEvolutionToolDefinitions: ToolDefinition[] = [
   {
     /* v8 ignore next -- static OpenAI tool schema is validated by the registry contract */
     tool: {
@@ -480,6 +493,11 @@ export const evolutionToolDefinitions: ToolDefinition[] = [
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "closes durable evolution case state" },
   },
 ]
+
+export const evolutionToolDefinitions: ToolDefinition[] = rawEvolutionToolDefinitions.map((definition) => ({
+  ...definition,
+  handler: withEvolutionToolTelemetry(definition.tool.function.name, definition.handler),
+}))
 
 export function getOpenEvolutionCasesForActiveWork(agentRoot = getAgentRoot()) {
   return listOpenEvolutionCases(agentRoot).map((item) => ({
