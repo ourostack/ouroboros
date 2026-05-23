@@ -32,6 +32,7 @@ describe("speakTool schema (Unit 5)", () => {
     expect(description.length).toBeGreaterThan(0)
     expect(description.startsWith("i ")).toBe(true)
     expect(description).toContain("speak")
+    expect(description).toContain("after speaking, continue with tools")
     // anti-hedging regex (matches Unit 9a) — "can" intentionally excluded; see doing doc Pass 8 note.
     expect(/(\b(may|should|prefer)\b|if relevant)/i.test(description)).toBe(false)
   })
