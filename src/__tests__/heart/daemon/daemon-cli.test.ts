@@ -810,6 +810,7 @@ describe("ouro CLI execution", () => {
   })
 
   it("reports a single worker still answering during final daemon handoff", async () => {
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const writeStdout = vi.fn()
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -853,6 +854,10 @@ describe("ouro CLI execution", () => {
         .mockResolvedValueOnce(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupTimeoutMs: 60,
     }
 
     const result = await runOuroCli(["up"], deps)
@@ -863,6 +868,7 @@ describe("ouro CLI execution", () => {
   })
 
   it("reports multiple workers still answering during final daemon handoff", async () => {
+    let nowMs = Date.parse("2026-04-10T05:02:36.000Z")
     const writeStdout = vi.fn()
     const deps: OuroCliDeps = {
       socketPath: "/tmp/ouro-test.sock",
@@ -920,6 +926,10 @@ describe("ouro CLI execution", () => {
         .mockResolvedValueOnce(true),
       cleanupStaleSocket: vi.fn(),
       fallbackPendingMessage: vi.fn(() => "/tmp/pending.jsonl"),
+      sleep: vi.fn(async (ms: number) => { nowMs += ms }),
+      now: () => nowMs,
+      startupPollIntervalMs: 5,
+      startupTimeoutMs: 60,
     }
 
     const result = await runOuroCli(["up"], deps)
