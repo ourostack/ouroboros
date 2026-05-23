@@ -27,6 +27,7 @@
     "teams": "tsc && node dist/senses/teams-entry.js --agent ouroboros",
     "bluebubbles": "tsc && node dist/senses/bluebubbles/entry.js --agent ouroboros",
     "voice:eval": "npm run build && node dist/senses/voice-realtime-eval-entry.js",
+    "worktree:bootstrap": "npm install --ignore-scripts",
     "test": "vitest run",
     "test:integration": "npm run build && vitest run --config vitest.integration.config.ts",
     "test:e2e:package": "npm run build && node scripts/package-e2e.cjs",

@@ -61,6 +61,14 @@ Avoid stale scopes from removed layouts like `wardrobe`.
 
 ## Testing
 
+In a fresh worktree, bootstrap the local dependencies before running checks:
+
+```bash
+npm run worktree:bootstrap
+```
+
+This runs `npm install --ignore-scripts` against the repo lockfile. Do not run direct `npx vitest` or `npx tsc` commands before this bootstrap; the repo `.npmrc` rejects new transient `npx` downloads, and Vitest config prints bootstrap guidance if an existing npm exec cache is reused without `node_modules`.
+
 For runtime code changes, keep these green:
 
 ```bash
