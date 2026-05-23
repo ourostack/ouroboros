@@ -2,7 +2,7 @@
 
 Agent Mail is the mail sense for an Ouro agent and the first slice of the Ouro work substrate account. It gives each agent a private `@ouro.bot` mailbox, optional delegated human-mail aliases, encrypted mail storage, explicit read tools, Screener decisions, confirmed outbound mail, and a Mailbox surface.
 
-Use this runbook when a human says something like: "Slugger, please set up email."
+Use this runbook when a human says something like: "Please set up email."
 
 ## AX Contract
 
@@ -32,7 +32,7 @@ Hard rule: the agent must not tell the human to run `ouro account ensure`, `ouro
 The work substrate account is agent-owned. Mail, vault, and enabled senses belong to the same agent identity and share the same backend boundary.
 
 - **Agent native mailbox:** `<agent>@ouro.bot`, for mail sent directly to the agent. This is a sense, like iMessage or Teams.
-- **Delegated human-mail alias:** a source-labeled address such as `me.mendelow.ari.slugger@ouro.bot`, for an explicit human grant from `ari@mendelow.me` to Slugger. This is not "Slugger's personal mail"; it is Slugger's encrypted copy of a human mailbox/source.
+- **Delegated human-mail alias:** a source-labeled address such as `<source-label>.<agent>@ouro.bot`, for an explicit human grant from the human's outside mailbox (e.g. `you@example.com`) to the agent. This is not "the agent's personal mail"; it is the agent's encrypted copy of a human mailbox/source.
 - **Vault coupling:** private mail keys and Mailroom coordinates live in the owning agent vault item `runtime/config`. If the agent cannot unlock the vault, it cannot read mail.
 - **Bundle state:** the non-secret registry and encrypted mail cache live under the owning agent bundle, typically `~/AgentBundles/<agent>.ouro/state/mailroom/`.
 - **Provenance, not a second trust system:** family/friend/stranger remains the trust model. Mail records add provenance: native vs delegated, source, owner email, sender policy, import, forwarding, and access log.
@@ -82,18 +82,18 @@ Use `ouro status` to confirm the named agent shows Mail as ready/running. `ouro 
 
 Use `ouro connect mail --agent <agent> --owner-email <email> --source hey` when repairing or adding Mailroom specifically. It uses the same Mailroom setup path as `ouro account ensure`. Use `--no-delegated-source` when repairing native-only mail and `--rotate-missing-mail-keys` only when hosted key ids are present but the matching private keys are absent from the agent vault.
 
-## Slugger Signup
+## Example Signup
 
-For Slugger:
+For an agent named `<agent>` whose human owner has a HEY mailbox at `you@example.com`:
 
 ```sh
-ouro account ensure --agent slugger --owner-email ari@mendelow.me --source hey
+ouro account ensure --agent <agent> --owner-email you@example.com --source hey
 ```
 
 Expected addresses:
 
-- Native agent mailbox: `slugger@ouro.bot`
-- Delegated HEY alias: `me.mendelow.ari.slugger@ouro.bot`
+- Native agent mailbox: `<agent>@ouro.bot`
+- Delegated HEY alias: `hey.<agent>@ouro.bot` (or whatever source-label.agent shape Mail Control returns)
 
 ## Reading Mail
 
@@ -150,13 +150,13 @@ Preferred agent command after a browser download:
 ouro mail import-mbox --discover --owner-email <human-email> --source hey --agent <agent>
 ```
 
-The discovery path searches the current repo's `.playwright-mcp`, worktree-local `.playwright-mcp` sandboxes (including common `_worktrees` pools and agent-owned workspaces), the home-directory `.playwright-mcp`, and `~/Downloads` for recent `.mbox` files. It prefers filenames that match the requested owner/source, including normalized Playwright names such as `HEY-emails-ari-mendelow-me.mbox`. Ambient import-ready state should label browser-sandbox files explicitly as `browser sandbox (.playwright-mcp)` instead of making the agent infer that from the path alone. If discovery finds more than one equally plausible export, it stops and asks for the path instead of guessing.
+The discovery path searches the current repo's `.playwright-mcp`, worktree-local `.playwright-mcp` sandboxes (including common `_worktrees` pools and agent-owned workspaces), the home-directory `.playwright-mcp`, and `~/Downloads` for recent `.mbox` files. It prefers filenames that match the requested owner/source, including normalized Playwright names such as `HEY-emails-<owner-slug>.mbox`. Ambient import-ready state should label browser-sandbox files explicitly as `browser sandbox (.playwright-mcp)` instead of making the agent infer that from the path alone. If discovery finds more than one equally plausible export, it stops and asks for the path instead of guessing.
 
 Once a specific archive has already been imported successfully, the same file should stop surfacing as "mail import ready" and `ouro mail import-mbox --discover ...` should refuse to start it again until a newer export appears on disk.
 
-When an import is queued, running, failed, or finished, `query_active_work` should expose the exact operation id, the archive path, the candidate origin label, the relevant timestamps, and any remediation hints. Failed imports should also name a `failure class`, a `retry` disposition, and a short `recovery` hint so Slugger does not have to infer whether the next move is retry-safe or a real repair.
+When an import is queued, running, failed, or finished, `query_active_work` should expose the exact operation id, the archive path, the candidate origin label, the relevant timestamps, and any remediation hints. Failed imports should also name a `failure class`, a `retry` disposition, and a short `recovery` hint so the agent does not have to infer whether the next move is retry-safe or a real repair.
 
-`mail_status` is the first compact truth surface for this operating model. It should answer, in one place: what Slugger's native mailbox is, which delegated aliases exist, which browser/download archives are sitting around, whether a discovered archive was already imported or is newer than the last import, whether that means `freshness: current`, `freshness: current older snapshot`, or `freshness: stale-risky`, and what the most recent import operations actually did.
+`mail_status` is the first compact truth surface for this operating model. It should answer, in one place: what the agent's native mailbox is, which delegated aliases exist, which browser/download archives are sitting around, whether a discovered archive was already imported or is newer than the last import, whether that means `freshness: current`, `freshness: current older snapshot`, or `freshness: stale-risky`, and what the most recent import operations actually did.
 
 When `mail_status` shows a delegated archive whose local filename suggests one account label but the recorded delegated binding says another, trust the delegated binding. The delegated owner/source comes from the explicit import lane, not from the local filename. `mail_status` should explain that mapping inline instead of making the agent infer whether the file is cross-wired.
 
@@ -168,23 +168,23 @@ Fallback agent command after the human provides the file path:
 ouro mail import-mbox --file <path-to-hey.mbox> --owner-email <human-email> --source hey --agent <agent>
 ```
 
-For Slugger:
+Concrete example for an agent named `<agent>` owned by `you@example.com`:
 
 ```sh
-ouro mail import-mbox --discover --owner-email ari@mendelow.me --source hey --agent slugger
+ouro mail import-mbox --discover --owner-email you@example.com --source hey --agent <agent>
 ```
 
 Fallback:
 
 ```sh
-ouro mail import-mbox --file <path-to-hey.mbox> --owner-email ari@mendelow.me --source hey --agent slugger
+ouro mail import-mbox --file <path-to-hey.mbox> --owner-email you@example.com --source hey --agent <agent>
 ```
 
 The import stores delegated HEY mail under the agent's encrypted Mailroom store. Archive imports are historical backfill: each imported message keeps MBOX provenance, `sourceFreshThrough` records the newest dated message in the export, and the import suppresses Screener wakeups so old mail does not arrive as a fresh attention storm. Reads remain explicit and access-logged through `mail_recent`, `mail_search`, and `mail_thread`.
 
 `ouro mail import-mbox` now works against both local-development Mailrooms and hosted Mailrooms. In hosted mode it reads the public registry from the configured Blob coordinates in `runtime/config`, streams the archive from disk instead of loading the whole file into memory, and writes messages one by one into the encrypted store. Re-running the same import is safe: existing messages dedupe, `sourceFreshThrough` is recomputed from the archive, and an interrupted large import can be resumed by running the same command again.
 
-Important HEY nuance: a single HEY browser login can expose multiple linked accounts or addresses, but export/download and forwarding are still account-scoped operations. Do not assume that exporting or enabling forwarding for `arimendelow@hey.com` also covers `ari@mendelow.me` or another linked address. Track each HEY account-level export and forwarding confirmation as its own feeder step, then unify them only at the delegated-source lens when the owner/source provenance is truly the same.
+Important HEY nuance: a single HEY browser login can expose multiple linked accounts or addresses, but export/download and forwarding are still account-scoped operations. Do not assume that exporting or enabling forwarding for one HEY-hosted address (e.g. `user@hey.com`) also covers another linked address (e.g. `user@example.com`). Track each HEY account-level export and forwarding confirmation as its own feeder step, then unify them only at the delegated-source lens when the owner/source provenance is truly the same.
 
 ## Live Inbound Mail
 
@@ -202,8 +202,8 @@ Current production proof state as of April 23, 2026:
 - Production DNS/MX for `ouro.bot` points at `mx1.ouro.bot`.
 - `mx1.ouro.bot:25` reaches the hosted Mail Ingress edge.
 - Mail Ingress advertises STARTTLS from mounted PEM secrets and enforces size, recipient, connection, and rate limits.
-- Hosted Mail Control can ensure `slugger@ouro.bot` and `me.mendelow.ari.slugger@ouro.bot`.
-- Accepted hosted mail lands in encrypted Azure Blob Storage and decrypts through Slugger's vault-held keys.
+- Hosted Mail Control can ensure native addresses like `<agent>@ouro.bot` and delegated addresses like `<source-label>.<agent>@ouro.bot`.
+- Accepted hosted mail lands in encrypted Azure Blob Storage and decrypts through the owning agent's vault-held keys.
 - Azure Communication Services is the current outbound provider lane; Event Grid delivery events reconcile accepted API submissions to later delivery outcomes.
 
 Before HEY forwarding or autonomous native-agent sending:
@@ -224,7 +224,7 @@ Do this only after SMTP ingress and production MX are explicitly accepted by the
 
 Human-required step, agent-guided:
 
-Slugger drives the browser-automation portion when browser MCP is available. The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation. The target is always the delegated source alias, for example `me.mendelow.ari.slugger@ouro.bot`. Do not forward Ari's HEY mailbox to `slugger@ouro.bot`; that is Slugger's native mailbox and would erase the executive-assistant provenance boundary.
+The agent drives the browser-automation portion when browser MCP is available. The human remains at the keyboard for HEY login, MFA, CAPTCHA, export download, and final forwarding confirmation. The target is always the delegated source alias (for example `<source-label>.<agent>@ouro.bot`). Do not forward the human's HEY mailbox to the agent's native `<agent>@ouro.bot` address; that would erase the executive-assistant provenance boundary.
 
 - In HEY for Domains, configure forwarding or an extension to send delegated mail to the alias verified by the agent.
 - Prefer a HEY setup that still leaves critical mail accessible in HEY itself. HEY notes that forwarding can miss spam-classified mail and can be affected by mail-authentication forwarding behavior.
@@ -236,7 +236,7 @@ Agent step:
 - After the human confirms forwarding, run a live test message and verify it appears in Ouro Mailbox and `mail_recent`.
 - Do not change DNS, enable production MX, or claim live forwarding is active until the human confirms the HEY/DNS side.
 
-Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`. A wrong-target probe, especially one delivered to `slugger@ouro.bot`, is recoverable setup friction: Slugger should correct HEY to the delegated alias and must not import or label that probe as Ari's delegated HEY mail.
+Forwarding status can be `blocked_by_human`, `pending_propagation`, `ready`, or `failed_recoverable`. A wrong-target probe, especially one delivered to the agent's native `<agent>@ouro.bot` instead of the delegated alias, is recoverable setup friction: the agent should correct HEY to the delegated alias and must not import or label that probe as delegated human mail.
 
 ## Outbound Mail
 
@@ -288,7 +288,7 @@ Provider credentials are workflow/runtime binding facts. A mail outbound binding
   "outbound": {
     "transport": "azure-communication-services",
     "endpoint": "https://example.communication.azure.com",
-    "senderAddress": "slugger@ouro.bot",
+    "senderAddress": "<agent>@ouro.bot",
     "credentialItem": "ops/mail/azure-communication-services/ouro.bot",
     "credentialFields": { "accessKey": "accessKey" }
   }

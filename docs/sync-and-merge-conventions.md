@@ -6,8 +6,8 @@ This document describes the shared merge behavior expected in this repo.
 
 Use the `<agent>/<slug>` convention:
 
-- `ouroboros/runtime-metadata`
-- `slugger/bluebubbles-ax`
+- `<agent>/runtime-metadata`
+- `<agent>/bluebubbles-ax`
 
 Do not create new `codex/<agent>` branches.
 

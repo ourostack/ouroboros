@@ -69,7 +69,7 @@ ouro hatch
 Or explicitly:
 
 ```bash
-ouro hatch --agent Hatchling --human Ari --provider anthropic --setup-token <token>
+ouro hatch --agent Hatchling --human <your-name> --provider anthropic --setup-token <token>
 ```
 
 Expected:

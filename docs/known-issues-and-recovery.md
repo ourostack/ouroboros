@@ -3,7 +3,7 @@
 A short runbook for bugs we've encountered and how to recognize / recover
 from them. Add to this when you find a new one.
 
-## "Slugger only produces `<think>` content with no answer" — MiniMax replay rejection
+## "Agent only produces `<think>` content with no answer" — MiniMax replay rejection
 
 **Symptom**: agent sends MCP / CLI / BB messages but the operator sees
 empty replies, raw `<think>...</think>` tags, or the diagnostic
@@ -39,9 +39,9 @@ empty string or null, and add a synthetic tool event right after it
 with the same `tool_call_id` and any non-empty `content`. Restart
 the daemon.
 
-## "Slugger replies to himself in iMessage groups"
+## "Agent replies to itself in iMessage groups"
 
-**Symptom**: Slugger's own outbound message in a group chat appears
+**Symptom**: the agent's own outbound message in a group chat appears
 back in the conversation as if from another participant; the agent
 then responds to it.
 
@@ -52,8 +52,8 @@ direct chats the flag is reliable, in groups it isn't.
 
 **Detection**: search the BB sense log for `senses.bluebubbles_self_handle_filtered`
 events. That event indicates the secondary guard caught a real echo.
-If you see consecutive replies in a group where Slugger seems to be
-talking to a phantom version of himself, this is likely the cause.
+If you see consecutive replies in a group where the agent seems to be
+talking to a phantom version of itself, this is likely the cause.
 
 **Recovery (post-#610, alpha.488+)**: configure
 `bluebubbles.ownHandles` in the agent's vault config to list the
@@ -65,7 +65,7 @@ missed.
 
 ## "Heartbeat keeps firing 'fresh work arrived' even after rest + HEARTBEAT_OK"
 
-**Symptom**: Slugger's inner-dialog heartbeat appears to be in a
+**Symptom**: the agent's inner-dialog heartbeat appears to be in a
 self-sustaining loop; rest is repeatedly rejected with "fresh work
 arrived for me this turn — inspect the pending messages above and
 take the next concrete action before you rest" even though the
@@ -106,7 +106,7 @@ the quiet state and run normally. Look for
 `senses.heartbeat_ok_rest_reused` info events when the worker reuses
 the prior clean rest.
 
-## "MCP empty-reply diagnostic appears even though Slugger is actually thinking"
+## "MCP empty-reply diagnostic appears even though the agent is actually thinking"
 
 **Symptom**: operator sees "(agent produced reasoning but no final
 answer this turn — try again, or check the session transcript for
