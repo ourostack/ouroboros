@@ -1323,8 +1323,7 @@ describe("buildSystem", () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("cli", { toolChoiceRequired: true }))
-    // Settle guidance: when ready to respond, call settle
-    expect(result).toMatch(/ready to respond.*call.*settle/i)
+    expect(result).toMatch(/final answer.*real blocker.*direct reply.*confirmation\/stop\/pause.*call.*settle/i)
   })
 
   it("tool behavior section contains anti-no-op pattern", async () => {
@@ -1370,6 +1369,19 @@ describe("buildSystem", () => {
     // Autonomous execution: use ponder mid-task, settle only for final result
     expect(result).toMatch(/ponder.*absorb.*messages|ponder.*new messages/i)
     expect(result).toMatch(/settle only.*final result/i)
+  })
+
+  it("outward channel tool behavior treats active-flow process feedback as loop input", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = flattenSystemPrompt(await buildSystem("bluebubbles", { toolChoiceRequired: true }))
+    expect(result).toContain("process feedback from the user is loop input, not a stop signal")
+    expect(result).toContain("I call `speak` once when that tool is available")
+    expect(result).toContain("Timeout/recovery state is internal steering")
   })
 
   it("outward channel tool behavior includes observe guidance", async () => {
@@ -1536,6 +1548,8 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("iMessage")
     expect(result).toContain("short")
     expect(result).toContain("i do not use markdown")
+    expect(result).toContain("process comments from my friend are feedback to absorb")
+    expect(result).toContain("timeout/recovery state is internal, not iMessage copy")
   })
 
   it("always includes runtime version line", async () => {

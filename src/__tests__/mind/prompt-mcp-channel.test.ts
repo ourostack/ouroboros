@@ -102,7 +102,7 @@ describe("runtimeInfoSection mcp channel", () => {
     expect(result).toContain("dev tool")
   })
 
-  it("mcp channel mentions settle and ponder without deferral language", async () => {
+  it("mcp channel keeps active-flow process feedback from settling status", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -112,6 +112,9 @@ describe("runtimeInfoSection mcp channel", () => {
     const result = runtimeInfoSection("mcp")
     expect(result).toContain("settle")
     expect(result).toContain("ponder")
+    expect(result).toContain("process comments are feedback to absorb")
+    expect(result).toContain("keep using tools instead of settling for status")
+    expect(result).not.toContain("respond via settle")
     expect(result).not.toContain("check back later")
   })
 

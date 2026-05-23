@@ -74,7 +74,7 @@ export const settleTool: OpenAI.ChatCompletionFunctionTool = {
   function: {
     name: "settle",
     description:
-      "deliver your response and end your turn — this hands control back to the user. only settle when your work is complete, you're genuinely blocked, or the user asked a direct question that needs an answer now. do not settle with status updates mid-task. if you're settling with 'I'll look into that,' you probably should be using a tool instead.",
+      "deliver your response and end your turn — this hands control back to the user. only settle when your work is complete, you're genuinely blocked, the user asked a direct question that needs an answer now, or a required confirmation/stop/pause boundary is reached. process feedback during active work is loop input, not a settle reason. do not settle with status updates mid-task. if you're settling with 'I'll look into that,' you probably should be using a tool instead.",
     parameters: {
       type: "object",
       properties: {
@@ -90,7 +90,7 @@ export const speakTool: OpenAI.ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "speak",
-    description: "i speak to send words to my friend mid-turn without ending it. for progress, acknowledgment, or phase-boundary updates during heavy work. i settle when my work is done or i need a reply. speak is one-way: my friend cannot steer me mid-turn after i speak.",
+    description: "i speak to send words to my friend mid-turn without ending it. for progress, acknowledgment, or phase-boundary updates during heavy work. after speaking, continue with tools unless the next step needs a reply. i settle when my work is done or i need a reply.",
     parameters: {
       type: "object",
       properties: {
