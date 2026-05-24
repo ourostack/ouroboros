@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.637",
       "changes": [
-        "Npm trusted-publisher repair now holds npm's human proof-of-presence flow open when run from an interactive terminal: on `EOTP`, `release:trust:repair` starts inherited-stdio `npm trust list` auth probes, lets the operator enable npm's short 2FA skip window, and boundedly repeats those proofs across structured list/revoke/create commands instead of looping through one-off auth URLs or giving up after the first registry challenge.",
+        "Npm trusted-publisher repair now holds npm's human proof-of-presence flow open when run from an interactive terminal: on `EOTP`, `release:trust:repair` starts inherited-stdio `npm trust list` auth probes, lets the operator enable npm's short 2FA skip window, and boundedly repeats those proofs across structured list/revoke/create commands and expired proof attempts instead of looping through one-off auth URLs or giving up after the first registry challenge.",
         "Route delegated inner-dialog returns back to their originating MCP session, including private self-delegation under correction-hold."
       ]
     },

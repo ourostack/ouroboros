@@ -309,6 +309,62 @@ publish:
     expect(capturedCommands.some((args) => args.join(" ").includes(" trust github @ouro.bot/cli "))).toBe(true)
   })
 
+  it("uses a fresh interactive auth probe when the proof process exits before npm accepts it", () => {
+    const capturedCommands: string[][] = []
+    const interactiveCommands: string[][] = []
+    let authAttempts = 0
+
+    const expectedTrust = {
+      trustedPublishers: [
+        {
+          id: "expected-trust",
+          repository: EXPECTED_REPOSITORY,
+          workflow: EXPECTED_WORKFLOW,
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+
+    const runCommandImpl = (args: string[]) => {
+      capturedCommands.push(args)
+
+      if (capturedCommands.length === 1) {
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+          output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+        }
+      }
+
+      return {
+        status: 0,
+        stdout: JSON.stringify(expectedTrust),
+        stderr: "",
+        output: "",
+      }
+    }
+
+    const spawnSyncImpl = (command: string, args: string[]) => {
+      interactiveCommands.push([command, ...args])
+      authAttempts += 1
+      return { status: authAttempts === 1 ? 1 : 0 }
+    }
+
+    runRepair({
+      runCommandImpl,
+      spawnSyncImpl,
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+    })
+
+    expect(interactiveCommands).toEqual([
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+    ])
+    expect(capturedCommands.filter((args) => args.join(" ").includes(" trust list @ouro.bot/cli "))).toHaveLength(2)
+  })
+
   it("limits repeated interactive auth probes when npm keeps requiring web proof", () => {
     const interactiveCommands: string[][] = []
 
