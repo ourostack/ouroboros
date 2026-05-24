@@ -11,12 +11,49 @@ export interface OuroVersionManagerDeps {
   existsSync?: (p: string) => boolean
   mkdirSync?: (p: string, options?: fs.MakeDirectoryOptions) => void
   readdirSync?: (p: string, options: { withFileTypes: true }) => fs.Dirent[]
+  readFileSync?: (p: string, encoding: BufferEncoding) => string
   rmSync?: (p: string, options?: fs.RmOptions) => void
   execSync?: (command: string, options?: { stdio?: string }) => unknown
 }
 
 /** Maximum number of installed CLI versions to retain after pruning. */
 export const DEFAULT_RETAIN_VERSIONS = 5
+
+const INSTALLED_RUNTIME_PACKAGE_PAYLOAD_PATHS = [
+  "assets",
+  "dist",
+  "RepairGuide.ouro",
+  "SerpentGuide.ouro",
+  "skills",
+  "changelog.json",
+  "package.json",
+]
+
+const INSTALLED_RUNTIME_TEXT_EXTENSIONS = new Set([
+  ".cjs",
+  ".css",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".mjs",
+  ".txt",
+])
+
+const BLOCKED_INSTALLED_RUNTIME_TEXT_SIGNATURES = [
+  {
+    label: "removed BlueBubbles timeout notice",
+    base64: "bGl2ZSBpTWVzc2FnZSB0dXJuIHRpbWVkIG91dDsgSSBjYXB0dXJlZCBpdCBmb3IgcmVjb3ZlcnkgaW5zdGVhZCBvZiBzaWxlbnRseSBoYW5naW5n",
+  },
+]
+
+export interface InstalledVersionActivationValidation {
+  ok: boolean
+  version: string
+  packageRoot: string
+  violations: string[]
+  message: string
+}
 
 export function getOuroCliHome(homeDir?: string): string {
   /* v8 ignore next -- dep default: tests always inject @preserve */
@@ -64,6 +101,121 @@ export function listInstalledVersions(deps: Pick<OuroVersionManagerDeps, "homeDi
     return entries.filter((e) => e.isDirectory()).map((e) => e.name)
   } catch {
     return []
+  }
+}
+
+export function validateInstalledVersionForActivation(
+  version: string,
+  deps: Pick<OuroVersionManagerDeps, "homeDir" | "existsSync" | "readdirSync" | "readFileSync"> = {},
+): InstalledVersionActivationValidation {
+  const cliHome = getOuroCliHome(deps.homeDir)
+  /* v8 ignore start -- dep defaults: tests inject @preserve */
+  const existsSync = deps.existsSync ?? fs.existsSync
+  const readdirSync = deps.readdirSync ?? ((p: string, opts: { withFileTypes: true }) => fs.readdirSync(p, opts))
+  const readFileSync = deps.readFileSync ?? fs.readFileSync
+  /* v8 ignore stop */
+  const packageRoot = path.join(cliHome, "versions", version, "node_modules", "@ouro.bot", "cli")
+  const packageJsonPath = path.join(packageRoot, "package.json")
+
+  if (!existsSync(packageJsonPath)) {
+    const message = `installed runtime ${version} is missing its @ouro.bot/cli package; run 'ouro up' to restore the current release`
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.cli_version_activation_blocked",
+      message: "blocked CLI version activation",
+      meta: { version, packageRoot, reason: "missing-package" },
+      level: "warn",
+    })
+    return { ok: false, version, packageRoot, violations: ["missing @ouro.bot/cli package"], message }
+  }
+
+  const violations = findBlockedInstalledRuntimePayloadText(packageRoot, { existsSync, readdirSync, readFileSync })
+  if (violations.length === 0) {
+    return { ok: true, version, packageRoot, violations, message: "installed runtime package passed activation guard" }
+  }
+
+  const message = `installed runtime ${version} contains blocked package assets (${violations.join(", ")}); run 'ouro up' to stay on the current release`
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.cli_version_activation_blocked",
+    message: "blocked CLI version activation",
+    meta: { version, packageRoot, reason: "blocked-package-assets", violations },
+    level: "warn",
+  })
+  return { ok: false, version, packageRoot, violations, message }
+}
+
+function findBlockedInstalledRuntimePayloadText(
+  packageRoot: string,
+  deps: Required<Pick<OuroVersionManagerDeps, "existsSync" | "readdirSync" | "readFileSync">>,
+): string[] {
+  const violations: string[] = []
+  const blockedText = BLOCKED_INSTALLED_RUNTIME_TEXT_SIGNATURES.map((signature) => ({
+    label: signature.label,
+    text: Buffer.from(signature.base64, "base64").toString("utf8"),
+  }))
+
+  for (const payloadPath of INSTALLED_RUNTIME_PACKAGE_PAYLOAD_PATHS) {
+    const absolutePath = path.join(packageRoot, payloadPath)
+    if (!deps.existsSync(absolutePath)) continue
+    collectBlockedTextViolations(packageRoot, absolutePath, payloadPath, blockedText, deps, violations)
+  }
+
+  return violations.sort()
+}
+
+function collectBlockedTextViolations(
+  packageRoot: string,
+  absolutePath: string,
+  relativePath: string,
+  blockedText: Array<{ label: string; text: string }>,
+  deps: Required<Pick<OuroVersionManagerDeps, "existsSync" | "readdirSync" | "readFileSync">>,
+  violations: string[],
+): void {
+  let entries: fs.Dirent[] | null = null
+  try {
+    entries = deps.readdirSync(absolutePath, { withFileTypes: true })
+  } catch {
+    entries = null
+  }
+
+  if (entries !== null) {
+    for (const entry of entries) {
+      const childRelativePath = `${relativePath}/${entry.name}`
+      if (entry.isDirectory()) {
+        collectBlockedTextViolations(packageRoot, path.join(absolutePath, entry.name), childRelativePath, blockedText, deps, violations)
+      } else if (entry.isFile()) {
+        inspectInstalledRuntimePayloadFile(packageRoot, childRelativePath, blockedText, deps, violations)
+      }
+    }
+    return
+  }
+
+  inspectInstalledRuntimePayloadFile(packageRoot, relativePath, blockedText, deps, violations)
+}
+
+function inspectInstalledRuntimePayloadFile(
+  packageRoot: string,
+  relativePath: string,
+  blockedText: Array<{ label: string; text: string }>,
+  deps: Pick<OuroVersionManagerDeps, "readFileSync">,
+  violations: string[],
+): void {
+  if (!INSTALLED_RUNTIME_TEXT_EXTENSIONS.has(path.extname(relativePath))) return
+
+  let content = ""
+  try {
+    content = deps.readFileSync!(path.join(packageRoot, relativePath), "utf8")
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error)
+    violations.push(`${relativePath} could not be inspected: ${reason}`)
+    return
+  }
+
+  for (const blocked of blockedText) {
+    if (content.includes(blocked.text)) {
+      violations.push(`${relativePath} contains ${blocked.label}`)
+    }
   }
 }
 

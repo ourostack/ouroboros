@@ -107,6 +107,53 @@ describe("ouro rollback: execution", () => {
     expect(result).toContain("rolled back to 0.1.0-alpha.74")
   })
 
+  it("refuses to roll back to a previous version that fails the activation guard", async () => {
+    const deps = makeDeps({
+      getPreviousCliVersion: vi.fn(() => "0.1.0-alpha.79"),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      validateCliVersionForActivation: vi.fn(() => ({
+        ok: false,
+        message: "installed runtime 0.1.0-alpha.79 contains blocked package assets",
+      })),
+      activateCliVersion: vi.fn(),
+      sendCommand: vi.fn(async () => ({ ok: true, message: "stopped" })),
+      setExitCode: vi.fn(),
+    })
+
+    const result = await runOuroCli(["rollback"], deps)
+
+    expect(deps.validateCliVersionForActivation).toHaveBeenCalledWith("0.1.0-alpha.79")
+    expect(deps.activateCliVersion).not.toHaveBeenCalled()
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.setExitCode).toHaveBeenCalledWith(1)
+    expect(result).toContain("refusing to roll back to 0.1.0-alpha.79")
+    expect(result).toContain("blocked package assets")
+  })
+
+  it("validates a specific rollback target after installing it and before activation", async () => {
+    const deps = makeDeps({
+      listCliVersions: vi.fn(() => ["0.1.0-alpha.80"]),
+      getCurrentCliVersion: vi.fn(() => "0.1.0-alpha.80"),
+      installCliVersion: vi.fn(async () => {}),
+      validateCliVersionForActivation: vi.fn(() => ({
+        ok: false,
+        message: "installed runtime 0.1.0-alpha.74 contains blocked package assets",
+      })),
+      activateCliVersion: vi.fn(),
+      sendCommand: vi.fn(async () => ({ ok: true, message: "stopped" })),
+      setExitCode: vi.fn(),
+    })
+
+    const result = await runOuroCli(["rollback", "0.1.0-alpha.74"], deps)
+
+    expect(deps.installCliVersion).toHaveBeenCalledWith("0.1.0-alpha.74")
+    expect(deps.validateCliVersionForActivation).toHaveBeenCalledWith("0.1.0-alpha.74")
+    expect(deps.activateCliVersion).not.toHaveBeenCalled()
+    expect(deps.sendCommand).not.toHaveBeenCalled()
+    expect(deps.setExitCode).toHaveBeenCalledWith(1)
+    expect(result).toContain("refusing to roll back to 0.1.0-alpha.74")
+  })
+
   it("outputs error when install of specific version fails", async () => {
     const deps = makeDeps({
       listCliVersions: vi.fn(() => []),

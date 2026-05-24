@@ -7070,6 +7070,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
           return message
         }
       }
+      const validation = deps.validateCliVersionForActivation?.(command.version)
+      if (validation && !validation.ok) {
+        const message = `refusing to roll back to ${command.version}: ${validation.message}`
+        return returnCliFailure(deps, message)
+      }
       deps.activateCliVersion!(command.version)
     } else {
       // Rollback to previous version
@@ -7078,6 +7083,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         const message = "no previous version to roll back to"
         deps.writeStdout(message)
         return message
+      }
+      const validation = deps.validateCliVersionForActivation?.(previousVersion)
+      if (validation && !validation.ok) {
+        const message = `refusing to roll back to ${previousVersion}: ${validation.message}`
+        return returnCliFailure(deps, message)
       }
       deps.activateCliVersion!(previousVersion)
       command = { ...command, version: previousVersion }
