@@ -13,7 +13,7 @@ import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentRoot, getRepoRoot, 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
-import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions } from "../versioning/ouro-version-manager"
+import { getCurrentVersion, getPreviousVersion, listInstalledVersions, installVersion, activateVersion, ensureLayout, getOuroCliHome, pruneOldVersions, validateInstalledVersionForActivation } from "../versioning/ouro-version-manager"
 import { CLI_UPDATE_CHECK_TIMEOUT_MS, CLI_UPDATE_DIST_TAG } from "../versioning/update-checker"
 import { ensureSkillManagement as defaultEnsureSkillManagement } from "./skill-management-installer"
 import {
@@ -766,6 +766,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
       })
     },
     installCliVersion: async (version: string) => { installVersion(version, {}) },
+    validateCliVersionForActivation: (version: string) => validateInstalledVersionForActivation(version, {}),
     activateCliVersion: (version: string) => {
       activateVersion(version, {})
       // Same self-prune as ensureCurrentVersionInstalled — fires from the

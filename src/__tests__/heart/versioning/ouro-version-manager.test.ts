@@ -1,13 +1,40 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
 describe("ouro-version-manager", () => {
+  const tmpHomes: string[] = []
+
   beforeEach(() => {
     vi.clearAllMocks()
   })
+
+  afterEach(() => {
+    while (tmpHomes.length > 0) {
+      const home = tmpHomes.pop()
+      if (home) fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  function writeInstalledRuntime(version: string, files: Record<string, string>): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-version-manager-test-"))
+    tmpHomes.push(home)
+    const packageRoot = path.join(home, ".ouro-cli", "versions", version, "node_modules", "@ouro.bot", "cli")
+    fs.mkdirSync(packageRoot, { recursive: true })
+
+    for (const [relativePath, content] of Object.entries(files)) {
+      const absolutePath = path.join(packageRoot, relativePath)
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true })
+      fs.writeFileSync(absolutePath, content, "utf8")
+    }
+
+    return home
+  }
 
   describe("getOuroCliHome", () => {
     it("returns <homeDir>/.ouro-cli", async () => {
@@ -100,6 +127,91 @@ describe("ouro-version-manager", () => {
       }
       const result = listInstalledVersions(deps)
       expect(result).toEqual([])
+    })
+  })
+
+  describe("validateInstalledVersionForActivation", () => {
+    it("passes clean installed runtime package payloads", async () => {
+      const { validateInstalledVersionForActivation } = await import("../../../heart/versioning/ouro-version-manager")
+      const homeDir = writeInstalledRuntime("0.1.0-alpha.80", {
+        "package.json": JSON.stringify({ name: "@ouro.bot/cli", version: "0.1.0-alpha.80" }),
+        "dist/heart/daemon/ouro-entry.js": "console.log('clean runtime')",
+      })
+
+      const result = validateInstalledVersionForActivation("0.1.0-alpha.80", { homeDir })
+
+      expect(result.ok).toBe(true)
+      expect(result.violations).toEqual([])
+    })
+
+    it("blocks installed runtime package payloads containing removed user-facing failure text", async () => {
+      const { validateInstalledVersionForActivation } = await import("../../../heart/versioning/ouro-version-manager")
+      const removedNotice = [
+        "live iMessage turn timed out",
+        "I captured it for recovery instead of silently hanging",
+      ].join("; ")
+      const homeDir = writeInstalledRuntime("0.1.0-alpha.79", {
+        "package.json": JSON.stringify({ name: "@ouro.bot/cli", version: "0.1.0-alpha.79" }),
+        "dist/senses/bluebubbles/index.js": `throw new Error(${JSON.stringify(removedNotice)})`,
+      })
+
+      const result = validateInstalledVersionForActivation("0.1.0-alpha.79", { homeDir })
+
+      expect(result.ok).toBe(false)
+      expect(result.message).toContain("contains blocked package assets")
+      expect(result.violations).toEqual([
+        "dist/senses/bluebubbles/index.js contains removed BlueBubbles timeout notice",
+      ])
+    })
+
+    it("blocks activation when the installed runtime package is missing", async () => {
+      const { validateInstalledVersionForActivation } = await import("../../../heart/versioning/ouro-version-manager")
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-version-manager-test-"))
+      tmpHomes.push(homeDir)
+
+      const result = validateInstalledVersionForActivation("0.1.0-alpha.79", { homeDir })
+
+      expect(result.ok).toBe(false)
+      expect(result.message).toContain("missing its @ouro.bot/cli package")
+    })
+
+    it("blocks activation when a text payload file cannot be inspected", async () => {
+      const { validateInstalledVersionForActivation } = await import("../../../heart/versioning/ouro-version-manager")
+      const homeDir = writeInstalledRuntime("0.1.0-alpha.80", {
+        "package.json": JSON.stringify({ name: "@ouro.bot/cli", version: "0.1.0-alpha.80" }),
+        "dist/heart/daemon/ouro-entry.js": "clean runtime",
+      })
+
+      const result = validateInstalledVersionForActivation("0.1.0-alpha.80", {
+        homeDir,
+        readFileSync: vi.fn(() => { throw new Error("permission denied") }),
+      })
+
+      expect(result.ok).toBe(false)
+      expect(result.violations).toEqual([
+        "dist/heart/daemon/ouro-entry.js could not be inspected: permission denied",
+        "package.json could not be inspected: permission denied",
+      ])
+    })
+
+    it("ignores non-text package payload files and special directory entries", async () => {
+      const { validateInstalledVersionForActivation } = await import("../../../heart/versioning/ouro-version-manager")
+      const homeDir = writeInstalledRuntime("0.1.0-alpha.80", {
+        "package.json": JSON.stringify({ name: "@ouro.bot/cli", version: "0.1.0-alpha.80" }),
+        "assets/logo.png": "not text inspected by the activation guard",
+      })
+      const packageRoot = path.join(homeDir, ".ouro-cli", "versions", "0.1.0-alpha.80", "node_modules", "@ouro.bot", "cli")
+      fs.symlinkSync("../package.json", path.join(packageRoot, "assets", "package-link"))
+      const readFileSync = vi.fn((p: string, encoding: BufferEncoding) => {
+        if (p.endsWith(".png")) throw new Error("png should not be read")
+        return fs.readFileSync(p, encoding)
+      })
+
+      const result = validateInstalledVersionForActivation("0.1.0-alpha.80", { homeDir, readFileSync })
+
+      expect(result.ok).toBe(true)
+      expect(result.violations).toEqual([])
+      expect(readFileSync.mock.calls.some(([p]) => String(p).endsWith(".png"))).toBe(false)
     })
   })
 
