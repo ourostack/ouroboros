@@ -914,7 +914,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     /* v8 ignore start -- attention queue: callback invoked by pipeline during pending drain; tested via attention-queue unit tests @preserve */
     onPendingDrained: (drained) => {
       const outstandingObligations = listActiveReturnObligations(agentName)
-      attentionQueue = buildAttentionQueue({
+      const builtAttentionQueue = buildAttentionQueue({
         drainedPending: drained,
         outstandingObligations,
         friendNameResolver: (friendId) => {
@@ -934,6 +934,7 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           }
         },
       })
+      attentionQueue.splice(0, attentionQueue.length, ...builtAttentionQueue)
       const summary = buildAttentionQueueSummary(attentionQueue)
       return summary ? [summary] : []
     },

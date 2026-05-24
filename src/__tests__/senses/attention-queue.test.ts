@@ -414,6 +414,7 @@ describe("attention queue", () => {
 
       const summary = buildAttentionQueueSummary(items)
       expect(summary).toContain("[internal: held work items")
+      expect(summary).toContain("call surface with delegationId")
       expect(summary).not.toContain("you're holding:")
       expect(summary).toContain("[abc123]")
       expect(summary).toContain("Ari asked:")

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.637",
+      "changes": [
+        "Route delegated inner-dialog returns back to their originating MCP session, including private self-delegation under correction-hold."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.636",
       "changes": [
         "Bitwarden CLI lock hardening: cross-process `.ouro-bw.lock` files now record both the harness owner PID and the spawned `bw` child PID, preserving compatibility with legacy plain-PID locks while letting later runtime attempts reap an abandoned dead-child lock even when the owner daemon process is still alive. A short grace window prevents stealing fresh locks during normal child-exit cleanup, and regression coverage proves both the stale-dead-child recovery path and the fresh-release waiting path.",
