@@ -19,7 +19,7 @@ import {
   type DelegatedFrom,
 } from "../mind/pending"
 import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
-import { buildAttentionQueue, buildAttentionQueueSummary, type AttentionItem } from "./attention-queue"
+import { buildAttentionQueue, buildAttentionQueueStatusFrame, type AttentionItem } from "./attention-queue"
 import { readPonderPacket } from "../arc/packets"
 import { getChannelCapabilities } from "../mind/friends/channel"
 import { enforceTrustGate } from "./trust-gate"
@@ -632,6 +632,15 @@ export function buildParseErrorNudge(parseErrors: HabitParseErrorInfo[]): string
   return lines.join("\n")
 }
 
+export function buildHeldReturnWakeMessage(): string {
+  return [
+    "held return work arrived; use the current held-work frame above as the authority for this turn.",
+    "Older checkpoints, rest summaries, transcript memories, completed returns, and repeated probes are historical context, not evidence about what is waiting now.",
+    "Return only the requested result; do not add commentary about prior attempts, old loops, or completed probes.",
+    "Return each listed item with surface(delegationId=...) before resting or settling.",
+  ].join("\n")
+}
+
 function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () => Date): string {
   const habitsDir = path.join(agentRoot, "habits")
   let files: string[]
@@ -695,6 +704,11 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     resting: false,
     lastHeartbeatAt: now().toISOString(),
   }
+  const pendingDir = getInnerDialogPendingDir(agentName)
+  const shouldUseHeldReturnWake =
+    !options?.taskId && reason !== "habit" && reason !== "await"
+      ? listActiveReturnObligations(agentName).length > 0
+      : false
 
   // ── Adapter concern: build user message ──────────────────────────
   let userContent: string
@@ -831,11 +845,14 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
     }
   }
 
+  if (shouldUseHeldReturnWake) {
+    userContent = buildHeldReturnWakeMessage()
+  }
+
   const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
 
   // ── Session loader: wraps existing session logic ──────────────────
   const innerCapabilities = getChannelCapabilities("inner")
-  const pendingDir = getInnerDialogPendingDir(agentName)
   const selfFriend = createSelfFriend(agentName)
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
@@ -935,8 +952,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         },
       })
       attentionQueue.splice(0, attentionQueue.length, ...builtAttentionQueue)
-      const summary = buildAttentionQueueSummary(attentionQueue)
-      return summary ? [summary] : []
+      const attentionFrame = buildAttentionQueueStatusFrame(attentionQueue)
+      return attentionFrame ? [attentionFrame] : []
     },
     /* v8 ignore stop */
     runAgentOptions: {

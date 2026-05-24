@@ -11,6 +11,7 @@ import {
 } from "../../arc/evolution"
 import {
   advancePonderPacket,
+  completePonderPacket,
   createPonderPacket,
   findHarnessFrictionPacket,
   getPonderPacketArtifactsDir,
@@ -472,6 +473,40 @@ describe("ponder packets", () => {
 
     advancePonderPacket(agentRoot, packet.id, { status: "processing" })
     expect(() => advancePonderPacket(agentRoot, packet.id, { status: "drafting" })).toThrow(/transition/i)
+  })
+
+  it("completes a packet through the valid lifecycle path", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "reflection",
+      objective: "Return a private thought",
+      summary: "The result was surfaced",
+      successCriteria: ["Surface the held answer"],
+      payload: {},
+    })
+
+    const completed = completePonderPacket(agentRoot, packet.id)
+
+    expect(completed.status).toBe("done")
+    expect(readPonderPacket(agentRoot, packet.id)?.status).toBe("done")
+  })
+
+  it("leaves already terminal packets unchanged when completing", () => {
+    const agentRoot = makeAgentRoot()
+    const packet = createPonderPacket(agentRoot, {
+      kind: "reflection",
+      objective: "Already done",
+      summary: "Terminal packet",
+      successCriteria: ["No-op"],
+      payload: {},
+    })
+    advancePonderPacket(agentRoot, packet.id, { status: "processing" })
+    advancePonderPacket(agentRoot, packet.id, { status: "validating" })
+    advancePonderPacket(agentRoot, packet.id, { status: "done" })
+
+    const completed = completePonderPacket(agentRoot, packet.id)
+
+    expect(completed.status).toBe("done")
   })
 
   it("exposes a durable state-artifacts directory for packet repro evidence", () => {

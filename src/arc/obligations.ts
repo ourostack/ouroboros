@@ -351,11 +351,16 @@ const RETURN_OBLIGATION_INJECTION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
 // it. This is a read-time defense; the underlying file is left as-is.
 const ACTIVE_RETURN_OBLIGATION_STATUSES: ReadonlySet<ReturnObligationStatus> = new Set(["queued", "running"])
 
+function isSelfInnerReturnObligation(obligation: ReturnObligation): boolean {
+  return obligation.origin.friendId === "self" && obligation.origin.channel === "inner"
+}
+
 export function listActiveReturnObligations(agentName: string, options: { now?: () => number } = {}): ReturnObligation[] {
   const all = readJsonDir<ReturnObligation>(getReturnObligationsDir(agentName))
   const nowMs = (options.now ?? Date.now)()
   return all
     .filter((parsed) => ACTIVE_RETURN_OBLIGATION_STATUSES.has(parsed.status))
+    .filter((parsed) => !isSelfInnerReturnObligation(parsed))
     .filter((parsed) => nowMs - parsed.createdAt <= RETURN_OBLIGATION_INJECTION_MAX_AGE_MS)
     .sort((a, b) => a.createdAt - b.createdAt)
 }

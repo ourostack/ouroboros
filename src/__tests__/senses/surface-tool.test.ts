@@ -181,6 +181,66 @@ describe("surface tool", () => {
       expect(advanceObligation).toHaveBeenCalledWith("obl-1", expect.objectContaining({ status: "returned" }))
     })
 
+    it("completes a linked ponder packet when routing succeeds", async () => {
+      const queue: AttentionItem[] = [
+        {
+          id: "abc123",
+          friendId: "ari",
+          friendName: "Ari",
+          channel: "bb",
+          key: "c1",
+          delegatedContent: "think",
+          source: "drained",
+          timestamp: 1000,
+          obligationId: "obl-1",
+          packetId: "pkt-1",
+        },
+      ]
+
+      const advanceObligation = vi.fn()
+      const completePonderPacket = vi.fn()
+      await handleSurface({
+        content: "private answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "delivered" }),
+        advanceObligation,
+        completePonderPacket,
+      })
+
+      expect(advanceObligation).toHaveBeenCalledWith("obl-1", expect.objectContaining({ status: "returned" }))
+      expect(completePonderPacket).toHaveBeenCalledWith("pkt-1")
+    })
+
+    it("does not complete a linked ponder packet when routing fails", async () => {
+      const queue: AttentionItem[] = [
+        {
+          id: "abc123",
+          friendId: "ari",
+          friendName: "Ari",
+          channel: "bb",
+          key: "c1",
+          delegatedContent: "think",
+          source: "drained",
+          timestamp: 1000,
+          obligationId: "obl-1",
+          packetId: "pkt-1",
+        },
+      ]
+
+      const completePonderPacket = vi.fn()
+      await handleSurface({
+        content: "private answer",
+        delegationId: "abc123",
+        queue,
+        routeToFriend: async () => ({ status: "failed" }),
+        advanceObligation: vi.fn(),
+        completePonderPacket,
+      })
+
+      expect(completePonderPacket).not.toHaveBeenCalled()
+    })
+
     it("advances obligation BEFORE dequeue (crash safety)", async () => {
       const queue: AttentionItem[] = [
         { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000, obligationId: "obl-1" },
@@ -357,6 +417,38 @@ describe("surface tool", () => {
       expect(advanceObligation).toHaveBeenCalledWith("obl-1", expect.objectContaining({ status: "returned" }))
       expect(fulfillHeartObligation).toHaveBeenCalledWith({ friendId: "friend-uuid", channel: "mcp", key: "session-1" })
       expect(queue).toHaveLength(0)
+    })
+
+    it("requires delegationId before returning packet-backed private work", async () => {
+      const queue: AttentionItem[] = [
+        {
+          id: "abc123",
+          friendId: "friend-uuid",
+          friendName: "Ari",
+          channel: "mcp",
+          key: "session-1",
+          delegatedContent: "check the loop",
+          obligationId: "obl-1",
+          packetId: "pkt-1",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ]
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "for originating mcp session" })
+      const advanceObligation = vi.fn()
+
+      const result = await handleSurface({
+        content: "stale unrelated thought",
+        friendId: "Ari",
+        queue,
+        routeToFriend,
+        advanceObligation,
+      })
+
+      expect(result).toContain("held private return abc123 is waiting")
+      expect(routeToFriend).not.toHaveBeenCalled()
+      expect(advanceObligation).not.toHaveBeenCalled()
+      expect(queue).toHaveLength(1)
     })
 
     it("requires delegationId when friendId matches multiple held items", async () => {

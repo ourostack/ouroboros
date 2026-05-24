@@ -206,7 +206,7 @@ describe("settle gate in inner dialog", () => {
     })
 
     const toolResults = messages.filter((m: any) => m.role === "tool")
-    const rejectionResult = toolResults.find((m: any) => m.content?.includes("surface them before you settle"))
+    const rejectionResult = toolResults.find((m: any) => m.content?.includes("current held-work frame still has unsurfaced items"))
     expect(rejectionResult).toBeDefined()
   })
 

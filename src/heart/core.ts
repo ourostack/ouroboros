@@ -30,9 +30,9 @@ import type { DelegationDecision } from "./delegation";
 import type { InnerJob } from "./daemon/thoughts";
 import { getAgentName, getAgentRoot } from "./identity";
 import { requestInnerWake } from "./daemon/socket-client";
-import { createObligation, createReturnObligation, generateObligationId } from "../arc/obligations";
+import { createObligation, createReturnObligation, generateObligationId, readReturnObligation } from "../arc/obligations";
 import { createToolLoopState, detectToolLoop, recordToolOutcome } from "./tool-loop";
-import { createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
+import { advancePonderPacket, createPonderPacket, findHarnessFrictionPacket, revisePonderPacket, type PonderPacket, type PonderPacketKind } from "../arc/packets";
 import { createToolFrictionLedger, rewriteToolResultForModel } from "./tool-friction";
 import { getDefaultModelForProvider, getProviderModelMismatchMessage } from "./provider-models";
 import {
@@ -459,7 +459,79 @@ function normalizeLegacyPonderArgs(parsed: ParsedPonderArgs): ParsedPonderArgs {
   }
 }
 
-function buildPonderResult(
+function messageContentText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part
+      if (!part || typeof part !== "object") return ""
+      const maybeText = (part as { text?: unknown }).text
+      return typeof maybeText === "string" ? maybeText : ""
+    })
+    .filter(Boolean)
+    .join("\n")
+}
+
+function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message?.role !== "user") continue
+    const text = messageContentText(message.content).trim()
+    if (text.length > 0) return text
+  }
+  return ""
+}
+
+function truncatePonderDelegatedContent(value: string): string {
+  return value.length > 120 ? `${value.slice(0, 117)}...` : value
+}
+
+function buildPonderDelegatedContent(input: {
+  objective: string
+  summary: string
+  sourceRequest: string
+}): string {
+  const primary = (input.summary || input.objective).trim()
+  const sourceRequest = input.sourceRequest.trim()
+  if (!sourceRequest || sourceRequest === primary || sourceRequest === input.objective.trim()) {
+    return truncatePonderDelegatedContent(primary)
+  }
+  return truncatePonderDelegatedContent(`${primary}\nsource request: ${sourceRequest}`)
+}
+
+function looksLikePrivateReturnRequest(text: string): boolean {
+  const normalized = text.toLowerCase()
+  return /\b(private|privately|private-attention|think|reflect|reflection)\b/.test(normalized)
+    && /\b(return|bring back|come back|surface|report back)\b/.test(normalized)
+}
+
+function extractPrivateReturnHeldTokens(text: string): string[] {
+  const tokens = new Set<string>()
+  for (const match of text.matchAll(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}\b/g)) {
+    const token = match[0]
+    if (token.length >= 8) tokens.add(token)
+  }
+  return [...tokens]
+}
+
+function privateReturnAckLeakError(answer: string | undefined, heldTokens: ReadonlySet<string>): string | null {
+  if (!answer || heldTokens.size === 0) return null
+  for (const token of heldTokens) {
+    if (answer.includes(token)) {
+      return "private return is queued; do not repeat private markers or requested private-return content in the outward acknowledgement. Say only that the private pass is queued and will return when ready."
+    }
+  }
+  return null
+}
+
+function activeReturnObligationId(agentName: string, obligationId: string | undefined): string | null {
+  if (!obligationId) return null
+  const obligation = readReturnObligation(agentName, obligationId)
+  return obligation?.status === "queued" || obligation?.status === "running" ? obligationId : null
+}
+
+export function buildPonderResult(
   packet: PonderPacket,
   action: "created" | "revised",
   returnObligationId: string | null,
@@ -470,6 +542,9 @@ function buildPonderResult(
     action,
     status: packet.status,
     return_obligation_id: returnObligationId,
+    private_return_contract: returnObligationId
+      ? "queued for inner attention; do not present the requested private answer as complete in this same outward turn. if you answer now, only say the private pass is queued and will return when ready."
+      : null,
   }, null, 2)
 }
 
@@ -797,6 +872,7 @@ export async function runAgent(
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
+  const privateReturnHeldTokens = new Set<string>();
   // Once-per-turn flag for the fresh-work rest gate. Without this, an agent
   // that called rest, was told "fresh work arrived", processed the items,
   // and called rest again would get the same message forever — the gate
@@ -1136,7 +1212,7 @@ export async function runAgent(
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             messages.push(msg);
-            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you settle.";
+            const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.";
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             continue;
@@ -1158,19 +1234,20 @@ export async function runAgent(
             continue;
           }
 
-          const retryError = getSettleRetryError(
-            mustResolveBeforeHandoffActive,
-            intent,
-            sawSteeringFollowUp,
-            options?.delegationDecision,
-            sawSendMessageSelf,
-            sawPonder,
-            sawQuerySession,
-            options?.currentObligation ?? null,
-            options?.activeWorkFrame?.inner?.job,
-            sawExternalStateQuery,
-          )
           const deliveredAnswer = answer
+          const retryError = privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
+            ?? getSettleRetryError(
+              mustResolveBeforeHandoffActive,
+              intent,
+              sawSteeringFollowUp,
+              options?.delegationDecision,
+              sawSendMessageSelf,
+              sawPonder,
+              sawQuerySession,
+              options?.currentObligation ?? null,
+              options?.activeWorkFrame?.inner?.job,
+              sawExternalStateQuery,
+            )
           const validDirectReply = mustResolveBeforeHandoffActive && intent === "direct_reply" && sawSteeringFollowUp;
           const validTerminalIntent = intent === "complete" || intent === "blocked";
           const validClosure = deliveredAnswer != null
@@ -1256,7 +1333,7 @@ export async function runAgent(
           if (attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
             messages.push(msg);
-            const gateMessage = "you're holding thoughts someone is waiting for — surface them before you rest.";
+            const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
             messages.push({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
             providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
             continue;
@@ -1315,6 +1392,16 @@ export async function runAgent(
             /* ignore */
           }
           if (tc.name === "send_message" && args.friendId === "self") {
+            const latestUserText = latestUserMessageText(messages)
+            if (!isInnerDialog && looksLikePrivateReturnRequest(latestUserText)) {
+              const argSummary = summarizeArgs(tc.name, args);
+              const rejection = "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.";
+              callbacks.onToolStart(tc.name, args);
+              callbacks.onToolEnd(tc.name, argSummary, false);
+              messages.push({ role: "tool", tool_call_id: tc.id, content: rejection });
+              providerRuntime.appendToolOutput(tc.id, rejection);
+              continue;
+            }
             sawSendMessageSelf = true;
           }
           if (tc.name === "speak") {
@@ -1384,20 +1471,42 @@ export async function runAgent(
                 ? { friendId: currentSession.friendId, channel: currentSession.channel, key: currentSession.key }
                 : undefined;
               const isInnerChannel = currentOrigin?.friendId === "self" && currentOrigin?.channel === "inner";
+              const shouldCreateReturnObligation = !!currentOrigin && !isInnerChannel;
+              const attentionQueue = (augmentedToolContext ?? options?.toolContext)?.delegatedOrigins ?? [];
               const successCriteria = parseSuccessCriteria(parsedArgs.success_criteria);
               const payload = parsePacketPayload(parsedArgs.payload_json);
 
               let packet: PonderPacket;
               let returnObligationId: string | null = null;
               let resultAction: "created" | "revised" = "created";
+              let privateReturnSourceRequest = "";
 
               if (action === "create") {
+                if (isInnerChannel && attentionQueue.length > 0) {
+                  throw new Error("inner dialog already has held return work in the attention queue; surface the existing delegationId instead of creating a replacement ponder packet.")
+                }
                 const kind = parsedArgs.kind;
                 const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
                 const summary = typeof parsedArgs.summary === "string" ? parsedArgs.summary.trim() : "";
+                const sourceRequest = currentOrigin && !isInnerChannel ? latestUserMessageText(messages) : "";
+                privateReturnSourceRequest = sourceRequest;
 
                 if (!kind || !objective || !successCriteria || !payload) {
                   throw new Error("ponder create requires kind, objective, success_criteria, and valid payload_json.")
+                }
+                const packetPayload = sourceRequest && typeof payload.sourceRequest !== "string"
+                  ? { ...payload, sourceRequest }
+                  : payload
+                const createLinkedReturnObligation = (id: string, packetId: string): void => {
+                  if (!currentOrigin) return
+                  createReturnObligation(getAgentName(), {
+                    id,
+                    origin: currentOrigin,
+                    status: "queued",
+                    delegatedContent: buildPonderDelegatedContent({ summary, objective, sourceRequest }),
+                    packetId,
+                    createdAt: Date.now(),
+                  });
                 }
 
                 const agentRoot = getAgentRoot();
@@ -1414,8 +1523,8 @@ export async function runAgent(
                   }
                 }
 
-                const frictionSignature = kind === "harness_friction" && typeof payload.frictionSignature === "string"
-                  ? payload.frictionSignature
+                const frictionSignature = kind === "harness_friction" && typeof packetPayload.frictionSignature === "string"
+                  ? packetPayload.frictionSignature
                   : null;
                 const existing = frictionSignature && currentOrigin
                   ? findHarnessFrictionPacket(agentRoot, currentOrigin, frictionSignature)
@@ -1423,18 +1532,26 @@ export async function runAgent(
 
                 if (existing) {
                   resultAction = "revised";
-                  returnObligationId = existing.relatedReturnObligationId ?? null;
+                  const existingActiveReturnId = shouldCreateReturnObligation
+                    ? activeReturnObligationId(getAgentName(), existing.relatedReturnObligationId)
+                    : null;
+                  returnObligationId = existingActiveReturnId
+                    ?? (shouldCreateReturnObligation ? generateObligationId(Date.now()) : null);
                   packet = existing.status === "drafting"
                     ? revisePonderPacket(agentRoot, existing.id, {
                         kind,
                         objective,
                         summary,
                         successCriteria,
-                        payload,
+                        payload: packetPayload,
                       })
                     : existing;
+                  if (returnObligationId && returnObligationId !== existing.relatedReturnObligationId) {
+                    packet = advancePonderPacket(agentRoot, packet.id, { relatedReturnObligationId: returnObligationId })
+                    createLinkedReturnObligation(returnObligationId, packet.id)
+                  }
                 } else {
-                  returnObligationId = generateObligationId(Date.now());
+                  returnObligationId = shouldCreateReturnObligation ? generateObligationId(Date.now()) : null;
                   packet = createPonderPacket(agentRoot, {
                     kind,
                     objective,
@@ -1442,19 +1559,14 @@ export async function runAgent(
                     successCriteria,
                     ...(currentOrigin ? { origin: currentOrigin } : {}),
                     ...(relatedObligationId ? { relatedObligationId } : {}),
-                    relatedReturnObligationId: returnObligationId,
+                    ...(returnObligationId ? { relatedReturnObligationId: returnObligationId } : {}),
                     ...(parsedArgs.follows_packet_id ? { followsPacketId: parsedArgs.follows_packet_id } : {}),
-                    payload,
+                    payload: packetPayload,
                   });
 
-                  createReturnObligation(getAgentName(), {
-                    id: returnObligationId,
-                    origin: currentOrigin ?? { friendId: "self", channel: "inner", key: "dialog" },
-                    status: "queued",
-                    delegatedContent: (summary || objective).length > 120 ? `${(summary || objective).slice(0, 117)}...` : (summary || objective),
-                    packetId: packet.id,
-                    createdAt: Date.now(),
-                  });
+                  if (returnObligationId) {
+                    createLinkedReturnObligation(returnObligationId, packet.id)
+                  }
                 }
               } else if (action === "revise") {
                 const packetId = typeof parsedArgs.packet_id === "string" ? parsedArgs.packet_id.trim() : "";
@@ -1471,13 +1583,21 @@ export async function runAgent(
                   successCriteria,
                   payload,
                 });
-                returnObligationId = packet.relatedReturnObligationId ?? null;
+                returnObligationId = packet.relatedReturnObligationId
+                  && !(packet.origin?.friendId === "self" && packet.origin.channel === "inner")
+                  ? packet.relatedReturnObligationId
+                  : null;
                 resultAction = "revised";
               } else {
                 throw new Error("ponder requires action=create or revise.")
               }
 
-              try { await requestInnerWake(getAgentName(), (augmentedToolContext ?? options?.toolContext)?.daemonSocketPath); } catch { /* daemon may not be running */ }
+              if (returnObligationId) {
+                for (const token of extractPrivateReturnHeldTokens(privateReturnSourceRequest)) {
+                  privateReturnHeldTokens.add(token)
+                }
+                try { await requestInnerWake(getAgentName(), (augmentedToolContext ?? options?.toolContext)?.daemonSocketPath); } catch { /* daemon may not be running */ }
+              }
               sawPonder = true;
               toolResult = buildPonderResult(packet, resultAction, returnObligationId);
               success = true;

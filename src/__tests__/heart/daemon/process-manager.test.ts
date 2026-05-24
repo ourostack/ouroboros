@@ -1175,6 +1175,33 @@ describe("daemon process manager", () => {
     expect(child.send).toHaveBeenCalledWith({ type: "heartbeat" })
   })
 
+  it("queues IPC messages sent while startup is still in flight", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => gate.promise,
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    manager.sendToAgent("slugger", { type: "message" })
+    expect(child.send).not.toHaveBeenCalled()
+
+    gate.resolve({ ok: true })
+    await start
+
+    expect(child.send).toHaveBeenCalledWith({ type: "message" })
+  })
+
   it("sendToAgent swallows errors when agent has no process", async () => {
     const manager = new DaemonProcessManager({
       agents,

@@ -104,6 +104,8 @@ describe("Phase 2: tool description enrichment", () => {
       const desc = ponderTool.function.description ?? ""
       expect(desc).toContain("Don't ponder trivial questions")
       expect(desc).toContain("does not end the turn")
+      expect(desc).toContain("do not settle with the final private answer")
+      expect(desc).toContain("does not create a new self-return obligation")
     })
 
     it("settle description contains substantive response guidance", () => {

@@ -89,10 +89,12 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 const mockCreateObligation = vi.fn(() => ({ id: "obl-test-123" }))
 const mockCreateReturnObligation = vi.fn()
 const mockGenerateObligationId = vi.fn(() => "ret-test-123")
+const mockReadReturnObligation = vi.fn(() => null)
 vi.mock("../../arc/obligations", () => ({
   createObligation: (...args: any[]) => mockCreateObligation(...args),
   createReturnObligation: (...args: any[]) => mockCreateReturnObligation(...args),
   generateObligationId: (...args: any[]) => mockGenerateObligationId(...args),
+  readReturnObligation: (...args: any[]) => mockReadReturnObligation(...args),
   readObligations: vi.fn(() => []),
   readPendingObligations: vi.fn(() => []),
   advanceObligation: vi.fn(),
@@ -110,9 +112,18 @@ const mockCreatePonderPacket = vi.fn((_: string, input: Record<string, unknown>)
   updatedAt: 1_700_000_000_000,
   ...input,
 }))
+const mockAdvancePonderPacket = vi.fn((_: string, __: string, update: Record<string, unknown>) => ({
+  id: "pkt-test-123",
+  sop: "harness_friction_v1",
+  status: "drafting",
+  createdAt: 1_700_000_000_000,
+  updatedAt: 1_700_000_000_000,
+  ...update,
+}))
 const mockRevisePonderPacket = vi.fn()
 const mockFindHarnessFrictionPacket = vi.fn(() => null)
 vi.mock("../../arc/packets", () => ({
+  advancePonderPacket: (...args: any[]) => mockAdvancePonderPacket(...args),
   createPonderPacket: (...args: any[]) => mockCreatePonderPacket(...args),
   revisePonderPacket: (...args: any[]) => mockRevisePonderPacket(...args),
   findHarnessFrictionPacket: (...args: any[]) => mockFindHarnessFrictionPacket(...args),
@@ -176,6 +187,30 @@ function ponderRawChunks(argumentsText: string) {
   ]
 }
 
+function sendMessageSelfChunks(content: string) {
+  return [
+    makeChunk(undefined, [{ index: 0, id: "call_send_self", function: { name: "send_message", arguments: "" } }]),
+    makeChunk(undefined, [{
+      index: 0,
+      function: { arguments: JSON.stringify({ friendId: "self", channel: "inner", content }) },
+    }]),
+  ]
+}
+
+function surfaceChunks(args: Record<string, unknown>) {
+  return [
+    makeChunk(undefined, [{ index: 0, id: "call_surface", function: { name: "surface", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify(args) } }]),
+  ]
+}
+
+function restChunks(args: Record<string, unknown> = {}) {
+  return [
+    makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify(args) } }]),
+  ]
+}
+
 function settleChunks(answer: string) {
   return [
     makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "settle", arguments: "" } }]),
@@ -201,7 +236,16 @@ describe("ponder packets in runAgent", () => {
     mockCreateObligation.mockReset().mockReturnValue({ id: "obl-test-123" })
     mockCreateReturnObligation.mockReset()
     mockGenerateObligationId.mockReset().mockReturnValue("ret-test-123")
+    mockReadReturnObligation.mockReset().mockReturnValue(null)
     mockCreatePonderPacket.mockClear()
+    mockAdvancePonderPacket.mockReset().mockImplementation((_: string, __: string, update: Record<string, unknown>) => ({
+      id: "pkt-test-123",
+      sop: "harness_friction_v1",
+      status: "drafting",
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      ...update,
+    }))
     mockRevisePonderPacket.mockReset()
     mockFindHarnessFrictionPacket.mockReset().mockReturnValue(null)
     await setupMinimax()
@@ -246,6 +290,9 @@ describe("ponder packets in runAgent", () => {
         origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
         relatedObligationId: "obl-test-123",
         relatedReturnObligationId: "ret-test-123",
+        payload: expect.objectContaining({
+          sourceRequest: "hi",
+        }),
       }),
     )
     expect(mockCreateReturnObligation).toHaveBeenCalledWith(
@@ -254,6 +301,7 @@ describe("ponder packets in runAgent", () => {
         id: "ret-test-123",
         packetId: "pkt-test-123",
         status: "queued",
+        delegatedContent: expect.stringContaining("source request: hi"),
       }),
     )
     expect(mockQueuePendingMessage).not.toHaveBeenCalled()
@@ -272,7 +320,13 @@ describe("ponder packets in runAgent", () => {
     })))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
 
-    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+    await runAgent(
+      [{ role: "user", content: "hi" }],
+      makeCallbacks(),
+      "cli",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
 
     expect(mockCreatePonderPacket).toHaveBeenCalledWith(
       "/mock/repo/testagent",
@@ -300,14 +354,259 @@ describe("ponder packets in runAgent", () => {
     })))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
 
-    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+    await runAgent(
+      [{ role: "user", content: "hi" }],
+      makeCallbacks(),
+      "cli",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
 
     expect(mockCreateReturnObligation).toHaveBeenCalledWith(
       "testagent",
       expect.objectContaining({
-        delegatedContent: "Objective fallback",
+        delegatedContent: expect.stringContaining("Objective fallback"),
       }),
     )
+  })
+
+  it("creates a fresh return obligation when a reused packet points at a terminal return", async () => {
+    const existingPacket = {
+      id: "pkt-existing-123",
+      kind: "harness_friction",
+      sop: "harness_friction_v1",
+      status: "drafting",
+      objective: "Old objective",
+      summary: "Old summary",
+      successCriteria: ["old"],
+      origin: { friendId: "ari", channel: "mcp", key: "session" },
+      relatedReturnObligationId: "ret-old-123",
+      payload: { frictionSignature: "private-loop-repeat" },
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    mockFindHarnessFrictionPacket.mockReturnValueOnce(existingPacket)
+    mockReadReturnObligation.mockReturnValueOnce({
+      id: "ret-old-123",
+      status: "returned",
+      origin: { friendId: "ari", channel: "mcp", key: "session" },
+      delegatedContent: "old",
+      createdAt: 1,
+    })
+    mockGenerateObligationId.mockReturnValueOnce("ret-fresh-123")
+    mockRevisePonderPacket.mockReturnValueOnce({
+      ...existingPacket,
+      objective: "Preserve repeat",
+      summary: "New private pass",
+    })
+    mockAdvancePonderPacket.mockReturnValueOnce({
+      ...existingPacket,
+      objective: "Preserve repeat",
+      summary: "New private pass",
+      relatedReturnObligationId: "ret-fresh-123",
+    })
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "harness_friction",
+      objective: "Preserve repeat",
+      summary: "New private pass",
+      success_criteria: "- return AX_REPEAT_MARKER",
+      payload_json: JSON.stringify({ frictionSignature: "private-loop-repeat" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("queued")))
+
+    await runAgent(
+      [{ role: "user", content: "Please think privately and return AX_REPEAT_MARKER later." }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
+
+    expect(mockRevisePonderPacket).toHaveBeenCalled()
+    expect(mockAdvancePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      "pkt-existing-123",
+      { relatedReturnObligationId: "ret-fresh-123" },
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        id: "ret-fresh-123",
+        packetId: "pkt-existing-123",
+        status: "queued",
+        delegatedContent: expect.stringContaining("AX_REPEAT_MARKER"),
+      }),
+    )
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
+  })
+
+  it("tells the model a ponder-created return is queued, not complete", async () => {
+    const { buildPonderResult } = await import("../../heart/core")
+    const result = JSON.parse(buildPonderResult({
+      id: "pkt-test",
+      kind: "reflection",
+      sop: "reflection_v1",
+      status: "drafting",
+      objective: "Evaluate private attention AX",
+      summary: "",
+      successCriteria: ["Return AX_MARKER"],
+      payload: {},
+      createdAt: 1,
+      updatedAt: 1,
+    }, "created", "ret-test"))
+
+    expect(result.private_return_contract).toContain("queued for inner attention")
+    expect(result.private_return_contract).toContain("do not present the requested private answer as complete")
+  })
+
+  it("rejects same-turn outward acknowledgements that repeat private return markers", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Evaluate current private return loop",
+      summary: "Return the marker privately",
+      success_criteria: "- include AX_PRIVATE_LEAK_123 in the private return",
+      payload_json: JSON.stringify({ marker: "AX_PRIVATE_LEAK_123" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued with marker AX_PRIVATE_LEAK_123.")))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued. Will return when ready.")))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and later return marker AX_PRIVATE_LEAK_123." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
+    expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
+  })
+
+  it("does not create a self-return obligation for inner-dialog ponder packets", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Preserve inner thought",
+      summary: "This should stay as packet state",
+      success_criteria: "- no self-return loop",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("rested")))
+
+    await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      { toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" } } },
+    )
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.not.objectContaining({ relatedReturnObligationId: expect.any(String) }),
+    )
+    expect(mockCreateReturnObligation).not.toHaveBeenCalled()
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
+  })
+
+  it("rejects inner-dialog replacement ponder packets while a held return is waiting", async () => {
+    const delegatedOrigins = [{
+      id: "ret-1",
+      friendId: "ari",
+      friendName: "Ari",
+      channel: "mcp",
+      key: "session",
+      delegatedContent: "return marker",
+      source: "obligation-recovery" as const,
+      timestamp: 1,
+    }]
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Replace held return",
+      summary: "This would duplicate the queue item",
+      success_criteria: "- no duplicate",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(surfaceChunks({ delegationId: "ret-1", content: "returned" })))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "HEARTBEAT_OK" })))
+    const callbacks = makeCallbacks()
+    const execTool = vi.fn().mockImplementation((name: string) => {
+      if (name === "surface") {
+        delegatedOrigins.splice(0)
+        return "delivered"
+      }
+      return "ok"
+    })
+
+    await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      callbacks,
+      "inner",
+      undefined,
+      {
+        execTool,
+        toolContext: {
+          currentSession: { friendId: "self", channel: "inner", key: "dialog" },
+          delegatedOrigins,
+        },
+      },
+    )
+
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
+    expect(execTool).toHaveBeenCalledWith("surface", expect.objectContaining({ delegationId: "ret-1" }), expect.any(Object))
+  })
+
+  it("does not create a return obligation when no outward session origin exists", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Preserve local thought",
+      summary: "No route-back target exists",
+      success_criteria: "- packet is created",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
+
+    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.not.objectContaining({ relatedReturnObligationId: expect.any(String) }),
+    )
+    expect(mockCreateReturnObligation).not.toHaveBeenCalled()
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
+  })
+
+  it("rejects legacy send_message(self) for private-return requests so ponder owns the contract", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(sendMessageSelfChunks("AX_PRIVATE_RETURN — ready")))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
+    const execTool = vi.fn().mockResolvedValue("queued")
+    const callbacks = makeCallbacks()
+
+    await runAgent(
+      [{ role: "user", content: "Please think privately and return marker AX_PRIVATE_RETURN later." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        execTool,
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("send_message", expect.any(String), false)
   })
 
   it("normalizes legacy thought into a reflection packet without ending the turn", async () => {
@@ -595,6 +894,13 @@ describe("ponder packets in runAgent", () => {
       createdAt: 1,
       updatedAt: 1,
     })
+    mockReadReturnObligation.mockReturnValueOnce({
+      id: "ret-existing",
+      status: "queued",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      delegatedContent: "old",
+      createdAt: 1,
+    })
     mockRevisePonderPacket.mockReturnValue({
       id: "pkt-existing",
       kind: "harness_friction",
@@ -703,6 +1009,13 @@ describe("ponder packets in runAgent", () => {
       createdAt: 1,
       updatedAt: 1,
     })
+    mockReadReturnObligation.mockReturnValueOnce({
+      id: "ret-existing",
+      status: "queued",
+      origin: { friendId: "ari", channel: "bluebubbles", key: "chat" },
+      delegatedContent: "old",
+      createdAt: 1,
+    })
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
       kind: "harness_friction",
@@ -724,6 +1037,7 @@ describe("ponder packets in runAgent", () => {
     expect(mockRevisePonderPacket).not.toHaveBeenCalled()
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
     expect(mockCreateReturnObligation).not.toHaveBeenCalled()
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
   })
 
   it("truncates a long objective when summary is blank", async () => {
@@ -738,7 +1052,13 @@ describe("ponder packets in runAgent", () => {
     })))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
 
-    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+    await runAgent(
+      [{ role: "user", content: "hi" }],
+      makeCallbacks(),
+      "cli",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
 
     expect(mockCreateReturnObligation).toHaveBeenCalledWith(
       "testagent",

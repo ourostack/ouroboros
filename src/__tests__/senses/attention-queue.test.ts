@@ -22,6 +22,7 @@ describe("attention queue", () => {
   let dequeueAttentionItem: typeof import("../../senses/attention-queue").dequeueAttentionItem
   let attentionQueueEmpty: typeof import("../../senses/attention-queue").attentionQueueEmpty
   let buildAttentionQueueSummary: typeof import("../../senses/attention-queue").buildAttentionQueueSummary
+  let buildAttentionQueueStatusFrame: typeof import("../../senses/attention-queue").buildAttentionQueueStatusFrame
   type AttentionItem = import("../../senses/attention-queue").AttentionItem
   type PendingMessage = import("../../mind/pending").PendingMessage
 
@@ -32,6 +33,7 @@ describe("attention queue", () => {
     dequeueAttentionItem = mod.dequeueAttentionItem
     attentionQueueEmpty = mod.attentionQueueEmpty
     buildAttentionQueueSummary = mod.buildAttentionQueueSummary
+    buildAttentionQueueStatusFrame = mod.buildAttentionQueueStatusFrame
   })
 
   describe("buildAttentionQueue", () => {
@@ -244,8 +246,11 @@ describe("attention queue", () => {
           status: "drafting",
           objective: "Fix image retry behavior",
           summary: "Shared attachment repair work",
-          successCriteria: ["No more dead-ends"],
-          payload: {},
+          successCriteria: ["No more dead-ends", "Return AX_PACKET_MARKER"],
+          payload: {
+            sourceRequest: 'Please think privately and later return exactly "AX_PACKET_MARKER: NATURAL".',
+            expected: "AX_PACKET_MARKER: NATURAL",
+          },
           createdAt: 1,
           updatedAt: 1,
         }),
@@ -254,6 +259,9 @@ describe("attention queue", () => {
       expect(queue[0].packetId).toBe("pkt-1")
       expect(queue[0].packetKind).toBe("harness_friction")
       expect(queue[0].packetObjective).toBe("Fix image retry behavior")
+      expect(queue[0].packetSuccessCriteria).toEqual(["No more dead-ends", "Return AX_PACKET_MARKER"])
+      expect(queue[0].packetSourceRequest).toBe('Please think privately and later return exactly "AX_PACKET_MARKER: NATURAL".')
+      expect(queue[0].packetReturnHints).toEqual(["AX_PACKET_MARKER: NATURAL"])
     })
 
     it("keeps a packet id even when the resolver cannot currently load the packet", () => {
@@ -413,8 +421,11 @@ describe("attention queue", () => {
       ]
 
       const summary = buildAttentionQueueSummary(items)
-      expect(summary).toContain("[internal: held work items")
+      expect(summary).toContain("[internal: current held work items")
+      expect(summary).toContain("Only listed items are waiting now")
+      expect(summary).toContain("completed returns/probes")
       expect(summary).toContain("call surface with delegationId")
+      expect(summary).toContain("Return only the requested result")
       expect(summary).not.toContain("you're holding:")
       expect(summary).toContain("[abc123]")
       expect(summary).toContain("Ari asked:")
@@ -424,7 +435,7 @@ describe("attention queue", () => {
       expect(summary).toContain("review the deployment plan")
     })
 
-    it("prefers packet kind and objective when available", () => {
+    it("shows packet return criteria and source request when available", () => {
       const items: AttentionItem[] = [
         {
           id: "pkt-1",
@@ -436,6 +447,9 @@ describe("attention queue", () => {
           packetId: "pkt-1",
           packetKind: "harness_friction",
           packetObjective: "Fix image retry behavior",
+          packetSuccessCriteria: ["No more dead-ends", "Return AX_PACKET_MARKER"],
+          packetSourceRequest: 'Please think privately and later return exactly "AX_PACKET_MARKER: NATURAL".',
+          packetReturnHints: ["AX_PACKET_MARKER: NATURAL"],
           source: "drained",
           timestamp: 1000,
         },
@@ -443,11 +457,27 @@ describe("attention queue", () => {
 
       const summary = buildAttentionQueueSummary(items)
       expect(summary).toContain("Ari -> harness_friction: Fix image retry behavior")
+      expect(summary).toContain("return criteria: No more dead-ends; Return AX_PACKET_MARKER")
+      expect(summary).toContain('literal return options: "AX_PACKET_MARKER: NATURAL"')
+      expect(summary).toContain('source request: "Please think privately and later return exactly "AX_PACKET_MARKER: NATURAL"."')
       expect(summary).not.toContain("asked:")
     })
 
     it("returns empty string for empty queue", () => {
       expect(buildAttentionQueueSummary([])).toBe("")
+    })
+
+    it("leaves empty status silent", () => {
+      const frame = buildAttentionQueueStatusFrame([])
+      expect(frame).toBe("")
+    })
+
+    it("status frame includes queue summary when held work exists", () => {
+      const frame = buildAttentionQueueStatusFrame([
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "bb", key: "c1", delegatedContent: "think", source: "drained", timestamp: 1000 },
+      ])
+      expect(frame).toContain("[abc123]")
+      expect(frame).toContain("Only listed items are waiting now")
     })
 
     it("truncates long content", () => {
@@ -456,7 +486,7 @@ describe("attention queue", () => {
       ]
 
       const summary = buildAttentionQueueSummary(items)
-      expect(summary.length).toBeLessThan(300)
+      expect(summary.length).toBeLessThan(650)
       expect(summary).toContain("...")
     })
   })

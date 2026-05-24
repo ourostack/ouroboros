@@ -23,11 +23,22 @@ export interface HandleSurfaceInput {
   queue: AttentionItem[]
   routeToFriend: (friendId: string, content: string, queueItem?: AttentionItem, deliveryHint?: SurfaceDeliveryHint) => Promise<SurfaceRouteResult>
   advanceObligation: (obligationId: string, update: { status: string; returnedAt?: number; returnTarget?: string }) => void
+  completePonderPacket?: (packetId: string) => void
   fulfillHeartObligation?: (origin: { friendId: string; channel: string; key: string }) => void
 }
 
 export async function handleSurface(input: HandleSurfaceInput): Promise<string> {
-  const { content, delegationId, friendId, deliveryHint, queue, routeToFriend, advanceObligation, fulfillHeartObligation } = input
+  const {
+    content,
+    delegationId,
+    friendId,
+    deliveryHint,
+    queue,
+    routeToFriend,
+    advanceObligation,
+    completePonderPacket,
+    fulfillHeartObligation,
+  } = input
 
   // Resolve target friend
   let targetFriendId: string
@@ -72,6 +83,10 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
     }
   }
 
+  if (queueItem?.packetId && !delegationId) {
+    return `held private return ${queueItem.id} is waiting — call surface with delegationId="${queueItem.id}" so the return is tied to the correct packet`
+  }
+
   // Route to target
   const result = deliveryHint
     ? await routeToFriend(targetFriendId, content, queueItem, deliveryHint)
@@ -99,6 +114,13 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
         returnedAt: Date.now(),
         returnTarget: "surface",
       })
+    }
+    if (completePonderPacket && queueItem.packetId) {
+      try {
+        completePonderPacket(queueItem.packetId)
+      } catch {
+        // swallowed — packet completion must never break surface delivery
+      }
     }
     // Fulfill the heart obligation for this origin (separate from inner/mind obligation)
     if (fulfillHeartObligation) {
