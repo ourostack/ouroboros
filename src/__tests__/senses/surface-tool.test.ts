@@ -268,6 +268,136 @@ describe("surface tool", () => {
       expect(routeToFriend).toHaveBeenCalledWith("bob", "hey there", undefined)
     })
 
+    it("keeps a named outreach spontaneous when no held item matches friendId", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "mcp", key: "s1", delegatedContent: "held", source: "drained", timestamp: 1000 },
+      ]
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "pending" })
+      const advanceObligation = vi.fn()
+      const fulfillHeartObligation = vi.fn()
+
+      const result = await handleSurface({
+        content: "fresh thought",
+        friendId: "ben",
+        queue,
+        routeToFriend,
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      expect(result).toContain("queued")
+      expect(routeToFriend).toHaveBeenCalledWith("ben", "fresh thought", undefined)
+      expect(advanceObligation).not.toHaveBeenCalled()
+      expect(fulfillHeartObligation).not.toHaveBeenCalled()
+      expect(queue).toHaveLength(1)
+    })
+
+    it("infers the only held item when surface omits friendId and delegationId", async () => {
+      const queue: AttentionItem[] = [
+        {
+          id: "abc123",
+          friendId: "friend-uuid",
+          friendName: "Ari",
+          channel: "mcp",
+          key: "session-1",
+          delegatedContent: "check the loop",
+          obligationId: "obl-1",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ]
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "for originating mcp session" })
+      const advanceObligation = vi.fn()
+      const fulfillHeartObligation = vi.fn()
+
+      const result = await handleSurface({
+        content: "single held return",
+        queue,
+        routeToFriend,
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      expect(result).toContain("queued")
+      expect(routeToFriend).toHaveBeenCalledWith("friend-uuid", "single held return", expect.objectContaining({ id: "abc123" }))
+      expect(advanceObligation).toHaveBeenCalledWith("obl-1", expect.objectContaining({ status: "returned" }))
+      expect(fulfillHeartObligation).toHaveBeenCalledWith({ friendId: "friend-uuid", channel: "mcp", key: "session-1" })
+      expect(queue).toHaveLength(0)
+    })
+
+    it("infers a matching held item when surface uses friendId without delegationId", async () => {
+      const queue: AttentionItem[] = [
+        {
+          id: "abc123",
+          friendId: "friend-uuid",
+          friendName: "Ari",
+          channel: "mcp",
+          key: "session-1",
+          delegatedContent: "check the loop",
+          obligationId: "obl-1",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ]
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "for originating mcp session" })
+      const advanceObligation = vi.fn()
+      const fulfillHeartObligation = vi.fn()
+
+      const result = await handleSurface({
+        content: "loop observed",
+        friendId: "Ari",
+        queue,
+        routeToFriend,
+        advanceObligation,
+        fulfillHeartObligation,
+      })
+
+      expect(result).toContain("queued")
+      expect(routeToFriend).toHaveBeenCalledWith("friend-uuid", "loop observed", expect.objectContaining({ id: "abc123" }))
+      expect(advanceObligation).toHaveBeenCalledWith("obl-1", expect.objectContaining({ status: "returned" }))
+      expect(fulfillHeartObligation).toHaveBeenCalledWith({ friendId: "friend-uuid", channel: "mcp", key: "session-1" })
+      expect(queue).toHaveLength(0)
+    })
+
+    it("requires delegationId when friendId matches multiple held items", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "mcp", key: "s1", delegatedContent: "first", source: "drained", timestamp: 1000 },
+        { id: "def456", friendId: "ari", friendName: "Ari", channel: "mcp", key: "s2", delegatedContent: "second", source: "drained", timestamp: 1001 },
+      ]
+
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued" })
+      const result = await handleSurface({
+        content: "answer",
+        friendId: "ari",
+        queue,
+        routeToFriend,
+        advanceObligation: () => {},
+      })
+
+      expect(result).toContain("multiple held thoughts match")
+      expect(routeToFriend).not.toHaveBeenCalled()
+      expect(queue).toHaveLength(2)
+    })
+
+    it("requires delegationId when no friendId is provided and multiple held items exist", async () => {
+      const queue: AttentionItem[] = [
+        { id: "abc123", friendId: "ari", friendName: "Ari", channel: "mcp", key: "s1", delegatedContent: "first", source: "drained", timestamp: 1000 },
+        { id: "def456", friendId: "ben", friendName: "Ben", channel: "mcp", key: "s2", delegatedContent: "second", source: "drained", timestamp: 1001 },
+      ]
+
+      const routeToFriend = vi.fn().mockResolvedValue({ status: "queued" })
+      const result = await handleSurface({
+        content: "answer",
+        queue,
+        routeToFriend,
+        advanceObligation: () => {},
+      })
+
+      expect(result).toContain("multiple held thoughts match this surface call")
+      expect(routeToFriend).not.toHaveBeenCalled()
+      expect(queue).toHaveLength(2)
+    })
+
     it("passes delivery hints only when a non-default channel is requested", async () => {
       const routeToFriend = vi.fn().mockResolvedValue({ status: "delivered", detail: "voice call initiated" })
       await handleSurface({
@@ -480,6 +610,142 @@ describe("surface tool", () => {
       expect(fs.writeFileSync).toHaveBeenCalledWith(
         expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
         expect.stringContaining("private answer ready for the bluebubbles session"),
+      )
+    })
+
+    it("surfaceToolDefinition queues delegated MCP returns to the exact origin even with a fresher BlueBubbles session", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "INNER_E2E_OK_C evolutions::count=0",
+        delegationId: "delegation-mcp",
+      }, {
+        delegatedOrigins: [
+          {
+            id: "delegation-mcp",
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "mcp",
+            key: "mcp-session-123",
+            delegatedContent: "check the evolution loop",
+            source: "drained",
+            timestamp: 1,
+          },
+        ],
+      } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for originating mcp session")
+      expect(mockSendProactiveBlueBubblesMessageToSession).not.toHaveBeenCalled()
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/mcp\/mcp-session-123\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("INNER_E2E_OK_C evolutions::count=0"),
+      )
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\//),
+        expect.any(String),
+      )
+    })
+
+    it("surfaceToolDefinition infers a delegated MCP return when inner omits delegationId but names the friend", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "INNER_E2E_OK_D evolution_status observed",
+        friendId: "Ari",
+      }, {
+        delegatedOrigins: [
+          {
+            id: "delegation-mcp",
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "mcp",
+            key: "mcp-session-123",
+            delegatedContent: "call evolution_status",
+            source: "drained",
+            timestamp: 1,
+          },
+        ],
+      } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for originating mcp session")
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/mcp\/mcp-session-123\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("INNER_E2E_OK_D evolution_status observed"),
+      )
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\//),
+        expect.any(String),
+      )
+    })
+
+    it("surfaceToolDefinition queues delegated non-MCP returns to the exact origin session", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "bluebubbles",
+          key: "chat:any;-;ari@mendelow.me",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/bluebubbles/chat_any;-;ari@mendelow.me.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "return to the CLI lane",
+        delegationId: "delegation-cli",
+      }, {
+        delegatedOrigins: [
+          {
+            id: "delegation-cli",
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "cli",
+            key: "session",
+            delegatedContent: "think privately",
+            source: "drained",
+            timestamp: 1,
+          },
+        ],
+      } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for originating cli session")
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/cli\/session\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("return to the CLI lane"),
+      )
+      expect(fs.writeFileSync).not.toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\//),
+        expect.any(String),
       )
     })
 

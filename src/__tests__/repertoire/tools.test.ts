@@ -185,7 +185,7 @@ describe("execTool", () => {
       ["intention_capture", { content: "wrong referent" }],
       ["credential_store", { domain: "example.com", username: "ari", password: "secret" }],
       ["user_profile_store", { fields: "{\"legalName\":{\"first\":\"Wrong\",\"last\":\"Referent\"}}" }],
-      ["send_message", { friendId: "self", channel: "inner", content: "wrong referent" }],
+      ["send_message", { friendId: "friend-1", channel: "bluebubbles", content: "wrong referent" }],
       ["coding_spawn", { runner: "codex", workdir: "/mock/repo", prompt: "wrong referent", taskRef: "wrong" }],
       ["stripe_create_card", { type: "single_use", spend_limit: "500", currency: "usd" }],
       ["flight_book", { offer_id: "off_123", amount: "100", currency: "usd" }],
@@ -418,6 +418,23 @@ describe("execTool", () => {
 
     expect(frame.actionPolicy.mode).toBe("correction_hold")
     expect(frame.actionPolicy.blockedMutationKinds).toEqual(["durable_state_write", "external_side_effect"])
+  })
+
+  it("orientation hold allows private self-delegation to inner dialog", async () => {
+    const socketClient = await import("../../heart/daemon/socket-client")
+    vi.mocked(fs.writeFileSync).mockReturnValue(undefined)
+    vi.mocked(fs.mkdirSync).mockReturnValue(undefined as any)
+    vi.mocked(socketClient.requestInnerWake).mockResolvedValueOnce({ ok: true })
+
+    const result = await execTool(
+      "send_message",
+      { friendId: "self", channel: "inner", content: "inspect this privately" },
+      orientationHoldCtx(),
+    )
+
+    expect(result).not.toContain("orientation hold")
+    expect(result).toContain("inner")
+    expect(fs.writeFileSync).toHaveBeenCalled()
   })
 
   it("rethrows non-Error values from handlers", async () => {

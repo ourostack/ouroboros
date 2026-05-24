@@ -93,10 +93,11 @@ export interface ToolContext {
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
   voiceCall?: VoiceCallControl;
   orientationFrame?: OrientationFrame;
+  daemonSocketPath?: string;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
-export type ToolMutationKind = "none" | "durable_state_write" | "external_side_effect"
+export type ToolMutationKind = "none" | "private_attention_write" | "durable_state_write" | "external_side_effect"
 export type ToolHighRiskMutationKind = Exclude<ToolMutationKind, "none">
 
 export type ToolRiskProfile =

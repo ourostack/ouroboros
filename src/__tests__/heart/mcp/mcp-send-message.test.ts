@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "stream"
+import * as fs from "fs"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
@@ -96,6 +97,8 @@ describe("MCP send_message tool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    vi.mocked(fs.readFileSync).mockReturnValue("")
     stdin = new PassThrough()
     stdout = new PassThrough()
     mockSendDaemonCommand.mockResolvedValue({
@@ -262,6 +265,150 @@ describe("MCP send_message tool", () => {
         sessionKey: "claude-session-456",
       }),
     )
+  })
+
+  it("canonicalizes local MCP friend ids before running a sense turn", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      name: "arimendelow",
+      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+    }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "local-arimendelow",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    await outputPromise
+    server.stop()
+
+    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        friendId: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      }),
+    )
+  })
+
+  it("canonicalizes local MCP friend ids that include a machine suffix", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      name: "arimendelow",
+      externalIds: [{ provider: "local", externalId: "arimendelow@macbook" }],
+    }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "local-arimendelow",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+  })
+
+  it("canonicalizes named MCP friend ids before running a sense turn", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      name: "Ari",
+      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+    }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "ari",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    await outputPromise
+    server.stop()
+
+    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        friendId: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      }),
+    )
+  })
+
+  it("preserves explicit UUID friend ids without reading bundle friends", async () => {
+    const uuid = "0e2b9e85-fe43-4340-87fd-4ea018dee8a5"
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: uuid,
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    expect(server.friendId).toBe(uuid)
+    expect(fs.readdirSync).not.toHaveBeenCalled()
+  })
+
+  it("preserves raw MCP friend ids when friend records cannot canonicalize them", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["missing-id.json", "github-only.json"] as any)
+    vi.mocked(fs.readFileSync)
+      .mockReturnValueOnce(JSON.stringify({ name: "Missing Id" }))
+      .mockReturnValueOnce(JSON.stringify({
+        id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+        name: "Ari",
+        externalIds: [{ provider: "github", externalId: "arimendelow" }],
+      }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "local-arimendelow",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    expect(server.friendId).toBe("local-arimendelow")
   })
 
   it("send_message handles daemon command errors gracefully", async () => {
