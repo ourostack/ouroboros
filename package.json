@@ -42,6 +42,9 @@
     "prepack": "npm run build && npm run package:verify-assets",
     "release:bump": "node scripts/release-bump.cjs",
     "release:preflight": "node scripts/release-preflight.cjs",
+    "release:trust:check": "node scripts/npm-trusted-publishers.cjs check",
+    "release:trust:repair-plan": "node scripts/npm-trusted-publishers.cjs repair-plan",
+    "release:trust:repair": "node scripts/npm-trusted-publishers.cjs repair",
     "release:smoke": "node scripts/release-smoke.cjs",
     "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"
   },
