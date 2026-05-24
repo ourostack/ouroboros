@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.639",
+      "changes": [
+        "Rollback safety guard: ouro rollback now validates the target installed @ouro.bot/cli package payload before flipping CurrentVersion, and refuses cached runtimes whose shipped assets contain blocked removed user-facing failure text so old local versions cannot resurrect the removed BlueBubbles live-turn timeout notice."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.638",
       "changes": [
         "Private-return acknowledgements now have to be packet-backed: outward settle rejects queued/private-return copy unless the same turn actually created a ponder packet, return obligation, and inner wake; regression coverage recreates the post-merge MCP failure and confirms blocking clarifications are still allowed."

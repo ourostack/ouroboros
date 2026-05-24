@@ -137,6 +137,7 @@ export interface OuroCliDeps {
   checkForCliUpdate?: () => Promise<CheckForUpdateResult>
   updateCheckTimeoutMs?: number
   installCliVersion?: (version: string) => Promise<void>
+  validateCliVersionForActivation?: (version: string) => { ok: boolean; message: string }
   activateCliVersion?: (version: string) => void
   getCurrentCliVersion?: () => string | null
   reExecFromNewVersion?: (args: string[]) => never
