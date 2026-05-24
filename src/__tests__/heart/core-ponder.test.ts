@@ -668,6 +668,158 @@ describe("ponder packets in runAgent", () => {
     expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
   })
 
+  it("rejects text-only private-return queued acknowledgements that did not create a ponder packet", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("Private pass is queued. Will return the validation result when the inner dialog completes."),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Validate text-only private attention return loop",
+      summary: "Run the private pass and return when complete",
+      success_criteria: "- return AX_TEXT_ONLY_PRIVATE_20260524_VALIDATED to the MCP session",
+      payload_json: JSON.stringify({ marker: "AX_TEXT_ONLY_PRIVATE_20260524_VALIDATED" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued. Will return when ready.")))
+
+    const delivered: string[] = []
+    const callbacks = makeCallbacks({
+      onTextChunk: vi.fn((chunk: string) => { delivered.push(chunk) }),
+      onClearText: vi.fn(() => { delivered.length = 0 }),
+    })
+    const result = await runAgent(
+      [{
+        role: "user",
+        content: "Please think privately and return marker AX_TEXT_ONLY_PRIVATE_20260524_VALIDATED later.",
+      }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolChoiceRequired: false,
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(callbacks.onClearText).toHaveBeenCalled()
+    expect(delivered.join("")).toBe("Private pass queued. Will return when ready.")
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        kind: "reflection",
+        objective: "Validate text-only private attention return loop",
+        relatedReturnObligationId: "ret-test-123",
+        payload: expect.objectContaining({
+          marker: "AX_TEXT_ONLY_PRIVATE_20260524_VALIDATED",
+          sourceRequest: "Please think privately and return marker AX_TEXT_ONLY_PRIVATE_20260524_VALIDATED later.",
+        }),
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        id: "ret-test-123",
+        packetId: "pkt-test-123",
+        status: "queued",
+        delegatedContent: expect.stringContaining("Run the private pass"),
+      }),
+    )
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
+    expect(result.outcome).toBe("settled")
+    expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
+  })
+
+  it("allows a text-only blocking clarification for private-return requests without a ponder packet", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("Which MCP session should receive the private return?"),
+    ]))
+
+    const delivered: string[] = []
+    const callbacks = makeCallbacks({
+      onTextChunk: vi.fn((chunk: string) => { delivered.push(chunk) }),
+      onClearText: vi.fn(() => { delivered.length = 0 }),
+    })
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and return the validation result later." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
+    expect(delivered.join("")).toBe("Which MCP session should receive the private return?")
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("settled")
+    expect(result.completion).toBeUndefined()
+  })
+
+  it("does not treat an empty no-tool turn as a private-return queued acknowledgement", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([]))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and return the validation result later." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("settled")
+  })
+
+  it("fails closed when text-only private-return acknowledgements keep skipping ponder", async () => {
+    const fakeAck = "Private pass is queued. Will return the validation result when the inner dialog completes."
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(fakeAck)]))
+
+    const delivered: string[] = []
+    const callbacks = makeCallbacks({
+      onTextChunk: vi.fn((chunk: string) => { delivered.push(chunk) }),
+      onClearText: vi.fn(() => { delivered.length = 0 }),
+    })
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and return the validation result later." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(callbacks.onClearText).toHaveBeenCalledTimes(3)
+    expect(delivered.join("")).toBe("I could not start the private pass. No private-attention packet was created, so no return work was queued.")
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(mockCreateReturnObligation).not.toHaveBeenCalled()
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("blocked")
+    expect(result.completion).toEqual({
+      answer: "I could not start the private pass. No private-attention packet was created, so no return work was queued.",
+      intent: "blocked",
+    })
+  })
+
   it("allows a blocking clarification for private-return requests without a ponder packet", async () => {
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("Which MCP session should receive the private return?")))
 
