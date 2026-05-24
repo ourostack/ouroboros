@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.641",
+      "changes": [
+        "Package build hardening: the root build now runs through a test-covered orchestrator that fails at the first broken clean, TypeScript, Mailbox UI install/build, or asset-copy step instead of swallowing failures with a `mailbox-ui build skipped` fallback."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.639",
       "changes": [
         "Rollback safety guard: ouro rollback now validates the target installed @ouro.bot/cli package payload before flipping CurrentVersion, and refuses cached runtimes whose shipped assets contain blocked removed user-facing failure text so old local versions cannot resurrect the removed BlueBubbles live-turn timeout notice."
