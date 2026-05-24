@@ -10,7 +10,10 @@ const {
   buildRepairPlan,
   collectTrustIds,
   formatCommand,
+  isAuthRequired,
+  runRepair,
   trustCreateCommand,
+  trustInteractiveAuthCommand,
   trustListCommand,
   trustOutputMatchesExpected,
   validateTrustedPublisherLocalContract,
@@ -136,5 +139,97 @@ publish:
         { nested: { _id: "third" } },
       ],
     })).sort()).toEqual(["first", "second", "third"])
+  })
+
+  it("recognizes npm web proof errors as auth-required output", () => {
+    expect(isAuthRequired("npm error code EOTP\nOpen this URL: https://www.npmjs.com/auth/cli/test")).toBe(true)
+    expect(isAuthRequired("404 package missing")).toBe(false)
+  })
+
+  it("uses an interactive auth probe before retrying trust repair when npm requires web proof", () => {
+    const capturedCommands: string[][] = []
+    const interactiveCommands: string[][] = []
+
+    const oldTrust = {
+      trustedPublishers: [
+        {
+          id: "old-trust",
+          repository: "ouroborosbot/ouroboros",
+          workflow: "coverage.yml",
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+    const expectedTrust = {
+      trustedPublishers: [
+        {
+          id: "expected-trust",
+          repository: EXPECTED_REPOSITORY,
+          workflow: EXPECTED_WORKFLOW,
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+
+    const runCommandImpl = (args: string[]) => {
+      capturedCommands.push(args)
+      const joined = args.join(" ")
+      const packageName = args.includes("@ouro.bot/cli") ? "@ouro.bot/cli" : "ouro.bot"
+
+      if (capturedCommands.length === 1) {
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+          output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+        }
+      }
+
+      if (joined.includes(" trust list ")) {
+        return {
+          status: 0,
+          stdout: JSON.stringify(packageName === "@ouro.bot/cli" ? oldTrust : expectedTrust),
+          stderr: "",
+          output: "",
+        }
+      }
+
+      return {
+        status: 0,
+        stdout: "",
+        stderr: "",
+        output: "",
+      }
+    }
+
+    const spawnSyncImpl = (command: string, args: string[]) => {
+      interactiveCommands.push([command, ...args])
+      return { status: 0 }
+    }
+
+    runRepair({
+      runCommandImpl,
+      spawnSyncImpl,
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+    })
+
+    expect(interactiveCommands).toEqual([trustInteractiveAuthCommand("@ouro.bot/cli")])
+    expect(capturedCommands.filter((args) => args.join(" ").includes(" trust list @ouro.bot/cli "))).toHaveLength(2)
+    expect(capturedCommands.some((args) => args.includes("old-trust"))).toBe(true)
+    expect(capturedCommands.some((args) => args.join(" ").includes(" trust github @ouro.bot/cli "))).toBe(true)
+  })
+
+  it("keeps npm web proof human-required when repair is not running in a TTY", () => {
+    expect(() => runRepair({
+      runCommandImpl: () => ({
+        status: 1,
+        stdout: "",
+        stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+        output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+      }),
+      stdin: { isTTY: false },
+      stdout: { isTTY: false },
+    })).toThrow(/requires human npm 2FA/)
   })
 })

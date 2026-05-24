@@ -98,6 +98,19 @@ function trustListCommand(packageName) {
   ]
 }
 
+function trustInteractiveAuthCommand(packageName) {
+  return [
+    "npx",
+    "--yes",
+    "npm@latest",
+    "trust",
+    "list",
+    packageName,
+    "--registry",
+    REGISTRY,
+  ]
+}
+
 function trustCreateCommand(packageName) {
   return [
     "npx",
@@ -212,24 +225,74 @@ function runCommand(args) {
   }
 }
 
+function isAuthRequired(output) {
+  return /EOTP|one-time password|auth\/cli/i.test(output)
+}
+
 function formatAuthRequired(packageName, output) {
   return [
     `npm trust repair for ${packageName} requires human npm 2FA/proof-of-presence.`,
-    "Complete the npm authentication URL shown by the failed command, then rerun:",
+    "Run this from an interactive terminal so npm can hold the browser proof flow open.",
+    "On the npm page, enable the short 2FA skip window when offered; the repair may need multiple trust mutations.",
+    "Then rerun:",
     `  npm run release:trust:repair`,
     "",
     output.trim(),
   ].filter(Boolean).join("\n")
 }
 
-function runRepair() {
+function canUseInteractiveAuth(stdin = process.stdin, stdout = process.stdout) {
+  return Boolean(stdin?.isTTY && stdout?.isTTY)
+}
+
+function runInteractiveAuthProbe(packageName, spawnSyncImpl = spawnSync) {
+  console.log(`npm trust repair for ${packageName}: starting interactive npm auth proof`)
+  const args = trustInteractiveAuthCommand(packageName)
+  const result = spawnSyncImpl(args[0], args.slice(1), {
+    stdio: "inherit",
+  })
+  return result.status ?? 1
+}
+
+function runRepair(options = {}) {
+  const runCommandImpl = options.runCommandImpl ?? runCommand
+  const spawnSyncImpl = options.spawnSyncImpl ?? spawnSync
+  const stdin = options.stdin ?? process.stdin
+  const stdout = options.stdout ?? process.stdout
+  const attemptedInteractiveAuth = new Set()
+
+  function runTrustedCommand(packageName, args) {
+    let result = runCommandImpl(args)
+    if (result.status === 0 || !isAuthRequired(result.output)) {
+      return result
+    }
+
+    if (!canUseInteractiveAuth(stdin, stdout) || attemptedInteractiveAuth.has(packageName)) {
+      return result
+    }
+
+    attemptedInteractiveAuth.add(packageName)
+    const authStatus = runInteractiveAuthProbe(packageName, spawnSyncImpl)
+    if (authStatus !== 0) {
+      return {
+        status: authStatus,
+        stdout: "",
+        stderr: `interactive npm auth proof failed for ${packageName}`,
+        output: `interactive npm auth proof failed for ${packageName}`,
+      }
+    }
+
+    result = runCommandImpl(args)
+    return result
+  }
+
   for (const packageConfig of TRUSTED_PUBLISHER_PACKAGES) {
     const packageName = packageConfig.packageName
     console.log(`checking trusted publisher for ${packageName}`)
-    const listResult = runCommand(trustListCommand(packageName))
+    const listResult = runTrustedCommand(packageName, trustListCommand(packageName))
 
     if (listResult.status !== 0) {
-      if (/EOTP|one-time password|auth\/cli/i.test(listResult.output)) {
+      if (isAuthRequired(listResult.output)) {
         throw new Error(formatAuthRequired(packageName, listResult.output))
       }
       throw new Error(`npm trust list failed for ${packageName}:\n${listResult.output.trim()}`)
@@ -244,9 +307,9 @@ function runRepair() {
     const trustIds = Array.from(collectTrustIds(trustList))
     for (const trustId of trustIds) {
       console.log(`${packageName}: revoking mismatched trusted publisher ${trustId}`)
-      const revokeResult = runCommand(trustRevokeCommand(packageName, trustId))
+      const revokeResult = runTrustedCommand(packageName, trustRevokeCommand(packageName, trustId))
       if (revokeResult.status !== 0) {
-        if (/EOTP|one-time password|auth\/cli/i.test(revokeResult.output)) {
+        if (isAuthRequired(revokeResult.output)) {
           throw new Error(formatAuthRequired(packageName, revokeResult.output))
         }
         throw new Error(`npm trust revoke failed for ${packageName} (${trustId}):\n${revokeResult.output.trim()}`)
@@ -254,9 +317,9 @@ function runRepair() {
     }
 
     console.log(`${packageName}: creating trusted publisher ${EXPECTED_REPOSITORY} ${EXPECTED_WORKFLOW}`)
-    const createResult = runCommand(trustCreateCommand(packageName))
+    const createResult = runTrustedCommand(packageName, trustCreateCommand(packageName))
     if (createResult.status !== 0) {
-      if (/EOTP|one-time password|auth\/cli/i.test(createResult.output)) {
+      if (isAuthRequired(createResult.output)) {
         throw new Error(formatAuthRequired(packageName, createResult.output))
       }
       throw new Error(`npm trust github failed for ${packageName}:\n${createResult.output.trim()}`)
@@ -316,8 +379,11 @@ module.exports = {
   buildRepairPlan,
   collectTrustIds,
   formatCommand,
+  isAuthRequired,
   parseTrustListOutput,
+  runRepair,
   trustCreateCommand,
+  trustInteractiveAuthCommand,
   trustListCommand,
   trustOutputMatchesExpected,
   validateTrustedPublisherLocalContract,
