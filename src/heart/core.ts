@@ -525,6 +525,24 @@ function privateReturnAckLeakError(answer: string | undefined, heldTokens: Reado
   return null
 }
 
+function claimsPrivateReturnQueued(answer: string | undefined): boolean {
+  if (!answer) return false
+  const normalized = answer.toLowerCase()
+  return /\b(queued|queue|will return|return when|when .*complete|when .*completes|private pass|inner dialog completes|later)\b/.test(normalized)
+    && /\b(private|inner|return|queued|later)\b/.test(normalized)
+}
+
+function privateReturnMissingPonderError(input: {
+  latestUserRequest: string
+  answer: string | undefined
+  sawPonder: boolean
+}): string | null {
+  if (input.sawPonder) return null
+  if (!looksLikePrivateReturnRequest(input.latestUserRequest)) return null
+  if (!claimsPrivateReturnQueued(input.answer)) return null
+  return "private-return acknowledgement claimed work was queued, but no ponder packet was created this turn. Call ponder(action=create, ...) first so the return has a packet, return obligation, and inner wake; then settle with only a queued acknowledgement. If you cannot create the packet, ask a blocking clarification without saying it is queued."
+}
+
 function activeReturnObligationId(agentName: string, obligationId: string | undefined): string | null {
   if (!obligationId) return null
   const obligation = readReturnObligation(agentName, obligationId)
@@ -1236,6 +1254,11 @@ export async function runAgent(
 
           const deliveredAnswer = answer
           const retryError = privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
+            ?? privateReturnMissingPonderError({
+              latestUserRequest: latestUserMessageText(messages),
+              answer: deliveredAnswer,
+              sawPonder,
+            })
             ?? getSettleRetryError(
               mustResolveBeforeHandoffActive,
               intent,
