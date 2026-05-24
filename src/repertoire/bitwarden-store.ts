@@ -167,6 +167,7 @@ function isBwItemNotFoundError(error: Error): boolean {
 const BW_LOCK_FILENAME = ".ouro-bw.lock"
 const BW_LOCK_TIMEOUT_MS = 30_000
 const BW_LOCK_POLL_MS = 100
+const BW_LOCK_DEAD_CHILD_GRACE_MS = 2_000
 const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
 const BW_DATA_FILENAME = "data.json"
 const BW_SYNC_MARKER_FILENAME = ".ouro-last-sync"
@@ -184,25 +185,62 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+type BwLockRecord = {
+  ownerPid: number | undefined
+  childPid: number | undefined
+}
+
 type StaleBwLock = {
-  reason: "dead-pid" | "stale-age"
+  reason: "dead-pid" | "dead-child-pid" | "stale-age"
   pid: number | undefined
+  ownerPid: number | undefined
   ageMs: number
 }
 
-function parseBwLockPid(content: string): number | undefined {
+function parseBwLockPidValue(content: string): number | undefined {
   const pid = Number.parseInt(content, 10)
   return Number.isFinite(pid) ? pid : undefined
 }
 
+function parseBwLockPid(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
+function serializeBwLockRecord(record: BwLockRecord): string {
+  return `${JSON.stringify({ ownerPid: record.ownerPid, childPid: record.childPid })}\n`
+}
+
+function parseBwLockRecord(content: string): BwLockRecord {
+  try {
+    const parsed = JSON.parse(content) as unknown
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      return {
+        ownerPid: parseBwLockPid(record.ownerPid),
+        childPid: parseBwLockPid(record.childPid),
+      }
+    }
+  } catch {
+    // Plain-PID lock files from older runtime builds remain valid.
+  }
+  return { ownerPid: parseBwLockPidValue(content), childPid: undefined }
+}
+
 function getStaleBwLock(lockPath: string, content: string): StaleBwLock | undefined {
-  const pid = parseBwLockPid(content)
+  const lock = parseBwLockRecord(content)
   const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
-  if (pid !== undefined && !isPidAlive(pid)) {
-    return { reason: "dead-pid", pid, ageMs }
+  if (
+    lock.childPid !== undefined &&
+    ageMs >= BW_LOCK_DEAD_CHILD_GRACE_MS &&
+    !isPidAlive(lock.childPid)
+  ) {
+    return { reason: "dead-child-pid", pid: lock.childPid, ownerPid: lock.ownerPid, ageMs }
+  }
+  if (lock.ownerPid !== undefined && !isPidAlive(lock.ownerPid)) {
+    return { reason: "dead-pid", pid: lock.ownerPid, ownerPid: lock.ownerPid, ageMs }
   }
   if (ageMs >= BW_LOCK_STALE_MS) {
-    return { reason: "stale-age", pid, ageMs }
+    return { reason: "stale-age", pid: lock.childPid ?? lock.ownerPid, ownerPid: lock.ownerPid, ageMs }
   }
   return undefined
 }
@@ -224,13 +262,18 @@ function reapStaleBwLock(lockPath: string, staleLock: StaleBwLock): void {
       lockPath,
       reason: staleLock.reason,
       pid: staleLock.pid === undefined ? "unknown" : String(staleLock.pid),
+      ownerPid: staleLock.ownerPid === undefined ? "unknown" : String(staleLock.ownerPid),
       ageMs: String(Math.round(staleLock.ageMs)),
     },
   })
 }
 
-async function acquireFileLock(lockPath: string): Promise<void> {
-  const content = `${process.pid}\n`
+type BwLockControl = {
+  recordChildPid: (pid: number) => void
+}
+
+async function acquireFileLock(lockPath: string): Promise<BwLockControl> {
+  const content = serializeBwLockRecord({ ownerPid: process.pid, childPid: undefined })
   const deadline = Date.now() + BW_LOCK_TIMEOUT_MS
 
   while (true) {
@@ -238,7 +281,16 @@ async function acquireFileLock(lockPath: string): Promise<void> {
       const fd = fs.openSync(lockPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL)
       fs.writeSync(fd, content)
       fs.closeSync(fd)
-      return
+      return {
+        recordChildPid: (pid: number) => {
+          try {
+            fs.writeFileSync(lockPath, serializeBwLockRecord({ ownerPid: process.pid, childPid: pid }))
+          } catch {
+            // If another process has already reaped the lock after the child
+            // died, releasing below remains idempotent.
+          }
+        },
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         throw err
@@ -272,7 +324,7 @@ function releaseFileLock(lockPath: string): void {
   }
 }
 
-async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T>): Promise<T> {
+async function withBwLock<T>(appDataDir: string | undefined, fn: (lock?: BwLockControl) => Promise<T>): Promise<T> {
   if (!appDataDir) {
     // No appDataDir means the default bw data location. Still need in-process
     // serialization but cannot do cross-process file lock without a dir.
@@ -291,12 +343,13 @@ async function withBwLock<T>(appDataDir: string | undefined, fn: () => Promise<T
   await previous
 
   let fileLockAcquired = false
+  let lockControl: BwLockControl | undefined
   try {
     // Cross-process file lock
-    await acquireFileLock(lockPath)
+    lockControl = await acquireFileLock(lockPath)
     fileLockAcquired = true
 
-    return await fn()
+    return await fn(lockControl)
   } finally {
     if (fileLockAcquired) {
       releaseFileLock(lockPath)
@@ -324,7 +377,7 @@ function execBw(
     ...extraEnv,
   }
 
-  const runCommand = (): Promise<string> =>
+  const runCommand = (lock?: BwLockControl): Promise<string> =>
     new Promise((resolve, reject) => {
       const child = execFileCb(bwBinaryPath, args, { timeout: 30_000, env }, (err, stdout, stderr) => {
         if (err) {
@@ -337,6 +390,9 @@ function execBw(
         }
         resolve(stdout)
       })
+      if (child?.pid !== undefined) {
+        lock?.recordChildPid(child.pid)
+      }
       if (stdin !== undefined) {
         child?.stdin?.end(stdin)
       }
