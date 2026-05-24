@@ -274,12 +274,14 @@ function runRepair(options = {}) {
       authAttempts += 1
       const authStatus = runInteractiveAuthProbe(packageName, spawnSyncImpl)
       if (authStatus !== 0) {
-        return {
+        const output = `npm error code EOTP\ninteractive npm auth proof failed for ${packageName}`
+        result = {
           status: authStatus,
           stdout: "",
-          stderr: `interactive npm auth proof failed for ${packageName}`,
-          output: `interactive npm auth proof failed for ${packageName}`,
+          stderr: output,
+          output,
         }
+        continue
       }
 
       result = runCommandImpl(args)
