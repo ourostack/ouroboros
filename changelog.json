@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.642",
+      "changes": [
+        "Make private-return packet trace source requests runtime-authoritative: outward ponder packet payloads now always record the latest originating user request as sourceRequest, even if the model supplies a lossy sourceRequest in payload_json; tool guidance now tells the model to preserve literal markers and constraints separately while the runtime owns sourceRequest."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.641",
       "changes": [
         "Package build hardening: the root build now runs through a test-covered orchestrator that fails at the first broken clean, TypeScript, Mailbox UI install/build, or asset-copy step instead of swallowing failures with a `mailbox-ui build skipped` fallback."
