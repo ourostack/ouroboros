@@ -218,6 +218,13 @@ function settleChunks(answer: string) {
   ]
 }
 
+function settleRawChunks(argumentsText: string) {
+  return [
+    makeChunk(undefined, [{ index: 0, id: "call_final", function: { name: "settle", arguments: "" } }]),
+    makeChunk(undefined, [{ index: 0, function: { arguments: argumentsText } }]),
+  ]
+}
+
 describe("ponder packets in runAgent", () => {
   let runAgent: (
     messages: any[],
@@ -602,6 +609,106 @@ describe("ponder packets in runAgent", () => {
 
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
     expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
+  })
+
+  it("rejects private-return queued acknowledgements that did not create a ponder packet", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks(
+      "Private pass is queued. Will return the validation result when the inner dialog completes.",
+    )))
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Validate private attention return loop",
+      summary: "Run the private pass and return when complete",
+      success_criteria: "- return AX_POSTMERGE_PRIVATE_20260524_VALIDATED to the MCP session",
+      payload_json: JSON.stringify({ marker: "AX_POSTMERGE_PRIVATE_20260524_VALIDATED" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued. Will return when ready.")))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{
+        role: "user",
+        content: "Please think privately and return marker AX_POSTMERGE_PRIVATE_20260524_VALIDATED later.",
+      }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        kind: "reflection",
+        objective: "Validate private attention return loop",
+        relatedReturnObligationId: "ret-test-123",
+        payload: expect.objectContaining({
+          marker: "AX_POSTMERGE_PRIVATE_20260524_VALIDATED",
+          sourceRequest: "Please think privately and return marker AX_POSTMERGE_PRIVATE_20260524_VALIDATED later.",
+        }),
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        id: "ret-test-123",
+        packetId: "pkt-test-123",
+        status: "queued",
+        delegatedContent: expect.stringContaining("Run the private pass"),
+      }),
+    )
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
+    expect(result.outcome).toBe("settled")
+    expect(result.completion?.answer).toBe("Private pass queued. Will return when ready.")
+  })
+
+  it("allows a blocking clarification for private-return requests without a ponder packet", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Which MCP session should receive the private return?")))
+
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and return the validation result later." }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("settled")
+    expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
+  })
+
+  it("keeps malformed private-return settle payloads on the ordinary retry path", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(settleRawChunks("{}")))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Which MCP session should receive the private return?")))
+
+    const callbacks = makeCallbacks()
+    const result = await runAgent(
+      [{ role: "user", content: "Please think privately and return the validation result later." }],
+      callbacks,
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+        },
+      },
+    )
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("settle", expect.any(String), false)
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(result.outcome).toBe("settled")
+    expect(result.completion?.answer).toBe("Which MCP session should receive the private return?")
   })
 
   it("does not create a self-return obligation for inner-dialog ponder packets", async () => {
