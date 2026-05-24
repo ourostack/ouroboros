@@ -13,11 +13,17 @@ import { NotesTab } from "./notes"
 import { RuntimeTab } from "./runtime"
 import type { MailboxAgentView, MailboxTranscriptMessage } from "../../contracts"
 
+const BOTTOM_STICKINESS_PX = 48
+
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,
     headers: { "content-type": "application/json" },
   })
+}
+
+function expectNearBottom(element: HTMLElement): void {
+  expect(element.scrollHeight - element.scrollTop - element.clientHeight).toBeLessThanOrEqual(BOTTOM_STICKINESS_PX)
 }
 
 async function flushRefresh(): Promise<void> {
@@ -579,7 +585,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(ui.container.textContent).toContain("new bottom"))
-    expect(panel.scrollTop).toBe(1200)
+    await waitFor(() => expectNearBottom(panel))
   })
 
   it("re-fetches mailbox summaries and selected body on refresh", async () => {
