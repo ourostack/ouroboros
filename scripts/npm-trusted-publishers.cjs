@@ -259,30 +259,34 @@ function runRepair(options = {}) {
   const spawnSyncImpl = options.spawnSyncImpl ?? spawnSync
   const stdin = options.stdin ?? process.stdin
   const stdout = options.stdout ?? process.stdout
-  const attemptedInteractiveAuth = new Set()
+  const maxInteractiveAuthAttempts = options.maxInteractiveAuthAttempts ?? 3
 
   function runTrustedCommand(packageName, args) {
     let result = runCommandImpl(args)
-    if (result.status === 0 || !isAuthRequired(result.output)) {
-      return result
-    }
+    let authAttempts = 0
 
-    if (!canUseInteractiveAuth(stdin, stdout) || attemptedInteractiveAuth.has(packageName)) {
-      return result
-    }
-
-    attemptedInteractiveAuth.add(packageName)
-    const authStatus = runInteractiveAuthProbe(packageName, spawnSyncImpl)
-    if (authStatus !== 0) {
-      return {
-        status: authStatus,
-        stdout: "",
-        stderr: `interactive npm auth proof failed for ${packageName}`,
-        output: `interactive npm auth proof failed for ${packageName}`,
+    while (
+      result.status !== 0 &&
+      isAuthRequired(result.output) &&
+      canUseInteractiveAuth(stdin, stdout) &&
+      authAttempts < maxInteractiveAuthAttempts
+    ) {
+      authAttempts += 1
+      const authStatus = runInteractiveAuthProbe(packageName, spawnSyncImpl)
+      if (authStatus !== 0) {
+        const output = `npm error code EOTP\ninteractive npm auth proof failed for ${packageName}`
+        result = {
+          status: authStatus,
+          stdout: "",
+          stderr: output,
+          output,
+        }
+        continue
       }
+
+      result = runCommandImpl(args)
     }
 
-    result = runCommandImpl(args)
     return result
   }
 
