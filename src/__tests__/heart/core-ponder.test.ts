@@ -358,6 +358,48 @@ describe("ponder packets in runAgent", () => {
     )
   })
 
+  it("overrides model-supplied sourceRequest with the runtime latest user request", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Validate runtime source request authority",
+      summary: "Private return should preserve the originating request",
+      success_criteria: "- return AX_RUNTIME_SOURCE_AUTHORITY_20260524",
+      payload_json: JSON.stringify({
+        marker: "AX_RUNTIME_SOURCE_AUTHORITY_20260524",
+        sourceRequest: "AX_RUNTIME_SOURCE_AUTHORITY_20260524",
+      }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Private pass queued. Will return when ready.")))
+
+    await runAgent(
+      [{
+        role: "user",
+        content: "Please think privately and return marker AX_RUNTIME_SOURCE_AUTHORITY_20260524 later.",
+      }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          marker: "AX_RUNTIME_SOURCE_AUTHORITY_20260524",
+          sourceRequest: "Please think privately and return marker AX_RUNTIME_SOURCE_AUTHORITY_20260524 later.",
+        }),
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        delegatedContent: expect.stringContaining("source request: Please think privately and return marker AX_RU"),
+      }),
+    )
+  })
+
   it("creates follow-up packet links and truncates overly long delegated summaries", async () => {
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",

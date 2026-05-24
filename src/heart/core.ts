@@ -1576,7 +1576,7 @@ export async function runAgent(
                 if (!kind || !objective || !successCriteria || !payload) {
                   throw new Error("ponder create requires kind, objective, success_criteria, and valid payload_json.")
                 }
-                const packetPayload = sourceRequest && typeof payload.sourceRequest !== "string"
+                const packetPayload = sourceRequest
                   ? { ...payload, sourceRequest }
                   : payload
                 const createLinkedReturnObligation = (id: string, packetId: string): void => {
