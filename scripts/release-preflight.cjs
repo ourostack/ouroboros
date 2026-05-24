@@ -218,6 +218,29 @@ function publishedVersionFor(packageName, version, execSyncImpl) {
   }
 }
 
+function runRootDependencyAudit(packageRoot, execSyncImpl) {
+  try {
+    const output = execSyncImpl("npm audit --audit-level=moderate", {
+      cwd: packageRoot,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const summary = splitLines(String(output)).find((line) => /^found \d+ vulnerabilities$/.test(line)) ??
+      "no moderate-or-higher vulnerabilities"
+    return { ok: true, message: `root npm audit: pass (${summary})` }
+  } catch (error) {
+    const stdout = typeof error?.stdout?.toString === "function" ? error.stdout.toString() : ""
+    const stderr = typeof error?.stderr?.toString === "function" ? error.stderr.toString() : ""
+    const details = splitLines(`${stdout}\n${stderr}`).slice(-10).join("\n")
+    return {
+      ok: false,
+      message:
+        `root npm audit failed: npm audit --audit-level=moderate reported vulnerable dependencies` +
+        (details ? `\n${details}` : ""),
+    }
+  }
+}
+
 function runReleasePreflight(options = {}, deps = {}) {
   const baseRef = options.baseRef ?? "origin/main"
   const execSyncImpl = deps.execSyncImpl ?? execSync
@@ -284,6 +307,13 @@ function runReleasePreflight(options = {}, deps = {}) {
     messages.push(wrapperResult.message)
   }
 
+  const auditResult = runRootDependencyAudit(packageRoot, execSyncImpl)
+  if (!auditResult.ok) {
+    errors.push(auditResult.message)
+  } else {
+    messages.push(auditResult.message)
+  }
+
   const packageAssetResult = validatePackageAssets(packageRoot)
   if (!packageAssetResult.ok) {
     errors.push(packageAssetResult.message)
@@ -344,6 +374,7 @@ module.exports = {
   parseArgs,
   pathRequiresChangelogFreshness,
   runReleasePreflight,
+  runRootDependencyAudit,
   splitLines,
   versionBumpRequired,
   wrapperPackageChanged,

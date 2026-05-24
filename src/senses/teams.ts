@@ -963,7 +963,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
 
     // Validate payload — graceful no-op for malformed invocations
     if (activity.value?.actionName !== "feedback" || !reaction) {
-      return
+      return undefined
     }
 
     const syntheticText = buildFeedbackSyntheticText(reaction, comment)
@@ -976,7 +976,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
         receivedAt: Date.now(),
         effect: classifySteeringFollowUpEffect(syntheticText),
       })
-      return
+      return undefined
     }
 
     try {
@@ -997,6 +997,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
     } finally {
       _turnCoordinator.endTurn(turnKey)
     }
+    return undefined
   })
   /* v8 ignore stop */
 
@@ -1018,6 +1019,7 @@ function registerBotHandlers(app: InstanceType<typeof App> & { id?: string; api?
       const msg = err instanceof Error ? err.message : String(err)
       emitNervesEvent({ level: "error", event: "channel.welcome_handler_error", component: "channels", message: msg.slice(0, 200), meta: {} })
     }
+    return undefined
   })
   /* v8 ignore stop */
 

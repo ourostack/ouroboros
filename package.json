@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.642",
+  "version": "0.1.0-alpha.643",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -52,12 +52,12 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
     "@azure/storage-blob": "^12.31.0",
-    "@microsoft/teams.api": "2.0.5",
-    "@microsoft/teams.apps": "^2.0.5",
-    "@microsoft/teams.cards": "2.0.5",
-    "@microsoft/teams.common": "2.0.5",
-    "@microsoft/teams.dev": "^2.0.5",
-    "@microsoft/teams.graph": "2.0.5",
+    "@microsoft/teams.api": "2.0.11",
+    "@microsoft/teams.apps": "2.0.11",
+    "@microsoft/teams.cards": "2.0.11",
+    "@microsoft/teams.common": "2.0.11",
+    "@microsoft/teams.dev": "2.0.11",
+    "@microsoft/teams.graph": "2.0.11",
     "@types/react": "^17.0.91",
     "@types/ws": "^8.18.1",
     "fast-glob": "^3.3.3",
@@ -87,6 +87,9 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
+    "@microsoft/teams.apps": {
+      "@azure/msal-node": "^5.2.2"
+    },
     "@testing-library/react": {
       "react": "$react",
       "@types/react": "$@types/react"
