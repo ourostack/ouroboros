@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "0.1.0-alpha.640",
+      "changes": [
+        "Reject text-only private-return queued acknowledgements unless ponder created packet-backed return work."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.639",
       "changes": [
         "Rollback safety guard: ouro rollback now validates the target installed @ouro.bot/cli package payload before flipping CurrentVersion, and refuses cached runtimes whose shipped assets contain blocked removed user-facing failure text so old local versions cannot resurrect the removed BlueBubbles live-turn timeout notice."
