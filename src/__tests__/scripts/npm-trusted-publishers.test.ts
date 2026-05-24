@@ -220,6 +220,120 @@ publish:
     expect(capturedCommands.some((args) => args.join(" ").includes(" trust github @ouro.bot/cli "))).toBe(true)
   })
 
+  it("uses another interactive auth probe when a trust mutation requires a fresh npm proof", () => {
+    const capturedCommands: string[][] = []
+    const interactiveCommands: string[][] = []
+    const failedOnce = new Set<string>()
+
+    const oldTrust = {
+      trustedPublishers: [
+        {
+          id: "old-trust",
+          repository: "ouroborosbot/ouroboros",
+          workflow: "coverage.yml",
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+    const expectedTrust = {
+      trustedPublishers: [
+        {
+          id: "expected-trust",
+          repository: EXPECTED_REPOSITORY,
+          workflow: EXPECTED_WORKFLOW,
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+
+    const runCommandImpl = (args: string[]) => {
+      capturedCommands.push(args)
+      const joined = args.join(" ")
+      const packageName = args.includes("@ouro.bot/cli") ? "@ouro.bot/cli" : "ouro.bot"
+
+      if (joined.includes(" trust list @ouro.bot/cli ") && !failedOnce.has("list-cli")) {
+        failedOnce.add("list-cli")
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/list",
+          output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/list",
+        }
+      }
+
+      if (joined.includes(" trust revoke @ouro.bot/cli ") && !failedOnce.has("revoke-cli")) {
+        failedOnce.add("revoke-cli")
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/revoke",
+          output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/revoke",
+        }
+      }
+
+      if (joined.includes(" trust list ")) {
+        return {
+          status: 0,
+          stdout: JSON.stringify(packageName === "@ouro.bot/cli" ? oldTrust : expectedTrust),
+          stderr: "",
+          output: "",
+        }
+      }
+
+      return {
+        status: 0,
+        stdout: "",
+        stderr: "",
+        output: "",
+      }
+    }
+
+    const spawnSyncImpl = (command: string, args: string[]) => {
+      interactiveCommands.push([command, ...args])
+      return { status: 0 }
+    }
+
+    runRepair({
+      runCommandImpl,
+      spawnSyncImpl,
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+    })
+
+    expect(interactiveCommands).toEqual([
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+    ])
+    expect(capturedCommands.filter((args) => args.join(" ").includes(" trust list @ouro.bot/cli "))).toHaveLength(2)
+    expect(capturedCommands.filter((args) => args.join(" ").includes(" trust revoke @ouro.bot/cli "))).toHaveLength(2)
+    expect(capturedCommands.some((args) => args.join(" ").includes(" trust github @ouro.bot/cli "))).toBe(true)
+  })
+
+  it("limits repeated interactive auth probes when npm keeps requiring web proof", () => {
+    const interactiveCommands: string[][] = []
+
+    expect(() => runRepair({
+      runCommandImpl: () => ({
+        status: 1,
+        stdout: "",
+        stderr: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+        output: "npm error code EOTP\nhttps://www.npmjs.com/auth/cli/test",
+      }),
+      spawnSyncImpl: (command: string, args: string[]) => {
+        interactiveCommands.push([command, ...args])
+        return { status: 0 }
+      },
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+      maxInteractiveAuthAttempts: 2,
+    })).toThrow(/requires human npm 2FA/)
+
+    expect(interactiveCommands).toEqual([
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+      trustInteractiveAuthCommand("@ouro.bot/cli"),
+    ])
+  })
+
   it("keeps npm web proof human-required when repair is not running in a TTY", () => {
     expect(() => runRepair({
       runCommandImpl: () => ({
