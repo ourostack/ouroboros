@@ -96,6 +96,24 @@ describe("coverage workflow contract", () => {
     expect(workflow).toContain('verify_tag "ouro.bot@${WRAPPER_TAG}" "$LOCAL"')
   })
 
+  it("keeps npm trusted-publishing package repository metadata exact", () => {
+    const cliPackage = JSON.parse(
+      readFileSync(join(process.cwd(), "package.json"), "utf8"),
+    )
+    const wrapperPackage = JSON.parse(
+      readFileSync(join(process.cwd(), "packages", "ouro.bot", "package.json"), "utf8"),
+    )
+
+    expect(cliPackage.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/ourostack/ouroboros.git",
+    })
+    expect(wrapperPackage.repository).toEqual({
+      type: "git",
+      url: "git+https://github.com/ourostack/ouroboros.git",
+    })
+  })
+
   it("runs the mailbox-ui package typecheck and test suite before the root coverage gate continues", () => {
     const gate = readFileSync(
       join(process.cwd(), "scripts", "run-coverage-gate.cjs"),
