@@ -25,6 +25,8 @@ type ExecResponse = {
   publishedWrapperVersion?: string
   latestCommits?: Record<string, string>
   ancestorChecks?: Record<string, boolean>
+  auditOutput?: string
+  auditFailureOutput?: string
 }
 
 type ReadResponse = {
@@ -75,6 +77,15 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
         return `${response.publishedWrapperVersion}\n`
       }
       throw new Error("not published")
+    }
+
+    if (command === "npm audit --audit-level=moderate") {
+      if (response.auditFailureOutput) {
+        const error = new Error("audit failed") as Error & { stdout: Buffer }
+        error.stdout = Buffer.from(response.auditFailureOutput)
+        throw error
+      }
+      return response.auditOutput ?? "found 0 vulnerabilities\n"
     }
 
     throw new Error(`unexpected command: ${command}`)
@@ -208,8 +219,33 @@ describe("release-preflight", () => {
     expect(result.messages).toContain("No releasable src/ or packaged skills changes detected — version bump not required")
     expect(result.messages).toContain("changelog gate: pass (0.1.0-alpha.407)")
     expect(result.messages).toContain("wrapper package unchanged")
+    expect(result.messages).toContain("root npm audit: pass (found 0 vulnerabilities)")
     expect(result.messages).toContain("package assets verified")
     expect(result.messages.join("\n")).toContain("npm trusted-publisher local contract:")
+  })
+
+  it("fails when the root npm dependency audit reports moderate-or-higher vulnerabilities", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
+    const result = runReleasePreflight(
+      {},
+      {
+        execSyncImpl: makeExecSyncImpl({
+          changedFiles: ["docs/auth-and-providers.md"],
+          auditFailureOutput: [
+            "# npm audit report",
+            "uuid  <11.1.1",
+            "3 moderate severity vulnerabilities",
+          ].join("\n"),
+        }),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
+      },
+    )
+    fs.rmSync(packageRoot, { recursive: true, force: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.errors.join("\n")).toContain("root npm audit failed")
+    expect(result.errors.join("\n")).toContain("3 moderate severity vulnerabilities")
   })
 
   it("fails when release preflight package assets are missing", () => {
