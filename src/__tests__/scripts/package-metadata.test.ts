@@ -11,8 +11,10 @@ describe("package metadata", () => {
     expect(packageJson.files).toContain("RepairGuide.ouro/")
   })
 
-  it("uses the deterministic Mailbox UI copy helper during build", () => {
-    expect(packageJson.scripts.build).toContain("node scripts/copy-mailbox-ui.cjs")
+  it("uses the deterministic build helper without a skip fallback", () => {
+    expect(packageJson.scripts.build).toBe("node scripts/build.cjs")
+    expect(packageJson.scripts.build).not.toContain("||")
+    expect(packageJson.scripts.build).not.toContain("build skipped")
   })
 
   it("builds and verifies package assets before npm pack", () => {
