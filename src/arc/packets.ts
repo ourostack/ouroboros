@@ -290,6 +290,30 @@ export function advancePonderPacket(
   return advanced
 }
 
+const PONDER_PACKET_COMPLETION_PATH: Record<TaskStatus, readonly TaskStatus[]> = {
+  drafting: ["processing", "validating", "done"],
+  processing: ["validating", "done"],
+  validating: ["done"],
+  collaborating: ["validating", "done"],
+  paused: ["processing", "validating", "done"],
+  blocked: ["processing", "validating", "done"],
+  done: [],
+  cancelled: [],
+}
+
+export function completePonderPacket(agentRoot: string, packetId: string): PonderPacket {
+  let packet = readPonderPacket(agentRoot, packetId)
+  if (!packet) {
+    throw new Error(`packet not found: ${packetId}`)
+  }
+
+  for (const status of PONDER_PACKET_COMPLETION_PATH[packet.status]) {
+    packet = advancePonderPacket(agentRoot, packet.id, { status })
+  }
+
+  return packet
+}
+
 export function findHarnessFrictionPacket(
   agentRoot: string,
   origin: PonderPacketOrigin,

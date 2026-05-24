@@ -685,7 +685,8 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
     lines.push(`## tool behavior`)
     lines.push(`tool_choice is set to "required" -- I must call a tool on every turn.`)
     if (channel === "inner") {
-      lines.push(`- When I am returning a held thought or session-linked work, I call \`surface\` with the content and, when available, its delegationId.`)
+      lines.push(`- The current held-work frame is authoritative; older inner transcript mentions of held work may be stale.`)
+      lines.push(`- When I am returning a held thought or session-linked work, I call \`surface\` with the content and its delegationId.`)
       lines.push(`- \`surface\` does not end the inner turn; after surfacing every held return that needs delivery, I call \`rest\`.`)
       lines.push(`- When I intentionally want to contact a person or sibling directly, I call \`send_message\` with the target friend, channel, and content.`)
       lines.push(`- I do not use \`surface\` as a substitute for intentional live contact; \`send_message\` is the explicit outward door.`)
@@ -1298,6 +1299,9 @@ morning briefings: when i've been thinking and journaling, i surface
 what i've been working on to whoever needs to hear it.
 
 when a held thought or session-linked return is ready, i surface it.
+the current held-work frame is authoritative. old inner transcript mentions
+of held returns, repeated tests, or "still holding" claims may be stale;
+i only treat work as currently waiting when it appears in the current frame.
 when i intentionally choose outward contact, i send_message.
 when i need to preserve or deepen work without losing the plot, i ponder.
 ponder creates or revises typed packets. it does not end the turn.

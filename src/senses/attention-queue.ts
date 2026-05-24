@@ -17,6 +17,50 @@ function originKey(friendId: string, channel: string, key: string): string {
   return `${friendId}/${channel}/${key}`
 }
 
+const PACKET_RETURN_HINT_MAX = 180
+const PACKET_RETURN_HINT_COUNT_MAX = 4
+const LITERAL_MARKER_RE = /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}\b/
+const RETURN_HINT_KEY_RE = /(expected|return|marker|answer|verdict)/i
+
+function addReturnHint(hints: string[], seen: Set<string>, value: unknown): void {
+  if (typeof value !== "string") return
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > PACKET_RETURN_HINT_MAX) return
+  if (!LITERAL_MARKER_RE.test(trimmed)) return
+  if (seen.has(trimmed)) return
+  seen.add(trimmed)
+  hints.push(trimmed)
+}
+
+function extractQuotedReturnHints(value: string, hints: string[], seen: Set<string>): void {
+  for (const match of value.matchAll(/"([^"\n]{1,180})"/g)) {
+    addReturnHint(hints, seen, match[1])
+    if (hints.length >= PACKET_RETURN_HINT_COUNT_MAX) return
+  }
+}
+
+function extractPacketReturnHints(packet: PonderPacket): string[] {
+  const hints: string[] = []
+  const seen = new Set<string>()
+
+  const sourceRequest = typeof packet.payload.sourceRequest === "string" ? packet.payload.sourceRequest : ""
+  if (sourceRequest) extractQuotedReturnHints(sourceRequest, hints, seen)
+
+  for (const [key, value] of Object.entries(packet.payload)) {
+    if (hints.length >= PACKET_RETURN_HINT_COUNT_MAX) break
+    if (key === "sourceRequest" || !RETURN_HINT_KEY_RE.test(key)) continue
+    addReturnHint(hints, seen, value)
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        addReturnHint(hints, seen, item)
+        if (hints.length >= PACKET_RETURN_HINT_COUNT_MAX) break
+      }
+    }
+  }
+
+  return hints
+}
+
 export interface BuildAttentionQueueInput {
   drainedPending: PendingMessage[]
   outstandingObligations: ReturnObligation[]
@@ -38,6 +82,9 @@ export function buildAttentionQueue(input: BuildAttentionQueueInput): AttentionI
       packetKind: packet.kind,
       packetObjective: packet.objective,
       packetSummary: packet.summary,
+      packetSuccessCriteria: packet.successCriteria,
+      packetSourceRequest: typeof packet.payload.sourceRequest === "string" ? packet.payload.sourceRequest : undefined,
+      packetReturnHints: extractPacketReturnHints(packet),
     }
   }
 
@@ -118,23 +165,42 @@ export function attentionQueueEmpty(queue: AttentionItem[]): boolean {
 // ── Queue visibility ─────────────────────────────────────────────
 
 const CONTENT_PREVIEW_MAX = 80
+const PACKET_SOURCE_PREVIEW_MAX = 240
+
+function preview(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 3)}...` : value
+}
 
 export function buildAttentionQueueSummary(queue: AttentionItem[]): string {
   if (queue.length === 0) return ""
 
   const lines = [
-    "[internal: held work items — not messages to send]",
+    "[internal: current held work items — not messages to send]",
+    "Only listed items are waiting now; older transcript mentions and completed returns/probes are not current pressure.",
     "To return one, call surface with delegationId set to the bracketed id.",
+    "Return only the requested result; do not add commentary about prior attempts, old loops, or completed probes.",
+    "If literal return options are listed, copy the chosen option exactly, including suffixes and punctuation.",
   ]
   for (const item of queue) {
     if (item.packetKind && item.packetObjective) {
       lines.push(`- [${item.id}] ${item.friendName} -> ${item.packetKind}: ${item.packetObjective}`)
+      if (item.packetSuccessCriteria?.length) {
+        lines.push(`  return criteria: ${item.packetSuccessCriteria.join("; ")}`)
+      }
+      if (item.packetReturnHints?.length) {
+        lines.push(`  literal return options: ${item.packetReturnHints.map((hint) => `"${hint}"`).join("; ")}`)
+      }
+      const sourceRequest = item.packetSourceRequest ?? item.delegatedContent
+      if (sourceRequest.trim().length > 0 && sourceRequest.trim() !== item.packetObjective.trim()) {
+        lines.push(`  source request: "${preview(sourceRequest, PACKET_SOURCE_PREVIEW_MAX)}"`)
+      }
       continue
     }
-    const preview = item.delegatedContent.length > CONTENT_PREVIEW_MAX
-      ? `${item.delegatedContent.slice(0, CONTENT_PREVIEW_MAX - 3)}...`
-      : item.delegatedContent
-    lines.push(`- [${item.id}] ${item.friendName} asked: "${preview}"`)
+    lines.push(`- [${item.id}] ${item.friendName} asked: "${preview(item.delegatedContent, CONTENT_PREVIEW_MAX)}"`)
   }
   return lines.join("\n")
+}
+
+export function buildAttentionQueueStatusFrame(queue: AttentionItem[]): string {
+  return buildAttentionQueueSummary(queue)
 }

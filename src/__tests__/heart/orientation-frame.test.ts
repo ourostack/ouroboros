@@ -98,6 +98,18 @@ describe("orientation frame", () => {
     expect(frame.actionPolicy).toEqual({ mode: "normal" })
   })
 
+  it("does not treat exact-output wording as a correction by itself", () => {
+    const frame = buildOrientationFrame({
+      channel: "mcp",
+      messages: [
+        { role: "user", content: "Think privately, then return exactly one concise sentence with marker AX_LIVE_A." },
+      ],
+    })
+
+    expect(frame.signals).toEqual([])
+    expect(frame.actionPolicy).toEqual({ mode: "normal" })
+  })
+
   it("surfaces the latest structured output for numeric correction referents", () => {
     const frame = buildOrientationFrame({
       channel: "cli",

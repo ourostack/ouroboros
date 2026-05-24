@@ -3,6 +3,7 @@ import * as fs from "fs";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
+import { completePonderPacket } from "../arc/packets";
 import { listSessionActivity } from "../heart/session-activity";
 import { containsInternalMetaMarkers } from "../senses/bluebubbles-meta-guard";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -285,6 +286,15 @@ export const surfaceToolDefinition: ToolDefinition = {
           })
         } catch {
           // swallowed — obligation advance must never break surface delivery
+        }
+        /* v8 ignore stop */
+      },
+      completePonderPacket: (packetId) => {
+        /* v8 ignore start -- packet completion: tested via surface-tool and arc packet unit tests @preserve */
+        try {
+          completePonderPacket(getAgentRoot(), packetId)
+        } catch {
+          // swallowed — packet completion must never break surface delivery
         }
         /* v8 ignore stop */
       },

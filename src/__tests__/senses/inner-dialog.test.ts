@@ -130,6 +130,7 @@ vi.mock("../../repertoire/tools", () => ({
 import {
   buildInnerDialogBootstrapMessage,
   buildNonCanonicalCleanupNudge,
+  buildHeldReturnWakeMessage,
   buildInstinctUserMessage,
   buildTaskTriggeredMessage,
   readTaskFile,
@@ -258,6 +259,18 @@ describe("inner dialog runtime", () => {
     expect(message).toContain("## what matters to me")
     expect(message).not.toContain("## what i know so far")
     expect(message).toContain("what needs my attention?")
+  })
+
+  it("builds a narrow held-return wake message that does not repeat stale checkpoints", () => {
+    const message = buildHeldReturnWakeMessage()
+    expect(message).toContain("current held-work frame")
+    expect(message).toContain("surface(delegationId=...)")
+    expect(message).toContain("Older checkpoints")
+    expect(message).toContain("completed returns")
+    expect(message).toContain("repeated probes")
+    expect(message).toContain("Return only the requested result")
+    expect(message).not.toContain("last checkpoint")
+    expect(message).not.toContain("none currently waiting")
   })
 
   it("returns minimal bootstrap when both aspirations and state are empty", () => {
@@ -716,6 +729,56 @@ describe("inner dialog runtime", () => {
     expect(mockGetInnerDialogPendingDir).toHaveBeenCalledWith("test-agent")
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.pendingDir).toBe("/tmp/pending/test-agent/self/inner/dialog")
+  })
+
+  it("uses held-return wake copy instead of stale checkpoint copy when return work is active", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [
+        { role: "assistant", content: "checkpoint: none currently waiting; matching May pattern exactly" },
+      ],
+    })
+    mockListActiveObligations.mockReturnValue([
+      {
+        id: "obl-1",
+        origin: { friendId: "friend-1", channel: "mcp", key: "session-1" },
+        delegatedContent: "private marker analysis",
+        createdAt: 1000,
+        status: "queued",
+      },
+    ] as any)
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:00:00.000Z"),
+    })
+
+    const input = mockHandleInboundTurn.mock.calls[0][0]
+    const userContent = input.messages[0].content
+    expect(userContent).toContain("current held-work frame")
+    expect(userContent).toContain("surface(delegationId=...)")
+    expect(userContent).not.toContain("May pattern")
+    expect(userContent).not.toContain("last checkpoint")
+    expect(userContent).not.toContain("none currently waiting")
+  })
+
+  it("does not prepend an empty held-work status frame", async () => {
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      expect(input.onPendingDrained([])).toEqual([])
+      return {
+        resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+        gateResult: { allowed: true },
+        usage: undefined,
+        sessionPath: sessionFile,
+        messages: [{ role: "assistant", content: null, tool_calls: [] }],
+      }
+    })
+
+    await runInnerDialogTurn({
+      reason: "instinct",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:00:00.000Z"),
+    })
   })
 
   it("keeps delegatedOrigins visible to tools after pending drain", async () => {

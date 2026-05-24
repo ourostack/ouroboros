@@ -18,6 +18,9 @@ export interface AttentionItem {
   packetKind?: string
   packetObjective?: string
   packetSummary?: string
+  packetSuccessCriteria?: string[]
+  packetSourceRequest?: string
+  packetReturnHints?: string[]
   source: "drained" | "obligation-recovery"
   timestamp: number
 }
