@@ -89,11 +89,44 @@ function makeReadFileSyncImpl(response: ReadResponse = {}) {
 
   return (filePath: string): string => {
     if (filePath.endsWith("/packages/ouro.bot/package.json")) {
-      return JSON.stringify({ version: wrapperVersion })
+      return JSON.stringify({
+        version: wrapperVersion,
+        repository: {
+          type: "git",
+          url: "git+https://github.com/ourostack/ouroboros.git",
+        },
+      })
     }
 
     if (filePath.endsWith("/package.json")) {
-      return JSON.stringify({ version: cliVersion })
+      return JSON.stringify({
+        version: cliVersion,
+        repository: {
+          type: "git",
+          url: "git+https://github.com/ourostack/ouroboros.git",
+        },
+      })
+    }
+
+    if (filePath.endsWith("/.github/workflows/coverage.yml")) {
+      return `
+publish:
+  permissions:
+    contents: read
+    id-token: write
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        registry-url: https://registry.npmjs.org
+        package-manager-cache: false
+    - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
+      run: npm install -g npm@latest
+    - name: Publish @ouro.bot/cli
+      run: npm publish --access public --tag "$TAG"
+    - name: Publish ouro.bot
+      run: npm publish --access public --tag "\${{ steps.wrapper-publish-tag.outputs.tag }}"
+`
     }
 
     if (filePath.endsWith("/changelog.json")) {
@@ -176,6 +209,7 @@ describe("release-preflight", () => {
     expect(result.messages).toContain("changelog gate: pass (0.1.0-alpha.407)")
     expect(result.messages).toContain("wrapper package unchanged")
     expect(result.messages).toContain("package assets verified")
+    expect(result.messages.join("\n")).toContain("npm trusted-publisher local contract:")
   })
 
   it("fails when release preflight package assets are missing", () => {

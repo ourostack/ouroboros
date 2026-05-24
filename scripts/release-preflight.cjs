@@ -6,6 +6,7 @@ const fs = require("fs")
 
 const { validateChangelog } = require("./changelog-gate.cjs")
 const { validatePackageAssets } = require("./package-assets.cjs")
+const { validateTrustedPublisherLocalContract } = require("./npm-trusted-publishers.cjs")
 
 function splitLines(output) {
   return output
@@ -288,6 +289,16 @@ function runReleasePreflight(options = {}, deps = {}) {
     errors.push(packageAssetResult.message)
   } else {
     messages.push(packageAssetResult.message)
+  }
+
+  const trustedPublisherResult = validateTrustedPublisherLocalContract({
+    repoRoot: packageRoot,
+    readFileSyncImpl,
+  })
+  if (!trustedPublisherResult.ok) {
+    errors.push(...trustedPublisherResult.errors)
+  } else {
+    messages.push(...trustedPublisherResult.messages)
   }
 
   return {
