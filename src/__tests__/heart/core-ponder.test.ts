@@ -308,6 +308,49 @@ describe("ponder packets in runAgent", () => {
     expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
   })
 
+  it("extracts source request text from structured user content", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Preserve structured user text",
+      summary: "Structured summary",
+      success_criteria: "- keep source text",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
+
+    await runAgent(
+      [{
+        role: "user",
+        content: [
+          "Lead text",
+          { text: "Structured return request" },
+          { text: 123 },
+          null,
+        ],
+      }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          sourceRequest: "Lead text\nStructured return request",
+        }),
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        delegatedContent: "Structured summary\nsource request: Lead text\nStructured return request",
+      }),
+    )
+  })
+
   it("creates follow-up packet links and truncates overly long delegated summaries", async () => {
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       action: "create",
@@ -366,6 +409,78 @@ describe("ponder packets in runAgent", () => {
       "testagent",
       expect.objectContaining({
         delegatedContent: expect.stringContaining("Objective fallback"),
+      }),
+    )
+  })
+
+  it("uses the primary summary as delegated content when no user source request exists", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Objective without user text",
+      summary: "Summary without source",
+      success_criteria: "- one",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
+
+    await runAgent(
+      [{ role: "assistant", content: "prior assistant-only context" }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        payload: {},
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        delegatedContent: "Summary without source",
+      }),
+    )
+  })
+
+  it("falls back past empty latest user content and ignores short marker-like tokens", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "reflection",
+      objective: "Preserve fallback source text",
+      summary: "Fallback source summary",
+      success_criteria: "- queue the return",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("queued")))
+
+    await runAgent(
+      [
+        { role: "user", content: "Please think privately and return A_B_C later." },
+        { role: "assistant", content: "queued" },
+        { role: "user", content: { text: "" } as any },
+      ],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      { toolContext: { currentSession: { friendId: "ari", channel: "mcp", key: "session" } } },
+    )
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          sourceRequest: "Please think privately and return A_B_C later.",
+        }),
+      }),
+    )
+    expect(mockCreateReturnObligation).toHaveBeenCalledWith(
+      "testagent",
+      expect.objectContaining({
+        delegatedContent: expect.stringContaining("A_B_C"),
       }),
     )
   })
@@ -746,6 +861,92 @@ describe("ponder packets in runAgent", () => {
     )
   })
 
+  it("keeps revised outward packets linked to their existing return obligation", async () => {
+    mockRequestInnerWake.mockRejectedValueOnce(new Error("daemon unavailable"))
+    mockRevisePonderPacket.mockReturnValue({
+      id: "pkt-test-123",
+      sop: "reflection_v1",
+      kind: "reflection",
+      status: "drafting",
+      objective: "Refined outward objective",
+      summary: "Refined outward summary",
+      successCriteria: ["Return later"],
+      payload: {},
+      origin: { friendId: "ari", channel: "mcp", key: "session" },
+      relatedReturnObligationId: "ret-existing-123",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "revise",
+      packet_id: "pkt-test-123",
+      kind: "reflection",
+      objective: "Refined outward objective",
+      summary: "Refined outward summary",
+      success_criteria: "- Return later",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    const result = await runAgent(
+      [{ role: "user", content: "revise that return packet" }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "ari", channel: "mcp", key: "session" },
+          daemonSocketPath: "/tmp/ouro-test.sock",
+        },
+      },
+    )
+
+    expect(result.outcome).toBe("settled")
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", "/tmp/ouro-test.sock")
+  })
+
+  it("drops stale self-return links when revising inner-dialog packets", async () => {
+    mockRevisePonderPacket.mockReturnValue({
+      id: "pkt-test-123",
+      sop: "reflection_v1",
+      kind: "reflection",
+      status: "drafting",
+      objective: "Refined inner objective",
+      summary: "Refined inner summary",
+      successCriteria: ["Stay internal"],
+      payload: {},
+      origin: { friendId: "self", channel: "inner", key: "dialog" },
+      relatedReturnObligationId: "ret-stale-self-123",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "revise",
+      packet_id: "pkt-test-123",
+      kind: "reflection",
+      objective: "Refined inner objective",
+      summary: "Refined inner summary",
+      success_criteria: "- Stay internal",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    const result = await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      {
+        toolContext: {
+          currentSession: { friendId: "self", channel: "inner", key: "dialog" },
+        },
+      },
+    )
+
+    expect(result.outcome).toBe("settled")
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
+  })
+
   it("rejects revise against non-drafting packets and tells the agent to file a follow-up", async () => {
     mockRevisePonderPacket.mockImplementation(() => {
       throw new Error("packet is no longer drafting; file a follow-up packet instead")
@@ -989,6 +1190,60 @@ describe("ponder packets in runAgent", () => {
       "pkt-existing",
       expect.objectContaining({ objective: "New objective" }),
     )
+  })
+
+  it("revises an existing inner harness_friction packet without creating return work", async () => {
+    mockFindHarnessFrictionPacket.mockReturnValue({
+      id: "pkt-existing-inner",
+      kind: "harness_friction",
+      sop: "harness_friction_v1",
+      status: "drafting",
+      objective: "Old inner objective",
+      summary: "Old inner summary",
+      successCriteria: ["Old"],
+      origin: { friendId: "self", channel: "inner", key: "dialog" },
+      payload: { frictionSignature: "inner-private-loop-repeat" },
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    mockRevisePonderPacket.mockReturnValue({
+      id: "pkt-existing-inner",
+      kind: "harness_friction",
+      sop: "harness_friction_v1",
+      status: "drafting",
+      objective: "New inner objective",
+      summary: "New inner summary",
+      successCriteria: ["New"],
+      origin: { friendId: "self", channel: "inner", key: "dialog" },
+      payload: { frictionSignature: "inner-private-loop-repeat" },
+      createdAt: 1,
+      updatedAt: 2,
+    })
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      action: "create",
+      kind: "harness_friction",
+      objective: "New inner objective",
+      summary: "New inner summary",
+      success_criteria: "- New",
+      payload_json: JSON.stringify({ frictionSignature: "inner-private-loop-repeat" }),
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    await runAgent(
+      [{ role: "user", content: "heartbeat" }],
+      makeCallbacks(),
+      "inner",
+      undefined,
+      { toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" } } },
+    )
+
+    expect(mockRevisePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      "pkt-existing-inner",
+      expect.objectContaining({ objective: "New inner objective" }),
+    )
+    expect(mockCreateReturnObligation).not.toHaveBeenCalled()
+    expect(mockRequestInnerWake).not.toHaveBeenCalled()
   })
 
   it("reuses an existing non-drafting harness_friction packet and tolerates obligation creation failure", async () => {

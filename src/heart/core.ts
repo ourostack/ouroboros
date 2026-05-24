@@ -1498,10 +1498,9 @@ export async function runAgent(
                   ? { ...payload, sourceRequest }
                   : payload
                 const createLinkedReturnObligation = (id: string, packetId: string): void => {
-                  if (!currentOrigin) return
                   createReturnObligation(getAgentName(), {
                     id,
-                    origin: currentOrigin,
+                    origin: currentOrigin as NonNullable<typeof currentOrigin>,
                     status: "queued",
                     delegatedContent: buildPonderDelegatedContent({ summary, objective, sourceRequest }),
                     packetId,
@@ -1596,7 +1595,7 @@ export async function runAgent(
                 for (const token of extractPrivateReturnHeldTokens(privateReturnSourceRequest)) {
                   privateReturnHeldTokens.add(token)
                 }
-                try { await requestInnerWake(getAgentName(), (augmentedToolContext ?? options?.toolContext)?.daemonSocketPath); } catch { /* daemon may not be running */ }
+                await requestInnerWake(getAgentName(), augmentedToolContext?.daemonSocketPath).catch(() => undefined)
               }
               sawPonder = true;
               toolResult = buildPonderResult(packet, resultAction, returnObligationId);

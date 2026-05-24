@@ -509,6 +509,12 @@ describe("ponder packets", () => {
     expect(completed.status).toBe("done")
   })
 
+  it("throws when completing a missing packet", () => {
+    const agentRoot = makeAgentRoot()
+
+    expect(() => completePonderPacket(agentRoot, "pkt-missing")).toThrow("packet not found: pkt-missing")
+  })
+
   it("exposes a durable state-artifacts directory for packet repro evidence", () => {
     const agentRoot = makeAgentRoot()
     const packet = createPonderPacket(agentRoot, {

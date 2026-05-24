@@ -264,6 +264,164 @@ describe("attention queue", () => {
       expect(queue[0].packetReturnHints).toEqual(["AX_PACKET_MARKER: NATURAL"])
     })
 
+    it("extracts packet return hints from return-like payload arrays", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-array",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => ({
+          id: "pkt-array",
+          kind: "reflection",
+          status: "drafting",
+          objective: "Choose the exact return",
+          payload: {
+            returnOptions: ["AX_ARRAY_MARKER_ONE: NATURAL", "AX_ARRAY_MARKER_TWO: CONFUSING"],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      })
+
+      expect(queue[0].packetReturnHints).toEqual([
+        "AX_ARRAY_MARKER_ONE: NATURAL",
+        "AX_ARRAY_MARKER_TWO: CONFUSING",
+      ])
+    })
+
+    it("caps packet return hints from arrays and keeps the first four literal options", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-cap",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => ({
+          id: "pkt-cap",
+          kind: "reflection",
+          status: "drafting",
+          objective: "Choose one exact return",
+          payload: {
+            returnOptions: [
+              "AX_CAP_MARKER_ONE: A",
+              "AX_CAP_MARKER_TWO: B",
+              "AX_CAP_MARKER_THREE: C",
+              "AX_CAP_MARKER_FOUR: D",
+              "AX_CAP_MARKER_FIVE: E",
+            ],
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      })
+
+      expect(queue[0].packetReturnHints).toEqual([
+        "AX_CAP_MARKER_ONE: A",
+        "AX_CAP_MARKER_TWO: B",
+        "AX_CAP_MARKER_THREE: C",
+        "AX_CAP_MARKER_FOUR: D",
+      ])
+    })
+
+    it("stops scanning packet payload once quoted source request hints fill the cap", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-source-cap",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => ({
+          id: "pkt-source-cap",
+          kind: "reflection",
+          status: "drafting",
+          objective: "Choose one exact return",
+          payload: {
+            sourceRequest: 'Return one of "AX_SRC_MARKER_ONE: A" "AX_SRC_MARKER_TWO: B" "AX_SRC_MARKER_THREE: C" "AX_SRC_MARKER_FOUR: D".',
+            expected: "AX_SRC_MARKER_FIVE: E",
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      })
+
+      expect(queue[0].packetReturnHints).toEqual([
+        "AX_SRC_MARKER_ONE: A",
+        "AX_SRC_MARKER_TWO: B",
+        "AX_SRC_MARKER_THREE: C",
+        "AX_SRC_MARKER_FOUR: D",
+      ])
+    })
+
+    it("ignores packet return-hint candidates that are empty, too long, or not literal markers", () => {
+      const drained: PendingMessage[] = [
+        {
+          from: "test",
+          friendId: "self",
+          channel: "inner",
+          key: "dialog",
+          content: "think",
+          timestamp: 1000,
+          packetId: "pkt-invalid-hints",
+          delegatedFrom: { friendId: "ari", channel: "bluebubbles", key: "chat-1" },
+        },
+      ]
+
+      const queue = buildAttentionQueue({
+        drainedPending: drained,
+        outstandingObligations: [],
+        friendNameResolver: () => "Ari",
+        packetResolver: () => ({
+          id: "pkt-invalid-hints",
+          kind: "reflection",
+          status: "drafting",
+          objective: "Ignore invalid hints",
+          payload: {
+            expected: "   ",
+            marker: "plain lowercase prose",
+            returnAnswer: "AX_TOO_LONG_MARKER: ".padEnd(181, "A"),
+          },
+          createdAt: 1,
+          updatedAt: 1,
+        }),
+      })
+
+      expect(queue[0].packetReturnHints).toEqual([])
+    })
+
     it("keeps a packet id even when the resolver cannot currently load the packet", () => {
       const drained: PendingMessage[] = [
         {
@@ -461,6 +619,50 @@ describe("attention queue", () => {
       expect(summary).toContain('literal return options: "AX_PACKET_MARKER: NATURAL"')
       expect(summary).toContain('source request: "Please think privately and later return exactly "AX_PACKET_MARKER: NATURAL"."')
       expect(summary).not.toContain("asked:")
+    })
+
+    it("omits optional packet detail lines when the packet item has no extra return context", () => {
+      const summary = buildAttentionQueueSummary([
+        {
+          id: "pkt-plain",
+          friendId: "ari",
+          friendName: "Ari",
+          channel: "bb",
+          key: "c1",
+          delegatedContent: "Fix the plain packet",
+          packetId: "pkt-plain",
+          packetKind: "reflection",
+          packetObjective: "Fix the plain packet",
+          packetSourceRequest: "Fix the plain packet",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ])
+
+      expect(summary).toContain("Ari -> reflection: Fix the plain packet")
+      expect(summary).not.toContain("return criteria:")
+      expect(summary).not.toContain("literal return options:")
+      expect(summary).not.toContain("source request:")
+    })
+
+    it("falls back to delegated content as the packet source request when packet source text is absent", () => {
+      const summary = buildAttentionQueueSummary([
+        {
+          id: "pkt-delegated-source",
+          friendId: "ari",
+          friendName: "Ari",
+          channel: "bb",
+          key: "c1",
+          delegatedContent: "Original delegated request",
+          packetId: "pkt-delegated-source",
+          packetKind: "reflection",
+          packetObjective: "Packet objective",
+          source: "drained",
+          timestamp: 1000,
+        },
+      ])
+
+      expect(summary).toContain('source request: "Original delegated request"')
     })
 
     it("returns empty string for empty queue", () => {

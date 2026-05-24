@@ -1202,6 +1202,91 @@ describe("daemon process manager", () => {
     expect(child.send).toHaveBeenCalledWith({ type: "message" })
   })
 
+  it("caps IPC messages queued during startup to the newest pending items", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => gate.promise,
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    for (let seq = 0; seq < 22; seq += 1) {
+      manager.sendToAgent("slugger", { type: "message", seq })
+    }
+
+    gate.resolve({ ok: true })
+    await start
+
+    expect(child.send).toHaveBeenCalledTimes(20)
+    expect(child.send).not.toHaveBeenCalledWith({ type: "message", seq: 0 })
+    expect(child.send).not.toHaveBeenCalledWith({ type: "message", seq: 1 })
+    expect(child.send).toHaveBeenNthCalledWith(1, { type: "message", seq: 2 })
+  })
+
+  it("continues startup when flushing a queued IPC message throws", async () => {
+    const child = new MockChild()
+    child.send.mockImplementationOnce(() => { throw new Error("flush-failed") })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => gate.promise,
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    manager.sendToAgent("slugger", { type: "message" })
+    gate.resolve({ ok: true })
+    await start
+
+    expect(child.send).toHaveBeenCalledWith({ type: "message" })
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
+  it("formats non-Error queued IPC flush failures without aborting startup", async () => {
+    const child = new MockChild()
+    child.send.mockImplementationOnce(() => { throw "raw-flush-failed" })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck: () => gate.promise,
+    })
+
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    manager.sendToAgent("slugger", { type: "message" })
+    gate.resolve({ ok: true })
+    await start
+
+    expect(child.send).toHaveBeenCalledWith({ type: "message" })
+    expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
+  })
+
   it("sendToAgent swallows errors when agent has no process", async () => {
     const manager = new DaemonProcessManager({
       agents,
