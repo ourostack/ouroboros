@@ -122,7 +122,10 @@ const CONTENT_PREVIEW_MAX = 80
 export function buildAttentionQueueSummary(queue: AttentionItem[]): string {
   if (queue.length === 0) return ""
 
-  const lines = ["[internal: held work items — not messages to send]"]
+  const lines = [
+    "[internal: held work items — not messages to send]",
+    "To return one, call surface with delegationId set to the bracketed id.",
+  ]
   for (const item of queue) {
     if (item.packetKind && item.packetObjective) {
       lines.push(`- [${item.id}] ${item.friendName} -> ${item.packetKind}: ${item.packetObjective}`)

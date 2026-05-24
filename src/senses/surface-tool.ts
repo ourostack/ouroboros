@@ -33,6 +33,21 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
   let targetFriendId: string
   let queueItem: AttentionItem | undefined
 
+  const matchesFriend = (item: AttentionItem, target: string): boolean =>
+    item.friendId === target || item.friendName.toLowerCase() === target.toLowerCase()
+
+  const inferQueueItem = (target?: string): AttentionItem | string | undefined => {
+    if (queue.length === 0) return undefined
+    const candidates = target
+      ? queue.filter((item) => matchesFriend(item, target))
+      : queue
+    if (candidates.length === 1) return candidates[0]
+    if (candidates.length > 1) {
+      return `multiple held thoughts match ${target ?? "this surface call"} — use delegationId to choose one`
+    }
+    return undefined
+  }
+
   if (delegationId) {
     // Look up in attention queue
     const found = queue.find((item) => item.id === delegationId)
@@ -42,9 +57,19 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
     targetFriendId = found.friendId
     queueItem = found
   } else if (friendId) {
-    targetFriendId = friendId
+    const inferred = inferQueueItem(friendId)
+    if (typeof inferred === "string") return inferred
+    queueItem = inferred
+    targetFriendId = queueItem?.friendId ?? friendId
   } else {
-    return "specify who this thought is for — use delegationId to address a held thought, or friendId for spontaneous outreach"
+    const inferred = inferQueueItem()
+    if (typeof inferred === "string") return inferred
+    if (inferred) {
+      queueItem = inferred
+      targetFriendId = inferred.friendId
+    } else {
+      return "specify who this thought is for — use delegationId to address a held thought, or friendId for spontaneous outreach"
+    }
   }
 
   // Route to target
@@ -67,7 +92,7 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
   // On successful routing with delegationId:
   // 1. Advance obligation to "returned" (disk FIRST — crash safety)
   // 2. Dequeue from process-local queue (AFTER obligation advance)
-  if (delegationId && queueItem && result.status !== "failed") {
+  if (queueItem && result.status !== "failed") {
     if (queueItem.obligationId) {
       advanceObligation(queueItem.obligationId, {
         status: "returned",
@@ -87,7 +112,7 @@ export async function handleSurface(input: HandleSurfaceInput): Promise<string> 
         // swallowed — heart obligation fulfillment must never break surface delivery
       }
     }
-    dequeueAttentionItem(queue, delegationId)
+    dequeueAttentionItem(queue, queueItem.id)
   }
 
   // Return delivery status

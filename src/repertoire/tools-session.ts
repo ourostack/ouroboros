@@ -324,6 +324,21 @@ function findDelegatingBridgeId(ctx?: ToolContext): string | undefined {
   )?.id
 }
 
+function sendMessageRiskProfile(args: Record<string, string>) {
+  if (args.friendId?.trim() === "self") {
+    return {
+      mutates: "private_attention_write",
+      risk: "high",
+      reason: "queues private inner-dialog attention without contacting an external session",
+    } as const
+  }
+  return {
+    mutates: ["durable_state_write", "external_side_effect"],
+    risk: "high",
+    reason: "queues or delivers messages across sessions/channels",
+  } as const
+}
+
 export function renderInnerProgressStatus(
   status: { queue: string; wake: string; processing: string; surfaced: string },
 ): string {
@@ -579,14 +594,14 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         }
         let wakeResponse: { ok: boolean } | null = null
         try {
-          wakeResponse = await requestInnerWake(agentName)
+          wakeResponse = await requestInnerWake(agentName, ctx?.daemonSocketPath)
         } catch {
           wakeResponse = null
         }
 
         if (!wakeResponse?.ok) {
           const { runInnerDialogTurn } = await import("../senses/inner-dialog")
-          if (ctx?.context?.channel.channel === "inner") {
+          if (ctx?.context?.channel?.channel === "inner") {
             queueMicrotask(() => {
               void runInnerDialogTurn({ reason: "instinct" })
             })
@@ -743,11 +758,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
 
       return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
-    riskProfile: {
-      mutates: ["durable_state_write", "external_side_effect"] as const,
-      risk: "high",
-      reason: "queues or delivers messages across sessions/channels",
-    },
+    riskProfile: sendMessageRiskProfile,
   },
   {
     tool: {

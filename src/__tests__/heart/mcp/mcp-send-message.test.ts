@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "stream"
+import * as fs from "fs"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
@@ -96,6 +97,8 @@ describe("MCP send_message tool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    vi.mocked(fs.readFileSync).mockReturnValue("")
     stdin = new PassThrough()
     stdout = new PassThrough()
     mockSendDaemonCommand.mockResolvedValue({
@@ -260,6 +263,49 @@ describe("MCP send_message tool", () => {
       expect.objectContaining({
         kind: "agent.senseTurn",
         sessionKey: "claude-session-456",
+      }),
+    )
+  })
+
+  it("canonicalizes local MCP friend ids before running a sense turn", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      name: "arimendelow",
+      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+    }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "local-arimendelow",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    const outputPromise = collectOutput(stdout)
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "send_message",
+        arguments: { message: "hello" },
+      },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    await outputPromise
+    server.stop()
+
+    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(mockSendDaemonCommand).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      expect.objectContaining({
+        friendId: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
       }),
     )
   })

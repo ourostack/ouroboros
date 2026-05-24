@@ -898,7 +898,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   // Inner dialog's next checkpoint will include this session's state
   if (input.channel !== "inner") {
     try {
-      requestInnerWake(getAgentName()).catch(/* v8 ignore next */ () => { /* best effort — daemon may not be running */ })
+      requestInnerWake(getAgentName(), existingToolContext?.daemonSocketPath).catch(/* v8 ignore next */ () => { /* best effort — daemon may not be running */ })
     } catch { /* getAgentName may fail in test environments */ }
   }
 

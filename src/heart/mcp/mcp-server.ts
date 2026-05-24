@@ -1,7 +1,10 @@
 import type { Readable, Writable } from "stream"
+import * as fs from "fs"
+import * as path from "path"
 import { sendDaemonCommand } from "../daemon/socket-client"
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon"
 import * as agentService from "../daemon/agent-service"
+import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { resolveSessionId } from "../daemon/session-id-resolver"
 import { drainPending, getPendingDir } from "../../mind/pending"
@@ -133,13 +136,55 @@ export interface McpServer {
   stop(): void
 }
 
+const UUID_PREFIX_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-/i
+
+function canonicalizeMcpFriendId(agent: string, rawFriendId: string): string {
+  if (UUID_PREFIX_RE.test(rawFriendId)) return rawFriendId
+
+  const localExternalId = rawFriendId.startsWith("local-")
+    ? rawFriendId.slice("local-".length)
+    : rawFriendId
+
+  try {
+    const friendsDir = path.join(getAgentRoot(agent), "friends")
+    const friendFiles = fs.readdirSync(friendsDir).filter((entry) => entry.endsWith(".json"))
+    for (const file of friendFiles) {
+      const raw = fs.readFileSync(path.join(friendsDir, file), "utf-8")
+      const record = JSON.parse(raw) as {
+        id?: string
+        name?: string
+        externalIds?: Array<{ provider?: string; externalId?: string }>
+      }
+      if (!record.id) continue
+      if (record.id === rawFriendId || record.name?.toLowerCase() === rawFriendId.toLowerCase()) {
+        return record.id
+      }
+      const localMatch = record.externalIds?.some((externalId) =>
+        externalId.provider === "local"
+        && (
+          externalId.externalId === rawFriendId
+          || externalId.externalId === localExternalId
+          || externalId.externalId?.startsWith(`${localExternalId}@`)
+        ),
+      )
+      if (localMatch) return record.id
+    }
+  } catch {
+    // Best effort only. If the bundle is unreadable, preserve the explicit id.
+  }
+
+  return rawFriendId
+}
+
 /**
  * Create an MCP server that speaks JSON-RPC 2.0 over stdio.
  * Handles initialize, initialized, tools/list, and tools/call.
  * Forwards tool calls to the daemon via Unix socket.
  */
 export function createMcpServer(options: McpServerOptions): McpServer {
-  const { agent, friendId, socketPath, stdin, stdout } = options
+  const { agent, socketPath, stdin, stdout } = options
+  const rawFriendId = options.friendId
+  const friendId = canonicalizeMcpFriendId(agent, rawFriendId)
   let buffer = ""
   let running = false
   let useContentLengthFraming = true // default to Content-Length, auto-detect from first message
@@ -502,7 +547,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         component: "daemon",
         event: "daemon.mcp_server_start",
         message: "MCP server started",
-        meta: { agent, friendId, socketPath },
+        meta: { agent, friendId, rawFriendId, socketPath },
       })
     },
     stop() {

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.637",
+      "changes": [
+        "Route delegated inner-dialog returns back to their originating MCP session, including private self-delegation under correction-hold."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.636",
       "changes": [
         "Prompt loop hardening for active browser/tool/task flows: MCP, BlueBubbles, generic tool-contract, `settle`, and `speak` guidance now all say process feedback is loop input, not a handoff trigger; mid-flow acknowledgements use `speak` when available and continue, while `settle` is reserved for final answers, direct blocking questions, real blockers, confirmation gates, and explicit stop/pause boundaries. Timeout/recovery state is now framed as internal cleanup/retry steering rather than chat copy or a reason to explain mid-flow.",

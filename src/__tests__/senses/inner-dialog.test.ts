@@ -718,6 +718,59 @@ describe("inner dialog runtime", () => {
     expect(input.pendingDir).toBe("/tmp/pending/test-agent/self/inner/dialog")
   })
 
+  it("keeps delegatedOrigins visible to tools after pending drain", async () => {
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.onPendingDrained([
+        {
+          from: "test-agent",
+          content: "call evolution_status",
+          timestamp: 1000,
+          delegatedFrom: {
+            friendId: "friend-1",
+            channel: "mcp",
+            key: "session-1",
+          },
+          obligationId: "obl-1",
+        },
+      ])
+
+      const result = await input.runAgent(
+        [],
+        input.callbacks,
+        input.channel,
+        input.signal,
+        input.runAgentOptions,
+      )
+
+      return {
+        resolvedContext: { friend: { id: "self" }, channel: innerCapabilities },
+        gateResult: { allowed: true },
+        usage: result?.usage,
+        sessionPath: sessionFile,
+        messages: [{ role: "assistant", content: null, tool_calls: [] }],
+      }
+    })
+
+    mockRunAgent.mockImplementationOnce(async (_messages: any, _callbacks: any, _channel: any, _signal: any, options: any) => {
+      expect(options.toolContext.delegatedOrigins).toHaveLength(1)
+      expect(options.toolContext.delegatedOrigins[0]).toEqual(expect.objectContaining({
+        id: "obl-1",
+        friendId: "friend-1",
+        channel: "mcp",
+        key: "session-1",
+      }))
+      return { usage: undefined }
+    })
+
+    await runInnerDialogTurn({
+      reason: "boot",
+      instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+      now: () => new Date("2026-03-09T10:00:00.000Z"),
+    })
+
+    expect(mockRunAgent).toHaveBeenCalled()
+  })
+
   it("injects drainPending, runAgent, postTurn, accumulateFriendTokens, enforceTrustGate into pipeline", async () => {
     await runInnerDialogTurn({
       reason: "boot",
