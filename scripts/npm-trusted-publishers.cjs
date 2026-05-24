@@ -111,6 +111,17 @@ function trustInteractiveAuthCommand(packageName) {
   ]
 }
 
+function npmLoginCommand() {
+  return [
+    "npx",
+    "--yes",
+    "npm@latest",
+    "login",
+    "--registry",
+    REGISTRY,
+  ]
+}
+
 function trustCreateCommand(packageName) {
   return [
     "npx",
@@ -226,13 +237,17 @@ function runCommand(args) {
 }
 
 function isAuthRequired(output) {
-  return /EOTP|one-time password|auth\/cli/i.test(output)
+  return /EOTP|one-time password|auth\/cli|E401|ENEEDAUTH|must be logged in|not logged in/i.test(output)
+}
+
+function isLoginRequired(output) {
+  return /E401|ENEEDAUTH|must be logged in|not logged in/i.test(output)
 }
 
 function formatAuthRequired(packageName, output) {
   return [
-    `npm trust repair for ${packageName} requires human npm 2FA/proof-of-presence.`,
-    "Run this from an interactive terminal so npm can hold the browser proof flow open.",
+    `npm trust repair for ${packageName} requires human npm login/2FA/proof-of-presence.`,
+    "Run this from an interactive terminal so npm can hold the login and browser proof flows open.",
     "On the npm page, enable the short 2FA skip window when offered; the repair may need multiple trust mutations.",
     "Then rerun:",
     `  npm run release:trust:repair`,
@@ -248,6 +263,15 @@ function canUseInteractiveAuth(stdin = process.stdin, stdout = process.stdout) {
 function runInteractiveAuthProbe(packageName, spawnSyncImpl = spawnSync) {
   console.log(`npm trust repair for ${packageName}: starting interactive npm auth proof`)
   const args = trustInteractiveAuthCommand(packageName)
+  const result = spawnSyncImpl(args[0], args.slice(1), {
+    stdio: "inherit",
+  })
+  return result.status ?? 1
+}
+
+function runInteractiveLogin(spawnSyncImpl = spawnSync) {
+  console.log("npm trust repair: starting interactive npm login")
+  const args = npmLoginCommand()
   const result = spawnSyncImpl(args[0], args.slice(1), {
     stdio: "inherit",
   })
@@ -272,9 +296,14 @@ function runRepair(options = {}) {
       authAttempts < maxInteractiveAuthAttempts
     ) {
       authAttempts += 1
-      const authStatus = runInteractiveAuthProbe(packageName, spawnSyncImpl)
+      const needsLogin = isLoginRequired(result.output)
+      const authStatus = needsLogin
+        ? runInteractiveLogin(spawnSyncImpl)
+        : runInteractiveAuthProbe(packageName, spawnSyncImpl)
       if (authStatus !== 0) {
-        const output = `npm error code EOTP\ninteractive npm auth proof failed for ${packageName}`
+        const output = needsLogin
+          ? "npm error code E401\ninteractive npm login failed"
+          : `npm error code EOTP\ninteractive npm auth proof failed for ${packageName}`
         result = {
           status: authStatus,
           stdout: "",
@@ -384,6 +413,8 @@ module.exports = {
   collectTrustIds,
   formatCommand,
   isAuthRequired,
+  isLoginRequired,
+  npmLoginCommand,
   parseTrustListOutput,
   runRepair,
   trustCreateCommand,

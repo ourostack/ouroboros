@@ -11,6 +11,7 @@ const {
   collectTrustIds,
   formatCommand,
   isAuthRequired,
+  npmLoginCommand,
   runRepair,
   trustCreateCommand,
   trustInteractiveAuthCommand,
@@ -143,7 +144,59 @@ publish:
 
   it("recognizes npm web proof errors as auth-required output", () => {
     expect(isAuthRequired("npm error code EOTP\nOpen this URL: https://www.npmjs.com/auth/cli/test")).toBe(true)
+    expect(isAuthRequired("npm error code E401\nYou must be logged in to publish packages.")).toBe(true)
     expect(isAuthRequired("404 package missing")).toBe(false)
+  })
+
+  it("uses interactive npm login before retrying trust repair when npm is logged out", () => {
+    const capturedCommands: string[][] = []
+    const interactiveCommands: string[][] = []
+
+    const expectedTrust = {
+      trustedPublishers: [
+        {
+          id: "expected-trust",
+          repository: EXPECTED_REPOSITORY,
+          workflow: EXPECTED_WORKFLOW,
+          allowedActions: ["npm publish"],
+        },
+      ],
+    }
+
+    const runCommandImpl = (args: string[]) => {
+      capturedCommands.push(args)
+
+      if (capturedCommands.length === 1) {
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "npm error code E401\nYou must be logged in to publish packages.",
+          output: "npm error code E401\nYou must be logged in to publish packages.",
+        }
+      }
+
+      return {
+        status: 0,
+        stdout: JSON.stringify(expectedTrust),
+        stderr: "",
+        output: "",
+      }
+    }
+
+    const spawnSyncImpl = (command: string, args: string[]) => {
+      interactiveCommands.push([command, ...args])
+      return { status: 0 }
+    }
+
+    runRepair({
+      runCommandImpl,
+      spawnSyncImpl,
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+    })
+
+    expect(interactiveCommands).toEqual([npmLoginCommand()])
+    expect(capturedCommands.filter((args) => args.join(" ").includes(" trust list @ouro.bot/cli "))).toHaveLength(2)
   })
 
   it("uses an interactive auth probe before retrying trust repair when npm requires web proof", () => {
@@ -382,7 +435,7 @@ publish:
       stdin: { isTTY: true },
       stdout: { isTTY: true },
       maxInteractiveAuthAttempts: 2,
-    })).toThrow(/requires human npm 2FA/)
+    })).toThrow(/requires human npm login\/2FA/)
 
     expect(interactiveCommands).toEqual([
       trustInteractiveAuthCommand("@ouro.bot/cli"),
@@ -400,6 +453,6 @@ publish:
       }),
       stdin: { isTTY: false },
       stdout: { isTTY: false },
-    })).toThrow(/requires human npm 2FA/)
+    })).toThrow(/requires human npm login\/2FA/)
   })
 })
