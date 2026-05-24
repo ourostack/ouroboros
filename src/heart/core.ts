@@ -473,11 +473,17 @@ function messageContentText(content: unknown): string {
     .join("\n")
 }
 
+function isHarnessCorrectiveUserText(text: string): boolean {
+  return text.startsWith("no tool was called this turn. you must end every turn")
+    || text.startsWith("private-return acknowledgement claimed work was queued, but no ponder packet was created this turn.")
+}
+
 function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
     if (message?.role !== "user") continue
     const text = messageContentText(message.content).trim()
+    if (isHarnessCorrectiveUserText(text)) continue
     if (text.length > 0) return text
   }
   return ""
@@ -898,12 +904,11 @@ export async function runAgent(
   // which doesn't update mid-turn. The agent only needs to be told once;
   // after that, repeated rest attempts mean they've acknowledged.
   let freshWorkGateFired = false;
-  // Counter for "no tool call returned despite tool_choice=required" violations.
-  // MiniMax reasoning models occasionally emit only a <think>...</think>
-  // block and stop, without any tool call — even when tool_choice is set to
-  // "required". This is a provider-level violation; the harness retries with
-  // a corrective nudge up to a small cap rather than silently accepting an
-  // empty turn.
+  // Counter for no-tool-call violations. MiniMax reasoning models occasionally
+  // emit only a <think>...</think> block and stop, without any tool call — even
+  // when tool_choice is set to "required". Private-return requests also need
+  // a hard no-tool guard: a text-only "queued" acknowledgement is false unless
+  // a ponder packet created the return obligation in this turn.
   let noToolCallRetries = 0;
   const NO_TOOL_CALL_MAX_RETRIES = 2;
   const toolLoopState = createToolLoopState();
@@ -1182,8 +1187,62 @@ export async function runAgent(
         && typeof result.content === "string"
         && stripThinkBlocksForViolationCheck(result.content).length === 0
         && result.content.length > 0;
+      const privateReturnTextAckRetryError = !result.toolCalls.length
+        ? privateReturnMissingPonderError({
+            latestUserRequest: latestUserMessageText(messages),
+            answer: stripThinkBlocksForViolationCheck(result.content),
+            sawPonder,
+          })
+        : null;
 
       if (!result.toolCalls.length) {
+        if (privateReturnTextAckRetryError) {
+          callbacks.onClearText?.();
+          if (noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
+            noToolCallRetries++;
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.no_tool_call_retry",
+              message: "model returned a text-only private-return acknowledgement without ponder; retrying with corrective nudge",
+              meta: {
+                attempt: noToolCallRetries,
+                cap: NO_TOOL_CALL_MAX_RETRIES,
+                provider: providerRuntime.id,
+                model: providerRuntime.model,
+                reason: "private_return_missing_ponder",
+                contentLength: result.content.length,
+              },
+            });
+            messages.push(msg);
+            messages.push({
+              role: "user",
+              content: `${privateReturnTextAckRetryError} Emit the ponder(action=create, ...) tool call now, or ask a blocking clarification without saying the private work is queued.`,
+            });
+            continue;
+          }
+
+          const blockedAnswer = "I could not start the private pass. No private-attention packet was created, so no return work was queued.";
+          emitNervesEvent({
+            level: "error",
+            component: "engine",
+            event: "engine.private_return_missing_ponder_blocked",
+            message: "private-return text acknowledgement skipped ponder through the retry cap; failing closed",
+            meta: {
+              cap: NO_TOOL_CALL_MAX_RETRIES,
+              provider: providerRuntime.id,
+              model: providerRuntime.model,
+              contentLength: result.content.length,
+            },
+          });
+          msg.content = blockedAnswer;
+          messages.push(msg);
+          callbacks.onTextChunk(blockedAnswer);
+          completion = { answer: blockedAnswer, intent: "blocked" };
+          outcome = "blocked";
+          done = true;
+          continue;
+        }
         if (onlyThinkContent && toolChoiceRequired && noToolCallRetries < NO_TOOL_CALL_MAX_RETRIES) {
           // Provider-level violation: tool_choice was required, model emitted
           // only a <think>...</think> block (or empty content) with no tool
