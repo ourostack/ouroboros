@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as path from "path"
 
 // Mock fs before importing plugin-mcp
@@ -32,15 +32,48 @@ vi.mock("../../nerves/runtime", () => ({
 import * as fs from "fs"
 import { loadAgentConfig } from "../../heart/identity"
 
+const MUTATED_ENV_KEYS = [
+  "DESK",
+  "MY_CMD",
+  "MY_TOKEN",
+  "OTHER",
+  "SOME_UNSET_VAR",
+] as const
+const originalEnvValues = Object.fromEntries(
+  MUTATED_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<(typeof MUTATED_ENV_KEYS)[number], string | undefined>
+
+function clearMutatedEnv(): void {
+  for (const key of MUTATED_ENV_KEYS) {
+    delete process.env[key]
+  }
+}
+
+function restoreOriginalEnv(): void {
+  for (const key of MUTATED_ENV_KEYS) {
+    const originalValue = originalEnvValues[key]
+    if (originalValue === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = originalValue
+    }
+  }
+}
+
 describe("plugin-mcp.ts — listPluginMcpServers", () => {
   beforeEach(() => {
     vi.resetModules()
+    clearMutatedEnv()
     vi.mocked(fs.existsSync).mockReset()
     vi.mocked(fs.readFileSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
     vi.mocked(fs.statSync).mockReset()
     vi.mocked(loadAgentConfig).mockReset()
     nervesEvents.length = 0
+  })
+
+  afterEach(() => {
+    restoreOriginalEnv()
   })
 
   it("returns empty list when no plugins are enabled", async () => {
