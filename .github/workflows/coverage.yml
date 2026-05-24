@@ -102,6 +102,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
     steps:
       - name: Checkout
@@ -110,10 +111,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
-      - name: Install latest npm (trusted publishing requires >=11.5.1)
+      - name: Install latest npm (trusted publishing requires npm >=11.5.1 on Node >=22.14)
         run: npm install -g npm@latest
 
       - name: Install Dependencies
@@ -137,7 +139,7 @@ jobs:
           if [ "$LOCAL" = "$PUBLISHED" ]; then
             echo "@ouro.bot/cli@${LOCAL} already published — skipping"
           else
-            npm publish --access public --provenance --tag "$TAG"
+            npm publish --access public --tag "$TAG"
           fi
 
       - name: Build for wrapper publish guard
@@ -192,7 +194,7 @@ jobs:
         if: steps.wrapper-check.outputs.should_publish == 'true'
         run: |
           cd packages/ouro.bot
-          npm publish --access public --provenance --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
+          npm publish --access public --tag "${{ steps.wrapper-publish-tag.outputs.tag }}"
 
       - name: Verify supported npm dist-tags
         run: |
