@@ -3421,6 +3421,90 @@ describe("BitwardenCredentialStore", () => {
       fs.rmSync(appDataDir, { recursive: true, force: true })
     })
 
+    it("reaps a dead bw child lock even when the owner process is still alive", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-dead-child-"))
+      const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      fs.writeFileSync(lockPath, `${JSON.stringify({ ownerPid: process.pid, childPid: 999999999 })}\n`)
+      const staleDate = new Date(Date.now() - 3_000)
+      fs.utimesSync(lockPath, staleDate, staleDate)
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return { pid: 12345 }
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { pid: 12346 }
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return { pid: 12347 }
+        }
+        cb(null, "", "")
+        return { pid: 12348 }
+      })
+
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+      expect(fs.existsSync(lockPath)).toBe(false)
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        level: "warn",
+        event: "repertoire.bw_lock_stale_reaped",
+        component: "repertoire",
+        meta: expect.objectContaining({
+          reason: "dead-child-pid",
+          pid: "999999999",
+          ownerPid: String(process.pid),
+        }),
+      }))
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("waits on a fresh dead bw child lock so normal release can win", async () => {
+      const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-dead-child-fresh-"))
+      const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+      const storeInstance = new BitwardenCredentialStore(
+        "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
+      )
+
+      fs.writeFileSync(lockPath, `${JSON.stringify({ ownerPid: process.pid, childPid: 999999999 })}\n`)
+      setTimeout(() => {
+        try { fs.unlinkSync(lockPath) } catch { /* ignore */ }
+      }, 200)
+
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return { pid: 12345 }
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { pid: 12346 }
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return { pid: 12347 }
+        }
+        cb(null, "", "")
+        return { pid: 12348 }
+      })
+
+      const result = await storeInstance.list()
+      expect(result).toEqual([])
+      expect(nervesEvents).not.toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_lock_stale_reaped",
+        meta: expect.objectContaining({ reason: "dead-child-pid" }),
+      }))
+
+      fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
     it("reaps an over-age lock file even when the owner pid is still alive", async () => {
       vi.useFakeTimers()
       let appDataDir: string | undefined
@@ -3516,6 +3600,54 @@ describe("BitwardenCredentialStore", () => {
         vi.useRealTimers()
         if (appDataDir) fs.rmSync(appDataDir, { recursive: true, force: true })
       }
+    })
+
+    it("reaps over-age structured locks with invalid pid fields as unknown", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return { pid: 12345 }
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { pid: 12346 }
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return { pid: 12347 }
+        }
+        cb(null, "", "")
+        return { pid: 12348 }
+      })
+
+      for (const [index, lockRecord] of [
+        { ownerPid: "not-a-pid", childPid: -1 },
+        { ownerPid: 1.5, childPid: "also-not-a-pid" },
+      ].entries()) {
+        const appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), `bw-lock-aged-invalid-${index}-`))
+        const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+        const storeInstance = new BitwardenCredentialStore(
+          "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
+        )
+
+        fs.writeFileSync(lockPath, `${JSON.stringify(lockRecord)}\n`)
+        const staleDate = new Date(Date.now() - 120_000)
+        fs.utimesSync(lockPath, staleDate, staleDate)
+
+        const result = await storeInstance.list()
+        expect(result).toEqual([])
+
+        fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
+
+      expect(nervesEvents).toContainEqual(expect.objectContaining({
+        event: "repertoire.bw_lock_stale_reaped",
+        meta: expect.objectContaining({
+          reason: "stale-age",
+          pid: "unknown",
+          ownerPid: "unknown",
+        }),
+      }))
     })
 
     it("retries when the lock holder releases during polling", async () => {
