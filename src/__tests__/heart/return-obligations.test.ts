@@ -336,6 +336,23 @@ describe("listActiveReturnObligations", () => {
     expect(result.map((o) => o.id)).toEqual(["v"])
   })
 
+  it("excludes self-inner return obligations from active injection", async () => {
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    const nowMs = 2_000_000_000_000
+    const outward = { id: "outward", status: "queued", createdAt: nowMs - 1000, origin: { friendId: "ari", channel: "mcp", key: "s" }, delegatedContent: "return to Ari" }
+    const selfInner = { id: "self-inner", status: "queued", createdAt: nowMs - 1000, origin: { friendId: "self", channel: "inner", key: "dialog" }, delegatedContent: "preserve only" }
+    vi.mocked(fs.readdirSync).mockReturnValue(["outward.json", "self-inner.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if ((p as string).includes("outward")) return JSON.stringify(outward)
+      if ((p as string).includes("self-inner")) return JSON.stringify(selfInner)
+      throw new Error("ENOENT")
+    }) as any)
+
+    const result = listActiveReturnObligations("testagent", { now: () => nowMs })
+    expect(result.map((o) => o.id)).toEqual(["outward"])
+  })
+
   it("skips unparseable files", async () => {
     const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)

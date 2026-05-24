@@ -460,7 +460,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "send_message",
-        description: "send a message to a friend's session. when the request is explicitly authorized from a trusted live chat, the harness will try to deliver immediately; otherwise it reports truthful queued/block/failure state.",
+        description: "send a message to a friend's session. when the request is explicitly authorized from a trusted live chat, the harness will try to deliver immediately; otherwise it reports truthful queued/block/failure state. do not use friendId=self for user-requested private-return work; use ponder so the typed return contract can be tracked and surfaced once.",
         parameters: {
           type: "object",
           properties: {

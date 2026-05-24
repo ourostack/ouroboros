@@ -122,7 +122,7 @@ export function extractOrderedListReferents(text: string): OrientationReferent[]
 }
 
 function hasCorrectionMarker(text: string): boolean {
-  return /\b(hang on|wait|actually|not that|not this|wrong|misunderstood|you(?:'re| are) right|correct|exactly)\b/i.test(text)
+  return /\b(hang on|wait|actually|not that|not this|wrong|misunderstood|you(?:'re| are) right|correct)\b/i.test(text)
     || /^\s*no[\s,]/i.test(text)
 }
 

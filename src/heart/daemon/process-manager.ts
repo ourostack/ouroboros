@@ -79,6 +79,7 @@ interface AgentRuntimeState {
   startInFlight: boolean
   startAttemptedAtMs: number | null
   startAttemptId: number
+  pendingIpcMessages: Record<string, unknown>[]
   restartTimer: unknown | null
   crashTimestamps: number[]
   /**
@@ -121,6 +122,7 @@ function startOfHour(ms: number): number {
  */
 export const RESPAWN_GUARD_MAX_RESTARTS = 5
 export const RESPAWN_GUARD_WINDOW_MS = 10 * 60_000
+const MAX_PENDING_IPC_MESSAGES = 20
 
 export class DaemonProcessManager {
   private readonly agents = new Map<string, AgentRuntimeState>()
@@ -238,6 +240,7 @@ export class DaemonProcessManager {
         startInFlight: false,
         startAttemptedAtMs: null,
         startAttemptId: 0,
+        pendingIpcMessages: [],
         restartTimer: null,
         crashTimestamps: [],
         orchestratedRestartTimestamps: [],
@@ -441,6 +444,27 @@ export class DaemonProcessManager {
         }
       }
 
+      const pendingIpcMessages = state.pendingIpcMessages.splice(0)
+      for (const message of pendingIpcMessages) {
+        try {
+          child.send?.(message)
+          emitNervesEvent({
+            component: "daemon",
+            event: "daemon.agent_pending_ipc_flushed",
+            message: "flushed pending IPC message to managed agent",
+            meta: { agent },
+          })
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.agent_ipc_send_error",
+            message: "failed to flush pending IPC message to managed agent",
+            meta: { agent, error: error instanceof Error ? error.message : String(error) },
+          })
+        }
+      }
+
       emitNervesEvent({
         component: "daemon",
         event: "daemon.agent_started",
@@ -477,6 +501,7 @@ export class DaemonProcessManager {
     this.clearRestartTimer(state)
     this.clearCooldownTimer(state)
     state.stopRequested = true
+    state.pendingIpcMessages = []
     // NOTE: do not touch state.respawnLoopTripped / orchestratedRestartTimestamps
     // here. restartAgent calls stopAgent internally; clearing the guard here
     // would reset the window every cycle and defeat the loop-detection. The
@@ -624,7 +649,21 @@ export class DaemonProcessManager {
 
   sendToAgent(agent: string, message: Record<string, unknown>): void {
     const state = this.requireAgent(agent)
-    if (!state.process) return
+    if (!state.process) {
+      if (state.startInFlight) {
+        if (state.pendingIpcMessages.length >= MAX_PENDING_IPC_MESSAGES) {
+          state.pendingIpcMessages.shift()
+        }
+        state.pendingIpcMessages.push(message)
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.agent_ipc_queued_during_startup",
+          message: "queued IPC message while managed agent startup is in flight",
+          meta: { agent, queuedCount: state.pendingIpcMessages.length },
+        })
+      }
+      return
+    }
     try {
       state.process.send(message)
     } catch {
