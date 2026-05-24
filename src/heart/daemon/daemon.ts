@@ -635,6 +635,7 @@ function isValidSenseReviveCommand(command: Extract<DaemonCommand, { kind: "daem
  */
 export async function handleAgentSenseTurn(
   command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
+  runtime?: { socketPath?: string },
 ): Promise<DaemonResponse> {
   try {
     const { setAgentName } = await import("../identity")
@@ -646,6 +647,7 @@ export async function handleAgentSenseTurn(
       sessionKey: command.sessionKey,
       friendId: command.friendId,
       userMessage: command.message,
+      ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
     })
     return {
       ok: true,
@@ -661,6 +663,7 @@ export async function handleAgentSenseTurn(
 
 export async function handleAgentAskTurn(
   command: Extract<DaemonCommand, { kind: "agent.ask" }>,
+  runtime?: { socketPath?: string },
 ): Promise<DaemonResponse> {
   /* v8 ignore start -- ask command parameter defaults are legacy MCP compatibility; send_message shares the primary path @preserve */
   const question = typeof command.question === "string" ? command.question : ""
@@ -677,7 +680,7 @@ export async function handleAgentAskTurn(
     channel,
     sessionKey,
     message: question,
-  })
+  }, runtime)
 }
 
 export class OuroDaemon {
@@ -1385,7 +1388,7 @@ export class OuroDaemon {
         await this.processManager.restartAgent?.(command.agent)
         return { ok: true, message: `restarted ${command.agent}` }
       case "agent.ask":
-        return handleAgentAskTurn(command)
+        return handleAgentAskTurn(command, { socketPath: this.socketPath })
       case "agent.status":
         return handleAgentStatus(command)
       case "agent.catchup":
@@ -1411,7 +1414,7 @@ export class OuroDaemon {
       case "agent.reportComplete":
         return handleAgentReportComplete(command)
       case "agent.senseTurn":
-        return handleAgentSenseTurn(command)
+        return handleAgentSenseTurn(command, { socketPath: this.socketPath })
       /* v8 ignore stop */
       case "cron.list": {
         const jobs = this.scheduler.listJobs()

@@ -1477,7 +1477,7 @@ export async function runAgent(
                 throw new Error("ponder requires action=create or revise.")
               }
 
-              try { await requestInnerWake(getAgentName()); } catch { /* daemon may not be running */ }
+              try { await requestInnerWake(getAgentName(), (augmentedToolContext ?? options?.toolContext)?.daemonSocketPath); } catch { /* daemon may not be running */ }
               sawPonder = true;
               toolResult = buildPonderResult(packet, resultAction, returnObligationId);
               success = true;

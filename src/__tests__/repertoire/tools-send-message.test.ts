@@ -1097,9 +1097,30 @@ describe("send_message tool", () => {
         content: "notice this now",
       })
 
-      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
+      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
       expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
       expect(result).toBe("i've queued this thought for private attention. it'll come up when my inner dialog is free.")
+    })
+
+    it("uses the daemon socket from tool context when waking inner dialog", async () => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+      mockRequestInnerWake.mockResolvedValue({
+        ok: true,
+        message: "woke inner dialog for testagent",
+      })
+
+      await tool.handler({
+        friendId: "self",
+        channel: "inner",
+        content: "notice this on the isolated daemon",
+      }, {
+        daemonSocketPath: "/tmp/ouroboros-e2e.sock",
+      } as any)
+
+      expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", "/tmp/ouroboros-e2e.sock")
+      expect(mockRunInnerDialogTurn).not.toHaveBeenCalled()
     })
 
     it("falls back to an immediate inner turn when daemon wake rejects", async () => {

@@ -257,7 +257,7 @@ describe("ponder packets in runAgent", () => {
       }),
     )
     expect(mockQueuePendingMessage).not.toHaveBeenCalled()
-    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent")
+    expect(mockRequestInnerWake).toHaveBeenCalledWith("testagent", undefined)
   })
 
   it("creates follow-up packet links and truncates overly long delegated summaries", async () => {

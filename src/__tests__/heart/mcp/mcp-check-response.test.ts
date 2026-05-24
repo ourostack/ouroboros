@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { PassThrough } from "stream"
+import * as fs from "fs"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 // ── Mocks ──────────────────────────────────────────────────────
@@ -88,6 +89,8 @@ describe("MCP check_response tool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(fs.readdirSync).mockReturnValue([])
+    vi.mocked(fs.readFileSync).mockReturnValue("")
     mockDrainPending.mockReturnValue([])
     stdin = new PassThrough()
     stdout = new PassThrough()
@@ -194,6 +197,44 @@ describe("MCP check_response tool", () => {
     expect(mockGetPendingDir).toHaveBeenCalledWith("test-agent", "friend-1", "mcp", "session-check-test")
     // And then drainPending with the returned dir
     expect(mockDrainPending).toHaveBeenCalledWith("/tmp/pending/mcp")
+  })
+
+  it("drains pending responses from the canonical local friend id", async () => {
+    vi.mocked(fs.readdirSync).mockReturnValue(["ari.json"] as any)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      id: "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      name: "arimendelow",
+      externalIds: [{ provider: "local", externalId: "arimendelow" }],
+    }))
+
+    const { createMcpServer } = await import("../../../heart/mcp/mcp-server")
+    const server = createMcpServer({
+      agent: "test-agent",
+      friendId: "local-arimendelow",
+      socketPath: "/tmp/test.sock",
+      stdin,
+      stdout,
+    })
+
+    server.start()
+
+    writeJsonRpc(stdin, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "check_response", arguments: {} },
+    })
+
+    await new Promise((r) => setTimeout(r, 200))
+    server.stop()
+
+    expect(server.friendId).toBe("0e2b9e85-fe43-4340-87fd-4ea018dee8a5")
+    expect(mockGetPendingDir).toHaveBeenCalledWith(
+      "test-agent",
+      "0e2b9e85-fe43-4340-87fd-4ea018dee8a5",
+      "mcp",
+      "session-check-test",
+    )
   })
 
   it("check_response is non-blocking (returns immediately)", async () => {

@@ -210,6 +210,24 @@ export const surfaceToolDefinition: ToolDefinition = {
           }
         }
 
+        // Priority 1.5: exact held-work origin.
+        // A delegated return has a concrete reply address. Preserve that
+        // address before considering fresher sessions for the same friend,
+        // especially MCP sessions where check_response drains this path.
+        if (queueItem?.channel && queueItem.key && queueItem.channel !== "inner") {
+          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+          const pendingDir = getPendingDir(agentName, friendId, queueItem.channel, queueItem.key)
+          queuePendingMessage(pendingDir, {
+            from: agentName,
+            friendId,
+            channel: queueItem.channel,
+            key: queueItem.key,
+            content,
+            timestamp: Date.now(),
+          })
+          return { status: "queued", detail: `for originating ${queueItem.channel} session` }
+        }
+
         // Priority 2: Try proactive delivery first, then queue to freshest session
         const allFriendSessions = listSessionActivity({ sessionsDir, friendsDir, agentName, activeThresholdMs: Number.MAX_SAFE_INTEGER })
           .filter((s) => s.friendId === friendId && s.channel !== "inner")
