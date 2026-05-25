@@ -7272,8 +7272,16 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-perplexity-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
+    const sentCommands: unknown[] = []
     const deps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
+      checkSocketAlive: async () => true,
+      sendCommand: async (_socketPath, command) => {
+        sentCommands.push(command)
+        if (command.kind === "agent.restart") return { ok: true, summary: "restarted" }
+        if (command.kind === "daemon.status") return { ok: true, data: daemonStatusData("Slugger", "running") }
+        return { ok: true }
+      },
       promptSecret: async (question) => {
         expect(question).toBe("Perplexity API key: ")
         return "pplx-secret"
@@ -7285,7 +7293,7 @@ describe("provider CLI command execution", () => {
     expect(result).toContain("Perplexity connected for Slugger")
     expect(result).toContain("Perplexity search")
     expect(result).toContain("runtime/config")
-    expect(result).toContain("running agent: daemon is not running; next `ouro up` will load the change")
+    expect(result).toContain("running agent: restarted Slugger and the daemon reports it running")
     expect(result).toContain("secret was not printed")
     expect(result).not.toContain("pplx-secret")
     expect(output).toContain("Connect Perplexity for Slugger")
@@ -7298,8 +7306,11 @@ describe("provider CLI command execution", () => {
     expect(output).toContain("✓ verifying Perplexity search")
     expect(output).toContain("... applying change to running Slugger")
     expect(output).toContain("checking whether Ouro is already running")
-    expect(output).toContain("daemon is not running; next `ouro up` will load the change")
+    expect(output).toContain("asking Ouro to reload Slugger")
+    expect(output).toContain("- daemon reports Slugger/inner-dialog running")
     expect(output).not.toContain("pplx-secret")
+    expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger" })
+    expect(sentCommands).not.toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
 
     const stored = readRuntimeSecret("Slugger")
     expect(stored.config).toMatchObject({
@@ -9466,10 +9477,12 @@ describe("provider CLI command execution", () => {
     writeAgentConfig(bundlesRoot, "Slugger")
     writeProviderCredentialPool(homeDir, credentialPool())
 
+    const sentCommands: unknown[] = []
     const restartDeps = makeCliDeps(homeDir, bundlesRoot, {
       now: () => Date.parse(NOW),
       checkSocketAlive: async () => true,
       sendCommand: async (_socketPath, command) => {
+        sentCommands.push(command)
         if (command.kind === "agent.restart") return { ok: true, summary: "restarted" }
         if (command.kind === "daemon.status") return { ok: true, data: daemonStatusData("Slugger", "running") }
         return { ok: true }
@@ -9491,6 +9504,7 @@ describe("provider CLI command execution", () => {
     expect(restartOutput).toContain("- reload request accepted")
     expect(restartOutput).toContain("- daemon reports Slugger/inner-dialog running")
     expect(restartOutput).toContain("✓ applying change to running Slugger")
+    expect(sentCommands).toContainEqual({ kind: "agent.restart", agent: "Slugger", skipConfigCheck: true })
 
     writeProviderCredentialPool(homeDir, credentialPool({ providers: {} }))
     const none = await runOuroCli(["provider", "refresh", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {

@@ -3518,7 +3518,7 @@ describe("BitwardenCredentialStore", () => {
         )
 
         fs.writeFileSync(lockPath, `${process.pid}\n`)
-        const staleDate = new Date(now.getTime() - 120_000)
+        const staleDate = new Date(now.getTime() - 180_000)
         fs.utimesSync(lockPath, staleDate, staleDate)
 
         mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -3568,7 +3568,7 @@ describe("BitwardenCredentialStore", () => {
         )
 
         fs.writeFileSync(lockPath, "not-a-pid\n")
-        const staleDate = new Date(now.getTime() - 120_000)
+        const staleDate = new Date(now.getTime() - 180_000)
         fs.utimesSync(lockPath, staleDate, staleDate)
 
         mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
@@ -3631,7 +3631,7 @@ describe("BitwardenCredentialStore", () => {
         )
 
         fs.writeFileSync(lockPath, `${JSON.stringify(lockRecord)}\n`)
-        const staleDate = new Date(Date.now() - 120_000)
+        const staleDate = new Date(Date.now() - 180_000)
         fs.utimesSync(lockPath, staleDate, staleDate)
 
         const result = await storeInstance.list()
@@ -3754,6 +3754,50 @@ describe("BitwardenCredentialStore", () => {
 
       fs.chmodSync(appDataDir, 0o755)
       fs.rmSync(appDataDir, { recursive: true, force: true })
+    })
+
+    it("waits past one bw command timeout so holder cleanup can release the lock", async () => {
+      vi.useFakeTimers()
+
+      let appDataDir: string | undefined
+      try {
+        appDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "bw-lock-holder-timeout-"))
+        const lockPath = path.join(appDataDir, ".ouro-bw.lock")
+        const storeInstance = new BitwardenCredentialStore(
+          "https://vault.ouro.bot", "o@ouro.bot", "pass", { appDataDir },
+        )
+
+        fs.writeFileSync(lockPath, `${JSON.stringify({ ownerPid: process.pid, childPid: process.pid })}\n`)
+        setTimeout(() => {
+          try { fs.unlinkSync(lockPath) } catch { /* ignore */ }
+        }, 30_100)
+
+        mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+          if (args[0] === "status") {
+            cb(null, JSON.stringify({ status: "unlocked" }), "")
+            return { pid: 12345 }
+          }
+          if (args[0] === "unlock") {
+            cb(null, "session-token", "")
+            return { pid: 12346 }
+          }
+          if (args[0] === "list") {
+            cb(null, "[]", "")
+            return { pid: 12347 }
+          }
+          cb(null, "", "")
+          return { pid: 12348 }
+        })
+
+        const listPromise = storeInstance.list()
+        await vi.advanceTimersByTimeAsync(31_000)
+
+        await expect(listPromise).resolves.toEqual([])
+        expect(fs.existsSync(lockPath)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+        if (appDataDir) fs.rmSync(appDataDir, { recursive: true, force: true })
+      }
     })
 
     // This test uses fake timers and MUST be last in the describe block
