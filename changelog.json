@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.648",
+      "changes": [
+        "Daemon restart state truth: stale exits from a child intentionally replaced during restart are ignored, preventing provider refresh from reporting success while a later SIGTERM from the old worker clears the replacement pid and leaves status stuck at `starting`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.647",
       "changes": [
         "Provider refresh restart hardening: provider-refresh restarts now skip redundant vault config checks after credentials are already refreshed, and the Bitwarden cross-process lock wait outlasts a single `bw` child timeout so concurrent vault users survive normal holder cleanup instead of failing at the same 30s boundary."
