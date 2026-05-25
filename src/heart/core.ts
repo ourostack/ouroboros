@@ -46,6 +46,7 @@ import {
   runProviderAttempt,
 } from "./provider-attempt";
 import type { AgentProviderVisibility } from "./provider-visibility";
+import { refreshOpenAICodexProviderCredentials } from "./providers/openai-codex-token";
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
 
@@ -128,15 +129,25 @@ async function getProviderRuntimeFingerprint(facing: Facing): Promise<{ binding:
       `Run \`ouro auth --agent ${agentName} --provider ${binding.provider}\`.`,
     ].join("\n"));
   }
+  let record = credential.record;
+  if (binding.provider === "openai-codex") {
+    const refresh = await refreshOpenAICodexProviderCredentials(agentName, {
+      record,
+      reason: "runtime-init",
+    });
+    if (refresh.ok) {
+      record = refresh.record;
+    }
+  }
   return {
     binding,
     fingerprint: JSON.stringify({
       lane: binding.lane,
       provider: binding.provider,
       model: binding.model,
-      credentialRevision: credential.record.revision,
+      credentialRevision: record.revision,
     }),
-    credential: credential.record,
+    credential: record,
   };
 }
 
@@ -1084,6 +1095,12 @@ export async function runAgent(
           const seconds = delayMs / 1000
           const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
           try {
+            if (record.provider === "openai-codex" && record.classification === "auth-failure") {
+              await refreshOpenAICodexProviderCredentials(getAgentName(), {
+                force: true,
+                reason: "turn-auth-failure",
+              })
+            }
             await refreshProviderCredentialPool(getAgentName(), {
               preserveCachedOnFailure: true,
               providers: [record.provider],

@@ -79,8 +79,14 @@ describe("provider failover", () => {
     )
 
     expect(context.userMessage).toContain('reply "switch to minimax"')
+    expect(context.userMessage).toContain('Reply "refresh openai-codex"')
     expect(context.userMessage).toContain("credentials in vault via auth-flow")
     expect(context.userMessage).toContain("ouro auth --agent slugger --provider anthropic")
+    expect(handleFailoverReply("refresh codex", context)).toEqual({
+      action: "refresh",
+      provider: "openai-codex",
+      lane: "inner",
+    })
     expect(handleFailoverReply("switch to minimax", context)).toEqual({
       action: "switch",
       provider: "minimax",
