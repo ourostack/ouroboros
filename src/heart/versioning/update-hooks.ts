@@ -47,6 +47,10 @@ export function clearRegisteredHooks(): void {
   _hooks.length = 0
 }
 
+function isNoAgentDefaultBundle(agentRoot: string, entryName: string): boolean {
+  return entryName === "default.ouro" && !fs.existsSync(path.join(agentRoot, "agent.json"))
+}
+
 export async function applyPendingUpdates(bundlesRoot: string, currentVersion: string): Promise<UpdateSummary> {
   const summary: UpdateSummary = { updated: [] }
 
@@ -73,6 +77,16 @@ export async function applyPendingUpdates(bundlesRoot: string, currentVersion: s
       if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
 
       const agentRoot = path.join(bundlesRoot, entry.name)
+      if (isNoAgentDefaultBundle(agentRoot, entry.name)) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.update_hook_skip_no_agent_default",
+          message: "skipping no-agent default bundle during pending updates",
+          meta: { agentRoot },
+        })
+        continue
+      }
+
       let previousVersion: string | undefined
 
       const metaPath = path.join(agentRoot, "bundle-meta.json")
