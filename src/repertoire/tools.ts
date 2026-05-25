@@ -283,7 +283,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   const guardContext = {
     readPaths: editFileReadTracker,
     trustLevel: ctx?.context?.friend?.trustLevel,
-    agentRoot: safeGetAgentRoot(),
+    agentRoot: ctx?.agentRoot ?? safeGetAgentRoot(),
     ...(mcpDef?.mcpServer ? { mcpServerName: mcpDef.mcpServer } : {}),
     ...((ctx?.context as any)?.isGroupChat !== undefined ? { isGroupChat: (ctx?.context as any).isGroupChat } : {}),
   }

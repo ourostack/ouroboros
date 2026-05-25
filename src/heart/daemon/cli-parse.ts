@@ -95,7 +95,7 @@ export function usage(): string {
     "  ouro -v|--version",
     "  ouro auth [--agent <name>] [--provider <provider>]",
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
     "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
@@ -128,6 +128,9 @@ export function usage(): string {
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
+    "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
+    "  ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]",
+    "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
@@ -272,7 +275,7 @@ function parseLinkCommand(args: string[], kind: "friend.link" | "friend.unlink" 
     throw new Error(`Usage\n${usage()}`)
   }
   if (!isIdentityProvider(providerRaw)) {
-    throw new Error(`Unknown identity provider '${providerRaw}'. Use aad|local|teams-conversation.`)
+    throw new Error(`Unknown identity provider '${providerRaw}'. Use aad|local|teams-conversation|imessage-handle|email-address|a2a-agent.`)
   }
 
   return {
@@ -752,7 +755,7 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
-function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | undefined {
+function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | undefined {
   if (!value) return undefined
   if (value === "providers" || value === "provider" || value === "auth") return "providers"
   if (value === "perplexity" || value === "perplexity-search") return "perplexity"
@@ -761,7 +764,8 @@ function normalizeConnectTarget(value: string | undefined): "providers" | "perpl
   if (value === "bluebubbles" || value === "imessage" || value === "messages") return "bluebubbles"
   if (value === "mail" || value === "email" || value === "mailroom") return "mail"
   if (value === "voice" || value === "audio" || value === "speech") return "voice"
-  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>]")
+  if (value === "a2a" || value === "agent2agent" || value === "agent-to-agent") return "a2a"
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]")
 }
 
 interface MailSourceFlagParse {
@@ -825,7 +829,7 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const mailFlags = extractMailSourceFlags(afterAgent, usageText)
   if (mailFlags.rest.length > 1) throw new Error(usageText)
@@ -1111,6 +1115,84 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
   if (sub === "unlink") return parseLinkCommand(rest, "friend.unlink")
 
   throw new Error(`Usage\n${usage()}`)
+}
+
+function parseA2ACommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const [sub, ...rest] = cleaned
+  if (sub === "card") {
+    let baseUrl: string | undefined
+    let json = false
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--base-url" && rest[i + 1]) {
+        baseUrl = rest[++i]
+        continue
+      }
+      if (rest[i] === "--json") {
+        json = true
+        continue
+      }
+      throw new Error("Usage: ouro a2a card [--agent <name>] [--base-url <url>] [--json]")
+    }
+    return { kind: "a2a.card", ...(agent ? { agent } : {}), ...(baseUrl ? { baseUrl } : {}), ...(json ? { json: true } : {}) }
+  }
+
+  if (sub === "onboard") {
+    let cardUrl: string | undefined
+    let trustLevel: TrustLevel | undefined
+    let name: string | undefined
+    const VALID_TRUST_LEVELS = new Set(["stranger", "acquaintance", "friend", "family"])
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--card-url" && rest[i + 1]) {
+        cardUrl = rest[++i]
+        continue
+      }
+      if (rest[i] === "--trust" && rest[i + 1]) {
+        const raw = rest[++i]
+        if (!VALID_TRUST_LEVELS.has(raw)) throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <stranger|acquaintance|friend|family>] [--name <name>]")
+        trustLevel = raw as TrustLevel
+        continue
+      }
+      if (rest[i] === "--name" && rest[i + 1]) {
+        name = rest[++i]
+        continue
+      }
+      throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]")
+    }
+    if (!cardUrl) throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]")
+    return { kind: "a2a.onboard", cardUrl, ...(agent ? { agent } : {}), ...(trustLevel ? { trustLevel } : {}), ...(name ? { name } : {}) }
+  }
+
+  if (sub === "serve") {
+    let host: string | undefined
+    let port: number | undefined
+    let baseUrl: string | undefined
+    let path: string | undefined
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--host" && rest[i + 1]) {
+        host = rest[++i]
+        continue
+      }
+      if (rest[i] === "--port" && rest[i + 1]) {
+        const rawPort = Number.parseInt(rest[++i], 10)
+        if (!Number.isInteger(rawPort) || rawPort < 1 || rawPort > 65535) throw new Error("A2A port must be 1-65535")
+        port = rawPort
+        continue
+      }
+      if (rest[i] === "--base-url" && rest[i + 1]) {
+        baseUrl = rest[++i]
+        continue
+      }
+      if (rest[i] === "--path" && rest[i + 1]) {
+        path = rest[++i]
+        continue
+      }
+      throw new Error("Usage: ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]")
+    }
+    return { kind: "a2a.serve", ...(agent ? { agent } : {}), ...(host ? { host } : {}), ...(port ? { port } : {}), ...(baseUrl ? { baseUrl } : {}), ...(path ? { path } : {}) }
+  }
+
+  throw new Error("Usage: ouro a2a card|onboard|serve ...")
 }
 
 function parseConfigCommand(args: string[]): OuroCliCommand {
@@ -1479,6 +1561,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "task") return parseTaskAliasCommand(args.slice(1))
   if (head === "migrate-to-desk") return parseMigrateToDeskCommand(args.slice(1))
   if (head === "friend") return parseFriendCommand(args.slice(1))
+  if (head === "a2a") return parseA2ACommand(args.slice(1))
   if (head === "config") return parseConfigCommand(args.slice(1))
   if (head === "mcp") return parseMcpCommand(args.slice(1))
   if (head === "whoami") {

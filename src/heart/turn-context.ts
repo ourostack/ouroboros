@@ -199,6 +199,7 @@ function readSenseStatusLines(): string[] {
     bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
     mail: configuredSenses.mail ?? { enabled: false },
     voice: configuredSenses.voice ?? { enabled: false },
+    a2a: configuredSenses.a2a ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const agentName = getAgentName()
@@ -246,6 +247,7 @@ function readSenseStatusLines(): string[] {
       : voiceConversationEngine === "openai-realtime"
         ? openAIRealtimeVoiceReady
         : cascadeVoiceReady,
+    a2a: true,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -265,6 +267,10 @@ function readSenseStatusLines(): string[] {
     {
       label: "Voice",
       status: !senses.voice.enabled ? "disabled" : configured.voice ? "ready" : "needs_config",
+    },
+    {
+      label: "A2A",
+      status: !senses.a2a.enabled ? "disabled" : configured.a2a ? "ready" : "needs_config",
     },
   ]
 

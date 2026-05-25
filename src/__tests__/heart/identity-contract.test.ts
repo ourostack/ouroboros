@@ -98,6 +98,7 @@ describe("readAgentConfigForAgent structural contract", () => {
         bluebubbles: { enabled: false },
         mail: { enabled: false },
         voice: { enabled: false },
+        a2a: { enabled: false },
       })
     } finally {
       tmp.cleanup()

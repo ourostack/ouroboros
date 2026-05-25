@@ -1,8 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
+
+let tmp: TmpBundleHandle | null = null
 
 describe("commerce tools in tool registry", () => {
   beforeEach(() => {
     vi.resetModules()
+  })
+
+  afterEach(() => {
+    tmp?.cleanup()
+    tmp = null
   })
 
   it("user profile tools are included in baseToolDefinitions", async () => {
@@ -66,10 +74,10 @@ describe("commerce tools in tool registry", () => {
     }
   })
 
-  it("Stripe tools are family-trust gated in guardrails", async () => {
+  it("Stripe tools are family-trust gated and card creation also requires commerce authority", async () => {
     const { guardInvocation } = await import("../../repertoire/guardrails")
-    const stripeTools = ["stripe_create_card", "stripe_deactivate_card", "stripe_list_cards"]
-    for (const tool of stripeTools) {
+    const familyOnlyTools = ["stripe_deactivate_card", "stripe_list_cards"]
+    for (const tool of familyOnlyTools) {
       const friendResult = guardInvocation(tool, {}, {
         readPaths: new Set(),
         trustLevel: "friend",
@@ -82,5 +90,39 @@ describe("commerce tools in tool registry", () => {
       })
       expect(familyResult.allowed, `${tool} should allow family trust`).toBe(true)
     }
+
+    const friendCreate = guardInvocation("stripe_create_card", {}, {
+      readPaths: new Set(),
+      trustLevel: "friend",
+    })
+    expect(friendCreate.allowed, "stripe_create_card should deny friend trust").toBe(false)
+
+    tmp = createTmpBundle({ agentName: "commerce-registration" })
+    const { confirmCommercePreview, createCommercePreview } = await import("../../commerce/store")
+    const preview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 25,
+      currency: "usd",
+      reason: "Registry contract authority",
+    })
+    const confirmed = confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: preview.id,
+      digest: preview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+    })
+    const familyCreate = guardInvocation("stripe_create_card", {
+      spend_limit: "25",
+      currency: "usd",
+      commerce_authority: confirmed.authorityToken!,
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+      agentRoot: tmp.agentRoot,
+    })
+    expect(familyCreate.allowed, "stripe_create_card should allow family trust with commerce authority").toBe(true)
   })
 })

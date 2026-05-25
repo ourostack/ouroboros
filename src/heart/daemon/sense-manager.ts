@@ -15,6 +15,7 @@ import { readProviderCredentialPool, type ProviderCredentialRecord } from "../pr
 import { getSenseInventory, type SenseRuntimeInfo, type SenseStatus } from "../sense-truth"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { DaemonProcessManager } from "./process-manager"
+import { A2A_DEFAULT_PATH, defaultA2APort, normalizeA2APath } from "../../a2a/config"
 // HTTP health probe import intentionally removed — see the comment in
 // listHealthProbes() for the 2026-05-11 incident context.
 import type { SenseProbe } from "./health-monitor"
@@ -109,6 +110,7 @@ function defaultSenses(): AgentSensesConfig {
     bluebubbles: { ...DEFAULT_AGENT_SENSES.bluebubbles },
     mail: { ...DEFAULT_AGENT_SENSES.mail },
     voice: { ...DEFAULT_AGENT_SENSES.voice },
+    a2a: { ...DEFAULT_AGENT_SENSES.a2a },
   }
 }
 
@@ -137,7 +139,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -195,6 +197,7 @@ function senseFactsFromRuntimeConfig(
     bluebubbles: { configured: false, detail: "not enabled in agent.json" },
     mail: { configured: false, detail: "not enabled in agent.json" },
     voice: { configured: false, detail: "not enabled in agent.json" },
+    a2a: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -207,6 +210,7 @@ function senseFactsFromRuntimeConfig(
   const mailroom = payload.mailroom as Record<string, unknown> | undefined
   const integrations = payload.integrations as Record<string, unknown> | undefined
   const voice = machinePayload.voice as Record<string, unknown> | undefined
+  const a2a = machinePayload.a2a as Record<string, unknown> | undefined
 
   if (senses.teams.enabled) {
     const missing: string[] = []
@@ -341,6 +345,16 @@ function senseFactsFromRuntimeConfig(
         }
   }
 
+  if (senses.a2a.enabled) {
+    const port = numberField(a2a, "port", defaultA2APort(agent))
+    const endpointPath = normalizeA2APath(textField(a2a, "path") || A2A_DEFAULT_PATH)
+    const publicUrl = textField(a2a, "publicUrl")
+    base.a2a = {
+      configured: true,
+      detail: publicUrl ? `${publicUrl}${endpointPath}` : `:${port} ${endpointPath}`,
+    }
+  }
+
   return base
 }
 
@@ -354,6 +368,9 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "voice") {
     return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance; use voice.twilioConversationEngine=openai-sip with voice.openaiRealtimeApiKey, voice.openaiSipProjectId, and voice.openaiSipWebhookSecret for preferred SIP phone voice; use openai-realtime for Media Streams fallback, or save ElevenLabs and local Whisper.cpp settings for cascade fallback; then run 'ouro up' again.`
   }
+  if (sense === "a2a") {
+    return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
+  }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
 
@@ -365,7 +382,7 @@ function parseSenseSnapshotName(name: string): { agent: string; sense: SenseName
   const parts = name.split(":")
   if (parts.length !== 2) return null
   const [agent, sense] = parts
-  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice") return null
+  if (sense !== "teams" && sense !== "bluebubbles" && sense !== "mail" && sense !== "voice" && sense !== "a2a") return null
   return { agent, sense }
 }
 
@@ -378,6 +395,7 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
   if (sense === "teams") return "senses/teams-entry.js"
   if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
   if (sense === "voice") return "senses/voice-entry.js"
+  if (sense === "a2a") return "senses/a2a-entry.js"
   return "senses/mail-entry.js"
 }
 
@@ -389,8 +407,8 @@ function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, 
   providerCredentialRecords?: ProviderCredentialRecord[]
 } | null {
   const runtime = readRuntimeCredentialConfig(agent)
-  const machineId = sense === "bluebubbles" || sense === "voice" ? currentMachineId() : undefined
-  const machine = sense === "bluebubbles" || sense === "voice" ? readMachineRuntimeCredentialConfig(agent) : null
+  const machineId = sense === "bluebubbles" || sense === "voice" || sense === "a2a" ? currentMachineId() : undefined
+  const machine = sense === "bluebubbles" || sense === "voice" || sense === "a2a" ? readMachineRuntimeCredentialConfig(agent) : null
   const providerPool = readProviderCredentialPool(agent)
   const providerCredentialRecords = providerPool.ok
     ? Object.values(providerPool.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
@@ -593,7 +611,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles", "mail", "voice"] as Exclude<SenseName, "cli">[])
+      return (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
@@ -601,6 +619,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
+          ...(sense === "a2a" ? { args: ["--port", String(defaultA2APort(agent))] } : {}),
           getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })
@@ -657,7 +676,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   private async refreshSenseConfigAndRetry(name: string, parsed: { agent: string; sense: SenseName }): Promise<void> {
     try {
       const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-      const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice"
+      const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice" || parsed.sense === "a2a"
         ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
         : readMachineRuntimeCredentialConfig(parsed.agent)
       const context = this.contexts.get(parsed.agent)
@@ -693,14 +712,14 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   private async refreshEnabledSenseConfigs(): Promise<void> {
     const refreshes = [...this.contexts.entries()].map(async ([agent, context]) => {
-      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice"] as Exclude<SenseName, "cli">[])
+      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli">[])
         .filter((sense) => context.senses[sense].enabled)
       /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
       if (enabledManagedSenses.length === 0) return
 
       /* v8 ignore start -- periodic freshness refresh uses the same runtime readers covered by startup integration tests @preserve */
       const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
-      const needsMachineConfig = enabledManagedSenses.some((sense) => sense === "bluebubbles" || sense === "voice")
+      const needsMachineConfig = enabledManagedSenses.some((sense) => sense === "bluebubbles" || sense === "voice" || sense === "a2a")
       const machineRuntimeConfig = needsMachineConfig
         ? await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(), { preserveCachedOnFailure: true })
         : readMachineRuntimeCredentialConfig(agent)
@@ -838,6 +857,10 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           configured: context.facts.voice.configured,
           optional: context.facts.voice.optional,
           ...(runtime.get(agent)?.voice ?? {}),
+        },
+        a2a: {
+          configured: context.facts.a2a.configured,
+          ...(runtime.get(agent)?.a2a ?? {}),
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

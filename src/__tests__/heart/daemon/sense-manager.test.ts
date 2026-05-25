@@ -61,6 +61,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
 
     await manager.startAutoStartSenses()
@@ -357,6 +358,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
       expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -497,6 +499,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "running", detail: ":18888 /hooks/bb" }),
       expect.objectContaining({ sense: "mail", status: "ready", detail: "slugger@ouro.bot" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -544,6 +547,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "voice", status: "running", detail: "local Whisper.cpp STT + ElevenLabs TTS" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -900,6 +904,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -975,6 +980,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1048,6 +1054,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1123,6 +1130,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1336,6 +1344,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1411,6 +1420,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1484,6 +1494,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1558,6 +1569,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1633,6 +1645,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2547,6 +2560,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
@@ -2554,6 +2568,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2778,6 +2793,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 })

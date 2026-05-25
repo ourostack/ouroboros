@@ -183,7 +183,20 @@ export class FileFriendStore implements FriendStore {
       familiarity: typeof meta.familiarity === "number" ? meta.familiarity : 0,
       sharedMissions: Array.isArray(meta.sharedMissions) ? meta.sharedMissions : [],
       outcomes: Array.isArray(meta.outcomes) ? meta.outcomes : [],
+      ...(this.normalizeA2AMeta(meta.a2a) ? { a2a: this.normalizeA2AMeta(meta.a2a) } : {}),
     }
+  }
+
+  private normalizeA2AMeta(raw: unknown): AgentMeta["a2a"] | undefined {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+    const meta = raw as Record<string, unknown>
+    const a2a = {
+      ...(typeof meta.cardUrl === "string" ? { cardUrl: meta.cardUrl } : {}),
+      ...(typeof meta.endpointUrl === "string" ? { endpointUrl: meta.endpointUrl } : {}),
+      ...(typeof meta.agentId === "string" ? { agentId: meta.agentId } : {}),
+      ...(typeof meta.protocolVersion === "string" ? { protocolVersion: meta.protocolVersion } : {}),
+    }
+    return Object.keys(a2a).length > 0 ? a2a : undefined
   }
 
   private async readJson(filePath: string): Promise<FriendRecord | null> {

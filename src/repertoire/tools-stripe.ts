@@ -28,7 +28,7 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       function: {
         name: "stripe_create_card",
         description:
-          "Create a virtual card for a transaction. Returns card ID and last 4 digits (never the full card number). Requires family trust level.",
+          "Create a virtual card for a transaction. Returns card ID and last 4 digits (never the full card number). Requires family trust level and a commerce_authority token from commerce_checkout_commit.",
         parameters: {
           type: "object",
           properties: {
@@ -49,8 +49,12 @@ export const stripeToolDefinitions: ToolDefinition[] = [
               type: "string",
               description: "Comma-separated allowed merchant categories (optional)",
             },
+            commerce_authority: {
+              type: "string",
+              description: "Authority token returned by commerce_checkout_commit for this exact transaction.",
+            },
           },
-          required: ["type", "spend_limit", "currency"],
+          required: ["type", "spend_limit", "currency", "commerce_authority"],
         },
       },
     },

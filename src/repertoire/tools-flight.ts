@@ -97,13 +97,14 @@ export const flightToolDefinitions: ToolDefinition[] = [
       function: {
         name: "flight_hold",
         description:
-          "Hold a flight offer for a short period before committing to book. Not all airlines support holds.",
+          "Hold a flight offer for a short period before committing to book. Not all airlines support holds. Requires a commerce_authority token from commerce_checkout_commit.",
         parameters: {
           type: "object",
           properties: {
             offer_id: { type: "string", description: "The Duffel offer ID to hold" },
+            commerce_authority: { type: "string", description: "Authority token returned by commerce_checkout_commit for this exact hold." },
           },
-          required: ["offer_id"],
+          required: ["offer_id", "commerce_authority"],
         },
       },
     },
@@ -136,15 +137,16 @@ export const flightToolDefinitions: ToolDefinition[] = [
       function: {
         name: "flight_book",
         description:
-          "Book a flight. Pulls passenger name/DOB/passport from the user's profile. Creates a virtual card, books the flight, then deactivates the card. Requires family trust level.",
+          "Book a flight. Pulls passenger name/DOB/passport from the user's profile. Creates a virtual card, books the flight, then deactivates the card. Requires family trust level and a commerce_authority token from commerce_checkout_commit.",
         parameters: {
           type: "object",
           properties: {
             offer_id: { type: "string", description: "The Duffel offer ID to book" },
             amount: { type: "string", description: "Expected total amount in dollars" },
             currency: { type: "string", description: "Currency code (e.g. 'usd')" },
+            commerce_authority: { type: "string", description: "Authority token returned by commerce_checkout_commit for this exact booking." },
           },
-          required: ["offer_id", "amount", "currency"],
+          required: ["offer_id", "amount", "currency", "commerce_authority"],
         },
       },
     },

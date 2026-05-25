@@ -8166,6 +8166,7 @@ describe("provider CLI command execution", () => {
         bluebubbles: { enabled: true },
         mail: { enabled: true },
         voice: { enabled: true },
+        a2a: { enabled: true },
       }
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({

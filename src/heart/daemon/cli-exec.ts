@@ -113,6 +113,7 @@ import type {
   DoctorCliCommand,
   HelpCliCommand,
   RuntimeConfigScope,
+  A2ACliCommand,
 } from "./cli-types"
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
@@ -454,6 +455,9 @@ type MissingAgentResolvableKind =
   | "attention.history"
   | "inner.status"
   | "session.list"
+  | "a2a.card"
+  | "a2a.onboard"
+  | "a2a.serve"
 
 type ResolvedAgentCommand<T extends { agent?: string }> = Omit<T, "agent"> & { agent: string }
 type MissingAgentResolvableCommand = Extract<OuroCliCommand, { kind: MissingAgentResolvableKind }>
@@ -526,6 +530,10 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "inner.status":
     case "session.list":
       return "return-message"
+    case "a2a.card":
+    case "a2a.onboard":
+    case "a2a.serve":
+      return "throw"
     case "provider.use":
     case "provider.check":
     case "provider.status":
@@ -1564,7 +1572,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -3054,7 +3062,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3070,18 +3078,19 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     bluebubbles: senses.bluebubbles ?? { enabled: false },
     mail: senses.mail ?? { enabled: false },
     voice: senses.voice ?? { enabled: false },
+    a2a: senses.a2a ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-const CONNECT_MENU_PROMPT = "Choose [1-7] or type a name: "
+const CONNECT_MENU_PROMPT = "Choose [1-8] or type a name: "
 
 function connectMenuIsTTY(deps: OuroCliDeps): boolean {
   return deps.isTTY ?? process.stdout.isTTY === true
 }
 
-function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean; voiceEnabled: boolean } {
+function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean; voiceEnabled: boolean; a2aEnabled: boolean } {
   const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
     senses?: {
@@ -3089,6 +3098,7 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnab
       bluebubbles?: { enabled?: boolean }
       mail?: { enabled?: boolean }
       voice?: { enabled?: boolean }
+      a2a?: { enabled?: boolean }
     }
   }
   return {
@@ -3096,6 +3106,7 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnab
     blueBubblesEnabled: parsed.senses?.bluebubbles?.enabled === true,
     mailEnabled: parsed.senses?.mail?.enabled === true,
     voiceEnabled: parsed.senses?.voice?.enabled === true,
+    a2aEnabled: parsed.senses?.a2a?.enabled === true,
   }
 }
 
@@ -3130,7 +3141,7 @@ async function buildConnectMenu(
   const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
   onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
-  const { teamsEnabled, blueBubblesEnabled, mailEnabled, voiceEnabled } = readConnectBaySenseFlags(agent, deps)
+  const { teamsEnabled, blueBubblesEnabled, mailEnabled, voiceEnabled, a2aEnabled } = readConnectBaySenseFlags(agent, deps)
   const perplexityApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
     : null
@@ -3284,6 +3295,7 @@ async function buildConnectMenu(
       ? "ready"
       : "missing"
     : runtimeConfigReadStatus(runtimeConfig)
+  const a2aStatus = a2aEnabled ? "ready" : "missing"
 
   const entries: ConnectMenuEntry[] = [
     {
@@ -3398,6 +3410,20 @@ async function buildConnectMenu(
         section: "This machine",
         status: voiceStatus,
       }) ? `ouro connect voice --agent ${agent}` : undefined,
+    },
+    {
+      option: "8",
+      name: "A2A",
+      section: "Portable",
+      status: a2aStatus,
+      description: "Agent-to-agent sense endpoint and peer onboarding.",
+      detailLines: a2aEnabled ? ["enabled in agent.json"] : ["not enabled in agent.json"],
+      nextAction: connectEntryNeedsAttention({
+        option: "8",
+        name: "A2A",
+        section: "Portable",
+        status: a2aStatus,
+      }) ? `ouro connect a2a --agent ${agent}` : undefined,
     },
   ]
 
@@ -5151,7 +5177,7 @@ function machineRuntimeReadStatus(
   return "needs attention"
 }
 
-function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "cancel" {
+function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "cancel" {
   const normalized = answer.trim().toLowerCase()
   if (normalized === "1" || normalized === "providers" || normalized === "provider" || normalized === "auth") return "providers"
   if (normalized === "2" || normalized === "perplexity" || normalized === "perplexity-search" || normalized === "search") return "perplexity"
@@ -5160,6 +5186,7 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
   if (normalized === "5" || normalized === "bluebubbles" || normalized === "imessage" || normalized === "messages") return "bluebubbles"
   if (normalized === "6" || normalized === "mail" || normalized === "email" || normalized === "mailroom") return "mail"
   if (normalized === "7" || normalized === "voice" || normalized === "audio" || normalized === "speech") return "voice"
+  if (normalized === "8" || normalized === "a2a" || normalized === "agent2agent" || normalized === "agent-to-agent") return "a2a"
   return "cancel"
 }
 
@@ -5200,6 +5227,24 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
   return message
 }
 
+async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<string> {
+  const { defaultA2APort } = await import("../../a2a/config")
+  enableAgentSense(agent, "a2a", deps)
+  const port = defaultA2APort(agent)
+  const message = [
+    `A2A connected for ${agent}`,
+    `The daemon-managed A2A sense will listen locally on port ${port} after \`ouro up\`.`,
+    `Local agent card: http://127.0.0.1:${port}/.well-known/agent-card.json`,
+    `Local JSON-RPC endpoint: http://127.0.0.1:${port}/a2a`,
+    "For a public endpoint, expose that local port through your chosen tunnel and publish the resulting base URL:",
+    `  ouro a2a card --agent ${agent} --base-url https://<public-host>`,
+    "Onboard a peer into the existing friend model:",
+    `  ouro a2a onboard --agent ${agent} --card-url https://<peer>/.well-known/agent-card.json --trust friend`,
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 async function executeConnect(
   command: Extract<ResolvedOuroCliCommand, { kind: "connect" }>,
   deps: OuroCliDeps,
@@ -5211,6 +5256,7 @@ async function executeConnect(
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
   if (command.target === "voice") return executeConnectVoice(command.agent, deps)
+  if (command.target === "a2a") return executeConnectA2A(command.agent, deps)
 
   const progress = createHumanCommandProgress(deps, "connect")
   let menu: string
@@ -5227,7 +5273,7 @@ async function executeConnect(
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
-      menu.replace(/\nChoose \[1-7\] or type a name: $/, ""),
+      menu.replace(/\nChoose \[1-8\] or type a name: $/, ""),
       "",
       `Run: ouro connect providers --agent ${command.agent}`,
       `Run: ouro connect perplexity --agent ${command.agent}`,
@@ -5236,6 +5282,7 @@ async function executeConnect(
       `Run: ouro connect bluebubbles --agent ${command.agent}`,
       `Run: ouro connect mail --agent ${command.agent}`,
       `Run: ouro connect voice --agent ${command.agent}`,
+      `Run: ouro connect a2a --agent ${command.agent}`,
     ].join("\n")
     deps.writeStdout(message)
     return message
@@ -5248,6 +5295,7 @@ async function executeConnect(
   if (answer === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   if (answer === "mail") return executeConnectMail(command.agent, deps)
   if (answer === "voice") return executeConnectVoice(command.agent, deps)
+  if (answer === "a2a") return executeConnectA2A(command.agent, deps)
   const message = "connect cancelled."
   deps.writeStdout(message)
   return message
@@ -6197,6 +6245,64 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   const filtered = current.externalIds.filter((_, i) => i !== idx)
   await store.put(command.friendId, { ...current, externalIds: filtered, updatedAt: now })
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
+}
+
+async function executeA2ACommand(command: A2ACliCommand & { agent: string }, deps: OuroCliDeps): Promise<string> {
+  if (command.kind === "a2a.card") {
+    const { buildA2AAgentCard } = await import("../../a2a/card")
+    const { defaultA2APort } = await import("../../a2a/config")
+    const { endpointForCard } = await import("../../a2a/client")
+    const baseUrl = command.baseUrl ?? `http://127.0.0.1:${defaultA2APort(command.agent)}`
+    const card = buildA2AAgentCard({ agentName: command.agent, baseUrl })
+    const endpoint = endpointForCard(card) ?? "unknown"
+    const message = command.json
+      ? JSON.stringify(card, null, 2)
+      : [
+          `A2A agent card for ${command.agent}`,
+          `card URL: ${baseUrl.replace(/\/+$/, "")}/.well-known/agent-card.json`,
+          `endpoint: ${endpoint}`,
+          JSON.stringify(card, null, 2),
+        ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  if (command.kind === "a2a.onboard") {
+    const { onboardA2APeer } = await import("../../a2a/onboarding")
+    const record = await onboardA2APeer({
+      agentName: command.agent,
+      cardUrl: command.cardUrl,
+      ...(command.trustLevel ? { trustLevel: command.trustLevel } : {}),
+      ...(command.name ? { name: command.name } : {}),
+      ...(deps.bundlesRoot ? { bundlesRoot: deps.bundlesRoot } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    const message = [
+      `onboarded A2A peer: ${record.name}`,
+      `friend id: ${record.id}`,
+      `trust: ${record.trustLevel ?? "unknown"}`,
+      `endpoint: ${record.agentMeta?.a2a?.endpointUrl ?? "unknown"}`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
+  const { startA2AServer } = await import("../../a2a/server")
+  const handle = await startA2AServer({
+    agentName: command.agent,
+    ...(command.host ? { host: command.host } : {}),
+    ...(command.port ? { port: command.port } : {}),
+    ...(command.baseUrl ? { baseUrl: command.baseUrl } : {}),
+    ...(command.path ? { path: command.path } : {}),
+  })
+  const message = `A2A listening for ${command.agent}\nendpoint: ${handle.endpointUrl}\ncard: ${handle.url.replace(/\/+$/, "")}/.well-known/agent-card.json`
+  deps.writeStdout(message)
+  await new Promise<void>((resolve) => {
+    process.once("SIGINT", () => resolve())
+    process.once("SIGTERM", () => resolve())
+  })
+  await handle.close()
+  return message
 }
 
 // ── Dev mode helpers ──
@@ -7583,6 +7689,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const message = await executeFriendCommand(command, store)
     deps.writeStdout(message)
     return message
+  }
+
+  if (command.kind === "a2a.card" || command.kind === "a2a.onboard" || command.kind === "a2a.serve") {
+    return executeA2ACommand(command, deps)
   }
 
   // ── provider commands (local, no daemon socket needed) ──

@@ -167,6 +167,13 @@ export interface RunSenseTurnOptions {
   sessionKey: string
   /** Friend ID for identity resolution. */
   friendId: string
+  /** Optional external identity override for remote senses such as A2A. */
+  identity?: {
+    provider: IdentityProvider
+    externalId: string
+    displayName: string
+    tenantId?: string
+  }
   /** The user's message text. */
   userMessage: string
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
@@ -227,8 +234,16 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // If friendId looks like a UUID, look up the friend record directly and use its identity.
   // Otherwise, resolve as a local user (same pattern as CLI sense).
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(friendId)
-  let resolverParams: { provider: IdentityProvider; externalId: string; displayName: string; channel: string }
-  if (isUuid) {
+  let resolverParams: { provider: IdentityProvider; externalId: string; displayName: string; channel: string; tenantId?: string }
+  if (options.identity) {
+    resolverParams = {
+      provider: options.identity.provider,
+      externalId: options.identity.externalId,
+      displayName: options.identity.displayName,
+      channel,
+      ...(options.identity.tenantId ? { tenantId: options.identity.tenantId } : {}),
+    }
+  } else if (isUuid) {
     const existingFriend = await friendStore.get(friendId)
     if (existingFriend) {
       // Use the friend's first external ID for resolver context
@@ -333,7 +348,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Run the pipeline
   const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
   stampIngressTime(userMsg)
-  await handleInboundTurn({
+  const turnResult = await handleInboundTurn({
     channel,
     latencyMode: options.latencyMode,
     sessionKey,
@@ -354,8 +369,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore stop */
     pendingDir,
     friendStore,
-    provider: "local",
-    externalId: friendId,
+    provider: resolverParams.provider,
+    externalId: resolverParams.externalId,
+    tenantId: resolverParams.tenantId,
     enforceTrustGate,
     drainPending,
     runAgentOptions: {
@@ -373,6 +389,18 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore stop */
     accumulateFriendTokens,
   })
+
+  if (turnResult.gateResult && !turnResult.gateResult.allowed) {
+    const blockedResponse = "autoReply" in turnResult.gateResult
+      ? turnResult.gateResult.autoReply
+      : `(blocked by trust gate: ${turnResult.gateResult.reason})`
+    return {
+      response: blockedResponse,
+      ponderDeferred: false,
+      deliveries,
+      deliveryFailures,
+    }
+  }
 
   await deliverPending(terminalDeliveryKind, { throwOnError: false })
 

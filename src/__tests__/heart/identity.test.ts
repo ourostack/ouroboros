@@ -214,6 +214,7 @@ describe("buildDefaultAgentTemplate", () => {
         bluebubbles: { enabled: false },
         mail: { enabled: false },
         voice: { enabled: false },
+        a2a: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -365,6 +366,7 @@ describe("loadAgentConfig", () => {
       bluebubbles: { enabled: false },
       mail: { enabled: false },
       voice: { enabled: false },
+      a2a: { enabled: false },
     })
   })
 
@@ -389,6 +391,7 @@ describe("loadAgentConfig", () => {
       bluebubbles: { enabled: false },
       mail: { enabled: false },
       voice: { enabled: false },
+      a2a: { enabled: false },
     })
   })
 
@@ -416,6 +419,7 @@ describe("loadAgentConfig", () => {
       bluebubbles: { enabled: false },
       mail: { enabled: false },
       voice: { enabled: false },
+      a2a: { enabled: false },
     })
   })
 
