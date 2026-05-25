@@ -37,6 +37,21 @@ interface TokenRefreshResponse {
   refresh_token?: unknown
 }
 
+interface LocalCodexAuthTokens {
+  accessToken: string
+  refreshToken: string
+}
+
+type LocalCodexAuthReadResult =
+  | { status: "ready"; tokens: LocalCodexAuthTokens }
+  | { status: "missing" | "invalid" }
+
+interface RefreshTokenSource {
+  source: "vault" | "local-codex-auth"
+  accessToken: string
+  refreshToken: string
+}
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split(".")
   if (parts.length < 2 || !parts[1]) return null
@@ -119,6 +134,27 @@ function parseRefreshFailure(body: string): string {
   return body.trim() || "refresh endpoint returned an empty error body"
 }
 
+function readLocalCodexAuthTokens(homeDir: string): LocalCodexAuthReadResult {
+  const authPath = path.join(homeDir, ".codex", "auth.json")
+  let raw: string
+  try {
+    raw = fs.readFileSync(authPath, "utf8")
+  } catch {
+    return { status: "missing" }
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: unknown; refresh_token?: unknown } }
+    if (!parsed.tokens || typeof parsed.tokens !== "object") return { status: "invalid" }
+    const accessToken = typeof parsed.tokens.access_token === "string" ? parsed.tokens.access_token.trim() : ""
+    const refreshToken = typeof parsed.tokens.refresh_token === "string" ? parsed.tokens.refresh_token.trim() : ""
+    if (!accessToken || !refreshToken) return { status: "invalid" }
+    return { status: "ready", tokens: { accessToken, refreshToken } }
+  } catch {
+    return { status: "invalid" }
+  }
+}
+
 async function updateLocalCodexAuthIfUnchanged(input: {
   homeDir: string
   oldAccessToken: string
@@ -190,6 +226,15 @@ async function requestOpenAICodexTokenRefresh(input: {
   return { ok: true, accessToken, refreshToken }
 }
 
+function refreshFailureRequiresHuman(refresh: { status?: number; detail: string }): boolean {
+  const detail = refresh.detail.toLowerCase()
+  return refresh.status === 401
+    || detail.includes("signing in again")
+    || detail.includes("already been used")
+    || detail.includes("invalid_grant")
+    || detail.includes("refresh token expired")
+}
+
 export async function refreshOpenAICodexProviderCredentials(
   agentName: string,
   options: RefreshOpenAICodexCredentialOptions = {},
@@ -216,11 +261,19 @@ export async function refreshOpenAICodexProviderCredentials(
 
   const oldAccessToken = recordCredentialString(record, "oauthAccessToken")
   const oldRefreshToken = recordCredentialString(record, "refreshToken")
-  if (!oldRefreshToken) {
+  const homeDir = options.homeDir ?? os.homedir()
+  const fallbackLocalAuth = oldRefreshToken ? undefined : readLocalCodexAuthTokens(homeDir)
+  let refreshSource: RefreshTokenSource | undefined = oldRefreshToken
+    ? { source: "vault", accessToken: oldAccessToken, refreshToken: oldRefreshToken }
+    : fallbackLocalAuth?.status === "ready"
+      ? { source: "local-codex-auth", accessToken: fallbackLocalAuth.tokens.accessToken, refreshToken: fallbackLocalAuth.tokens.refreshToken }
+      : undefined
+
+  if (!refreshSource) {
     return {
       ok: false,
       actor: "human-required",
-      message: `openai-codex has no saved refresh token for ${agentName}. Run '${authCommand(agentName)}'.`,
+      message: `openai-codex has no saved refresh token for ${agentName} and no usable local Codex login to import. Run '${authCommand(agentName)}'.`,
     }
   }
 
@@ -228,15 +281,37 @@ export async function refreshOpenAICodexProviderCredentials(
     component: "engine",
     event: "engine.openai_codex_token_refresh_start",
     message: "refreshing openai-codex OAuth token",
-    meta: { agentName, reason: options.reason ?? "unspecified" },
+    meta: { agentName, reason: options.reason ?? "unspecified", source: refreshSource.source },
   })
 
-  const refresh = await requestOpenAICodexTokenRefresh({
-    refreshToken: oldRefreshToken,
+  let refresh = await requestOpenAICodexTokenRefresh({
+    refreshToken: refreshSource.refreshToken,
     fetchImpl: options.fetchImpl ?? fetch,
   })
+
+  if (!refresh.ok && oldRefreshToken) {
+    const retryLocalAuth = readLocalCodexAuthTokens(homeDir)
+    if (retryLocalAuth.status === "ready" && retryLocalAuth.tokens.refreshToken !== oldRefreshToken) {
+      emitNervesEvent({
+        component: "engine",
+        event: "engine.openai_codex_token_refresh_local_rescue",
+        message: "retrying openai-codex OAuth refresh with local Codex auth tokens",
+        meta: { agentName, reason: options.reason ?? "unspecified", status: refresh.status ?? "none", detail: refresh.detail },
+      })
+      refreshSource = {
+        source: "local-codex-auth",
+        accessToken: retryLocalAuth.tokens.accessToken,
+        refreshToken: retryLocalAuth.tokens.refreshToken,
+      }
+      refresh = await requestOpenAICodexTokenRefresh({
+        refreshToken: refreshSource.refreshToken,
+        fetchImpl: options.fetchImpl ?? fetch,
+      })
+    }
+  }
+
   if (!refresh.ok) {
-    const actor: OpenAICodexTokenRefreshActor = refresh.status === 401 ? "human-required" : "agent-runnable"
+    const actor: OpenAICodexTokenRefreshActor = refreshFailureRequiresHuman(refresh) ? "human-required" : "agent-runnable"
     emitNervesEvent({
       level: actor === "human-required" ? "warn" : "error",
       component: "engine",
@@ -246,6 +321,7 @@ export async function refreshOpenAICodexProviderCredentials(
         agentName,
         reason: options.reason ?? "unspecified",
         actor,
+        source: refreshSource.source,
         ...(refresh.status ? { status: refresh.status } : {}),
         detail: refresh.detail,
       },
@@ -274,10 +350,10 @@ export async function refreshOpenAICodexProviderCredentials(
     now,
   })
 
-  const localAuth = await updateLocalCodexAuthIfUnchanged({
-    homeDir: options.homeDir ?? os.homedir(),
-    oldAccessToken,
-    oldRefreshToken,
+  const localAuthSync = await updateLocalCodexAuthIfUnchanged({
+    homeDir,
+    oldAccessToken: refreshSource.accessToken,
+    oldRefreshToken: refreshSource.refreshToken,
     newAccessToken: refresh.accessToken,
     newRefreshToken: refresh.refreshToken,
     now,
@@ -291,7 +367,8 @@ export async function refreshOpenAICodexProviderCredentials(
       agentName,
       reason: options.reason ?? "unspecified",
       credentialRevision: updated.revision,
-      localCodexAuth: localAuth,
+      source: refreshSource.source,
+      localCodexAuth: localAuthSync,
     },
   })
   return { ok: true, refreshed: true, record: updated }
