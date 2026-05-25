@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.645",
+      "changes": [
+        "Rescue openai-codex refresh when the vault refresh token has rotated by retrying with the local Codex login, and classify sign-in-required refresh failures as human-required."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.644",
       "changes": [
         "Refresh expired openai-codex OAuth credentials automatically and expose chat-driven recovery, with full coverage for stale-token repair, malformed local Codex auth files, transient refresh failures, and human-required reauth boundaries."

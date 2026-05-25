@@ -190,14 +190,62 @@ describe("openai-codex token refresh", () => {
       record: makeRecord({ credentials: { oauthAccessToken: "old-access", expiresAt: Date.parse("2026-05-24T00:00:00.000Z") } }),
       now: new Date("2026-05-25T12:00:00.000Z"),
       fetchImpl: vi.fn() as never,
+      homeDir: makeTempDir("codex-auth-no-refresh-home"),
       force: true,
     })
 
     expect(result).toEqual({
       ok: false,
       actor: "human-required",
-      message: "openai-codex has no saved refresh token for slugger. Run 'ouro auth --agent slugger --provider openai-codex'.",
+      message: "openai-codex has no saved refresh token for slugger and no usable local Codex login to import. Run 'ouro auth --agent slugger --provider openai-codex'.",
     })
+  })
+
+  it("uses a local Codex login when the vault record has no refresh token", async () => {
+    emitTestEvent("openai codex refresh missing vault refresh local rescue")
+    const homeDir = makeTempDir("codex-auth-local-only-home")
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".codex", "auth.json"), `${JSON.stringify({
+      tokens: {
+        access_token: "local-access",
+        refresh_token: "local-refresh",
+      },
+    }, null, 2)}\n`, "utf8")
+    const newAccess = makeJwt(Date.parse("2026-05-25T13:00:00.000Z"))
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      access_token: newAccess,
+      refresh_token: "new-refresh",
+    }), { status: 200 }))
+    const upsertCredential = vi.fn(async (input: {
+      credentials: Record<string, string | number>
+      config: Record<string, string | number>
+      provenance: { source: "auth-flow" | "manual" }
+    }) => ({
+      provider: "openai-codex" as const,
+      revision: "vault_new",
+      updatedAt: "2026-05-25T12:00:00.000Z",
+      credentials: input.credentials,
+      config: input.config,
+      provenance: { source: input.provenance.source, updatedAt: "2026-05-25T12:00:00.000Z" },
+    }))
+
+    const result = await refreshOpenAICodexProviderCredentials("slugger", {
+      record: makeRecord({ credentials: { oauthAccessToken: "old-access", expiresAt: Date.parse("2026-05-24T00:00:00.000Z") } }),
+      now: new Date("2026-05-25T12:00:00.000Z"),
+      fetchImpl: fetchImpl as never,
+      upsertCredential: upsertCredential as never,
+      homeDir,
+      force: true,
+    })
+
+    expect(result).toMatchObject({ ok: true, refreshed: true })
+    expect(fetchImpl).toHaveBeenCalledWith("https://auth.openai.com/oauth/token", expect.objectContaining({
+      body: JSON.stringify({
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+        grant_type: "refresh_token",
+        refresh_token: "local-refresh",
+      }),
+    }))
   })
 
   it("refreshes stale Codex credentials, updates the agent vault record, and keeps matching local Codex auth in sync", async () => {
@@ -258,6 +306,76 @@ describe("openai-codex token refresh", () => {
         expiresAt: Date.parse("2026-05-25T13:00:00.000Z"),
       },
       provenance: { source: "auth-flow" },
+    }))
+    const localAuth = JSON.parse(fs.readFileSync(path.join(homeDir, ".codex", "auth.json"), "utf8")) as {
+      tokens: { access_token: string; refresh_token: string }
+    }
+    expect(localAuth.tokens.access_token).toBe(newAccess)
+    expect(localAuth.tokens.refresh_token).toBe("new-refresh")
+  })
+
+  it("retries with the newer local Codex login when the vault refresh token has rotated", async () => {
+    emitTestEvent("openai codex refresh rotated token local rescue")
+    const homeDir = makeTempDir("codex-auth-rotated-home")
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".codex", "auth.json"), `${JSON.stringify({
+      tokens: {
+        access_token: "local-access",
+        refresh_token: "local-refresh",
+      },
+    }, null, 2)}\n`, "utf8")
+    const newAccess = makeJwt(Date.parse("2026-05-25T13:00:00.000Z"))
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: { message: "Your refresh token has already been used to generate a new access token. Please try signing in again." },
+      }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: newAccess,
+        refresh_token: "new-refresh",
+      }), { status: 200 }))
+    vi.stubGlobal("fetch", fetchImpl)
+    const upsertCredential = vi.fn(async (input: {
+      credentials: Record<string, string | number>
+      config: Record<string, string | number>
+      provenance: { source: "auth-flow" | "manual" }
+    }) => ({
+      provider: "openai-codex" as const,
+      revision: "vault_new",
+      updatedAt: "2026-05-25T12:00:00.000Z",
+      credentials: input.credentials,
+      config: input.config,
+      provenance: { source: input.provenance.source, updatedAt: "2026-05-25T12:00:00.000Z" },
+    }))
+
+    const result = await refreshOpenAICodexProviderCredentials("slugger", {
+      record: makeRecord({ credentials: { oauthAccessToken: "old-access", refreshToken: "old-refresh" } }),
+      now: new Date("2026-05-25T12:00:00.000Z"),
+      upsertCredential: upsertCredential as never,
+      homeDir,
+      force: true,
+    })
+
+    expect(result).toMatchObject({ ok: true, refreshed: true })
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, "https://auth.openai.com/oauth/token", expect.objectContaining({
+      body: JSON.stringify({
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+        grant_type: "refresh_token",
+        refresh_token: "old-refresh",
+      }),
+    }))
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, "https://auth.openai.com/oauth/token", expect.objectContaining({
+      body: JSON.stringify({
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+        grant_type: "refresh_token",
+        refresh_token: "local-refresh",
+      }),
+    }))
+    expect(upsertCredential).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: {
+        oauthAccessToken: newAccess,
+        refreshToken: "new-refresh",
+        expiresAt: Date.parse("2026-05-25T13:00:00.000Z"),
+      },
     }))
     const localAuth = JSON.parse(fs.readFileSync(path.join(homeDir, ".codex", "auth.json"), "utf8")) as {
       tokens: { access_token: string; refresh_token: string }
@@ -433,6 +551,60 @@ describe("openai-codex token refresh", () => {
       message: "openai-codex refresh token is no longer usable (refresh token expired). Run 'ouro auth --agent slugger --provider openai-codex'.",
     })
     expect(upsertCredential).not.toHaveBeenCalled()
+  })
+
+  it("returns human-required guidance when the refresh endpoint says browser sign-in is needed", async () => {
+    emitTestEvent("openai codex refresh sign in required")
+    const result = await refreshOpenAICodexProviderCredentials("slugger", {
+      record: makeRecord(),
+      now: new Date("2026-05-25T12:00:00.000Z"),
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        error: { message: "Your refresh token has already been used to generate a new access token. Please try signing in again." },
+      }), { status: 400 })) as never,
+      upsertCredential: vi.fn() as never,
+      homeDir: makeTempDir("codex-auth-signin-required-home"),
+      force: true,
+    })
+
+    expect(result).toEqual({
+      ok: false,
+      actor: "human-required",
+      message: "openai-codex refresh token is no longer usable (Your refresh token has already been used to generate a new access token. Please try signing in again.). Run 'ouro auth --agent slugger --provider openai-codex'.",
+    })
+  })
+
+  it("does not retry with unusable or non-rotated local Codex auth", async () => {
+    emitTestEvent("openai codex refresh skips unusable local rescue")
+    const localAuthFiles = [
+      "not-json",
+      JSON.stringify({ auth_mode: "chatgpt" }),
+      JSON.stringify({ tokens: { access_token: 123, refresh_token: "local-refresh" } }),
+      JSON.stringify({ tokens: { access_token: "local-access", refresh_token: false } }),
+      JSON.stringify({ tokens: { access_token: "", refresh_token: "local-refresh" } }),
+      JSON.stringify({ tokens: { access_token: "local-access", refresh_token: "" } }),
+      JSON.stringify({ tokens: { access_token: "local-access", refresh_token: "old-refresh" } }),
+    ]
+
+    for (const localAuth of localAuthFiles) {
+      const homeDir = makeTempDir("codex-auth-unusable-local-home")
+      fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+      fs.writeFileSync(path.join(homeDir, ".codex", "auth.json"), localAuth, "utf8")
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+        error: { message: "Your refresh token has already been used to generate a new access token. Please try signing in again." },
+      }), { status: 400 }))
+
+      const result = await refreshOpenAICodexProviderCredentials("slugger", {
+        record: makeRecord(),
+        now: new Date("2026-05-25T12:00:00.000Z"),
+        fetchImpl: fetchImpl as never,
+        upsertCredential: vi.fn() as never,
+        homeDir,
+        force: true,
+      })
+
+      expect(result).toMatchObject({ ok: false, actor: "human-required" })
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    }
   })
 
   it("returns agent-runnable guidance for transient refresh endpoint failures", async () => {
