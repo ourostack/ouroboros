@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.650",
+      "changes": [
+        "Launchd boot persistence now writes daemon stdout to machine-scoped `~/.ouro-cli/daemon/logs` instead of resolving a no-agent `default.ouro` bundle path during `ouro up`."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.649",
       "changes": [
         "No-agent CLI process logging is now machine-scoped under `~/.ouro-cli/daemon` instead of fabricating `~/AgentBundles/default.ouro`; update hooks and version detection ignore any stale no-agent `default.ouro` directory that lacks `agent.json`."

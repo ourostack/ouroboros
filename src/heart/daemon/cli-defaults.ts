@@ -9,7 +9,7 @@ import { spawn, execSync } from "child_process"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { getAgentBundlesRoot, getAgentDaemonLogsDir, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, getAgentRoot, getRepoRoot, PROVIDER_CREDENTIALS, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { installOuroCommand as defaultInstallOuroCommand } from "../versioning/ouro-path-installer"
 import { registerOuroBundleUti as defaultRegisterOuroBundleUti } from "../versioning/ouro-uti"
@@ -239,7 +239,7 @@ function writeDaemonBootPlist(socketPath: string): string {
     nodePath: process.execPath,
     entryPath,
     socketPath,
-    logDir: getAgentDaemonLogsDir(),
+    logDir: path.join(getOuroCliHome(homeDir), "daemon", "logs"),
     envPath: process.env.PATH,
   })
 }
