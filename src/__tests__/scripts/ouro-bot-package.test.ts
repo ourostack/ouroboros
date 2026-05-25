@@ -7,10 +7,10 @@ import * as path from "path"
 const wrapperPath = path.resolve(__dirname, "../../../packages/ouro.bot/index.js")
 const wrapperPackagePath = path.resolve(__dirname, "../../../packages/ouro.bot/package.json")
 const wrapperPackageVersion = JSON.parse(fs.readFileSync(wrapperPackagePath, "utf8")).version as string
+const entryRelPath = path.join("node_modules", "@ouro.bot", "cli", "dist", "heart", "daemon", "ouro-entry.js")
 
-function writeFakeNpm(binDir: string, version: string): void {
-  const fakeNpmPath = path.join(binDir, "npm")
-  const installedEntry = [
+function installedEntryScript(version: string): string {
+  return [
     "#!/usr/bin/env node",
     `const version = ${JSON.stringify(version)}`,
     "if (process.argv.slice(2).includes(\"--version\")) {",
@@ -20,6 +20,22 @@ function writeFakeNpm(binDir: string, version: string): void {
     "}",
     "",
   ].join("\n")
+}
+
+function writeInstalledRuntime(home: string, version: string): void {
+  const versionDir = path.join(home, ".ouro-cli", "versions", version)
+  const entry = path.join(versionDir, entryRelPath)
+  fs.mkdirSync(path.dirname(entry), { recursive: true })
+  fs.writeFileSync(entry, installedEntryScript(version), { mode: 0o755 })
+
+  const currentLink = path.join(home, ".ouro-cli", "CurrentVersion")
+  fs.rmSync(currentLink, { force: true })
+  fs.symlinkSync(versionDir, currentLink)
+}
+
+function writeFakeNpm(binDir: string, version: string): void {
+  const fakeNpmPath = path.join(binDir, "npm")
+  const installedEntry = installedEntryScript(version)
   const script = `#!/usr/bin/env node
 const fs = require("fs")
 const path = require("path")
@@ -51,14 +67,15 @@ process.exit(1)
   fs.writeFileSync(fakeNpmPath, script, { mode: 0o755 })
 }
 
-function runWrapper(args: string[], options: { version?: string; shell?: string } = {}) {
-  const { version = wrapperPackageVersion, shell = "/bin/zsh" } = options
+function runWrapper(args: string[], options: { version?: string; shell?: string; setupHome?: (home: string) => void } = {}) {
+  const { version = wrapperPackageVersion, shell = "/bin/zsh", setupHome } = options
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-bot-package-test-"))
   const home = path.join(root, "home")
   const binDir = path.join(root, "bin")
   fs.mkdirSync(home, { recursive: true })
   fs.mkdirSync(binDir, { recursive: true })
   writeFakeNpm(binDir, version)
+  setupHome?.(home)
 
   const result = spawnSync(process.execPath, [wrapperPath, ...args], {
     env: {
@@ -72,6 +89,7 @@ function runWrapper(args: string[], options: { version?: string; shell?: string 
 
   return {
     ...result,
+    home,
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
   }
 }
@@ -83,6 +101,21 @@ describe("ouro.bot package bootstrap", () => {
       expect(result.status, result.stderr).toBe(0)
       expect(result.stdout).toBe(`${wrapperPackageVersion}\n`)
       expect(result.stderr).toContain("ouro is ready")
+    } finally {
+      result.cleanup()
+    }
+  })
+
+  it("does not downgrade an already-installed newer CurrentVersion", () => {
+    const installedVersion = "999.0.0"
+    const result = runWrapper(["--version"], {
+      setupHome: (home) => writeInstalledRuntime(home, installedVersion),
+    })
+    try {
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout).toBe(`${installedVersion}\n`)
+      expect(result.stderr).not.toContain("ouro updated to")
+      expect(fs.readlinkSync(path.join(result.home, ".ouro-cli", "CurrentVersion"))).toContain(installedVersion)
     } finally {
       result.cleanup()
     }
