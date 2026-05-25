@@ -393,12 +393,14 @@ describe("getOpenAICodexConfig", () => {
 
     const config = await import("../../heart/config")
     config.resetConfigCache()
-    config.patchRuntimeConfig({ providers: { "openai-codex": { oauthAccessToken: "oauth-token-123" } } })
+    config.patchRuntimeConfig({ providers: { "openai-codex": { oauthAccessToken: "oauth-token-123", refreshToken: "refresh-token-123", expiresAt: 1770000000000 } } })
     expect(typeof (config as any).getOpenAICodexConfig).toBe("function")
     const codex = (config as any).getOpenAICodexConfig()
 
     expect(codex).not.toHaveProperty("model")
     expect(codex.oauthAccessToken).toBe("oauth-token-123")
+    expect(codex.refreshToken).toBe("refresh-token-123")
+    expect(codex.expiresAt).toBe(1770000000000)
   })
 })
 

@@ -2007,6 +2007,73 @@ describe("handleInboundTurn", () => {
       expect(lastUserMsg?.content).toContain("human-required")
     })
 
+    it("surfaces transient failover refresh failures as retryable model context", async () => {
+      mockRefreshOpenAICodexProviderCredentials.mockResolvedValue({
+        ok: false,
+        actor: "agent-runnable",
+        message: "openai-codex token refresh failed (server_busy); retry refresh before asking for browser login.",
+      })
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const failoverState = {
+        pending: {
+          errorSummary: "openai-codex / gpt-5.4 authentication failed",
+          classification: "auth-failure" as const,
+          currentProvider: "openai-codex" as const,
+          currentModel: "gpt-5.4",
+          currentLane: "outward" as const,
+          agentName: "slugger",
+          workingProviders: ["minimax" as const],
+          readyProviders: [{ provider: "minimax" as const, model: "MiniMax-M2.7" }],
+          unconfiguredProviders: [],
+          userMessage: "refresh or switch",
+        },
+      }
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "refresh openai-codex" }],
+        runAgent: mockRunAgent,
+      })
+
+      await handleInboundTurn(input)
+
+      const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
+      const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
+      expect(lastUserMsg?.content).toContain("provider refresh failed")
+      expect(lastUserMsg?.content).toContain("agent-runnable")
+      expect(lastUserMsg?.content).toContain("server_busy")
+    })
+
+    it("rejects chat-driven refresh for providers without refresh support", async () => {
+      const mockRunAgent = vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" })
+      const failoverState = {
+        pending: {
+          errorSummary: "minimax / MiniMax-M2.7 authentication failed",
+          classification: "auth-failure" as const,
+          currentProvider: "minimax" as const,
+          currentModel: "MiniMax-M2.7",
+          currentLane: "outward" as const,
+          agentName: "slugger",
+          workingProviders: ["openai-codex" as const],
+          readyProviders: [{ provider: "openai-codex" as const, model: "gpt-5.4" }],
+          unconfiguredProviders: [],
+          userMessage: "switch available",
+        },
+      }
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "refresh minimax" }],
+        runAgent: mockRunAgent,
+      })
+
+      await handleInboundTurn(input)
+
+      expect(mockRefreshOpenAICodexProviderCredentials).not.toHaveBeenCalled()
+      const passedMessages = mockRunAgent.mock.calls[0][0] as Array<{ role: string; content: string }>
+      const lastUserMsg = [...passedMessages].reverse().find((m) => m.role === "user")
+      expect(lastUserMsg?.content).toContain("provider minimax does not support chat-driven refresh")
+      expect(lastUserMsg?.content).toContain("human-required")
+    })
+
     it("refuses failover switch when candidate provider fails preflight ping and leaves lane untouched", async () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-refused-"))
       const agentRoot = path.join(tmp, "slugger.ouro")

@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.644",
       "changes": [
-        "Refresh expired openai-codex OAuth credentials automatically and expose chat-driven recovery."
+        "Refresh expired openai-codex OAuth credentials automatically and expose chat-driven recovery, with full coverage for stale-token repair, malformed local Codex auth files, transient refresh failures, and human-required reauth boundaries."
       ]
     },
     {

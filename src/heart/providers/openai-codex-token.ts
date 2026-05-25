@@ -187,7 +187,6 @@ async function requestOpenAICodexTokenRefresh(input: {
   const accessToken = typeof body.access_token === "string" ? body.access_token.trim() : ""
   const refreshToken = typeof body.refresh_token === "string" ? body.refresh_token.trim() : input.refreshToken
   if (!accessToken) return { ok: false, detail: "refresh endpoint returned no access_token" }
-  if (!refreshToken) return { ok: false, detail: "refresh endpoint returned no refresh_token and no previous refresh token is available" }
   return { ok: true, accessToken, refreshToken }
 }
 

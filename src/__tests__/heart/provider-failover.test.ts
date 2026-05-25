@@ -140,6 +140,33 @@ describe("provider failover", () => {
     expect(handleFailoverReply("keep trying", context)).toEqual({ action: "dismiss" })
   })
 
+  it("does not offer chat-driven refresh for non-Codex auth failures", () => {
+    emitTestEvent("failover non codex auth failure has no refresh prompt")
+
+    const context = buildFailoverContext(
+      "minimax authentication failed",
+      "auth-failure",
+      "minimax",
+      "MiniMax-M2.7",
+      "slugger",
+      {
+        ready: [],
+        unavailable: [],
+        unconfigured: [],
+      },
+      {},
+      { currentLane: "outward" },
+    )
+
+    expect(context.userMessage).toContain("To keep using the current provider:")
+    expect(context.userMessage).not.toContain("refresh openai-codex")
+    expect(handleFailoverReply("refresh minimax", context)).toEqual({
+      action: "refresh",
+      provider: "minimax",
+      lane: "outward",
+    })
+  })
+
   it("formats blank current models and truncates long provider details", () => {
     emitTestEvent("failover blank model and long detail")
 
