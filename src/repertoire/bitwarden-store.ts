@@ -165,7 +165,8 @@ function isBwItemNotFoundError(error: Error): boolean {
 // ---------------------------------------------------------------------------
 
 const BW_LOCK_FILENAME = ".ouro-bw.lock"
-const BW_LOCK_TIMEOUT_MS = 30_000
+const BW_COMMAND_TIMEOUT_MS = 30_000
+const BW_LOCK_TIMEOUT_MS = 75_000
 const BW_LOCK_POLL_MS = 100
 const BW_LOCK_DEAD_CHILD_GRACE_MS = 2_000
 const BW_LOCK_STALE_MS = BW_LOCK_TIMEOUT_MS * 2
@@ -379,7 +380,7 @@ function execBw(
 
   const runCommand = (lock?: BwLockControl): Promise<string> =>
     new Promise((resolve, reject) => {
-      const child = execFileCb(bwBinaryPath, args, { timeout: 30_000, env }, (err, stdout, stderr) => {
+      const child = execFileCb(bwBinaryPath, args, { timeout: BW_COMMAND_TIMEOUT_MS, env }, (err, stdout, stderr) => {
         if (err) {
           if (isBwNotInstalled(err)) {
             reject(new Error("bw CLI not found. Install from https://bitwarden.com/help/cli/"))

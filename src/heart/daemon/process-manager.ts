@@ -46,6 +46,10 @@ export interface DaemonAgentSnapshot {
   fixHint: string | null
 }
 
+export interface DaemonAgentStartOptions {
+  skipConfigCheck?: boolean
+}
+
 export interface DaemonProcessManagerOptions {
   agents: DaemonManagedAgent[]
   maxRestartsPerHour?: number
@@ -289,7 +293,7 @@ export class DaemonProcessManager {
     }
   }
 
-  async startAgent(agent: string): Promise<void> {
+  async startAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
     if (state.process || state.startInFlight) return
 
@@ -302,7 +306,7 @@ export class DaemonProcessManager {
       state.stopRequested = false
       state.snapshot.status = "starting"
 
-      if (this.configCheckFn) {
+      if (this.configCheckFn && options.skipConfigCheck !== true) {
         let result: { ok: boolean; error?: string; fix?: string; skip?: boolean }
         try {
           result = await this.configCheckFn(agent)
@@ -349,6 +353,10 @@ export class DaemonProcessManager {
         // reporting the broken state. This is the recovery path: the user
         // fixed their secrets/config, the next startAgent attempt sees a
         // valid config, and the pulse goes quiet.
+        state.snapshot.errorReason = null
+        state.snapshot.fixHint = null
+      }
+      if (options.skipConfigCheck === true) {
         state.snapshot.errorReason = null
         state.snapshot.fixHint = null
       }
@@ -534,7 +542,7 @@ export class DaemonProcessManager {
     this.notifySnapshotChange(state.snapshot)
   }
 
-  async restartAgent(agent: string): Promise<void> {
+  async restartAgent(agent: string, options: DaemonAgentStartOptions = {}): Promise<void> {
     const state = this.requireAgent(agent)
 
     // Respawn-loop guard: prune timestamps outside the window, then check
@@ -624,7 +632,7 @@ export class DaemonProcessManager {
       state.startAttemptedAtMs = null
     }
     await this.stopAgent(agent)
-    await this.startAgent(agent)
+    await this.startAgent(agent, options)
   }
 
   async stopAll(): Promise<void> {

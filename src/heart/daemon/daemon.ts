@@ -349,10 +349,10 @@ export interface DaemonProcessManagerLike {
   startAutoStartAgents(): Promise<void>
   triggerAutoStartAgents?(): void
   stopAll(): Promise<void>
-  startAgent(agent: string): Promise<void>
+  startAgent(agent: string, options?: { skipConfigCheck?: boolean }): Promise<void>
   resetAgentFailureState(agent: string): void
   stopAgent?(agent: string): Promise<void>
-  restartAgent?(agent: string): Promise<void>
+  restartAgent?(agent: string, options?: { skipConfigCheck?: boolean }): Promise<void>
   sendToAgent?(agent: string, message: Record<string, unknown>): void
   listAgentSnapshots(): Array<{
     name: string
@@ -407,7 +407,7 @@ export type DaemonCommand =
   | { kind: "daemon.sense_revive"; agent: string; sense: string; reason: string }
   | { kind: "agent.start"; agent: string }
   | { kind: "agent.stop"; agent: string }
-  | { kind: "agent.restart"; agent: string }
+  | { kind: "agent.restart"; agent: string; skipConfigCheck?: boolean }
   | { kind: "agent.ask"; agent: string; friendId: string; question?: string; [key: string]: unknown }
   | { kind: "agent.status"; agent: string; friendId: string; [key: string]: unknown }
   | { kind: "agent.catchup"; agent: string; friendId: string; [key: string]: unknown }
@@ -1393,7 +1393,10 @@ export class OuroDaemon {
         if (!managed) {
           return { ok: false, error: `Unknown managed agent '${command.agent}'.` }
         }
-        void this.processManager.restartAgent(command.agent).catch((error) => {
+        const restartWork = command.skipConfigCheck === true
+          ? this.processManager.restartAgent(command.agent, { skipConfigCheck: true })
+          : this.processManager.restartAgent(command.agent)
+        void restartWork.catch((error) => {
           emitNervesEvent({
             level: "error",
             component: "daemon",
