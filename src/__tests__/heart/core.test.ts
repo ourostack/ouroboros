@@ -5081,6 +5081,29 @@ describe("openai-codex oauth provider contract", () => {
     }
   })
 
+  it("continues openai-codex runtime init when proactive refresh is human-required", async () => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupConfig({
+      humanFacingModel: "gpt-5.4",
+      providers: {
+        "openai-codex": {
+          oauthAccessToken: makeOpenAICodexAccessToken(),
+          expiresAt: 1,
+        },
+      },
+    } as any)
+    mockResponsesCreate.mockImplementationOnce(() =>
+      makeResponsesStream([{ type: "response.output_text.delta", delta: "hi" }]),
+    )
+
+    const core = await import("../../heart/core")
+    const result = await core.runAgent([{ role: "user", content: "hello" }], noopCallbacks)
+
+    expect(result.outcome).toBe("settled")
+    expect(mockResponsesCreate).toHaveBeenCalledTimes(1)
+  })
+
   it("fails fast with oauth guidance when openai-codex oauthAccessToken is missing", async () => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)

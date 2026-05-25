@@ -33,6 +33,7 @@ import {
   type FailoverContext,
   type FailoverSwitchValidationResult,
 } from "../heart/provider-failover"
+import { refreshOpenAICodexProviderCredentials } from "../heart/providers/openai-codex-token"
 import type { ProviderLane } from "../heart/provider-lanes"
 import { deriveTempo } from "../heart/tempo"
 import { buildTemporalView } from "../heart/temporal-view"
@@ -488,6 +489,48 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         }]
       }
       // Switch failed OR succeeded — either way, fall through to normal processing.
+    } else if (failoverAction.action === "refresh") {
+      const refresh = failoverAction.provider === "openai-codex"
+        ? await refreshOpenAICodexProviderCredentials(failoverAgentName, {
+            force: true,
+            reason: "failover-reply",
+          })
+        : { ok: false as const, actor: "human-required" as const, message: `provider ${failoverAction.provider} does not support chat-driven refresh` }
+      if (refresh.ok) {
+        emitNervesEvent({
+          component: "senses",
+          event: "senses.failover_refresh",
+          message: `refreshed ${failoverAction.provider} provider credentials via failover`,
+          meta: {
+            agentName: failoverAgentName,
+            lane: failoverAction.lane,
+            provider: failoverAction.provider,
+            refreshed: refresh.refreshed,
+          },
+        })
+        input.messages = [{
+          role: "user" as const,
+          content: `[provider refresh: ${pendingContext.errorSummary}. refreshed ${failoverAction.provider} credentials for the ${failoverAction.lane} lane. your conversation history is intact — respond to the user's last message.]`,
+        }]
+      } else {
+        emitNervesEvent({
+          level: refresh.actor === "human-required" ? "warn" : "error",
+          component: "senses",
+          event: "senses.failover_refresh_error",
+          message: `failed to refresh ${failoverAction.provider} provider credentials via failover`,
+          meta: {
+            agentName: failoverAgentName,
+            lane: failoverAction.lane,
+            provider: failoverAction.provider,
+            actor: refresh.actor,
+            error: refresh.message,
+          },
+        })
+        input.messages = [{
+          role: "user" as const,
+          content: `[provider refresh failed: tried to refresh ${failoverAction.provider} for the ${failoverAction.lane} lane. actor: ${refresh.actor}. reason: ${refresh.message}. current lane unchanged: ${pendingContext.currentProvider} / ${pendingContext.currentModel}. If ready alternatives are listed in the prior failover message, switch to one; otherwise tell the user the concrete human-required auth step.]`,
+        }]
+      }
     }
   }
 

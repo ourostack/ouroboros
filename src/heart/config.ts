@@ -42,6 +42,8 @@ export interface AnthropicProviderConfig {
 
 export interface OpenAICodexProviderConfig {
   oauthAccessToken: string
+  refreshToken?: string
+  expiresAt?: number
 }
 
 export interface GithubCopilotProviderConfig {
@@ -335,7 +337,11 @@ export function getAnthropicConfig(): AnthropicProviderConfig {
 
 export function getOpenAICodexConfig(): OpenAICodexProviderConfig {
   const raw = readProviderConfig("openai-codex")
-  return { oauthAccessToken: typeof raw.oauthAccessToken === "string" ? raw.oauthAccessToken : "" }
+  return {
+    oauthAccessToken: typeof raw.oauthAccessToken === "string" ? raw.oauthAccessToken : "",
+    ...(typeof raw.refreshToken === "string" ? { refreshToken: raw.refreshToken } : {}),
+    ...(typeof raw.expiresAt === "number" ? { expiresAt: raw.expiresAt } : {}),
+  }
 }
 
 export function getGithubCopilotConfig(): GithubCopilotProviderConfig {
