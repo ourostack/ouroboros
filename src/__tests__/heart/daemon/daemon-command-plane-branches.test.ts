@@ -927,6 +927,7 @@ describe("daemon command plane branches", () => {
     const { daemon, processManager, scheduler, healthMonitor } = make(socketPath)
     processManager.stopAgent = vi.fn(async (_agent: string) => undefined)
     processManager.restartAgent = vi.fn(async (_agent: string) => undefined)
+    processManager.listAgentSnapshots.mockReturnValue([{ name: "slugger" }])
     scheduler.listJobs.mockReturnValue([
       { id: "habit-heartbeat", schedule: "daily", lastRun: "2026-03-06T08:00:00.000Z" },
     ])
@@ -945,7 +946,7 @@ describe("daemon command plane branches", () => {
     expect(processManager.stopAgent).toHaveBeenCalledWith("slugger")
 
     const restarted = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
-    expect(restarted.message).toBe("restarted slugger")
+    expect(restarted.message).toBe("restart requested for slugger")
     expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
 
     const cronList = await daemon.handleCommand({ kind: "cron.list" })
@@ -963,6 +964,68 @@ describe("daemon command plane branches", () => {
 
     const cronTrigger = await daemon.handleCommand({ kind: "cron.trigger", jobId: "habit-heartbeat" })
     expect(cronTrigger).toEqual({ ok: true, message: "triggered habit-heartbeat" })
+  })
+
+  it("acks agent restart before the restart work settles", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-ack")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{ name: "slugger" }])
+    processManager.restartAgent = vi.fn(() => new Promise<void>(() => {}))
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
+
+    expect(response).toEqual({ ok: true, message: "restart requested for slugger" })
+    expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
+  })
+
+  it("reports unknown agent restarts without starting async work", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-unknown")
+    const { daemon, processManager } = make(socketPath)
+    processManager.restartAgent = vi.fn(async () => undefined)
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "ghost" })
+
+    expect(response).toEqual({ ok: false, error: "Unknown managed agent 'ghost'." })
+    expect(processManager.restartAgent).not.toHaveBeenCalled()
+  })
+
+  it("reports when managed agent restart is unavailable", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-unavailable")
+    const { daemon } = make(socketPath)
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
+
+    expect(response).toEqual({ ok: false, error: "Managed agent restart is not available." })
+  })
+
+  it("logs restart failures that happen after acknowledgement", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-late-error")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{ name: "slugger" }])
+    processManager.restartAgent = vi.fn(async () => {
+      throw new Error("restart blew up")
+    })
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(response).toEqual({ ok: true, message: "restart requested for slugger" })
+    expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
+  })
+
+  it("logs raw restart failure values that happen after acknowledgement", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-late-raw-error")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{ name: "slugger" }])
+    processManager.restartAgent = vi.fn(async () => {
+      throw "restart raw failure"
+    })
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger" })
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(response).toEqual({ ok: true, message: "restart requested for slugger" })
+    expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
   })
 
   it("retains malformed pending lines and tolerates unreadable bundle roots", async () => {
