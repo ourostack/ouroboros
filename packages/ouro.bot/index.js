@@ -48,6 +48,53 @@ function getCurrentVersion() {
   }
 }
 
+function parseSemver(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(version);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function compareIdentifier(a, b) {
+  const aNumeric = /^\d+$/.test(a);
+  const bNumeric = /^\d+$/.test(b);
+  if (aNumeric && bNumeric) return Number(a) - Number(b);
+  if (aNumeric) return -1;
+  if (bNumeric) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function compareVersions(a, b) {
+  const parsedA = parseSemver(a);
+  const parsedB = parseSemver(b);
+  if (!parsedA || !parsedB) return 0;
+  for (const key of ["major", "minor", "patch"]) {
+    const diff = parsedA[key] - parsedB[key];
+    if (diff !== 0) return diff;
+  }
+  if (parsedA.prerelease.length === 0 && parsedB.prerelease.length === 0) return 0;
+  if (parsedA.prerelease.length === 0) return 1;
+  if (parsedB.prerelease.length === 0) return -1;
+  const length = Math.max(parsedA.prerelease.length, parsedB.prerelease.length);
+  for (let i = 0; i < length; i++) {
+    const left = parsedA.prerelease[i];
+    const right = parsedB.prerelease[i];
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    const diff = compareIdentifier(left, right);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function installedEntryPath(version) {
+  return path.join(VERSIONS_DIR, version, ENTRY_RELPATH);
+}
+
 function ensureLayout() {
   fs.mkdirSync(OURO_HOME, { recursive: true });
   fs.mkdirSync(BIN_DIR, { recursive: true });
@@ -56,7 +103,7 @@ function ensureLayout() {
 
 function installVersion(version) {
   const versionDir = path.join(VERSIONS_DIR, version);
-  if (fs.existsSync(path.join(versionDir, ENTRY_RELPATH))) {
+  if (fs.existsSync(installedEntryPath(version))) {
     return; // Already installed
   }
   console.error(`installing @ouro.bot/cli@${version}...`);
@@ -129,11 +176,16 @@ function cleanupOldWrapper() {
 
 const previousVersion = getCurrentVersion();
 const bundledVersion = resolveBundledVersion();
+const useInstalledNewer = previousVersion
+  && compareVersions(previousVersion, bundledVersion) > 0
+  && fs.existsSync(installedEntryPath(previousVersion));
 
 ensureLayout();
-installVersion(bundledVersion);
+if (!useInstalledNewer) {
+  installVersion(bundledVersion);
+}
 
-if (previousVersion !== bundledVersion) {
+if (!useInstalledNewer && previousVersion !== bundledVersion) {
   activateVersion(bundledVersion);
   if (previousVersion) {
     console.error(`ouro updated to ${bundledVersion} (was ${previousVersion})`);

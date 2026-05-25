@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.652",
+      "changes": [
+        "The `ouro.bot` bootstrap wrapper now refuses to downgrade an already-installed newer `~/.ouro-cli/CurrentVersion`, so a stale global wrapper cannot roll the local runtime back after a fresh CI-published update."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.651",
       "changes": [
         "Daemon inter-agent message routing now stores its queue under machine-scoped `~/.ouro-cli/daemon/messages` instead of resolving a no-agent `default.ouro/state/messages` bundle path during daemon startup."
