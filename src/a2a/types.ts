@@ -1,3 +1,5 @@
+/* v8 ignore file -- type-only A2A protocol definitions */
+
 export interface A2AAgentCard {
   name: string
   description: string

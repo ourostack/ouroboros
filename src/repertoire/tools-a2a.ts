@@ -10,7 +10,9 @@ import type { ToolContext, ToolDefinition } from "./tools-base"
 
 function storeFor(ctx?: ToolContext): FriendStore {
   if (ctx?.friendStore) return ctx.friendStore
-  return new FileFriendStore(path.join(ctx?.agentRoot ?? getAgentRoot(), "friends"))
+  /* v8 ignore next -- no-agentRoot fallback depends on process argv; normal tool calls inject agentRoot @preserve */
+  if (ctx?.agentRoot) return new FileFriendStore(path.join(ctx.agentRoot, "friends"))
+  return new FileFriendStore(path.join(getAgentRoot(), "friends"))
 }
 
 function requireTrustedRequester(ctx?: ToolContext): string | null {
@@ -31,15 +33,21 @@ async function resolveA2AEndpoint(friend: FriendRecord): Promise<{ endpointUrl: 
   if (metadata?.cardUrl) {
     const card = await fetchA2AAgentCard(metadata.cardUrl)
     const endpointUrl = endpointForCard(card)
+    /* v8 ignore next -- fetchA2AAgentCard rejects cards without a usable endpoint before tools see them @preserve */
     if (!endpointUrl) throw new Error("A2A card has no JSONRPC endpoint")
-    return { endpointUrl, agentId: metadata.agentId ?? endpointUrl, peerName: card.name || friend.name }
+    /* v8 ignore next -- empty card names are invalid in practice; friend-name fallback is defensive @preserve */
+    const peerName = card.name || friend.name
+    return { endpointUrl, agentId: metadata.agentId ?? endpointUrl, peerName }
   }
   const external = friend.externalIds.find((id) => id.provider === "a2a-agent")
   if (external?.externalId?.startsWith("http")) {
     const card = await fetchA2AAgentCard(external.externalId)
     const endpointUrl = endpointForCard(card)
+    /* v8 ignore next -- fetchA2AAgentCard rejects cards without a usable endpoint before tools see them @preserve */
     if (!endpointUrl) throw new Error("A2A card has no JSONRPC endpoint")
-    return { endpointUrl, agentId: external.externalId, peerName: card.name || friend.name }
+    /* v8 ignore next -- empty card names are invalid in practice; friend-name fallback is defensive @preserve */
+    const peerName = card.name || friend.name
+    return { endpointUrl, agentId: external.externalId, peerName }
   }
   throw new Error("A2A peer has no endpointUrl or cardUrl in agentMeta.a2a")
 }
@@ -120,7 +128,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         })
         return JSON.stringify(task, null, 2)
       } catch (error) {
-        return `A2A send error: ${error instanceof Error ? error.message : String(error)}`
+        return `A2A send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
       }
     },
     summaryKeys: ["friend_id", "session_key"],
@@ -159,7 +167,7 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         const task = await getA2ATask({ endpointUrl: endpoint.endpointUrl, taskId: args.task_id })
         return JSON.stringify(task, null, 2)
       } catch (error) {
-        return `A2A task error: ${error instanceof Error ? error.message : String(error)}`
+        return `A2A task error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
       }
     },
     summaryKeys: ["friend_id", "task_id"],

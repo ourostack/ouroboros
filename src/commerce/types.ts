@@ -1,3 +1,5 @@
+/* v8 ignore file -- type-only commerce authority records */
+
 export type CommerceMandateStatus = "previewed" | "confirmed" | "voided"
 
 export interface CommerceMandateItem {
@@ -33,4 +35,3 @@ export interface CommerceAccessLogEntry {
   ok: boolean
   reason?: string
 }
-

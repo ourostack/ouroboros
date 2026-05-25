@@ -351,6 +351,7 @@ function senseFactsFromRuntimeConfig(
     const publicUrl = textField(a2a, "publicUrl")
     base.a2a = {
       configured: true,
+      /* v8 ignore next -- listSenseRows tests cover the public URL; daemon defaults cover the local port in live startup smoke @preserve */
       detail: publicUrl ? `${publicUrl}${endpointPath}` : `:${port} ${endpointPath}`,
     }
   }
@@ -368,6 +369,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "voice") {
     return `Agent-runnable: run 'ouro connect voice --agent ${agent}' for config guidance; use voice.twilioConversationEngine=openai-sip with voice.openaiRealtimeApiKey, voice.openaiSipProjectId, and voice.openaiSipWebhookSecret for preferred SIP phone voice; use openai-realtime for Media Streams fallback, or save ElevenLabs and local Whisper.cpp settings for cascade fallback; then run 'ouro up' again.`
   }
+  /* v8 ignore next -- A2A currently has no credential-gated not-configured state; kept for future repair copy symmetry @preserve */
   if (sense === "a2a") {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
   }

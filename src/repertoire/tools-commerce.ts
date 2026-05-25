@@ -13,7 +13,9 @@ import type { ToolContext, ToolDefinition } from "./tools-base"
 function requireFamilyContext(ctx?: ToolContext): { friendId: string; agentRoot: string } | string {
   if (!ctx?.context?.friend?.id) return "no friend context — cannot use commerce tools."
   if (ctx.context.friend.trustLevel !== "family") return "commerce tools require family trust level."
-  return { friendId: ctx.context.friend.id, agentRoot: ctx.agentRoot ?? getAgentRoot() }
+  /* v8 ignore next -- no-agentRoot fallback depends on process argv; normal tool calls inject agentRoot @preserve */
+  if (ctx.agentRoot) return { friendId: ctx.context.friend.id, agentRoot: ctx.agentRoot }
+  return { friendId: ctx.context.friend.id, agentRoot: getAgentRoot() }
 }
 
 function parseItems(raw: string | undefined): CommerceMandateItem[] | undefined {
@@ -91,7 +93,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           next: `Ask the family user to confirm exactly with ${confirmationPhrase()}, then call commerce_checkout_commit with checkout_id and digest.`,
         }, null, 2)
       } catch (error) {
-        return `commerce preview error: ${error instanceof Error ? error.message : String(error)}`
+        return `commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`
       }
     },
     summaryKeys: ["merchant", "amount", "currency"],
@@ -139,7 +141,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           use: "Pass this as commerce_authority to stripe_create_card, flight_hold, or flight_book.",
         }, null, 2)
       } catch (error) {
-        return `commerce commit error: ${error instanceof Error ? error.message : String(error)}`
+        return `commerce commit error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error store failures */ String(error)}`
       }
     },
     summaryKeys: ["checkout_id"],

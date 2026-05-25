@@ -373,6 +373,60 @@ describe("runSenseTurn", () => {
     expect(input.sessionKey).toBe("my-session")
   })
 
+  it("uses explicit remote identity for A2A turns", async () => {
+    const caps = { ...makeMcpCapabilities(), channel: "a2a", senseType: "open" } as ChannelCapabilities
+    mockGetChannelCapabilities.mockReturnValueOnce(caps)
+    mockFriendResolve.mockResolvedValueOnce({ friend: makeFriend({ kind: "agent" }), channel: caps })
+    const { FriendResolver } = await import("../../mind/friends/resolver")
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "a2a",
+      sessionKey: "a2a-session",
+      friendId: "storage-key",
+      userMessage: "hello from peer",
+      identity: {
+        provider: "a2a-agent",
+        externalId: "remote-agent-id",
+        displayName: "Remote Agent",
+        tenantId: "remote-tenant",
+      },
+    })
+    expect(FriendResolver).toHaveBeenCalledWith(expect.anything(), {
+      provider: "a2a-agent",
+      externalId: "remote-agent-id",
+      displayName: "Remote Agent",
+      channel: "a2a",
+      tenantId: "remote-tenant",
+    })
+  })
+
+  it("uses explicit A2A identity without a tenant id", async () => {
+    const caps = { ...makeMcpCapabilities(), channel: "a2a", senseType: "open" } as ChannelCapabilities
+    mockGetChannelCapabilities.mockReturnValueOnce(caps)
+    mockFriendResolve.mockResolvedValueOnce({ friend: makeFriend({ kind: "agent" }), channel: caps })
+    const { FriendResolver } = await import("../../mind/friends/resolver")
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "a2a",
+      sessionKey: "a2a-session",
+      friendId: "storage-key",
+      userMessage: "hello from peer",
+      identity: {
+        provider: "a2a-agent",
+        externalId: "remote-agent-id",
+        displayName: "Remote Agent",
+      },
+    })
+    expect(FriendResolver).toHaveBeenCalledWith(expect.anything(), {
+      provider: "a2a-agent",
+      externalId: "remote-agent-id",
+      displayName: "Remote Agent",
+      channel: "a2a",
+    })
+  })
+
   it.each(["mcp", "voice"] as Channel[])("delegates %s turns to the shared pipeline for orientation construction", async (channel) => {
     const caps = { ...makeMcpCapabilities(), channel } as ChannelCapabilities
     mockGetChannelCapabilities.mockReturnValueOnce(caps)
@@ -552,7 +606,7 @@ describe("runSenseTurn", () => {
   it("handles gate rejection gracefully", async () => {
     mockHandleInboundTurn.mockResolvedValue({
       resolvedContext: makeResolvedContext(),
-      gateResult: { allowed: false, reason: "untrusted" },
+      gateResult: { allowed: false, reason: "untrusted", autoReply: "blocked politely" },
       turnOutcome: undefined,
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
@@ -564,7 +618,25 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })
     // Should return empty or error message, not throw
-    expect(result.response).toBeDefined()
+    expect(result.response).toBe("blocked politely")
+    expect(result.ponderDeferred).toBe(false)
+  })
+
+  it("renders trust gate reason when a blocked turn has no auto-reply", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: false, reason: "untrusted" },
+      turnOutcome: undefined,
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+    expect(result.response).toBe("(blocked by trust gate: untrusted)")
     expect(result.ponderDeferred).toBe(false)
   })
 

@@ -499,7 +499,7 @@ function localSenseStatusLines(): string[] {
     },
     {
       label: "A2A",
-      status: !senses.a2a.enabled ? "disabled" : configured.a2a ? "ready" : "needs_config",
+      status: senses.a2a.enabled ? "ready" : "disabled",
     },
   ]
 

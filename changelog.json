@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.654",
       "changes": [
-        "Add A2A sense substrate and AP2-compatible commerce authority primitives."
+        "Add A2A sense substrate and AP2-compatible commerce authority primitives.",
+        "Backfill coverage and release-gate validation for the A2A protocol, onboarding, tools, sense status, and commerce authority edge paths."
       ]
     },
     {

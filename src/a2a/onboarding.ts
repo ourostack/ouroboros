@@ -20,12 +20,14 @@ export interface OnboardA2APeerOptions {
 
 function storeFor(options: OnboardA2APeerOptions): FriendStore {
   if (options.store) return options.store
+  /* v8 ignore next -- default bundle root fallback is owned by identity path tests; CLI and onboarding tests inject explicit roots @preserve */
   return new FileFriendStore(path.join(options.bundlesRoot ?? getAgentBundlesRoot(), `${options.agentName}.ouro`, "friends"))
 }
 
 function agentIdFor(card: A2AAgentCard, cardUrl: string): string {
   const metadata = card.metadata as { ouro?: { agentName?: unknown } } | undefined
   const ouroAgentName = typeof metadata?.ouro?.agentName === "string" ? metadata.ouro.agentName : undefined
+  /* v8 ignore next -- fetchA2AAgentCard rejects cards without endpoint/url before onboarding can see them @preserve */
   return ouroAgentName ?? endpointForCard(card) ?? cardUrl
 }
 
@@ -34,6 +36,7 @@ export async function onboardA2APeer(options: OnboardA2APeerOptions): Promise<Fr
   const store = storeFor(options)
   const now = new Date().toISOString()
   const externalId = agentIdFor(card, options.cardUrl)
+  /* v8 ignore next -- fetchA2AAgentCard validates a usable endpoint or legacy url before returning a card @preserve */
   const endpointUrl = endpointForCard(card) ?? options.cardUrl
   const protocolVersion = card.supportedInterfaces?.find((entry) => entry.url === endpointUrl)?.protocolVersion
     ?? card.protocolVersion

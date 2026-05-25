@@ -93,6 +93,90 @@ describe("daemon sense manager", () => {
     expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
   })
 
+  it("reports enabled A2A as a daemon-managed ready sense", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      a2a: {
+        port: 19999,
+        path: "agent-a2a",
+        publicUrl: "https://agent.example",
+      },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "a2a",
+      status: "ready",
+      detail: "https://agent.example/agent-a2a",
+    }))
+  })
+
+  it("reports enabled A2A with default path and local port when no public URL is configured", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      a2a: { port: 19998 },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "a2a",
+      status: "ready",
+      detail: ":19998 /a2a",
+    }))
+  })
+
   it("restarts managed sense workers through the process manager when available", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const processManager = {

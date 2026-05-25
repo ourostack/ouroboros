@@ -19,7 +19,11 @@ export function defaultA2APort(agentName: string): number {
 
 export function normalizeA2APath(value: string | undefined): string {
   const trimmed = value?.trim()
-  const normalized = trimmed ? (trimmed.startsWith("/") ? trimmed : `/${trimmed}`) : A2A_DEFAULT_PATH
+  const normalized = !trimmed
+    ? A2A_DEFAULT_PATH
+    : trimmed.startsWith("/")
+      ? trimmed
+      : `/${trimmed}`
   emitNervesEvent({
     component: "channels",
     event: "channel.a2a_path_normalized",
