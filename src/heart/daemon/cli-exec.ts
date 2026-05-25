@@ -2521,6 +2521,7 @@ async function applyRuntimeChangeToRunningAgent(
   agent: string,
   deps: OuroCliDeps,
   onProgress?: (message: string) => void,
+  options: { skipRestartConfigCheck?: boolean } = {},
 ): Promise<string> {
   try {
     onProgress?.("checking whether Ouro is already running")
@@ -2531,7 +2532,9 @@ async function applyRuntimeChangeToRunningAgent(
     const response = await withCliTimeout(
       DEFAULT_AGENT_RESTART_TIMEOUT_MS,
       "daemon restart request timed out",
-      () => deps.sendCommand(deps.socketPath, { kind: "agent.restart", agent }),
+      () => deps.sendCommand(deps.socketPath, options.skipRestartConfigCheck
+        ? { kind: "agent.restart", agent, skipConfigCheck: true }
+        : { kind: "agent.restart", agent }),
     )
     if (!response.ok) return `daemon restart skipped: ${response.error ?? response.message ?? "unknown daemon error"}`
 
@@ -5585,7 +5588,12 @@ async function executeProviderRefresh(
   const reload = await runCommandProgressPhase(
     progress,
     `applying change to running ${command.agent}`,
-    () => applyRuntimeChangeToRunningAgent(command.agent, deps, (message) => progress.updateDetail(message)),
+    () => applyRuntimeChangeToRunningAgent(
+      command.agent,
+      deps,
+      (message) => progress.updateDetail(message),
+      { skipRestartConfigCheck: true },
+    ),
     (result) => result,
   )
   progress.end()

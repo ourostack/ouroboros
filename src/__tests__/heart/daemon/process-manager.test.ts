@@ -458,6 +458,39 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("running")
   })
 
+  it("skips config validation for restart paths that already refreshed credentials", async () => {
+    const first = new MockChild()
+    const second = new MockChild()
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(second)
+    now.mockReturnValue(1_000)
+    const configCheck = vi.fn(() => {
+      throw new Error("config check should be skipped")
+    })
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      configCheck,
+      statusWriter: () => {},
+    })
+
+    await manager.startAgent("slugger", { skipConfigCheck: true })
+    await manager.restartAgent("slugger", { skipConfigCheck: true })
+
+    expect(configCheck).not.toHaveBeenCalled()
+    expect(first.kill).toHaveBeenCalledWith("SIGTERM")
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: second.pid,
+      errorReason: null,
+      fixHint: null,
+    }))
+  })
+
   it("recovers a stale pending startup without letting the old check spawn later", async () => {
     const staleCheck = createDeferred<{ ok: boolean }>()
     const freshChild = new MockChild()

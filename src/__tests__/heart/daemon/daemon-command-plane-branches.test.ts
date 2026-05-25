@@ -978,6 +978,18 @@ describe("daemon command plane branches", () => {
     expect(processManager.restartAgent).toHaveBeenCalledWith("slugger")
   })
 
+  it("passes skipConfigCheck to acknowledged agent restarts when requested", async () => {
+    const socketPath = tmpSocketPath("daemon-agent-restart-skip-config")
+    const { daemon, processManager } = make(socketPath)
+    processManager.listAgentSnapshots.mockReturnValue([{ name: "slugger" }])
+    processManager.restartAgent = vi.fn(async () => undefined)
+
+    const response = await daemon.handleCommand({ kind: "agent.restart", agent: "slugger", skipConfigCheck: true })
+
+    expect(response).toEqual({ ok: true, message: "restart requested for slugger" })
+    expect(processManager.restartAgent).toHaveBeenCalledWith("slugger", { skipConfigCheck: true })
+  })
+
   it("reports unknown agent restarts without starting async work", async () => {
     const socketPath = tmpSocketPath("daemon-agent-restart-unknown")
     const { daemon, processManager } = make(socketPath)
