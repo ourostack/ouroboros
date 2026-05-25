@@ -106,6 +106,43 @@ describe("applyPendingUpdates", () => {
     )
   })
 
+  it("skips no-agent default.ouro directories", async () => {
+    const bundlesRoot = createTempDir("update-hooks-default-skip-")
+    const defaultDir = path.join(bundlesRoot, "default.ouro")
+    fs.mkdirSync(defaultDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(defaultDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.0.1", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+
+    expect(hook).not.toHaveBeenCalled()
+    expect(result.updated).toHaveLength(0)
+  })
+
+  it("processes default.ouro when it has an agent.json", async () => {
+    const bundlesRoot = createTempDir("update-hooks-default-agent-")
+    const defaultDir = path.join(bundlesRoot, "default.ouro")
+    fs.mkdirSync(defaultDir, { recursive: true })
+    fs.writeFileSync(path.join(defaultDir, "agent.json"), JSON.stringify({ name: "default" }))
+    fs.writeFileSync(
+      path.join(defaultDir, "bundle-meta.json"),
+      JSON.stringify({ runtimeVersion: "0.0.1", bundleSchemaVersion: 1, lastUpdated: "2025-01-01T00:00:00Z" }),
+    )
+
+    const hook = vi.fn((_ctx: UpdateHookContext): UpdateHookResult => ({ ok: true }))
+    registerUpdateHook(hook)
+
+    const result = await applyPendingUpdates(bundlesRoot, "0.1.0")
+
+    expect(hook).toHaveBeenCalledWith(expect.objectContaining({ agentRoot: defaultDir }))
+    expect(result.updated).toContainEqual({ agent: "default", from: "0.0.1", to: "0.1.0" })
+  })
+
   it("handles empty bundles directory", async () => {
     const bundlesRoot = createTempDir("update-hooks-empty-")
 

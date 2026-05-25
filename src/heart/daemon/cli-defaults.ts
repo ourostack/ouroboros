@@ -103,6 +103,8 @@ export function readFirstBundleMetaVersion(bundlesRoot: string): string | undefi
     for (const entry of entries) {
       /* v8 ignore next -- skip non-.ouro dirs: tested via version-detect tests @preserve */
       if (!entry.isDirectory() || !entry.name.endsWith(".ouro")) continue
+      const agentJsonPath = path.join(bundlesRoot, entry.name, "agent.json")
+      if (entry.name === "default.ouro" && !fs.existsSync(agentJsonPath)) continue
       const metaPath = path.join(bundlesRoot, entry.name, "bundle-meta.json")
       if (!fs.existsSync(metaPath)) continue
       const raw = fs.readFileSync(metaPath, "utf-8")
