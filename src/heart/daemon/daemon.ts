@@ -1384,9 +1384,29 @@ export class OuroDaemon {
       case "agent.stop":
         await this.processManager.stopAgent?.(command.agent)
         return { ok: true, message: `stopped ${command.agent}` }
-      case "agent.restart":
-        await this.processManager.restartAgent?.(command.agent)
-        return { ok: true, message: `restarted ${command.agent}` }
+      case "agent.restart": {
+        if (!this.processManager.restartAgent) {
+          return { ok: false, error: "Managed agent restart is not available." }
+        }
+        const managed = this.processManager.listAgentSnapshots()
+          .some((snapshot) => snapshot.name === command.agent)
+        if (!managed) {
+          return { ok: false, error: `Unknown managed agent '${command.agent}'.` }
+        }
+        void this.processManager.restartAgent(command.agent).catch((error) => {
+          emitNervesEvent({
+            level: "error",
+            component: "daemon",
+            event: "daemon.agent_restart_request_error",
+            message: "managed agent restart failed after request acknowledgement",
+            meta: {
+              agent: command.agent,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          })
+        })
+        return { ok: true, message: `restart requested for ${command.agent}` }
+      }
       case "agent.ask":
         return handleAgentAskTurn(command, { socketPath: this.socketPath })
       case "agent.status":
