@@ -101,6 +101,29 @@ describe("openai-codex token refresh", () => {
     expect(upsertCredential).not.toHaveBeenCalled()
   })
 
+  it("skips network refresh for non-expiring opaque Codex access tokens", async () => {
+    emitTestEvent("openai codex refresh skip non expiring opaque token")
+    const freshRecord = makeRecord({
+      credentials: {
+        oauthAccessToken: "opaque-access-token",
+        refreshToken: "fresh-refresh",
+      },
+    })
+    const fetchImpl = vi.fn()
+    const upsertCredential = vi.fn()
+
+    const result = await refreshOpenAICodexProviderCredentials("slugger", {
+      record: freshRecord,
+      now: new Date("2026-05-25T11:00:00.000Z"),
+      fetchImpl: fetchImpl as never,
+      upsertCredential: upsertCredential as never,
+    })
+
+    expect(result).toEqual({ ok: true, refreshed: false, record: freshRecord })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(upsertCredential).not.toHaveBeenCalled()
+  })
+
   it("loads the vault record when one is not supplied and skips a fresh JWT-derived expiry", async () => {
     emitTestEvent("openai codex refresh loads fresh record")
     const freshRecord = makeRecord({
