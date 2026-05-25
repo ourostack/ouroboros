@@ -683,7 +683,7 @@ function bootPhasePlan(_daemonAlive: boolean): readonly string[] {
   return ["update check", "system setup", "sync probe", "starting daemon", "provider checks", "final daemon check"]
 }
 
-const FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS = 20_000
+const FINAL_DAEMON_HEALTH_SETTLE_TIMEOUT_MS = 90_000
 const FINAL_DAEMON_HEALTH_SETTLE_POLL_INTERVAL_MS = 500
 
 /**

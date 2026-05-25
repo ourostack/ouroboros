@@ -400,6 +400,59 @@ describe("ouro up: UpProgress integration", () => {
     expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("final daemon check", "daemon answered")
   })
 
+  it("waits through a full periodic health cycle by default before failing final handoff", async () => {
+    mocks.upProgressCompletePhase.mockClear()
+    let now = 0
+    const sleep = vi.fn(async (ms: number) => {
+      now += ms
+    })
+    const deps = makeDeps({
+      now: () => now,
+      sleep,
+      finalDaemonHealthSettlePollIntervalMs: 10_000,
+      checkSocketAlive: vi.fn().mockResolvedValue(true),
+      sendCommand: vi.fn(async (_socketPath, command) => {
+        if (command.kind === "daemon.status") {
+          if (now < 65_000) {
+            return {
+              ok: true,
+              summary: "running",
+              data: {
+                overview: {
+                  daemon: "running",
+                  health: "warn",
+                  socketPath: "/tmp/ouro-test.sock",
+                  version: "0.1.0-alpha.20",
+                  lastUpdated: "2026-03-09T11:00:00.000Z",
+                  workerCount: 0,
+                  senseCount: 1,
+                },
+                senses: [
+                  {
+                    agent: "slugger",
+                    sense: "voice",
+                    enabled: true,
+                    status: "error",
+                    detail: "canary has not completed the next health cycle",
+                  },
+                ],
+                workers: [],
+              },
+            }
+          }
+          return daemonStatusOk()
+        }
+        return { ok: true, summary: "ok" }
+      }),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).not.toContain("background service stopped before boot finished")
+    expect(sleep).toHaveBeenCalledWith(10_000)
+    expect(mocks.upProgressCompletePhase).toHaveBeenCalledWith("final daemon check", "daemon answered")
+  })
+
   it("reports the last degraded runtime health after the settle window expires", async () => {
     let now = 0
     let statusCalls = 0
