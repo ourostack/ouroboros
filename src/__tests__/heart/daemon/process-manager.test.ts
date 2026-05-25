@@ -862,6 +862,43 @@ describe("daemon process manager", () => {
     expect(manager.getAgentSnapshot("slugger")?.status).toBe("stopped")
   })
 
+  it("ignores stale exits from a child that was replaced during restart", async () => {
+    const first = new MockChild()
+    first.pid = 111
+    first.kill.mockImplementation(() => {
+      first.connected = false
+      return true
+    })
+    const second = new MockChild()
+    second.pid = 222
+    spawn.mockReturnValueOnce(first).mockReturnValueOnce(second)
+    now.mockReturnValue(1_000)
+
+    const manager = new DaemonProcessManager({
+      agents,
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 222,
+    }))
+
+    first.emit("exit", null, "SIGTERM")
+
+    expect(manager.getAgentSnapshot("slugger")).toEqual(expect.objectContaining({
+      status: "running",
+      pid: 222,
+    }))
+    expect(timers).toHaveLength(0)
+  })
+
   it("lists snapshots and stops all managed agents", async () => {
     const child = new MockChild()
     spawn.mockReturnValue(child)

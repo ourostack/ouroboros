@@ -494,7 +494,7 @@ export class DaemonProcessManager {
       /* v8 ignore stop */
 
       child.once("exit", (code, signal) => {
-        this.onExit(state, code, signal)
+        this.onExit(state, child, code, signal)
       })
     } finally {
       if (this.isStartAttemptCurrent(state, attemptId)) {
@@ -693,8 +693,8 @@ export class DaemonProcessManager {
     return [...this.agents.values()].map((state) => state.snapshot)
   }
 
-  private onExit(state: AgentRuntimeState, code: number | null, signal: NodeJS.Signals | null): void {
-    if (!state.process) return
+  private onExit(state: AgentRuntimeState, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
+    if (state.process !== child) return
     state.process = null
     state.startInFlight = false
     state.startAttemptedAtMs = null
