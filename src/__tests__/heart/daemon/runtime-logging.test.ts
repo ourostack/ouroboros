@@ -47,7 +47,7 @@ describe("daemon runtime logging", () => {
 
   it("uses daemon logging config to disable terminal sink", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, ".ouro-cli", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(
       configPath,
@@ -68,7 +68,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "daemon.ndjson")
     const body = await waitForLogContent(logFile, "\"event\":\"daemon.custom_event\"")
     expect(body).toContain("\"event\":\"daemon.custom_event\"")
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] ndjson only")
@@ -92,10 +92,11 @@ describe("daemon runtime logging", () => {
       meta: { ok: true },
     })
 
-    const logFile = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logs", "ouro.ndjson")
+    const logFile = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "ouro.ndjson")
     const body = await waitForLogContent(logFile, "\"event\":\"daemon.default_sink_test\"")
     expect(body).toContain("\"event\":\"daemon.default_sink_test\"")
     expect(stderrChunks.join("")).not.toContain("INFO [daemon] default sinks")
+    expect(fs.existsSync(path.join(tmpRoot, "AgentBundles", "default.ouro"))).toBe(false)
 
     stderrSpy.mockRestore()
   })
@@ -133,7 +134,7 @@ describe("daemon runtime logging", () => {
 
   it("falls back when logging config JSON is not an object", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, ".ouro-cli", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, "42\n", "utf-8")
 
@@ -151,7 +152,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "daemon.ndjson")
     expect(await waitForLogContent(logFile, "\"event\":\"daemon.non_object_config\""))
       .toContain("\"event\":\"daemon.non_object_config\"")
     expect(stderrChunks.join("")).toContain("INFO [daemon] non-object config fallback")
@@ -159,7 +160,7 @@ describe("daemon runtime logging", () => {
 
   it("accepts every valid level and falls back from invalid level/sink entries", async () => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
-    const configPath = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logging.json")
+    const configPath = path.join(tmpRoot, ".ouro-cli", "daemon", "logging.json")
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
 
     const stderrChunks: string[] = []
@@ -210,7 +211,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logs", "daemon.ndjson")
+    const logFile = path.join(tmpRoot, ".ouro-cli", "daemon", "logs", "daemon.ndjson")
     const body = await waitForLogContent(logFile, "\"event\":\"daemon.non_array_sinks\"")
     expect(body).toContain("\"event\":\"daemon.level_debug\"")
     expect(body).toContain("\"event\":\"daemon.level_warn\"")
@@ -293,7 +294,7 @@ describe("daemon runtime logging", () => {
       return true
     })
 
-    configureDaemonRuntimeLogger("bluebubbles", { homeDir: tmpRoot })
+    configureDaemonRuntimeLogger("bluebubbles", { homeDir: tmpRoot, agentName: "slugger" })
     emitNervesEvent({
       level: "warn",
       component: "daemon",
@@ -302,7 +303,7 @@ describe("daemon runtime logging", () => {
       meta: {},
     })
 
-    const logFile = path.join(tmpRoot, "AgentBundles", "default.ouro", "state", "daemon", "logs", "bluebubbles.ndjson")
+    const logFile = path.join(tmpRoot, "AgentBundles", "slugger.ouro", "state", "daemon", "logs", "bluebubbles.ndjson")
     expect(await waitForLogContent(logFile, "\"event\":\"daemon.bluebubbles_runtime_default\""))
       .toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")

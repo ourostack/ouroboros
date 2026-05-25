@@ -48,6 +48,28 @@ describe("readFirstBundleMetaVersion", () => {
     expect(readFirstBundleMetaVersion(bundlesRoot)).toBeUndefined()
   })
 
+  it("skips default.ouro without an agent.json", () => {
+    const bundlesRoot = createTempDir("version-detect-default-skip-")
+    const defaultDir = path.join(bundlesRoot, "default.ouro")
+    fs.mkdirSync(defaultDir, { recursive: true })
+    fs.writeFileSync(path.join(defaultDir, "bundle-meta.json"), JSON.stringify({ runtimeVersion: "0.1.0-alpha.66" }))
+    const agentDir = path.join(bundlesRoot, "slugger.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, "bundle-meta.json"), JSON.stringify({ runtimeVersion: "0.1.0-alpha.67" }))
+
+    expect(readFirstBundleMetaVersion(bundlesRoot)).toBe("0.1.0-alpha.67")
+  })
+
+  it("reads default.ouro when it has an agent.json", () => {
+    const bundlesRoot = createTempDir("version-detect-default-agent-")
+    const agentDir = path.join(bundlesRoot, "default.ouro")
+    fs.mkdirSync(agentDir, { recursive: true })
+    fs.writeFileSync(path.join(agentDir, "agent.json"), JSON.stringify({ name: "default" }))
+    fs.writeFileSync(path.join(agentDir, "bundle-meta.json"), JSON.stringify({ runtimeVersion: "0.1.0-alpha.68" }))
+
+    expect(readFirstBundleMetaVersion(bundlesRoot)).toBe("0.1.0-alpha.68")
+  })
+
   it("returns undefined when bundle-meta.json is malformed", () => {
     const bundlesRoot = createTempDir("version-detect-malformed-")
     const agentDir = path.join(bundlesRoot, "test.ouro")

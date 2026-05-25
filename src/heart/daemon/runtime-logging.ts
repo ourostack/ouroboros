@@ -10,6 +10,7 @@ import {
 } from "../../nerves"
 import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
 import { getAgentDaemonLoggingConfigPath, getAgentDaemonLogsDir, getAgentName } from "../identity"
+import { getOuroCliHome } from "../versioning/ouro-version-manager"
 
 export type RuntimeSink = "terminal" | "ndjson"
 
@@ -25,6 +26,7 @@ export interface ConfigureDaemonRuntimeLoggerOptions {
 }
 
 type RuntimeProcessName = "daemon" | "ouro" | "ouro-bot" | "bluebubbles" | "mail" | "voice"
+type LoggingPathTarget = { kind: "agent"; agentName: string } | { kind: "machine" }
 
 const LEGACY_SHARED_RUNTIME_LOGGING: RuntimeLoggingConfig = {
   level: "info",
@@ -101,12 +103,22 @@ function resolveRuntimeLoggingConfig(configPath: string, processName: RuntimePro
   }
 }
 
-function resolveAgentNameForPaths(explicit?: string): string {
-  if (explicit && explicit.trim().length > 0) return explicit.trim()
+function machineDaemonLoggingConfigPath(homeDir?: string): string {
+  return path.join(getOuroCliHome(homeDir), "daemon", "logging.json")
+}
+
+function machineDaemonLogsDir(homeDir?: string): string {
+  return path.join(getOuroCliHome(homeDir), "daemon", "logs")
+}
+
+function resolveLoggingPathTarget(explicit?: string): LoggingPathTarget {
+  if (explicit && explicit.trim().length > 0) {
+    return { kind: "agent", agentName: explicit.trim() }
+  }
   try {
-    return getAgentName()
+    return { kind: "agent", agentName: getAgentName() }
   } catch {
-    return "default"
+    return { kind: "machine" }
   }
 }
 
@@ -114,16 +126,20 @@ export function configureDaemonRuntimeLogger(
   processName: RuntimeProcessName,
   options: ConfigureDaemonRuntimeLoggerOptions = {},
 ): void {
-  const agentName = resolveAgentNameForPaths(options.agentName)
+  const pathTarget = resolveLoggingPathTarget(options.agentName)
   const configPath = options.configPath
-    ?? (options.homeDir
-      ? path.join(options.homeDir, "AgentBundles", `${agentName}.ouro`, "state", "daemon", "logging.json")
-      : getAgentDaemonLoggingConfigPath(agentName))
+    ?? (pathTarget.kind === "machine"
+      ? machineDaemonLoggingConfigPath(options.homeDir)
+      : options.homeDir
+        ? path.join(options.homeDir, "AgentBundles", `${pathTarget.agentName}.ouro`, "state", "daemon", "logging.json")
+        : getAgentDaemonLoggingConfigPath(pathTarget.agentName))
   const config = resolveRuntimeLoggingConfig(configPath, processName)
 
-  const logsDir = options.homeDir
-    ? path.join(options.homeDir, "AgentBundles", `${agentName}.ouro`, "state", "daemon", "logs")
-    : getAgentDaemonLogsDir(agentName)
+  const logsDir = pathTarget.kind === "machine"
+    ? machineDaemonLogsDir(options.homeDir)
+    : options.homeDir
+      ? path.join(options.homeDir, "AgentBundles", `${pathTarget.agentName}.ouro`, "state", "daemon", "logs")
+      : getAgentDaemonLogsDir(pathTarget.agentName)
 
   // Rotation policy per daemon ndjson stream (Unit 1c):
   //   25 MB threshold x 5 gzipped generations = ~30 MB peak per stream.
@@ -156,6 +172,7 @@ export function configureDaemonRuntimeLogger(
       level: config.level,
       sinks: config.sinks,
       configPath,
+      pathTarget,
     },
   })
 }
