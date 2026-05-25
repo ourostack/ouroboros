@@ -234,6 +234,8 @@ describe("daemon entrypoint", () => {
         expect.objectContaining({ from: "slugger", to: "ouroboros", content: "hi" }),
       ]),
     )
+    expect(fs.existsSync(path.join(testHomeRoot, ".ouro-cli", "daemon", "messages"))).toBe(true)
+    expect(fs.existsSync(path.join(testHomeRoot, "AgentBundles", "default.ouro"))).toBe(false)
 
     expect(emitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({

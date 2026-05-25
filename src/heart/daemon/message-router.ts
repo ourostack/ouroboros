@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentMessagesRoot } from "../identity"
+import { getOuroCliHome } from "../versioning/ouro-version-manager"
 
 export interface RoutedMessage {
   id: string
@@ -16,7 +16,12 @@ export interface RoutedMessage {
 
 export interface FileMessageRouterOptions {
   baseDir?: string
+  homeDir?: string
   now?: () => string
+}
+
+export function getDaemonMessageRouterDir(homeDir?: string): string {
+  return path.join(getOuroCliHome(homeDir), "daemon", "messages")
 }
 
 function messageId(nowIso: string): string {
@@ -28,7 +33,7 @@ export class FileMessageRouter {
   private readonly now: () => string
 
   constructor(options: FileMessageRouterOptions = {}) {
-    this.baseDir = options.baseDir ?? getAgentMessagesRoot()
+    this.baseDir = options.baseDir ?? getDaemonMessageRouterDir(options.homeDir)
     this.now = options.now ?? (() => new Date().toISOString())
     fs.mkdirSync(this.baseDir, { recursive: true })
   }

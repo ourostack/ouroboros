@@ -3,7 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { FileMessageRouter } from "../../../heart/daemon/message-router"
+import { FileMessageRouter, getDaemonMessageRouterDir } from "../../../heart/daemon/message-router"
 
 describe("FileMessageRouter", () => {
   const tempDirs: string[] = []
@@ -13,6 +13,30 @@ describe("FileMessageRouter", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
     tempDirs.length = 0
+  })
+
+  it("defaults to machine-scoped daemon storage without creating a default agent bundle", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-home-"))
+    tempDirs.push(homeDir)
+
+    const router = new FileMessageRouter({
+      homeDir,
+      now: () => "2026-05-25T08:08:09.010Z",
+    })
+
+    expect(getDaemonMessageRouterDir(homeDir)).toBe(path.join(homeDir, ".ouro-cli", "daemon", "messages"))
+    expect(fs.existsSync(path.join(homeDir, ".ouro-cli", "daemon", "messages"))).toBe(true)
+    expect(fs.existsSync(path.join(homeDir, "AgentBundles", "default.ouro"))).toBe(false)
+
+    await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "hello from daemon storage",
+    })
+    expect(router.pollInbox("ouroboros")).toEqual([
+      expect.objectContaining({ content: "hello from daemon storage" }),
+    ])
+    expect(fs.existsSync(path.join(homeDir, "AgentBundles", "default.ouro"))).toBe(false)
   })
 
   it("queues messages with default priority and empties inbox after polling", async () => {
