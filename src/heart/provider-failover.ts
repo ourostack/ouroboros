@@ -66,6 +66,7 @@ export type FailoverAction =
     credentialRevision?: string
     source?: ProviderCredentialProvenanceSource
   }
+  | { action: "refresh"; provider: AgentProvider; lane: ProviderLane }
   | { action: "dismiss" }
 
 const CLASSIFICATION_LABELS: Record<ProviderErrorClassification, string> = {
@@ -214,6 +215,9 @@ export function buildFailoverContext(
   if (classification === "auth-failure") {
     lines.push("")
     lines.push("To keep using the current provider:")
+    if (currentProvider === "openai-codex") {
+      lines.push(`  - Reply "refresh openai-codex" to try the saved refresh token from this chat.`)
+    }
     lines.push(`  1. Run \`ouro auth --agent ${agentName} --provider ${currentProvider}\``)
   }
 
@@ -281,11 +285,22 @@ export function handleFailoverReply(
   context: FailoverContext,
 ): FailoverAction {
   const lower = reply.toLowerCase().trim()
+  const currentProvider = context.currentProvider
+  const currentLane = context.currentLane ?? "outward"
+  if (
+    context.classification === "auth-failure"
+    && (
+      lower.includes(`refresh ${currentProvider}`)
+      || lower.includes(`reauth ${currentProvider}`)
+      || (currentProvider === "openai-codex" && (lower.includes("refresh codex") || lower.includes("reauth codex")))
+    )
+  ) {
+    return { action: "refresh", provider: currentProvider, lane: currentLane }
+  }
   const readyProviders = context.readyProviders ?? context.workingProviders.map((provider) => ({
     provider,
     model: resolveModelForProviderDisplay(provider),
   }))
-  const currentLane = context.currentLane ?? "outward"
   for (const candidate of readyProviders) {
     if (lower.includes(`switch to ${candidate.provider}`) || lower === candidate.provider) {
       return {
