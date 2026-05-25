@@ -407,6 +407,56 @@ describe("openai-codex token refresh", () => {
     expect(localAuth.tokens.refresh_token).toBe("new-refresh")
   })
 
+  it("retries local Codex rescue after a transport failure without an HTTP status", async () => {
+    emitTestEvent("openai codex refresh transport local rescue")
+    const homeDir = makeTempDir("codex-auth-transport-rescue-home")
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true })
+    fs.writeFileSync(path.join(homeDir, ".codex", "auth.json"), `${JSON.stringify({
+      tokens: {
+        access_token: "local-access",
+        refresh_token: "local-refresh",
+      },
+    }, null, 2)}\n`, "utf8")
+    const newAccess = makeJwt(Date.parse("2026-05-25T13:00:00.000Z"))
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: newAccess,
+        refresh_token: "new-refresh",
+      }), { status: 200 }))
+    const upsertCredential = vi.fn(async (input: {
+      credentials: Record<string, string | number>
+      config: Record<string, string | number>
+      provenance: { source: "auth-flow" | "manual" }
+    }) => ({
+      provider: "openai-codex" as const,
+      revision: "vault_new",
+      updatedAt: "2026-05-25T12:00:00.000Z",
+      credentials: input.credentials,
+      config: input.config,
+      provenance: { source: input.provenance.source, updatedAt: "2026-05-25T12:00:00.000Z" },
+    }))
+
+    const result = await refreshOpenAICodexProviderCredentials("slugger", {
+      record: makeRecord({ credentials: { oauthAccessToken: "old-access", refreshToken: "old-refresh" } }),
+      now: new Date("2026-05-25T12:00:00.000Z"),
+      fetchImpl: fetchImpl as never,
+      upsertCredential: upsertCredential as never,
+      homeDir,
+      force: true,
+    })
+
+    expect(result).toMatchObject({ ok: true, refreshed: true })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, "https://auth.openai.com/oauth/token", expect.objectContaining({
+      body: JSON.stringify({
+        client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+        grant_type: "refresh_token",
+        refresh_token: "local-refresh",
+      }),
+    }))
+  })
+
   it("refreshes with the previous refresh token when the endpoint returns only a new access token", async () => {
     emitTestEvent("openai codex refresh keeps previous refresh token")
     const newAccess = makeJwt(Date.parse("2026-05-25T13:00:00.000Z"))
