@@ -88,6 +88,12 @@ describe("daemon CLI default dependency branches", () => {
       await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       expect(writeLaunchAgentPlist).toHaveBeenCalledOnce()
+      expect(writeLaunchAgentPlist).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          logDir: path.join(tempHome, ".ouro-cli", "daemon", "logs"),
+        }),
+      )
     } finally {
       vi.doUnmock("../../../heart/daemon/launchd")
       restorePlatform()
@@ -213,9 +219,10 @@ describe("daemon CLI default dependency branches", () => {
       await deps.ensureDaemonBootPersistence?.("/tmp/daemon.sock")
 
       const plistPath = path.join(tempHome, "Library", "LaunchAgents", "bot.ouro.daemon.plist")
-      const logDir = path.join(tempHome, "AgentBundles", "slugger.ouro", "state", "daemon", "logs")
+      const logDir = path.join(tempHome, ".ouro-cli", "daemon", "logs")
       expect(fs.existsSync(plistPath)).toBe(true)
       expect(fs.existsSync(logDir)).toBe(true)
+      expect(fs.existsSync(path.join(tempHome, "AgentBundles", "default.ouro"))).toBe(false)
 
       const plist = fs.readFileSync(plistPath, "utf-8")
       expect(plist).toContain(process.execPath)
