@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.646",
+      "changes": [
+        "Provider refresh runtime-apply hardening: daemon agent.restart commands now acknowledge once restart work is accepted instead of holding the command socket open through slow provider/vault startup checks, so `ouro provider refresh` can poll daemon status without timing out or leaving the CLI process stuck."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.645",
       "changes": [
         "Rescue openai-codex refresh when the vault refresh token has rotated by retrying with the local Codex login, and classify sign-in-required refresh failures as human-required."
