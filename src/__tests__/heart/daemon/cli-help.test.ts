@@ -265,6 +265,12 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("a2a")
   })
 
+  it("returns focused help for A2A subcommands", () => {
+    expect(getCommandHelp("a2a card")).toContain("ouro a2a card [--agent <name>]")
+    expect(getCommandHelp("a2a onboard")).toContain("ouro a2a onboard [--agent <name>] --card-url <url>")
+    expect(getCommandHelp("a2a serve")).toContain("ouro a2a serve [--agent <name>]")
+  })
+
   it("returns focused help for mail import-mbox", () => {
     const result = getCommandHelp("mail import-mbox")
 
@@ -385,6 +391,9 @@ describe("parseOuroCommand help handling", () => {
     expect(parseOuroCommand(["auth", "switch", "--help"])).toEqual({ kind: "help", command: "auth switch" })
     expect(parseOuroCommand(["provider", "refresh", "--help"])).toEqual({ kind: "help", command: "provider refresh" })
     expect(parseOuroCommand(["use", "--help"])).toEqual({ kind: "help", command: "use" })
+    expect(parseOuroCommand(["a2a", "card", "--help"])).toEqual({ kind: "help", command: "a2a card" })
+    expect(parseOuroCommand(["a2a", "onboard", "--help"])).toEqual({ kind: "help", command: "a2a onboard" })
+    expect(parseOuroCommand(["a2a", "serve", "--help"])).toEqual({ kind: "help", command: "a2a serve" })
   })
 })
 
@@ -471,6 +480,14 @@ describe("runOuroCli help execution", () => {
     await expect(runOuroCli(["help", "auth", "switch"], deps)).resolves.toContain("ouro auth switch [--agent <name>]")
     await expect(runOuroCli(["help", "provider", "refresh"], deps)).resolves.toContain("ouro provider refresh [--agent <name>]")
     await expect(runOuroCli(["help", "use"], deps)).resolves.toContain("ouro use [--agent <name>]")
+  })
+
+  it("ouro help covers documented A2A subcommands", async () => {
+    const deps = makeDeps()
+
+    await expect(runOuroCli(["help", "a2a", "card"], deps)).resolves.toContain("ouro a2a card [--agent <name>]")
+    await expect(runOuroCli(["a2a", "onboard", "--help"], deps)).resolves.toContain("ouro a2a onboard [--agent <name>] --card-url <url>")
+    await expect(runOuroCli(["a2a", "serve", "--help"], deps)).resolves.toContain("ouro a2a serve [--agent <name>]")
   })
 
   it("ouro help <unknown> outputs fallback grouped help", async () => {
