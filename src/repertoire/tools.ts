@@ -284,6 +284,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     readPaths: editFileReadTracker,
     trustLevel: ctx?.context?.friend?.trustLevel,
     agentRoot: ctx?.agentRoot ?? safeGetAgentRoot(),
+    friendId: ctx?.context?.friend?.id,
     ...(mcpDef?.mcpServer ? { mcpServerName: mcpDef.mcpServer } : {}),
     ...((ctx?.context as any)?.isGroupChat !== undefined ? { isGroupChat: (ctx?.context as any).isGroupChat } : {}),
   }

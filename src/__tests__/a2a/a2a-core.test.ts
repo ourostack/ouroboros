@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { buildA2AAgentCard } from "../../a2a/card"
 import { defaultA2APort, normalizeA2APath } from "../../a2a/config"
@@ -60,8 +62,8 @@ describe("A2A core substrate", () => {
     const task = await sendA2AMessage({
       endpointUrl: server.endpointUrl,
       message: "hello peer",
-      peerAgentId: "peer-agent",
-      peerName: "Peer Agent",
+      senderAgentId: "local-agent",
+      senderName: "Local Agent",
       sessionKey: "case-1",
     })
     expect(task.status.state).toBe("TASK_STATE_COMPLETED")
@@ -123,16 +125,23 @@ describe("A2A core substrate", () => {
       status: { state: "TASK_STATE_COMPLETED", timestamp: new Date().toISOString() },
       history: [],
     }
+    let directRequest: A2AJsonRpcRequest | null = null
     const direct = await sendA2AMessage({
       endpointUrl: "https://legacy.example/a2a",
       message: "hello",
-      fetchImpl: async () => new Response(JSON.stringify({
+      senderCardUrl: "https://local.example/card",
+      fetchImpl: async (_url, init) => {
+        directRequest = JSON.parse(String(init?.body ?? "{}")) as A2AJsonRpcRequest
+        return new Response(JSON.stringify({
         jsonrpc: "2.0",
         id: "rpc-1",
         result: directTask,
-      }), { status: 200 }) as Response,
+        }), { status: 200 }) as Response
+      },
     })
     expect(direct.id).toBe("task-direct")
+    expect((directRequest?.params as { message?: { metadata?: Record<string, string> } }).message?.metadata?.senderCardUrl)
+      .toBe("https://local.example/card")
 
     await expect(getA2ATask({
       endpointUrl: "https://bad.example/a2a",
@@ -200,12 +209,67 @@ describe("A2A core substrate", () => {
         messageId: "message-1",
         taskId: "task-1",
         parts: [{ text: "legacy hello" }, { text: "" }, null],
+        metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
       },
     }, {
       "x-a2a-agent-id": "header-peer",
       "x-a2a-agent-name": "Header Peer",
     })
     expect("result" in legacySend ? legacySend.result.task.status.state : "").toBe("TASK_STATE_COMPLETED")
+    expect("result" in legacySend ? legacySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain("route:unauthenticated-a2a:")
+    expect("result" in legacySend ? legacySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Claimed Peer:default:legacy hello")
+
+    const headerOnlySend = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-header",
+        parts: [{ text: "header hello" }],
+      },
+    }, {
+      "x-a2a-agent-id": "header-peer",
+      "x-a2a-agent-name": "Header Peer",
+    })
+    expect("result" in headerOnlySend ? headerOnlySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Header Peer:default:header hello")
+
+    const legacyMetadataSend = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-legacy-metadata",
+        parts: [{ text: "legacy metadata hello" }],
+        metadata: { cardUrl: "https://claimed.example/card", agentName: "Legacy Metadata Peer" },
+      },
+    })
+    expect("result" in legacyMetadataSend ? legacyMetadataSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Legacy Metadata Peer:default:legacy metadata hello")
+
+    const cardHintSend = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-card-hint",
+        parts: [{ text: "card hint hello" }],
+        metadata: { senderCardUrl: "https://sender.example/card" },
+      },
+    })
+    expect("result" in cardHintSend ? cardHintSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":https://sender.example/card:default:card hint hello")
+
+    const anonymousSend = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-anonymous",
+        parts: [{ text: "anonymous hello" }],
+      },
+    })
+    expect("result" in anonymousSend ? anonymousSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Unauthenticated A2A peer:default:anonymous hello")
+
+    const traversal = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-traversal",
+        taskId: "../../../agent",
+        parts: [{ text: "path traversal" }],
+      },
+    })
+    expect("result" in traversal ? traversal.result.task.id : "").toBe("../../../agent")
+    expect(fs.existsSync(path.join(tmp.agentRoot, "state", "agent.json"))).toBe(false)
 
     const missingGetId = await postRpc("GetTask", {})
     expect("error" in missingGetId ? missingGetId.error.message : "").toContain("requires id")

@@ -377,7 +377,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     runAgentOptions: {
       mcpManager,
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
-      ...(options.toolContext ? { toolContext: options.toolContext as ToolContext } : {}),
+      toolContext: {
+        signin: async () => undefined,
+        ...(options.toolContext ? options.toolContext as ToolContext : {}),
+        currentUserMessage: userMessage,
+      },
     },
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),

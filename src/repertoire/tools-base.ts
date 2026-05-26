@@ -97,6 +97,7 @@ export interface ToolContext {
   orientationFrame?: OrientationFrame;
   daemonSocketPath?: string;
   agentRoot?: string;
+  currentUserMessage?: string;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

@@ -41,6 +41,19 @@ function parseExpiryMinutes(raw: string | undefined): number | undefined {
   return value
 }
 
+function parseToolName(raw: string | undefined): string {
+  const toolName = raw?.trim()
+  if (!toolName) throw new Error("tool_name is required")
+  return toolName
+}
+
+function parseConstraints(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw?.trim()) return undefined
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("constraints_json must be a JSON object")
+  return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
+}
+
 export const commerceToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -54,11 +67,13 @@ export const commerceToolDefinitions: ToolDefinition[] = [
             merchant: { type: "string", description: "Merchant, provider, or counterparty name." },
             amount: { type: "string", description: "Exact total amount." },
             currency: { type: "string", description: "Currency code, e.g. usd." },
+            tool_name: { type: "string", description: "Exact tool this authority may be used with, e.g. stripe_create_card, flight_hold, or flight_book." },
+            constraints_json: { type: "string", description: "Optional JSON object of exact tool-argument constraints, e.g. {\"offer_id\":\"off_123\"}." },
             reason: { type: "string", description: "Why this purchase/booking is being made." },
             items_json: { type: "string", description: "Optional JSON array of {name, quantity, amount} items." },
             expires_minutes: { type: "string", description: "Optional expiry window in minutes; defaults to 30." },
           },
-          required: ["merchant", "amount", "currency", "reason"],
+          required: ["merchant", "amount", "currency", "tool_name", "reason"],
         },
       },
     },
@@ -73,12 +88,15 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       if (typeof guard === "string") return guard
       try {
         const expiresInMinutes = parseExpiryMinutes(args.expires_minutes)
+        const toolName = parseToolName(args.tool_name)
         const record = createCommercePreview({
           agentRoot: guard.agentRoot,
           friendId: guard.friendId,
           merchant: args.merchant,
           amount: Number.parseFloat(args.amount),
           currency: args.currency,
+          allowedTools: [toolName],
+          constraints: parseConstraints(args.constraints_json),
           reason: args.reason,
           items: parseItems(args.items_json),
           ...(expiresInMinutes ? { expiresInMinutes } : {}),
@@ -88,9 +106,11 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           merchant: record.merchant,
           amount: record.amount,
           currency: record.currency,
+          allowedTools: record.allowedTools,
+          constraints: record.constraints,
           expiresAt: record.expiresAt,
           digest: record.digest,
-          next: `Ask the family user to confirm exactly with ${confirmationPhrase()}, then call commerce_checkout_commit with checkout_id and digest.`,
+          next: `Ask the family user to send a new message containing ${confirmationPhrase()}, checkout ${record.id}, and digest ${record.digest}; then call commerce_checkout_commit from that same turn.`,
         }, null, 2)
       } catch (error) {
         return `commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`
@@ -132,6 +152,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           digest: args.digest,
           confirmation: args.confirmation,
           friendId: guard.friendId,
+          currentUserMessage: ctx?.currentUserMessage,
         })
         return JSON.stringify({
           checkoutId: record.id,

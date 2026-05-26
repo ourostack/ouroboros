@@ -167,6 +167,25 @@ function numberField(record: Record<string, unknown> | undefined, key: string, f
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
 }
 
+function a2aMachineRuntimeConfig(agent: string): Record<string, unknown> | undefined {
+  const runtimeConfig = readMachineRuntimeCredentialConfig(agent)
+  const payload = runtimeConfig.ok ? runtimeConfig.config : {}
+  const a2a = payload.a2a
+  return a2a && typeof a2a === "object" && !Array.isArray(a2a) ? a2a as Record<string, unknown> : undefined
+}
+
+function managedA2AArgs(agent: string): string[] {
+  const a2a = a2aMachineRuntimeConfig(agent)
+  const args = ["--port", String(numberField(a2a, "port", defaultA2APort(agent)))]
+  const host = textField(a2a, "host")
+  const endpointPath = normalizeA2APath(textField(a2a, "path") || A2A_DEFAULT_PATH)
+  const publicUrl = textField(a2a, "publicUrl")
+  if (host) args.push("--host", host)
+  args.push("--path", endpointPath)
+  if (publicUrl) args.push("--base-url", publicUrl)
+  return args
+}
+
 function compactRuntimeConfigError(agent: string, error: string): string {
   const compact = error.replace(/\s+/g, " ").trim()
   if (/credential vault is locked|vault locked|vault is locked/i.test(compact)) {
@@ -621,7 +640,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
-          ...(sense === "a2a" ? { args: ["--port", String(defaultA2APort(agent))] } : {}),
+          ...(sense === "a2a" ? { args: managedA2AArgs(agent) } : {}),
           getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })

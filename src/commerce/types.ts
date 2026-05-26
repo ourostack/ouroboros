@@ -16,6 +16,8 @@ export interface CommerceMandateRecord {
   items: CommerceMandateItem[]
   amount: number
   currency: string
+  allowedTools?: string[]
+  constraints?: Record<string, string>
   reason: string
   digest: string
   createdAt: string
@@ -23,6 +25,7 @@ export interface CommerceMandateRecord {
   expiresAt: string
   confirmedAt?: string
   confirmation?: string
+  confirmedByMessage?: string
   authorityToken?: string
 }
 

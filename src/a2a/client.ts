@@ -47,8 +47,9 @@ async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetc
 export async function sendA2AMessage(input: {
   endpointUrl: string
   message: string
-  peerAgentId?: string
-  peerName?: string
+  senderAgentId?: string
+  senderName?: string
+  senderCardUrl?: string
   sessionKey?: string
   fetchImpl?: typeof fetch
 }): Promise<A2ATask> {
@@ -65,8 +66,9 @@ export async function sendA2AMessage(input: {
         contextId: input.sessionKey ?? "default",
         parts: [{ text: input.message }],
         metadata: {
-          ...(input.peerAgentId ? { agentId: input.peerAgentId } : {}),
-          ...(input.peerName ? { agentName: input.peerName } : {}),
+          ...(input.senderAgentId ? { senderAgentId: input.senderAgentId } : {}),
+          ...(input.senderName ? { senderName: input.senderName } : {}),
+          ...(input.senderCardUrl ? { senderCardUrl: input.senderCardUrl } : {}),
         },
       },
     },

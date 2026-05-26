@@ -8,6 +8,7 @@ export interface GuardContext {
   readPaths: ReadonlySet<string>
   trustLevel?: TrustLevel
   agentRoot?: string
+  friendId?: string
   senseType?: string
   isGroupChat?: boolean
   /** For first-class MCP tools: the server this tool belongs to. */
@@ -342,6 +343,7 @@ function checkCommerceAuthorityGuardrails(toolName: string, args: Record<string,
     token: args.commerce_authority,
     toolName,
     args,
+    friendId: context.friendId,
   })
   if (result.ok) return allow
   return deny(`commerce authority required: ${result.reason}`)

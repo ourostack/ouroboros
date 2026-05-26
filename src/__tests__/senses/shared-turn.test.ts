@@ -371,6 +371,8 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.channel).toBe("mcp")
     expect(input.sessionKey).toBe("my-session")
+    expect(input.runAgentOptions.toolContext.currentUserMessage).toBe("hello")
+    await expect(input.runAgentOptions.toolContext.signin("anything")).resolves.toBeUndefined()
   })
 
   it("uses explicit remote identity for A2A turns", async () => {

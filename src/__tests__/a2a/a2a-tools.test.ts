@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
+import * as path from "node:path"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 import { FileFriendStore } from "../../mind/friends/store-file"
@@ -50,14 +51,14 @@ function friendRecord(input: Partial<FriendRecord> = {}): FriendRecord {
 }
 
 function requesterContext(input: {
-  agentRoot: string
+  agentRoot?: string
   store?: ToolContext["friendStore"]
   trustLevel?: FriendRecord["trustLevel"]
 }): ToolContext {
   const requester = friendRecord({ id: "requester", trustLevel: input.trustLevel ?? "family", kind: "human" })
   return {
     signin: async () => undefined,
-    agentRoot: input.agentRoot,
+    ...(input.agentRoot ? { agentRoot: input.agentRoot } : {}),
     ...(input.store ? { friendStore: input.store } : {}),
     context: {
       friend: requester,
@@ -217,5 +218,47 @@ describe("A2A repertoire tools", () => {
     expect(await tool("a2a_get_task")({ friend_id: acquaintancePeer.id, task_id: "task" }, ctx)).toContain("target A2A peer must be friend or family")
     expect(await tool("a2a_send_message")({ friend_id: invalidPeer.id, message: "ping" }, ctx)).toContain("A2A send error")
     expect(await tool("a2a_get_task")({ friend_id: invalidPeer.id, task_id: "task" }, ctx)).toContain("A2A task error")
+  })
+
+  it("uses the local bundle name as outbound sender metadata with safe fallbacks", async () => {
+    tmp = createTmpBundle({ agentName: "a2a-sender-fallbacks" })
+    server = await startA2AServer({
+      agentName: "remote-sender",
+      agentRoot: tmp.agentRoot,
+      port: 0,
+      turnRunner: async ({ message, peerName }) => ({ response: `sender:${peerName}:${message}` }),
+    })
+    const store = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const peer = friendRecord({
+      agentMeta: {
+        bundleName: "remote-sender",
+        familiarity: 0,
+        sharedMissions: [],
+        outcomes: [],
+        a2a: {
+          endpointUrl: server.endpointUrl,
+          agentId: "remote-sender-agent",
+        },
+      },
+    })
+    await store.put(peer.id, peer)
+
+    const bundleRootSender = JSON.parse(await tool("a2a_send_message")({
+      friend_id: peer.id,
+      message: "bundle root",
+    }, requesterContext({ agentRoot: tmp.agentRoot, store })))
+    expect(bundleRootSender.artifacts[0].parts[0].text).toBe("sender:a2a-sender-fallbacks:bundle root")
+
+    const missingRootSender = JSON.parse(await tool("a2a_send_message")({
+      friend_id: peer.id,
+      message: "missing root",
+    }, requesterContext({ store })))
+    expect(missingRootSender.artifacts[0].parts[0].text).toBe("sender:Ouro agent:missing root")
+
+    const nonBundleRootSender = JSON.parse(await tool("a2a_send_message")({
+      friend_id: peer.id,
+      message: "non bundle root",
+    }, requesterContext({ agentRoot: path.join(tmp.agentRoot, "state"), store })))
+    expect(nonBundleRootSender.artifacts[0].parts[0].text).toBe("sender:Ouro agent:non bundle root")
   })
 })

@@ -25,6 +25,12 @@ function isA2APeer(friend: FriendRecord): boolean {
   return friend.kind === "agent" && friend.externalIds.some((id) => id.provider === "a2a-agent")
 }
 
+function agentNameFromRoot(agentRoot: string | undefined): string | undefined {
+  if (!agentRoot) return undefined
+  const base = path.basename(agentRoot)
+  return base.endsWith(".ouro") ? base.slice(0, -".ouro".length) : undefined
+}
+
 async function resolveA2AEndpoint(friend: FriendRecord): Promise<{ endpointUrl: string; agentId?: string; peerName: string }> {
   const metadata = friend.agentMeta?.a2a
   if (metadata?.endpointUrl) {
@@ -122,8 +128,8 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         const task = await sendA2AMessage({
           endpointUrl: endpoint.endpointUrl,
           message: args.message,
-          peerAgentId: endpoint.agentId,
-          peerName: endpoint.peerName,
+          senderAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
+          senderName: agentNameFromRoot(ctx?.agentRoot) ?? "Ouro agent",
           sessionKey: args.session_key,
         })
         return JSON.stringify(task, null, 2)

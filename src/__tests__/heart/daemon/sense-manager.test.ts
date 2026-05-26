@@ -177,6 +177,66 @@ describe("daemon sense manager", () => {
     }))
   })
 
+  it("builds A2A managed process args from defaults when machine config is missing or malformed", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    writeAgentJson(bundlesRoot, "curie", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("curie", { a2a: [] as unknown })
+    const processManagerCtor = vi.fn()
+
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(options: unknown) {
+          processManagerCtor(options)
+        }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+
+    const { defaultA2APort } = await import("../../../a2a/config")
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    new DaemonSenseManager({
+      agents: ["slugger", "curie"],
+      bundlesRoot,
+    })
+
+    const managedAgents = (processManagerCtor.mock.calls[0]?.[0] as {
+      agents: Array<{ name: string; args?: string[] }>
+    }).agents
+    expect(managedAgents.find((agent) => agent.name === "slugger:a2a")?.args)
+      .toEqual(["--port", String(defaultA2APort("slugger")), "--path", "/a2a"])
+    expect(managedAgents.find((agent) => agent.name === "curie:a2a")?.args)
+      .toEqual(["--port", String(defaultA2APort("curie")), "--path", "/a2a"])
+  })
+
   it("restarts managed sense workers through the process manager when available", async () => {
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
     const processManager = {
@@ -1745,6 +1805,7 @@ describe("daemon sense manager", () => {
         teams: { enabled: true },
         bluebubbles: { enabled: true },
         mail: { enabled: true },
+        a2a: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -1776,6 +1837,12 @@ describe("daemon sense manager", () => {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
+      },
+      a2a: {
+        host: "127.0.0.1",
+        port: 19991,
+        path: "agent-a2a",
+        publicUrl: "https://agent.example",
       },
     })
     await cacheProviderCredentials("slugger")
@@ -1812,6 +1879,12 @@ describe("daemon sense manager", () => {
           expect.objectContaining({ name: "slugger:teams", agentArg: "slugger", entry: "senses/teams-entry.js" }),
           expect.objectContaining({ name: "slugger:bluebubbles", agentArg: "slugger", entry: "senses/bluebubbles/entry.js" }),
           expect.objectContaining({ name: "slugger:mail", agentArg: "slugger", entry: "senses/mail-entry.js" }),
+          expect.objectContaining({
+            name: "slugger:a2a",
+            agentArg: "slugger",
+            entry: "senses/a2a-entry.js",
+            args: ["--port", "19991", "--host", "127.0.0.1", "--path", "/agent-a2a", "--base-url", "https://agent.example"],
+          }),
         ],
       }),
     )
@@ -1837,6 +1910,12 @@ describe("daemon sense manager", () => {
         bluebubbles: {
           serverUrl: "http://localhost:1234",
           password: "pw",
+        },
+        a2a: {
+          host: "127.0.0.1",
+          port: 19991,
+          path: "agent-a2a",
+          publicUrl: "https://agent.example",
         },
       },
       machineId: expect.stringMatching(/^machine_/),

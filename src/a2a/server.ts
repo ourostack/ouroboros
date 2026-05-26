@@ -100,8 +100,8 @@ function headerString(req: http.IncomingMessage, key: string): string | undefine
 }
 
 /* v8 ignore start -- default runner crosses into the full live agent pipeline; shared-turn covers that pipeline and server tests inject a deterministic runner @preserve */
-function storageKeyFor(peerAgentId: string): string {
-  return `a2a-${createHash("sha256").update(peerAgentId).digest("hex").slice(0, 24)}`
+function storageKeyFor(peerExternalId: string): string {
+  return `a2a-${createHash("sha256").update(peerExternalId).digest("hex").slice(0, 24)}`
 }
 
 async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunnerOutput> {
@@ -121,6 +121,32 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
   return { response: result.response }
 }
 /* v8 ignore stop */
+
+function unauthenticatedPeerExternalId(req: http.IncomingMessage, senderHint: string | undefined): string {
+  /* v8 ignore next -- Node supplies a socket address for accepted HTTP requests; fallback protects unusual runtimes @preserve */
+  const remoteAddress = req.socket.remoteAddress ?? "unknown-address"
+  /* v8 ignore next -- Node supplies a socket family for accepted HTTP requests; fallback protects unusual runtimes @preserve */
+  const remoteFamily = req.socket.remoteFamily ?? "unknown-family"
+  const digest = createHash("sha256")
+    .update(`${remoteFamily}\n${remoteAddress}\n${senderHint ?? ""}`)
+    .digest("hex")
+    .slice(0, 32)
+  return `unauthenticated-a2a:${digest}`
+}
+
+function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): { idHint?: string; name: string } {
+  const idHint = metadataString(inbound, "senderAgentId")
+    ?? metadataString(inbound, "senderCardUrl")
+    ?? metadataString(inbound, "agentId")
+    ?? metadataString(inbound, "cardUrl")
+    ?? headerString(req, "x-a2a-agent-id")
+  const name = metadataString(inbound, "senderName")
+    ?? metadataString(inbound, "agentName")
+    ?? headerString(req, "x-a2a-agent-name")
+    ?? idHint
+    ?? "Unauthenticated A2A peer"
+  return { idHint, name }
+}
 
 function taskFor(input: {
   taskId: string
@@ -203,13 +229,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "SendMessage requires a text message"))
           return
         }
-        const peerAgentId = metadataString(inbound, "agentId")
-          ?? metadataString(inbound, "cardUrl")
-          ?? headerString(req, "x-a2a-agent-id")
-          ?? "unknown-a2a-peer"
-        const peerName = metadataString(inbound, "agentName")
-          ?? headerString(req, "x-a2a-agent-name")
-          ?? peerAgentId
+        const senderHint = senderHintFromMessage(req, inbound)
+        const peerAgentId = unauthenticatedPeerExternalId(req, senderHint.idHint)
+        const peerName = senderHint.name
         const contextId = inbound.contextId ?? "default"
         const taskId = inbound.taskId ?? randomUUID()
         taskStore.put(taskFor({ taskId, contextId, inbound, state: "TASK_STATE_WORKING" }))

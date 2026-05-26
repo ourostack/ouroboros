@@ -14,6 +14,8 @@ export interface CommercePreviewInput {
   items?: CommerceMandateItem[]
   amount: number
   currency: string
+  allowedTools?: string[]
+  constraints?: Record<string, string>
   reason: string
   expiresInMinutes?: number
 }
@@ -23,6 +25,7 @@ export interface CommerceAuthorityValidationInput {
   token: string | undefined
   toolName: string
   args?: Record<string, string>
+  friendId?: string
 }
 
 export type CommerceAuthorityValidationResult =
@@ -51,6 +54,8 @@ function canonicalMandatePayload(input: {
   items: CommerceMandateItem[]
   amount: number
   currency: string
+  allowedTools: string[]
+  constraints: Record<string, string>
   reason: string
   expiresAt: string
 }): string {
@@ -64,6 +69,8 @@ function canonicalMandatePayload(input: {
     })),
     amount: input.amount,
     currency: input.currency.trim().toLowerCase(),
+    allowedTools: [...input.allowedTools].sort(),
+    constraints: Object.fromEntries(Object.entries(input.constraints).sort(([a], [b]) => a.localeCompare(b))),
     reason: input.reason.trim(),
     expiresAt: input.expiresAt,
   })
@@ -87,6 +94,29 @@ function normalizeItems(items: CommerceMandateItem[] | undefined, merchant: stri
     ...(item.quantity !== undefined ? { quantity: item.quantity } : {}),
     ...(item.amount !== undefined ? { amount: parseAmount(item.amount) } : {}),
   }))
+}
+
+function normalizeToolName(toolName: string): string {
+  const normalized = toolName.trim()
+  if (!normalized) throw new Error("commerce allowed tool is required")
+  return normalized
+}
+
+function normalizeAllowedTools(allowedTools: string[] | undefined): string[] {
+  const tools = (allowedTools ?? []).map(normalizeToolName)
+  if (tools.length === 0) throw new Error("commerce preview must name at least one allowed tool")
+  return [...new Set(tools)].sort()
+}
+
+function normalizeConstraints(constraints: Record<string, string> | undefined): Record<string, string> {
+  const normalized: Record<string, string> = {}
+  for (const [key, value] of Object.entries(constraints ?? {})) {
+    const cleanKey = key.trim()
+    const cleanValue = String(value).trim()
+    if (!cleanKey || !cleanValue) continue
+    normalized[cleanKey] = cleanValue
+  }
+  return Object.fromEntries(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b)))
 }
 
 function appendAccessLog(agentRoot: string, entry: Omit<CommerceAccessLogEntry, "at">): void {
@@ -119,6 +149,8 @@ export function createCommercePreview(input: CommercePreviewInput): CommerceMand
   if (!merchant) throw new Error("commerce merchant is required")
   const reason = input.reason.trim()
   if (!reason) throw new Error("commerce reason is required")
+  const allowedTools = normalizeAllowedTools(input.allowedTools)
+  const constraints = normalizeConstraints(input.constraints)
   const expiresAt = new Date(now.getTime() + (input.expiresInMinutes ?? DEFAULT_EXPIRES_MINUTES) * 60_000).toISOString()
   const items = normalizeItems(input.items, merchant, amount)
   const digest = digestFor({
@@ -127,6 +159,8 @@ export function createCommercePreview(input: CommercePreviewInput): CommerceMand
     items,
     amount,
     currency,
+    allowedTools,
+    constraints,
     reason,
     expiresAt,
   })
@@ -138,6 +172,8 @@ export function createCommercePreview(input: CommercePreviewInput): CommerceMand
     items,
     amount,
     currency,
+    allowedTools,
+    constraints,
     reason,
     digest,
     createdAt: now.toISOString(),
@@ -179,6 +215,7 @@ export function confirmCommercePreview(input: {
   digest: string
   confirmation: string
   friendId: string
+  currentUserMessage?: string
 }): CommerceMandateRecord {
   const record = readCommerceRecord(input.agentRoot, input.checkoutId)
   if (!record) throw new Error(`commerce checkout not found: ${input.checkoutId}`)
@@ -187,6 +224,12 @@ export function confirmCommercePreview(input: {
   if (Date.parse(record.expiresAt) <= Date.now()) throw new Error("commerce checkout preview has expired")
   if (record.digest !== input.digest) throw new Error("commerce digest mismatch")
   if (input.confirmation.trim() !== CONFIRMATION_PHRASE) throw new Error(`confirmation must be ${CONFIRMATION_PHRASE}`)
+  const currentUserMessage = input.currentUserMessage?.trim() ?? ""
+  if (!currentUserMessage.includes(CONFIRMATION_PHRASE)
+    || !currentUserMessage.includes(record.id)
+    || !currentUserMessage.includes(record.digest)) {
+    throw new Error(`current human message must include ${CONFIRMATION_PHRASE}, checkout id, and digest`)
+  }
   const now = new Date().toISOString()
   const confirmed: CommerceMandateRecord = {
     ...record,
@@ -194,6 +237,7 @@ export function confirmCommercePreview(input: {
     confirmedAt: now,
     updatedAt: now,
     confirmation: CONFIRMATION_PHRASE,
+    confirmedByMessage: currentUserMessage,
     authorityToken: commerceAuthorityToken(record),
   }
   writeRecord(input.agentRoot, confirmed)
@@ -220,6 +264,18 @@ function currencyFromArgs(args: Record<string, string> | undefined): string | nu
   return raw ? raw.trim().toLowerCase() : null
 }
 
+function requiredAmountForTool(toolName: string): "amount" | "spend_limit" | null {
+  if (toolName === "stripe_create_card") return "spend_limit"
+  if (toolName === "flight_book") return "amount"
+  return null
+}
+
+function requiredConstraintsForTool(toolName: string): string[] {
+  if (toolName === "stripe_create_card") return ["type"]
+  if (toolName === "flight_hold" || toolName === "flight_book") return ["offer_id"]
+  return []
+}
+
 export function validateCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
   const token = input.token?.trim()
   if (!token) return { ok: false, reason: "missing commerce_authority token" }
@@ -231,12 +287,28 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
   if (!record) return { ok: false, reason: "commerce checkout not found" }
   let reason: string | null = null
   if (record.status !== "confirmed") reason = `commerce checkout is ${record.status}, not confirmed`
+  if (!reason && input.friendId && record.friendId !== input.friendId) reason = "commerce_authority belongs to a different friend"
   if (!reason && record.digest !== digest) reason = "commerce_authority digest mismatch"
   if (!reason && Date.parse(record.expiresAt) <= Date.now()) reason = "commerce_authority expired"
+  const allowedTools = record.allowedTools ?? []
+  if (!reason && !allowedTools.includes(input.toolName)) reason = "tool is not allowed by commerce_authority"
+  const requiredAmountKey = requiredAmountForTool(input.toolName)
   const amount = amountFromArgs(input.args)
-  if (!reason && amount !== null && amount > record.amount) reason = "tool amount exceeds commerce_authority amount"
+  if (!reason && requiredAmountKey && amount === null) reason = `tool ${requiredAmountKey} is required for commerce_authority validation`
+  if (!reason && amount !== null && amount !== record.amount) reason = "tool amount does not match commerce_authority amount"
   const currency = currencyFromArgs(input.args)
+  if (!reason && requiredAmountKey && !currency) reason = "tool currency is required for commerce_authority validation"
   if (!reason && currency && currency !== record.currency) reason = "tool currency does not match commerce_authority"
+  const constraints = record.constraints ?? {}
+  for (const key of requiredConstraintsForTool(input.toolName)) {
+    if (reason) break
+    if (!constraints[key]) reason = `commerce_authority is missing required ${key} constraint`
+  }
+  for (const [key, expected] of Object.entries(constraints)) {
+    if (reason) break
+    const actual = input.args?.[key]?.trim()
+    if (actual !== expected) reason = `tool ${key} does not match commerce_authority`
+  }
   const ok = !reason
   appendAccessLog(input.agentRoot, {
     checkoutId,
@@ -279,4 +351,3 @@ export function confirmationPhrase(): string {
   })
   return CONFIRMATION_PHRASE
 }
-

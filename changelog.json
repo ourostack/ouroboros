@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.654",
       "changes": [
         "Add A2A sense substrate and AP2-compatible commerce authority primitives.",
-        "Backfill coverage and release-gate validation for the A2A protocol, onboarding, tools, sense status, and commerce authority edge paths."
+        "Harden A2A and commerce review gates by hashing task storage keys, treating unauthenticated inbound A2A claims as untrusted hints, propagating managed A2A endpoint config, and binding commerce authority to current human confirmation plus exact tool constraints."
       ]
     },
     {
