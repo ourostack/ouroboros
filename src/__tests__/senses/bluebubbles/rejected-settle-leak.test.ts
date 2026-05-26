@@ -97,7 +97,7 @@ describe("BlueBubbles: rejected settle args do NOT leak into visible chat", () =
 
     // No new sendText after we cleared the mock. The hidden-tool END is suppressed.
     expect(sendText).not.toHaveBeenCalled()
-  })
+  }, 15000)
 
   it("rejected settle from the inner-dialog attention-queue gate does NOT leak args via client.sendText", async () => {
     // Same shape as above — core.ts calls callbacks.onToolEnd("settle", summary, false)

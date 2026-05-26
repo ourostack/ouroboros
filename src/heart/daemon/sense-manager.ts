@@ -401,6 +401,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   if (sense === "a2a") {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
   }
+  /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
     return `Agent-runnable: run 'ouro connect workbench --agent ${agent}' to enable senses.workbench.enabled and mcpServers.ouro_workbench in agent.json.`
   }

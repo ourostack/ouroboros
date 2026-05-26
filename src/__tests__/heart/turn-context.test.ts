@@ -481,6 +481,16 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("marks Workbench as needs_config when enabled without MCP registration", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: true } },
+    })
+    mockLoadConfig.mockReturnValue({})
+
+    const ctx = await buildTurnContext(makeInput())
+    expect(ctx.senseStatusLines).toContain("- Workbench: needs_config")
+  })
+
   it("detects Voice as ready when the ElevenLabs voice id is stored in voice config", async () => {
     mockLoadAgentConfig.mockReturnValue({
       senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: true } },
