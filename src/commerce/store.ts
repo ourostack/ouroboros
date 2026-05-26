@@ -48,6 +48,10 @@ function recordPath(agentRoot: string, checkoutId: string): string {
   return path.join(recordsDir(agentRoot), `${checkoutId}.json`)
 }
 
+function recordLockPath(agentRoot: string, checkoutId: string): string {
+  return `${recordPath(agentRoot, checkoutId)}.lock`
+}
+
 function canonicalMandatePayload(input: {
   friendId: string
   merchant: string
@@ -96,11 +100,17 @@ function digestForRecord(record: CommerceMandateRecord): string {
   })
 }
 
-function expectedConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
-  return `${CONFIRMATION_PHRASE} checkout ${record.id} digest ${record.digest}`
+function consentSummary(record: Pick<CommerceMandateRecord, "merchant" | "amount" | "currency" | "allowedTools" | "constraints">): string {
+  const tools = [...(record.allowedTools ?? [])].sort().join(",")
+  const constraints = JSON.stringify(Object.fromEntries(Object.entries(record.constraints ?? {}).sort(([a], [b]) => a.localeCompare(b))))
+  return `${record.merchant} ${record.amount} ${record.currency} via ${tools} constraints ${constraints}`
 }
 
-export function commerceConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
+function expectedConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest" | "merchant" | "amount" | "currency" | "allowedTools" | "constraints">): string {
+  return `${CONFIRMATION_PHRASE} checkout ${record.id} digest ${record.digest} for ${consentSummary(record)}`
+}
+
+export function commerceConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest" | "merchant" | "amount" | "currency" | "allowedTools" | "constraints">): string {
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.commerce_confirmation_message_built",
@@ -161,11 +171,62 @@ function timestampMillis(value: string): number | null {
 
 function writeRecord(agentRoot: string, record: CommerceMandateRecord): void {
   fs.mkdirSync(recordsDir(agentRoot), { recursive: true })
-  fs.writeFileSync(recordPath(agentRoot, record.id), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
+  const { authorityToken: _authorityToken, ...persisted } = record
+  fs.writeFileSync(recordPath(agentRoot, record.id), `${JSON.stringify(persisted, null, 2)}\n`, "utf-8")
 }
 
-export function commerceAuthorityToken(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
-  const token = `commerce:${record.id}:${record.digest}`
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function withRecordLock<T>(agentRoot: string, checkoutId: string, fn: () => T): T {
+  fs.mkdirSync(recordsDir(agentRoot), { recursive: true })
+  const lockPath = recordLockPath(agentRoot, checkoutId)
+  const deadline = Date.now() + 5_000
+  let fd: number | null = null
+  while (fd === null) {
+    try {
+      fd = fs.openSync(lockPath, "wx")
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      try {
+        const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
+        if (ageMs > 30_000) {
+          fs.unlinkSync(lockPath)
+          continue
+        }
+      } catch {
+        /* v8 ignore next -- another process can remove a stale lock between failed open and stat; the next loop rechecks from scratch @preserve */
+        continue
+      }
+      if (Date.now() >= deadline) throw new Error("commerce_authority lock timed out")
+      sleepSync(25)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    fs.closeSync(fd)
+    try {
+      fs.unlinkSync(lockPath)
+    } catch {
+      /* v8 ignore next -- lock cleanup is best-effort after successful close; stale-lock reap handles rare removal races @preserve */
+    }
+  }
+}
+
+function tokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
+}
+
+function createCommerceAuthorityToken(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
+  return `commerce:${record.id}:${record.digest}:${randomUUID()}`
+}
+
+export function commerceAuthorityToken(record: Pick<CommerceMandateRecord, "id" | "digest"> & { authorityToken?: string }): string {
+  if (!record.authorityToken) throw new Error("commerce authority token is only available after confirmation")
+  const token = record.authorityToken
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.commerce_authority_token_built",
@@ -267,6 +328,7 @@ export function confirmCommercePreview(input: {
     throw new Error(`current human message must exactly equal: ${expectedConfirmationMessage(record)}`)
   }
   const now = new Date().toISOString()
+  const authorityToken = createCommerceAuthorityToken(record)
   const confirmed: CommerceMandateRecord = {
     ...record,
     status: "confirmed",
@@ -274,7 +336,8 @@ export function confirmCommercePreview(input: {
     updatedAt: now,
     confirmation: CONFIRMATION_PHRASE,
     confirmedByMessage: currentUserMessage,
-    authorityToken: commerceAuthorityToken(record),
+    authorityToken,
+    authorityTokenHash: tokenHash(authorityToken),
   }
   writeRecord(input.agentRoot, confirmed)
   appendAccessLog(input.agentRoot, { checkoutId: record.id, action: "confirm", friendId: input.friendId, ok: true })
@@ -315,7 +378,7 @@ function requiredConstraintsForTool(toolName: string): string[] {
 export function validateCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
   const token = input.token?.trim()
   if (!token) return { ok: false, reason: "missing commerce_authority token" }
-  const match = /^commerce:([^:]+):([a-f0-9]{64})$/.exec(token)
+  const match = /^commerce:([^:]+):([a-f0-9]{64}):([0-9a-f-]{36})$/.exec(token)
   if (!match) return { ok: false, reason: "invalid commerce_authority token format" }
   const checkoutId = match[1]
   const digest = match[2]
@@ -330,6 +393,10 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
   if (!reason && expiresAtMs === null) reason = "commerce_authority has invalid expiry"
   if (!reason && record.digest !== digestForRecord(record)) reason = "commerce_authority record digest mismatch"
   if (!reason && record.status !== "confirmed") reason = `commerce checkout is ${record.status}, not confirmed`
+  if (!reason && timestampMillis(record.confirmedAt ?? "") === null) reason = "commerce_authority confirmation state is invalid"
+  if (!reason && record.confirmation !== CONFIRMATION_PHRASE) reason = "commerce_authority confirmation state is invalid"
+  if (!reason && record.confirmedByMessage !== expectedConfirmationMessage(record)) reason = "commerce_authority confirmation state is invalid"
+  if (!reason && record.authorityTokenHash !== tokenHash(token)) reason = "commerce_authority token mismatch"
   if (!reason && input.friendId && record.friendId !== input.friendId) reason = "commerce_authority belongs to a different friend"
   if (!reason && record.digest !== digest) reason = "commerce_authority digest mismatch"
   if (!reason && expiresAtMs !== null && expiresAtMs <= Date.now()) reason = "commerce_authority expired"
@@ -370,31 +437,36 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
 }
 
 export function consumeCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
-  const validation = validateCommerceAuthorityToken(input)
-  if (!validation.ok) return validation
-  const now = new Date().toISOString()
-  const consumed: CommerceMandateRecord = {
-    ...validation.record,
-    status: "consumed",
-    consumedAt: now,
-    consumedByTool: input.toolName,
-    updatedAt: now,
-  }
-  writeRecord(input.agentRoot, consumed)
-  appendAccessLog(input.agentRoot, {
-    checkoutId: validation.record.id,
-    action: "consume",
-    toolName: input.toolName,
-    friendId: input.friendId,
-    ok: true,
+  const token = input.token?.trim()
+  const checkoutId = token ? /^commerce:([^:]+):[a-f0-9]{64}:[0-9a-f-]{36}$/.exec(token)?.[1] : undefined
+  if (!checkoutId) return validateCommerceAuthorityToken(input)
+  return withRecordLock(input.agentRoot, checkoutId, () => {
+    const validation = validateCommerceAuthorityToken(input)
+    if (!validation.ok) return validation
+    const now = new Date().toISOString()
+    const consumed: CommerceMandateRecord = {
+      ...validation.record,
+      status: "consumed",
+      consumedAt: now,
+      consumedByTool: input.toolName,
+      updatedAt: now,
+    }
+    writeRecord(input.agentRoot, consumed)
+    appendAccessLog(input.agentRoot, {
+      checkoutId: validation.record.id,
+      action: "consume",
+      toolName: input.toolName,
+      friendId: input.friendId,
+      ok: true,
+    })
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.commerce_authority_consumed",
+      message: "consumed commerce authority token",
+      meta: { checkoutId: validation.record.id, toolName: input.toolName },
+    })
+    return { ok: true, record: consumed }
   })
-  emitNervesEvent({
-    component: "repertoire",
-    event: "repertoire.commerce_authority_consumed",
-    message: "consumed commerce authority token",
-    meta: { checkoutId: validation.record.id, toolName: input.toolName },
-  })
-  return { ok: true, record: consumed }
 }
 
 export function readCommerceAccessLog(agentRoot: string, limit = 20): CommerceAccessLogEntry[] {

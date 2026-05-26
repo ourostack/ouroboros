@@ -11,6 +11,8 @@ import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
 const MAX_A2A_MESSAGE_TEXT_CHARS = 16_000
 
+type A2AResponseStyle = "latest" | "legacy"
+
 export interface A2ATurnRunnerInput {
   agentName: string
   peerAgentId: string
@@ -219,11 +221,50 @@ function taskA2AMetadata(task: A2ATask): Record<string, unknown> {
   return a2a as Record<string, unknown>
 }
 
-function publicTask(task: A2ATask, accessToken: string): A2ATask {
+function publicMessage(message: A2AMessage, style: A2AResponseStyle): A2AMessage {
+  const parts = message.parts
+    .filter((part) => part && typeof part === "object" && typeof part.text === "string")
+    .map((part) => style === "legacy" ? { ...part, kind: part.kind ?? "text" } : part)
+  if (style === "latest") return { ...message, parts }
+  return {
+    ...message,
+    role: message.role === "ROLE_AGENT" ? "agent" : message.role === "ROLE_USER" ? "user" : message.role,
+    parts,
+  }
+}
+
+function legacyTaskState(state: A2ATask["status"]["state"]): A2ATask["status"]["state"] {
+  if (state === "TASK_STATE_SUBMITTED") return "submitted"
+  if (state === "TASK_STATE_WORKING") return "working"
+  if (state === "TASK_STATE_COMPLETED") return "completed"
+  if (state === "TASK_STATE_FAILED") return "failed"
+  if (state === "TASK_STATE_CANCELED") return "canceled"
+  if (state === "TASK_STATE_REJECTED") return "rejected"
+  if (state === "TASK_STATE_AUTH_REQUIRED") return "auth-required"
+  if (state === "TASK_STATE_INPUT_REQUIRED") return "input-required"
+  return state
+}
+
+function publicTask(task: A2ATask, accessToken: string, style: A2AResponseStyle): A2ATask {
   const a2a = taskA2AMetadata(task)
   const { accessTokenHash: _accessTokenHash, taskScopeHash: _taskScopeHash, ...safeA2A } = a2a
+  const statusMessage = task.status.message ? publicMessage(task.status.message, style) : undefined
   return {
     ...task,
+    status: {
+      ...task.status,
+      state: style === "legacy" ? legacyTaskState(task.status.state) : task.status.state,
+      ...(statusMessage ? { message: statusMessage } : {}),
+    },
+    history: task.history.map((message) => publicMessage(message, style)),
+    ...(task.artifacts ? {
+      artifacts: task.artifacts.map((artifact) => ({
+        ...artifact,
+        parts: style === "legacy"
+          ? artifact.parts.map((part) => ({ ...part, kind: part.kind ?? "text" }))
+          : artifact.parts,
+      })),
+    } : {}),
     metadata: {
       ...task.metadata,
       a2a: {
@@ -329,6 +370,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
 
     try {
       if (rpc.method === "SendMessage" || rpc.method === "message/send") {
+        const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
         const inbound = messageFromParams(rpc.params)
         const text = textFromMessage(inbound)
         if (!inbound || !text) {
@@ -357,11 +399,12 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         })
         const task = taskFor({ taskId, accessToken, taskScope, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, clientTaskId })
         taskStore.put(task, taskScope)
-        writeJson(res, 200, jsonResponse(rpc.id, { task: publicTask(task, accessToken) }))
+        writeJson(res, 200, jsonResponse(rpc.id, { task: publicTask(task, accessToken, responseStyle) }))
         return
       }
 
       if (rpc.method === "GetTask" || rpc.method === "tasks/get") {
+        const responseStyle: A2AResponseStyle = rpc.method === "tasks/get" ? "legacy" : "latest"
         const taskId = rpc.params && typeof rpc.params === "object"
           ? (rpc.params as { id?: unknown }).id
           : undefined
@@ -378,12 +421,13 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
         const task = taskStore.get(taskId, taskScope)
         writeJson(res, 200, task && taskAuthorized(task, taskScope, accessToken)
-          ? jsonResponse(rpc.id, publicTask(task, accessToken))
+          ? jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle))
           : errorResponse(rpc.id, -32001, "task not found"))
         return
       }
 
       if (rpc.method === "CancelTask" || rpc.method === "tasks/cancel") {
+        const responseStyle: A2AResponseStyle = rpc.method === "tasks/cancel" ? "legacy" : "latest"
         const taskId = rpc.params && typeof rpc.params === "object"
           ? (rpc.params as { id?: unknown }).id
           : undefined
@@ -408,7 +452,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           status: { state: "TASK_STATE_CANCELED", timestamp: new Date().toISOString() },
         }
         taskStore.put(canceled, taskScope)
-        writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken)))
+        writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken, responseStyle)))
         return
       }
 

@@ -57,9 +57,13 @@ describe("A2A core substrate", () => {
     expect(normalizeA2APath("custom-a2a")).toBe("/custom-a2a")
     expect(normalizeA2APath("/already-normal")).toBe("/already-normal")
     expect(normalizeA2APath(undefined)).toBe("/a2a")
-    const defaultCard = buildA2AAgentCard({ agentName: tmp.agentName, baseUrl: "https://agent.example" })
-    expect(defaultCard.supportedInterfaces[0]?.url).toBe("https://agent.example/a2a")
-    expect(endpointForCard(defaultCard)).toBe("https://agent.example/a2a")
+      const defaultCard = buildA2AAgentCard({ agentName: tmp.agentName, baseUrl: "https://agent.example" })
+      expect(defaultCard.supportedInterfaces[0]?.url).toBe("https://agent.example/a2a")
+      expect(defaultCard.protocolVersion).toBe("1.0")
+      expect(defaultCard.url).toBe("https://agent.example/a2a")
+      expect(defaultCard.preferredTransport).toBe("JSONRPC")
+      expect(defaultCard.additionalInterfaces?.[0]).toEqual({ url: "https://agent.example/a2a", transport: "JSONRPC" })
+      expect(endpointForCard(defaultCard)).toBe("https://agent.example/a2a")
     const staticCard = buildA2AAgentCard({ agentName: tmp.agentName, baseUrl: "https://agent.example", path: "/custom-a2a" })
     expect(staticCard.supportedInterfaces[0]?.url).toBe("https://agent.example/custom-a2a")
     expect(staticCard.supportedInterfaces[0]?.protocolVersion).toBe("1.0")
@@ -96,19 +100,25 @@ describe("A2A core substrate", () => {
   })
 
   it("handles client validation and legacy JSON-RPC result shapes", async () => {
-    const legacyCard = {
-      name: "legacy",
-      description: "legacy card",
-      version: "0.3.0",
-      supportedInterfaces: [],
-      url: "https://legacy.example/a2a",
-      capabilities: {},
-      defaultInputModes: [],
-      defaultOutputModes: [],
-      skills: [],
-    }
-    expect(endpointForCard(legacyCard)).toBe("https://legacy.example/a2a")
-    expect(endpointForCard({ ...legacyCard, supportedInterfaces: undefined, url: "https://legacy.example/fallback" })).toBe("https://legacy.example/fallback")
+      const legacyCard = {
+        name: "legacy",
+        description: "legacy card",
+        version: "0.3.0",
+        supportedInterfaces: [],
+        url: "https://legacy.example/a2a",
+        preferredTransport: "JSONRPC",
+        capabilities: {},
+        defaultInputModes: [],
+        defaultOutputModes: [],
+        skills: [],
+      }
+      expect(endpointForCard(legacyCard)).toBe("https://legacy.example/a2a")
+      expect(endpointForCard({
+        ...legacyCard,
+        preferredTransport: "GRPC",
+        additionalInterfaces: [{ url: "https://legacy.example/jsonrpc", transport: "JSONRPC" }],
+      })).toBe("https://legacy.example/jsonrpc")
+      expect(endpointForCard({ ...legacyCard, supportedInterfaces: undefined, url: "https://legacy.example/fallback" })).toBe("https://legacy.example/fallback")
     expect(endpointForCard({
       ...legacyCard,
       supportedInterfaces: [{ url: "https://legacy.example/sse", protocolBinding: "SSE" }],
@@ -147,7 +157,7 @@ describe("A2A core substrate", () => {
       status: { state: "TASK_STATE_COMPLETED", timestamp: new Date().toISOString() },
       history: [],
     }
-    let directRequest: A2AJsonRpcRequest | null = null
+      let directRequest: A2AJsonRpcRequest | null = null
     const direct = await sendA2AMessage({
       endpointUrl: "https://legacy.example/a2a",
       message: "hello",
@@ -162,8 +172,66 @@ describe("A2A core substrate", () => {
       },
     })
     expect(direct.id).toBe("task-direct")
-    expect((directRequest?.params as { message?: { metadata?: Record<string, string> } }).message?.metadata?.senderCardUrl)
-      .toBe("https://local.example/card")
+      expect((directRequest?.params as { message?: { metadata?: Record<string, string> } }).message?.metadata?.senderCardUrl)
+        .toBe("https://local.example/card")
+      expect((directRequest?.params as { message?: { role?: string; parts?: Array<{ kind?: string }> } }).message?.role).toBe("ROLE_USER")
+      expect((directRequest?.params as { message?: { parts?: Array<{ kind?: string }> } }).message?.parts?.[0]?.kind).toBe("text")
+
+      const fallbackRequests: A2AJsonRpcRequest[] = []
+      const fallbackTask: A2ATask = {
+        id: "legacy-task",
+        contextId: "default",
+        status: { state: "completed", timestamp: new Date().toISOString() },
+        history: [],
+      }
+      const fallback = await sendA2AMessage({
+        endpointUrl: "https://legacy.example/a2a",
+        message: "legacy fallback",
+        fetchImpl: async (_url, init) => {
+          const request = JSON.parse(String(init?.body ?? "{}")) as A2AJsonRpcRequest
+          fallbackRequests.push(request)
+          if (fallbackRequests.length === 1) {
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              id: "rpc-1",
+              error: { code: -32601, message: "method not found" },
+            }), { status: 200 }) as Response
+          }
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: "rpc-2",
+            result: { task: fallbackTask },
+          }), { status: 200 }) as Response
+        },
+      })
+      expect(fallback.id).toBe("legacy-task")
+      expect(fallbackRequests.map((request) => request.method)).toEqual(["SendMessage", "message/send"])
+      expect((fallbackRequests[1]?.params as { message?: { role?: string } }).message?.role).toBe("user")
+
+      const getFallbackRequests: A2AJsonRpcRequest[] = []
+      const fetchedFallback = await getA2ATask({
+        endpointUrl: "https://legacy.example/a2a",
+        taskId: "legacy-task",
+        accessToken: "legacy-access",
+        fetchImpl: async (_url, init) => {
+          const request = JSON.parse(String(init?.body ?? "{}")) as A2AJsonRpcRequest
+          getFallbackRequests.push(request)
+          if (getFallbackRequests.length === 1) {
+            return new Response(JSON.stringify({
+              jsonrpc: "2.0",
+              id: "rpc-1",
+              error: { code: -32601, message: "method not found" },
+            }), { status: 200 }) as Response
+          }
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: "rpc-2",
+            result: fallbackTask,
+          }), { status: 200 }) as Response
+        },
+      })
+      expect(fetchedFallback.id).toBe("legacy-task")
+      expect(getFallbackRequests.map((request) => request.method)).toEqual(["GetTask", "tasks/get"])
 
     await expect(getA2ATask({
       endpointUrl: "https://bad.example/a2a",
@@ -258,7 +326,8 @@ describe("A2A core substrate", () => {
     const legacyTask = taskFromRpc(legacySend)
     const legacyAccessToken = taskAccessToken(legacyTask)
     const legacyText = legacyTask.artifacts?.[0]?.parts[0]?.text ?? ""
-    expect(legacyTask.status.state).toBe("TASK_STATE_COMPLETED")
+      expect(legacyTask.status.state).toBe("completed")
+      expect(legacyTask.artifacts?.[0]?.parts[0]?.kind).toBe("text")
     expect(legacyText).toContain("route:unauthenticated-a2a:")
     expect(legacyText).toContain(":Claimed Peer:default:legacy hello")
     expect(legacyTask.id).not.toBe("task-1")
@@ -361,6 +430,45 @@ describe("A2A core substrate", () => {
       "x-a2a-agent-name": "Header Peer",
     })
     expect(taskFromRpc(headerFetched).id).toBe(headerOnlyTask.id)
+    const taskDir = path.join(tmp.agentRoot, "state", "a2a", "tasks")
+    const headerTaskPath = fs.readdirSync(taskDir)
+      .map((file) => path.join(taskDir, file))
+      .find((file) => (JSON.parse(fs.readFileSync(file, "utf-8")) as A2ATask).id === headerOnlyTask.id)
+    if (!headerTaskPath) throw new Error("missing header task file")
+    for (const [index, [state, legacyState]] of [
+      ["TASK_STATE_SUBMITTED", "submitted"],
+      ["TASK_STATE_WORKING", "working"],
+      ["TASK_STATE_FAILED", "failed"],
+      ["TASK_STATE_CANCELED", "canceled"],
+      ["TASK_STATE_REJECTED", "rejected"],
+      ["TASK_STATE_AUTH_REQUIRED", "auth-required"],
+      ["TASK_STATE_INPUT_REQUIRED", "input-required"],
+      ["unknown", "unknown"],
+    ].entries()) {
+      const stored = JSON.parse(fs.readFileSync(headerTaskPath, "utf-8")) as A2ATask
+      const nextTask: A2ATask = {
+        ...stored,
+        status: { ...stored.status, state },
+        ...(index === 0 ? {
+          history: stored.history.map((message) => ({ ...message, role: "agent" })),
+          artifacts: undefined,
+        } : {}),
+      }
+      fs.writeFileSync(headerTaskPath, `${JSON.stringify(nextTask, null, 2)}\n`, "utf-8")
+      const legacyStateFetched = await postRpc("tasks/get", {
+        id: headerOnlyTask.id,
+        access_token: taskAccessToken(headerOnlyTask),
+      }, {
+        "x-a2a-agent-id": "header-peer",
+        "x-a2a-agent-name": "Header Peer",
+      })
+      const legacyStateTask = taskFromRpc(legacyStateFetched)
+      expect(legacyStateTask.status.state).toBe(legacyState)
+      if (index === 0) {
+        expect(legacyStateTask.history[0]?.role).toBe("agent")
+        expect(legacyStateTask.artifacts).toBeUndefined()
+      }
+    }
     const legacyMetadataFetched = await postRpc("GetTask", {
       id: legacyMetadataTask.id,
       accessToken: taskAccessToken(legacyMetadataTask),

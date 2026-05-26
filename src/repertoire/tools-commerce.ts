@@ -100,18 +100,20 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           reason: args.reason,
           items: parseItems(args.items_json),
           ...(expiresInMinutes ? { expiresInMinutes } : {}),
-        })
-        return JSON.stringify({
-          checkoutId: record.id,
-          merchant: record.merchant,
-          amount: record.amount,
-          currency: record.currency,
-          allowedTools: record.allowedTools,
-          constraints: record.constraints,
-          expiresAt: record.expiresAt,
-          digest: record.digest,
-          next: `Ask the family user to send this exact message in a new turn: ${commerceConfirmationMessage(record)}; then call commerce_checkout_commit from that same turn.`,
-        }, null, 2)
+	        })
+	        const confirmationMessage = commerceConfirmationMessage(record)
+	        return JSON.stringify({
+	          checkoutId: record.id,
+	          merchant: record.merchant,
+	          amount: record.amount,
+	          currency: record.currency,
+	          allowedTools: record.allowedTools,
+	          constraints: record.constraints,
+	          expiresAt: record.expiresAt,
+	          digest: record.digest,
+	          confirmationMessage,
+	          next: `Ask the family user to send the confirmationMessage exactly in a new turn after reviewing merchant, amount, currency, tool, and constraints; then call commerce_checkout_commit from that same turn.`,
+	        }, null, 2)
       } catch (error) {
         return `commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`
       }

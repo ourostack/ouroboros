@@ -5231,6 +5231,7 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
 async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<string> {
   const { defaultA2APort } = await import("../../a2a/config")
   enableAgentSense(agent, "a2a", deps)
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
   const port = defaultA2APort(agent)
   const message = [
     `A2A connected for ${agent}`,
@@ -5241,6 +5242,7 @@ async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<stri
     `  ouro a2a card --agent ${agent} --base-url https://<public-host>`,
     "Onboard a peer into the existing friend model:",
     `  ouro a2a onboard --agent ${agent} --card-url https://<peer>/.well-known/agent-card.json --trust friend`,
+    ...(syncSummary ? [syncSummary] : []),
   ].join("\n")
   deps.writeStdout(message)
   return message

@@ -36,6 +36,10 @@ export interface A2AAgentCard {
   protocolVersion?: string
   url?: string
   preferredTransport?: "JSONRPC" | string
+  additionalInterfaces?: Array<{
+    url: string
+    transport: "JSONRPC" | "GRPC" | "HTTP+JSON" | string
+  }>
 }
 
 export type A2ATaskState =
@@ -49,10 +53,13 @@ export type A2ATaskState =
   | "TASK_STATE_INPUT_REQUIRED"
   | "submitted"
   | "working"
-  | "completed"
-  | "failed"
-  | "canceled"
-  | "rejected"
+    | "completed"
+    | "failed"
+    | "canceled"
+    | "rejected"
+    | "auth-required"
+    | "input-required"
+    | "unknown"
 
 export interface A2AMessagePart {
   kind?: "text"

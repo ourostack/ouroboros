@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { createHash, randomUUID } from "node:crypto"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import {
+  commerceConfirmationMessage,
   commerceAuthorityToken,
   confirmationPhrase,
   confirmCommercePreview,
@@ -20,6 +22,7 @@ import type { FriendRecord } from "../../mind/friends/types"
 let tmp: TmpBundleHandle | null = null
 
 afterEach(() => {
+  vi.restoreAllMocks()
   tmp?.cleanup()
   tmp = null
 })
@@ -62,8 +65,16 @@ function familyContext(agentRoot: string): ToolContext {
   }
 }
 
-function confirmationMessage(record: { id: string; digest: string }): string {
-  return `CONFIRM_PURCHASE checkout ${record.id} digest ${record.digest}`
+function confirmationMessage(record: Parameters<typeof commerceConfirmationMessage>[0]): string {
+  return commerceConfirmationMessage(record)
+}
+
+function testToken(checkoutId: string, digest: string): string {
+  return `commerce:${checkoutId}:${digest}:${randomUUID()}`
+}
+
+function testTokenHash(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
 }
 
 describe("commerce authority", () => {
@@ -86,8 +97,11 @@ describe("commerce authority", () => {
       confirmation: "CONFIRM_PURCHASE",
       friendId: "family-1",
       currentUserMessage: confirmationMessage(preview),
-    })
-    expect(confirmed.authorityToken).toMatch(/^commerce:/)
+      })
+      expect(confirmed.authorityToken).toMatch(/^commerce:/)
+      const persistedConfirmed = readCommerceRecord(tmp.agentRoot, confirmed.id)
+      expect(persistedConfirmed?.authorityToken).toBeUndefined()
+      expect(persistedConfirmed?.authorityTokenHash).toMatch(/^[a-f0-9]{64}$/)
 
     const valid = validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
@@ -189,6 +203,15 @@ describe("commerce authority", () => {
       reason: "No constraints path",
     })
     expect(noConstraints.constraints).toEqual({})
+    expect(commerceConfirmationMessage({
+      id: "legacy-consent",
+      digest: "4".repeat(64),
+      merchant: "Legacy",
+      amount: 1,
+      currency: "usd",
+      allowedTools: undefined as unknown as string[],
+      constraints: undefined as unknown as Record<string, string>,
+    })).toContain("Legacy 1 usd via  constraints {}")
 
     const sortedConstraints = createCommercePreview({
       agentRoot: tmp.agentRoot,
@@ -309,16 +332,22 @@ describe("commerce authority", () => {
       friendId: "family-1",
     })).toThrow("current human message")
 
-    const previewToken = commerceAuthorityToken(withItems)
-    const previewValidation = validateCommerceAuthorityToken({
-      agentRoot: tmp.agentRoot,
-      token: previewToken,
-      toolName: "stripe_create_card",
-    })
-    expect(previewValidation.ok).toBe(false)
-    expect(validateCommerceAuthorityToken({
-      agentRoot: tmp.agentRoot,
-      token: undefined,
+      expect(() => commerceAuthorityToken(withItems)).toThrow("only available after confirmation")
+      const statusFlipToken = testToken(withItems.id, withItems.digest)
+      fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${withItems.id}.json`), `${JSON.stringify({
+        ...withItems,
+        status: "confirmed",
+      }, null, 2)}\n`, "utf-8")
+      expect(validateCommerceAuthorityToken({
+        agentRoot: tmp.agentRoot,
+        token: statusFlipToken,
+        toolName: "stripe_create_card",
+        args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
+      fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${withItems.id}.json`), `${JSON.stringify(withItems, null, 2)}\n`, "utf-8")
+      expect(validateCommerceAuthorityToken({
+        agentRoot: tmp.agentRoot,
+        token: undefined,
       toolName: "stripe_create_card",
     })).toEqual({ ok: false, reason: "missing commerce_authority token" })
     expect(validateCommerceAuthorityToken({
@@ -328,9 +357,9 @@ describe("commerce authority", () => {
     })).toEqual({ ok: false, reason: "invalid commerce_authority token format" })
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
-      token: `commerce:missing:${"0".repeat(64)}`,
-      toolName: "stripe_create_card",
-    })).toEqual({ ok: false, reason: "commerce checkout not found" })
+        token: `commerce:missing:${"0".repeat(64)}:${randomUUID()}`,
+        toolName: "stripe_create_card",
+      })).toEqual({ ok: false, reason: "commerce checkout not found" })
 
     const confirmed = confirmCommercePreview({
       agentRoot: tmp.agentRoot,
@@ -340,6 +369,48 @@ describe("commerce authority", () => {
       friendId: "family-1",
       currentUserMessage: confirmationMessage(withItems),
     })
+    expect(commerceAuthorityToken(confirmed)).toBe(confirmed.authorityToken)
+    const badConfirmationToken = testToken("bad-confirmation", confirmed.digest)
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", "bad-confirmation.json"), `${JSON.stringify({
+      ...confirmed,
+      id: "bad-confirmation",
+      confirmation: "CONFIRM_ALMOST",
+      authorityTokenHash: testTokenHash(badConfirmationToken),
+    }, null, 2)}\n`, "utf-8")
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: badConfirmationToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
+    const badMessageToken = testToken("bad-message", confirmed.digest)
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", "bad-message.json"), `${JSON.stringify({
+      ...confirmed,
+      id: "bad-message",
+      confirmedByMessage: "wrong exact message",
+      authorityTokenHash: testTokenHash(badMessageToken),
+    }, null, 2)}\n`, "utf-8")
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: badMessageToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
+    const digestMismatchId = "digest-mismatch"
+    const digestMismatchToken = testToken(digestMismatchId, "3".repeat(64))
+    const digestMismatchRecord = {
+      ...confirmed,
+      id: digestMismatchId,
+      confirmedByMessage: confirmationMessage({ ...confirmed, id: digestMismatchId }),
+      authorityTokenHash: testTokenHash(digestMismatchToken),
+    }
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${digestMismatchId}.json`), `${JSON.stringify(digestMismatchRecord, null, 2)}\n`, "utf-8")
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: digestMismatchToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority digest mismatch" })
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
@@ -379,9 +450,9 @@ describe("commerce authority", () => {
     }).ok).toBe(false)
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
-      token: `commerce:${confirmed.id}:${"0".repeat(64)}`,
-      toolName: "stripe_create_card",
-    }).ok).toBe(false)
+        token: `commerce:${confirmed.id}:${"0".repeat(64)}:${randomUUID()}`,
+        toolName: "stripe_create_card",
+      }).ok).toBe(false)
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
@@ -391,37 +462,37 @@ describe("commerce authority", () => {
 
     const legacyNoAllowedToolsId = "legacy-no-allowed-tools"
     const legacyNoAllowedToolsDigest = "1".repeat(64)
-    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${legacyNoAllowedToolsId}.json`), `${JSON.stringify({
-      ...confirmed,
-      id: legacyNoAllowedToolsId,
-      digest: legacyNoAllowedToolsDigest,
-      status: "confirmed",
-      allowedTools: undefined,
-      constraints: undefined,
-    }, null, 2)}\n`, "utf-8")
-    expect(validateCommerceAuthorityToken({
-      agentRoot: tmp.agentRoot,
-      token: `commerce:${legacyNoAllowedToolsId}:${legacyNoAllowedToolsDigest}`,
-      toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
-    })).toEqual({ ok: false, reason: "commerce_authority is missing allowed tools" })
+      fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${legacyNoAllowedToolsId}.json`), `${JSON.stringify({
+        ...confirmed,
+        id: legacyNoAllowedToolsId,
+        digest: legacyNoAllowedToolsDigest,
+        status: "confirmed",
+        allowedTools: undefined,
+        constraints: undefined,
+      }, null, 2)}\n`, "utf-8")
+      expect(validateCommerceAuthorityToken({
+        agentRoot: tmp.agentRoot,
+        token: `commerce:${legacyNoAllowedToolsId}:${legacyNoAllowedToolsDigest}:${randomUUID()}`,
+        toolName: "stripe_create_card",
+        args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      })).toEqual({ ok: false, reason: "commerce_authority is missing allowed tools" })
 
     const legacyNoConstraintsId = "legacy-no-constraints"
     const legacyNoConstraintsDigest = "2".repeat(64)
-    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${legacyNoConstraintsId}.json`), `${JSON.stringify({
-      ...confirmed,
-      id: legacyNoConstraintsId,
-      digest: legacyNoConstraintsDigest,
-      status: "confirmed",
-      allowedTools: ["stripe_create_card"],
-      constraints: undefined,
-    }, null, 2)}\n`, "utf-8")
-    expect(validateCommerceAuthorityToken({
-      agentRoot: tmp.agentRoot,
-      token: `commerce:${legacyNoConstraintsId}:${legacyNoConstraintsDigest}`,
-      toolName: "stripe_create_card",
-      args: { spend_limit: "24.69", currency: "usd" },
-    })).toEqual({ ok: false, reason: "commerce_authority constraints are invalid" })
+      fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${legacyNoConstraintsId}.json`), `${JSON.stringify({
+        ...confirmed,
+        id: legacyNoConstraintsId,
+        digest: legacyNoConstraintsDigest,
+        status: "confirmed",
+        allowedTools: ["stripe_create_card"],
+        constraints: undefined,
+      }, null, 2)}\n`, "utf-8")
+      expect(validateCommerceAuthorityToken({
+        agentRoot: tmp.agentRoot,
+        token: `commerce:${legacyNoConstraintsId}:${legacyNoConstraintsDigest}:${randomUUID()}`,
+        toolName: "stripe_create_card",
+        args: { spend_limit: "24.69", currency: "usd" },
+      })).toEqual({ ok: false, reason: "commerce_authority constraints are invalid" })
 
     const tamperedPath = path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${confirmed.id}.json`)
     fs.writeFileSync(tamperedPath, `${JSON.stringify({
@@ -518,25 +589,26 @@ describe("commerce authority", () => {
       friendId: "family-1",
       currentUserMessage: confirmationMessage(confirmed),
     })).toThrow("preview has expired")
-    const expiredPreview = createCommercePreview({
-      agentRoot: tmp.agentRoot,
-      friendId: "family-1",
+      const expiredPreview = createCommercePreview({
+        agentRoot: tmp.agentRoot,
+        friendId: "family-1",
       merchant: "Expired Store",
       amount: 3,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
       constraints: { type: "single_use" },
-      reason: "Exercise expired authority validation",
-      expiresInMinutes: -1,
-    })
-    const expiredToken = commerceAuthorityToken(expiredPreview)
-    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${expiredPreview.id}.json`), `${JSON.stringify({
-      ...expiredPreview,
-      status: "confirmed",
-      confirmedAt: new Date().toISOString(),
-      confirmation: "CONFIRM_PURCHASE",
-      authorityToken: expiredToken,
-    }, null, 2)}\n`, "utf-8")
+        reason: "Exercise expired authority validation",
+        expiresInMinutes: -1,
+      })
+      const expiredToken = testToken(expiredPreview.id, expiredPreview.digest)
+      fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${expiredPreview.id}.json`), `${JSON.stringify({
+        ...expiredPreview,
+        status: "confirmed",
+        confirmedAt: new Date().toISOString(),
+        confirmation: "CONFIRM_PURCHASE",
+        confirmedByMessage: confirmationMessage(expiredPreview),
+        authorityTokenHash: testTokenHash(expiredToken),
+      }, null, 2)}\n`, "utf-8")
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: expiredToken,
@@ -626,6 +698,66 @@ describe("commerce authority", () => {
     expect(directlyConsumed.ok).toBe(false)
   })
 
+  it("cleans stale commerce locks and times out on live lock contention", () => {
+    tmp = createTmpBundle({ agentName: "commerce-locks" })
+    const preview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 25,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use" },
+      reason: "Virtual card for approved purchase",
+    })
+    const confirmed = confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: preview.id,
+      digest: preview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(preview),
+    })
+    const lockPath = path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${preview.id}.json.lock`)
+    fs.writeFileSync(lockPath, "stale")
+    const staleTime = new Date(Date.now() - 31_000)
+    fs.utimesSync(lockPath, staleTime, staleTime)
+    const consumed = consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      friendId: "family-1",
+    })
+    expect(consumed.ok).toBe(true)
+    expect(fs.existsSync(lockPath)).toBe(false)
+
+    const lockedId = "locked-checkout"
+    const lockedPath = path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${lockedId}.json.lock`)
+    fs.writeFileSync(lockedPath, "live")
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(2_000)
+      .mockReturnValueOnce(2_000)
+      .mockReturnValueOnce(2_025)
+      .mockReturnValueOnce(7_000)
+    expect(() => consumeCommerceAuthorityToken({
+      agentRoot: tmp!.agentRoot,
+      token: `commerce:${lockedId}:${"0".repeat(64)}:${randomUUID()}`,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      friendId: "family-1",
+    })).toThrow("commerce_authority lock timed out")
+    vi.restoreAllMocks()
+    expect(() => consumeCommerceAuthorityToken({
+      agentRoot: tmp!.agentRoot,
+      token: `commerce:${"x".repeat(300)}:${"0".repeat(64)}:${randomUUID()}`,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      friendId: "family-1",
+    })).toThrow()
+  })
+
   it("commerce tools run the preview/commit/read/log flow", async () => {
     tmp = createTmpBundle({ agentName: "commerce-tools" })
     const ctx = familyContext(tmp.agentRoot)
@@ -640,14 +772,15 @@ describe("commerce authority", () => {
       items_json: JSON.stringify([{ name: "Flight", quantity: 1, amount: 250 }]),
       expires_minutes: "10",
     }, ctx)
-    const preview = JSON.parse(previewRaw)
-    expect(preview.digest).toMatch(/^[a-f0-9]{64}$/)
+      const preview = JSON.parse(previewRaw)
+      expect(preview.digest).toMatch(/^[a-f0-9]{64}$/)
+      expect(preview.confirmationMessage).toContain("Duffel 250 usd via flight_book")
 
-    const committedRaw = await commerceTool("commerce_checkout_commit")({
-      checkout_id: preview.checkoutId,
-      digest: preview.digest,
-      confirmation: "CONFIRM_PURCHASE",
-    }, { ...ctx, currentUserMessage: confirmationMessage({ id: preview.checkoutId, digest: preview.digest }) })
+      const committedRaw = await commerceTool("commerce_checkout_commit")({
+        checkout_id: preview.checkoutId,
+        digest: preview.digest,
+        confirmation: "CONFIRM_PURCHASE",
+      }, { ...ctx, currentUserMessage: preview.confirmationMessage })
     const committed = JSON.parse(committedRaw)
     expect(committed.authorityToken).toMatch(/^commerce:/)
 

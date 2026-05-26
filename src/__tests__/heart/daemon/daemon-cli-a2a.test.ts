@@ -111,7 +111,7 @@ describe("ouro A2A CLI execution", () => {
     expect(stdout[0]).toBe(result)
   })
 
-  it("connects A2A onboarding and enables the sense in agent.json", async () => {
+    it("connects A2A onboarding and enables the sense in agent.json", async () => {
     const bundlesRoot = mkdtempSync(join(tmpdir(), "ouro-a2a-connect-"))
     try {
       const agentRoot = join(bundlesRoot, "slugger.ouro")
@@ -137,9 +137,31 @@ describe("ouro A2A CLI execution", () => {
     } finally {
       rmSync(bundlesRoot, { recursive: true, force: true })
     }
-  })
+    })
 
-  it("onboards an A2A peer through the friend store", async () => {
+    it("reports bundle sync from A2A onboarding when the bundle is sync-enabled", async () => {
+      const bundlesRoot = mkdtempSync(join(tmpdir(), "ouro-a2a-connect-sync-"))
+      try {
+        const agentRoot = join(bundlesRoot, "slugger.ouro")
+        const { mkdirSync, writeFileSync } = await import("node:fs")
+        mkdirSync(agentRoot, { recursive: true })
+        writeFileSync(join(agentRoot, "agent.json"), JSON.stringify({
+          version: 1,
+          enabled: true,
+          provider: "anthropic",
+          sync: { enabled: true, remote: "origin" },
+          senses: { cli: { enabled: true }, a2a: { enabled: false } },
+          phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+        }), "utf-8")
+        const result = await runOuroCli(["connect", "a2a", "--agent", "slugger"], createMockDeps({ bundlesRoot }))
+        expect(result).toContain("A2A connected for slugger")
+        expect(result).toContain("bundle sync: could not push bundle changes")
+      } finally {
+        rmSync(bundlesRoot, { recursive: true, force: true })
+      }
+    })
+
+    it("onboards an A2A peer through the friend store", async () => {
     const bundlesRoot = mkdtempSync(join(tmpdir(), "ouro-a2a-cli-"))
     const card = buildA2AAgentCard({ agentName: "remote", baseUrl: "https://remote.example" })
     try {

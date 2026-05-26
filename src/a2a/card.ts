@@ -14,10 +14,17 @@ export function buildA2AAgentCard(options: BuildA2AAgentCardOptions): A2AAgentCa
   const card: A2AAgentCard = {
     name: options.agentName,
     description: options.description ?? `Ouroboros agent ${options.agentName}`,
+    protocolVersion: A2A_DEFAULT_PROTOCOL_VERSION,
+    url: endpoint,
+    preferredTransport: "JSONRPC",
     supportedInterfaces: [{
       url: endpoint,
       protocolBinding: "JSONRPC",
       protocolVersion: A2A_DEFAULT_PROTOCOL_VERSION,
+    }],
+    additionalInterfaces: [{
+      url: endpoint,
+      transport: "JSONRPC",
     }],
     version: "1.0.0",
     capabilities: {

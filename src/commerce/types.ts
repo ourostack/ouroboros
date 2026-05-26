@@ -23,13 +23,14 @@ export interface CommerceMandateRecord {
   createdAt: string
   updatedAt: string
   expiresAt: string
-  confirmedAt?: string
-  confirmation?: string
-  confirmedByMessage?: string
-  authorityToken?: string
-  consumedAt?: string
-  consumedByTool?: string
-}
+    confirmedAt?: string
+    confirmation?: string
+    confirmedByMessage?: string
+    authorityToken?: string
+    authorityTokenHash?: string
+    consumedAt?: string
+    consumedByTool?: string
+  }
 
 export interface CommerceAccessLogEntry {
   at: string

@@ -11,7 +11,7 @@ For services with direct API access: Duffel flights, LiteAPI hotels.
 1. Search using the API tool (`flight_search`, LiteAPI MCP)
 2. Present options to the human with prices and details
 3. Create a checkout preview with `commerce_checkout_preview` for the exact merchant, item, amount, currency, allowed tool, and exact tool constraints
-4. Human approves in a new message that exactly equals `CONFIRM_PURCHASE checkout <checkout_id> digest <digest>`
+4. Human approves in a new message that exactly equals the preview's `confirmationMessage`, including checkout id, digest, merchant, amount, currency, allowed tool, and constraints
 5. Commit the preview with `commerce_checkout_commit` and pass its `commerce_authority` token to any payment or booking tool
 6. Book using the API tool with passenger data from `user_profile_get`
 7. Create a single-use virtual card via `stripe_create_card` when needed
@@ -57,7 +57,7 @@ Default is Level 1. Level changes require explicit human approval.
 
 ## Commerce Authority
 
-Money-moving tools (`stripe_create_card`, `flight_hold`, `flight_book`) require a one-use `commerce_authority` token from `commerce_checkout_commit`. This is the local AP2-compatible primitive: an exact mandate record with merchant, amount, currency, allowed tool, exact tool constraints, reason, digest, expiry, confirmation, consumption state, and access log. If the tool, amount, currency, offer id, card type, or other constraint changes, create a new preview and get a new confirmation.
+Money-moving tools (`stripe_create_card`, `flight_hold`, `flight_book`) require a one-use `commerce_authority` token from `commerce_checkout_commit`. This is the local AP2-compatible primitive: an exact mandate record with merchant, amount, currency, allowed tool, exact tool constraints, reason, digest, expiry, confirmation, consumption state, and access log. Tokens are random, stored only as hashes, and consumed under a checkout lock before the money-moving tool runs. If the tool, amount, currency, offer id, card type, or other constraint changes, create a new preview and get a new confirmation.
 
 ## Error Handling
 

@@ -4,7 +4,10 @@ import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2ATask } fro
 
 export function endpointForCard(card: A2AAgentCard): string | undefined {
   const jsonRpc = card.supportedInterfaces?.find((entry) => entry.protocolBinding.toUpperCase() === "JSONRPC")
-  return jsonRpc?.url ?? card.url
+  if (jsonRpc?.url) return jsonRpc.url
+  if (card.preferredTransport?.toUpperCase() === "JSONRPC" && card.url) return card.url
+  const legacyJsonRpc = card.additionalInterfaces?.find((entry) => entry.transport.toUpperCase() === "JSONRPC")
+  return legacyJsonRpc?.url ?? card.url
 }
 
 export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch = fetch): Promise<A2AAgentCard> {
@@ -21,7 +24,7 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
   const parsed = await response.json() as A2AAgentCard
   const endpoint = endpointForCard(parsed)
   if (!parsed || typeof parsed !== "object" || typeof endpoint !== "string" || typeof parsed.name !== "string") {
-    throw new Error("A2A card is missing required name/supportedInterfaces fields")
+    throw new Error("A2A card is missing required name or JSONRPC endpoint fields")
   }
   emitNervesEvent({
     component: "channels",
@@ -32,16 +35,20 @@ export async function fetchA2AAgentCard(cardUrl: string, fetchImpl: typeof fetch
   return parsed
 }
 
-async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch): Promise<A2AJsonRpcResponse> {
+async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetchImpl: typeof fetch, protocolVersion = "1.0"): Promise<A2AJsonRpcResponse> {
   const response = await fetchImpl(endpointUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "A2A-Version": protocolVersion },
     body: JSON.stringify(request),
   })
   if (!response.ok) {
     throw new Error(`A2A JSON-RPC request failed (${response.status} ${response.statusText})`)
   }
   return await response.json() as A2AJsonRpcResponse
+}
+
+function methodNotFound(response: A2AJsonRpcResponse): boolean {
+  return "error" in response && response.error.code === -32601
 }
 
 function senderMetadata(input: {
@@ -76,7 +83,7 @@ export async function sendA2AMessage(input: {
         role: "ROLE_USER",
         messageId,
         contextId: input.sessionKey ?? "default",
-        parts: [{ text: input.message }],
+        parts: [{ kind: "text", text: input.message }],
         metadata: senderMetadata(input),
       },
     },
@@ -89,7 +96,20 @@ export async function sendA2AMessage(input: {
     meta: { endpointUrl: input.endpointUrl, messageId },
   })
 
-  const rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl)
+  let rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl)
+  if (methodNotFound(rpc)) {
+    rpc = await postJsonRpc(input.endpointUrl, {
+      ...request,
+      method: "message/send",
+      params: {
+        ...(request.params as Record<string, unknown>),
+        message: {
+          ...((request.params as { message: Record<string, unknown> }).message),
+          role: "user",
+        },
+      },
+    }, fetchImpl, "0.3")
+  }
   if ("error" in rpc) {
     throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
   }
@@ -131,7 +151,10 @@ export async function getA2ATask(input: {
     message: "fetching A2A task",
     meta: { endpointUrl: input.endpointUrl, taskId: input.taskId },
   })
-  const rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl)
+  let rpc = await postJsonRpc(input.endpointUrl, request, fetchImpl)
+  if (methodNotFound(rpc)) {
+    rpc = await postJsonRpc(input.endpointUrl, { ...request, method: "tasks/get" }, fetchImpl, "0.3")
+  }
   if ("error" in rpc) {
     throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
   }
