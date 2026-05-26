@@ -44,6 +44,18 @@ async function postJsonRpc(endpointUrl: string, request: A2AJsonRpcRequest, fetc
   return await response.json() as A2AJsonRpcResponse
 }
 
+function senderMetadata(input: {
+  senderAgentId?: string
+  senderName?: string
+  senderCardUrl?: string
+}): Record<string, string> {
+  return {
+    ...(input.senderAgentId ? { senderAgentId: input.senderAgentId } : {}),
+    ...(input.senderName ? { senderName: input.senderName } : {}),
+    ...(input.senderCardUrl ? { senderCardUrl: input.senderCardUrl } : {}),
+  }
+}
+
 export async function sendA2AMessage(input: {
   endpointUrl: string
   message: string
@@ -65,11 +77,7 @@ export async function sendA2AMessage(input: {
         messageId,
         contextId: input.sessionKey ?? "default",
         parts: [{ text: input.message }],
-        metadata: {
-          ...(input.senderAgentId ? { senderAgentId: input.senderAgentId } : {}),
-          ...(input.senderName ? { senderName: input.senderName } : {}),
-          ...(input.senderCardUrl ? { senderCardUrl: input.senderCardUrl } : {}),
-        },
+        metadata: senderMetadata(input),
       },
     },
   }
@@ -99,14 +107,23 @@ export async function sendA2AMessage(input: {
 export async function getA2ATask(input: {
   endpointUrl: string
   taskId: string
+  accessToken?: string
+  senderAgentId?: string
+  senderName?: string
+  senderCardUrl?: string
   fetchImpl?: typeof fetch
 }): Promise<A2ATask> {
   const fetchImpl = input.fetchImpl ?? fetch
+  const metadata = senderMetadata(input)
   const request: A2AJsonRpcRequest = {
     jsonrpc: "2.0",
     id: randomUUID(),
     method: "GetTask",
-    params: { id: input.taskId },
+    params: {
+      id: input.taskId,
+      ...(input.accessToken ? { accessToken: input.accessToken } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    },
   }
   emitNervesEvent({
     component: "channels",

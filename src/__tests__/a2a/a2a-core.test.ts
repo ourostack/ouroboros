@@ -8,7 +8,7 @@ import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "
 import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
 import { onboardA2APeer } from "../../a2a/onboarding"
 import { FileA2ATaskStore } from "../../a2a/task-store"
-import type { A2AJsonRpcResponse, A2ATask } from "../../a2a/types"
+import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2ATask } from "../../a2a/types"
 import { FriendResolver } from "../../mind/friends/resolver"
 import { FileFriendStore } from "../../mind/friends/store-file"
 
@@ -33,6 +33,22 @@ describe("A2A core substrate", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: "rpc-1", method, params }),
     })
     return await response.json() as A2AJsonRpcResponse
+  }
+
+  function taskAccessToken(task: A2ATask): string {
+    const a2a = task.metadata?.a2a && typeof task.metadata.a2a === "object" && !Array.isArray(task.metadata.a2a)
+      ? task.metadata.a2a as { accessToken?: unknown }
+      : undefined
+    if (typeof a2a?.accessToken !== "string" || !a2a.accessToken.trim()) {
+      throw new Error("missing A2A task access token")
+    }
+    return a2a.accessToken
+  }
+
+  function taskFromRpc(response: A2AJsonRpcResponse): A2ATask {
+    if ("error" in response) throw new Error(response.error.message)
+    const result = response.result as A2ATask | { task?: A2ATask }
+    return result && typeof result === "object" && "task" in result && result.task ? result.task : result as A2ATask
   }
 
   it("builds, serves, sends, and fetches an A2A task", async () => {
@@ -69,7 +85,13 @@ describe("A2A core substrate", () => {
     expect(task.status.state).toBe("TASK_STATE_COMPLETED")
     expect(task.artifacts?.[0]?.parts[0]?.text).toBe("echo:hello peer")
 
-    const fetched = await getA2ATask({ endpointUrl: server.endpointUrl, taskId: task.id })
+    const fetched = await getA2ATask({
+      endpointUrl: server.endpointUrl,
+      taskId: task.id,
+      accessToken: taskAccessToken(task),
+      senderAgentId: "local-agent",
+      senderName: "Local Agent",
+    })
     expect(fetched.id).toBe(task.id)
   })
 
@@ -177,8 +199,26 @@ describe("A2A core substrate", () => {
     })
     expect(invalidJson.status).toBe(400)
 
+    const tooLargeBody = await fetch(server.endpointUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "x".repeat(128 * 1024 + 1),
+    })
+    expect(tooLargeBody.status).toBe(413)
+    const tooLargeBodyRpc = await tooLargeBody.json() as A2AJsonRpcResponse
+    expect("error" in tooLargeBodyRpc ? tooLargeBodyRpc.error.message : "").toContain("request body exceeds")
+
     const invalidSend = await postRpc("SendMessage", { message: { role: "ROLE_USER", parts: [] } })
     expect("error" in invalidSend ? invalidSend.error.message : "").toContain("requires a text message")
+
+    const tooLargeText = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "too-large-text",
+        parts: [{ text: "x".repeat(16_001) }],
+      },
+    })
+    expect("error" in tooLargeText ? tooLargeText.error.message : "").toContain("text exceeds")
 
     const noIdResponse = await fetch(server.endpointUrl, {
       method: "POST",
@@ -215,9 +255,14 @@ describe("A2A core substrate", () => {
       "x-a2a-agent-id": "header-peer",
       "x-a2a-agent-name": "Header Peer",
     })
-    expect("result" in legacySend ? legacySend.result.task.status.state : "").toBe("TASK_STATE_COMPLETED")
-    expect("result" in legacySend ? legacySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain("route:unauthenticated-a2a:")
-    expect("result" in legacySend ? legacySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Claimed Peer:default:legacy hello")
+    const legacyTask = taskFromRpc(legacySend)
+    const legacyAccessToken = taskAccessToken(legacyTask)
+    const legacyText = legacyTask.artifacts?.[0]?.parts[0]?.text ?? ""
+    expect(legacyTask.status.state).toBe("TASK_STATE_COMPLETED")
+    expect(legacyText).toContain("route:unauthenticated-a2a:")
+    expect(legacyText).toContain(":Claimed Peer:default:legacy hello")
+    expect(legacyTask.id).not.toBe("task-1")
+    expect((legacyTask.metadata?.a2a as { clientTaskId?: unknown } | undefined)?.clientTaskId).toBe("task-1")
 
     const headerOnlySend = await postRpc("SendMessage", {
       message: {
@@ -229,7 +274,8 @@ describe("A2A core substrate", () => {
       "x-a2a-agent-id": "header-peer",
       "x-a2a-agent-name": "Header Peer",
     })
-    expect("result" in headerOnlySend ? headerOnlySend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Header Peer:default:header hello")
+    const headerOnlyTask = taskFromRpc(headerOnlySend)
+    expect(headerOnlyTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":Header Peer:default:header hello")
 
     const legacyMetadataSend = await postRpc("SendMessage", {
       message: {
@@ -239,7 +285,19 @@ describe("A2A core substrate", () => {
         metadata: { cardUrl: "https://claimed.example/card", agentName: "Legacy Metadata Peer" },
       },
     })
-    expect("result" in legacyMetadataSend ? legacyMetadataSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Legacy Metadata Peer:default:legacy metadata hello")
+    const legacyMetadataTask = taskFromRpc(legacyMetadataSend)
+    expect(legacyMetadataTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":Legacy Metadata Peer:default:legacy metadata hello")
+
+    const agentIdMetadataSend = await postRpc("SendMessage", {
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-agent-id-metadata",
+        parts: [{ text: "agent id metadata hello" }],
+        metadata: { agentId: "legacy-agent-id", agentName: "Legacy Agent ID Peer" },
+      },
+    })
+    const agentIdMetadataTask = taskFromRpc(agentIdMetadataSend)
+    expect(agentIdMetadataTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":Legacy Agent ID Peer:default:agent id metadata hello")
 
     const cardHintSend = await postRpc("SendMessage", {
       message: {
@@ -249,7 +307,8 @@ describe("A2A core substrate", () => {
         metadata: { senderCardUrl: "https://sender.example/card" },
       },
     })
-    expect("result" in cardHintSend ? cardHintSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":https://sender.example/card:default:card hint hello")
+    const cardHintTask = taskFromRpc(cardHintSend)
+    expect(cardHintTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":https://sender.example/card:default:card hint hello")
 
     const anonymousSend = await postRpc("SendMessage", {
       message: {
@@ -258,7 +317,8 @@ describe("A2A core substrate", () => {
         parts: [{ text: "anonymous hello" }],
       },
     })
-    expect("result" in anonymousSend ? anonymousSend.result.task.artifacts[0]?.parts[0]?.text : "").toContain(":Unauthenticated A2A peer:default:anonymous hello")
+    const anonymousTask = taskFromRpc(anonymousSend)
+    expect(anonymousTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":Unauthenticated A2A peer:default:anonymous hello")
 
     const traversal = await postRpc("SendMessage", {
       message: {
@@ -268,7 +328,9 @@ describe("A2A core substrate", () => {
         parts: [{ text: "path traversal" }],
       },
     })
-    expect("result" in traversal ? traversal.result.task.id : "").toBe("../../../agent")
+    const traversalTask = taskFromRpc(traversal)
+    expect(traversalTask.id).not.toBe("../../../agent")
+    expect((traversalTask.metadata?.a2a as { clientTaskId?: unknown } | undefined)?.clientTaskId).toBe("../../../agent")
     expect(fs.existsSync(path.join(tmp.agentRoot, "state", "agent.json"))).toBe(false)
 
     const missingGetId = await postRpc("GetTask", {})
@@ -277,10 +339,62 @@ describe("A2A core substrate", () => {
     expect("error" in missingGetParams ? missingGetParams.error.message : "").toContain("requires id")
 
     const missingTask = await postRpc("tasks/get", { id: "missing" })
-    expect("error" in missingTask ? missingTask.error.message : "").toContain("task not found")
+    expect("error" in missingTask ? missingTask.error.message : "").toContain("requires accessToken")
+    const missingTaskWithToken = await postRpc("tasks/get", {
+      id: "missing",
+      accessToken: "nope",
+      metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+    })
+    expect("error" in missingTaskWithToken ? missingTaskWithToken.error.message : "").toContain("task not found")
 
-    const fetched = await postRpc("GetTask", { id: "task-1" })
-    expect("result" in fetched ? fetched.result.id : "").toBe("task-1")
+    const fetched = await postRpc("GetTask", {
+      id: legacyTask.id,
+      accessToken: legacyAccessToken,
+      metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+    })
+    expect(taskFromRpc(fetched).id).toBe(legacyTask.id)
+    const headerFetched = await postRpc("tasks/get", {
+      id: headerOnlyTask.id,
+      access_token: taskAccessToken(headerOnlyTask),
+    }, {
+      "x-a2a-agent-id": "header-peer",
+      "x-a2a-agent-name": "Header Peer",
+    })
+    expect(taskFromRpc(headerFetched).id).toBe(headerOnlyTask.id)
+    const legacyMetadataFetched = await postRpc("GetTask", {
+      id: legacyMetadataTask.id,
+      accessToken: taskAccessToken(legacyMetadataTask),
+      metadata: { cardUrl: "https://claimed.example/card", agentName: "Legacy Metadata Peer" },
+    })
+    expect(taskFromRpc(legacyMetadataFetched).id).toBe(legacyMetadataTask.id)
+    const agentIdMetadataFetched = await postRpc("GetTask", {
+      id: agentIdMetadataTask.id,
+      accessToken: taskAccessToken(agentIdMetadataTask),
+      metadata: { agentId: "legacy-agent-id", agentName: "Legacy Agent ID Peer" },
+    })
+    expect(taskFromRpc(agentIdMetadataFetched).id).toBe(agentIdMetadataTask.id)
+    const cardHintFetched = await postRpc("GetTask", {
+      id: cardHintTask.id,
+      metadata: { senderCardUrl: "https://sender.example/card", accessToken: taskAccessToken(cardHintTask) },
+    })
+    expect(taskFromRpc(cardHintFetched).id).toBe(cardHintTask.id)
+    const anonymousFetched = await postRpc("GetTask", {
+      id: anonymousTask.id,
+      accessToken: taskAccessToken(anonymousTask),
+    })
+    expect(taskFromRpc(anonymousFetched).id).toBe(anonymousTask.id)
+    const wrongToken = await postRpc("GetTask", {
+      id: legacyTask.id,
+      accessToken: "wrong-token",
+      metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+    })
+    expect("error" in wrongToken ? wrongToken.error.message : "").toContain("task not found")
+    const wrongSender = await postRpc("GetTask", {
+      id: legacyTask.id,
+      accessToken: legacyAccessToken,
+      metadata: { senderAgentId: "different-peer", senderName: "Claimed Peer" },
+    })
+    expect("error" in wrongSender ? wrongSender.error.message : "").toContain("task not found")
 
     const missingCancelId = await postRpc("CancelTask", {})
     expect("error" in missingCancelId ? missingCancelId.error.message : "").toContain("requires id")
@@ -288,15 +402,27 @@ describe("A2A core substrate", () => {
     expect("error" in missingCancelParams ? missingCancelParams.error.message : "").toContain("requires id")
 
     const missingCancelTask = await postRpc("tasks/cancel", { id: "missing" })
-    expect("error" in missingCancelTask ? missingCancelTask.error.message : "").toContain("task not found")
+    expect("error" in missingCancelTask ? missingCancelTask.error.message : "").toContain("requires accessToken")
+    const missingCancelTaskWithToken = await postRpc("tasks/cancel", {
+      id: "missing",
+      accessToken: "nope",
+      metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+    })
+    expect("error" in missingCancelTaskWithToken ? missingCancelTaskWithToken.error.message : "").toContain("task not found")
 
-    const canceled = await postRpc("CancelTask", { id: "task-1" })
-    expect("result" in canceled ? canceled.result.status.state : "").toBe("TASK_STATE_CANCELED")
+    const canceled = await postRpc("CancelTask", {
+      id: legacyTask.id,
+      accessToken: legacyAccessToken,
+      metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+    })
+    expect(taskFromRpc(canceled).status.state).toBe("TASK_STATE_CANCELED")
 
     const unknown = await postRpc("Nope", {})
     expect("error" in unknown ? unknown.error.message : "").toContain("unknown method")
 
-    expect(new FileA2ATaskStore(tmp.agentRoot).get("missing")).toBeNull()
+    const scopedStore = new FileA2ATaskStore(tmp.agentRoot)
+    expect(scopedStore.get("missing")).toBeNull()
+    expect(scopedStore.get(legacyTask.id)).toBeNull()
 
     await server.close()
     await expect(server.close()).rejects.toThrow()
@@ -343,6 +469,7 @@ describe("A2A core substrate", () => {
     expect(record.kind).toBe("agent")
     expect(record.trustLevel).toBe("friend")
     expect(record.agentMeta?.a2a?.endpointUrl).toBe("https://remote.example/a2a")
+    expect(record.agentMeta?.a2a?.agentId).toBe("https://remote.example/.well-known/agent-card.json")
     expect(record.agentMeta?.a2a?.protocolVersion).toBe("1.0")
     expect(record.externalIds.some((id) => id.provider === "a2a-agent")).toBe(true)
 
@@ -377,6 +504,30 @@ describe("A2A core substrate", () => {
       fetchImpl: fetchImpl as typeof fetch,
     })
     expect(preserved.trustLevel).toBe("family")
+
+    const spoofedCard = {
+      ...card,
+      name: "Evil Remote",
+      supportedInterfaces: [{
+        url: "https://evil.example/a2a",
+        protocolBinding: "JSONRPC",
+        protocolVersion: "1.0",
+      }],
+      metadata: { ouro: { agentName: "remote-agent" } },
+    }
+    const spoofed = await onboardA2APeer({
+      agentName: tmp.agentName,
+      bundlesRoot: tmp.bundlesRoot,
+      store,
+      cardUrl: "https://evil.example/card",
+      fetchImpl: (async () => new Response(JSON.stringify(spoofedCard), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch,
+    })
+    expect(spoofed.id).not.toBe(record.id)
+    expect(spoofed.trustLevel).toBe("acquaintance")
+    expect((await store.get(record.id))?.agentMeta?.a2a?.endpointUrl).toBe("https://remote.example/a2a")
 
     await store.put(record.id, {
       ...preserved,
@@ -413,7 +564,7 @@ describe("A2A core substrate", () => {
         headers: { "content-type": "application/json" },
       })) as typeof fetch,
     })
-    expect(fallback.agentMeta?.a2a?.agentId).toBe("https://fallback.example/a2a")
+    expect(fallback.agentMeta?.a2a?.agentId).toBe("https://fallback.example/card")
   })
 
   it("auto-created A2A peers use agent kind and never become first-imprint family", async () => {

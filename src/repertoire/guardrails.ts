@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { isTrustedLevel, type TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
-import { validateCommerceAuthorityToken } from "../commerce/store"
+import { consumeCommerceAuthorityToken } from "../commerce/store"
 
 export interface GuardContext {
   readPaths: ReadonlySet<string>
@@ -338,7 +338,7 @@ function checkCredentialTrustGuardrails(toolName: string, context: GuardContext)
 function checkCommerceAuthorityGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
   if (!COMMERCE_AUTHORITY_TOOLS.has(toolName)) return allow
   if (!context.agentRoot) return deny("commerce authority unavailable: agent root could not be resolved.")
-  const result = validateCommerceAuthorityToken({
+  const result = consumeCommerceAuthorityToken({
     agentRoot: context.agentRoot,
     token: args.commerce_authority,
     toolName,

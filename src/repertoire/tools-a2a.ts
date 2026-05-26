@@ -151,8 +151,9 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           properties: {
             friend_id: { type: "string", description: "Friend record ID for the A2A agent peer." },
             task_id: { type: "string", description: "Remote A2A task ID." },
+            access_token: { type: "string", description: "Task access token returned in the SendMessage task metadata." },
           },
-          required: ["friend_id", "task_id"],
+          required: ["friend_id", "task_id", "access_token"],
         },
       },
     },
@@ -170,7 +171,13 @@ export const a2aToolDefinitions: ToolDefinition[] = [
       if (!isTrustedLevel(peer.trustLevel)) return "target A2A peer must be friend or family trust before task lookup."
       try {
         const endpoint = await resolveA2AEndpoint(peer)
-        const task = await getA2ATask({ endpointUrl: endpoint.endpointUrl, taskId: args.task_id })
+        const task = await getA2ATask({
+          endpointUrl: endpoint.endpointUrl,
+          taskId: args.task_id,
+          accessToken: args.access_token,
+          senderAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
+          senderName: agentNameFromRoot(ctx?.agentRoot) ?? "Ouro agent",
+        })
         return JSON.stringify(task, null, 2)
       } catch (error) {
         return `A2A task error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`

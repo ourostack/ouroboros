@@ -640,7 +640,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
           entry: managedSenseEntry(sense),
           channel: sense,
           autoStart: true,
-          ...(sense === "a2a" ? { args: managedA2AArgs(agent) } : {}),
+          ...(sense === "a2a" ? { args: managedA2AArgs(agent), getArgs: () => managedA2AArgs(agent) } : {}),
           getRuntimeCredentialBootstrap: () => runtimeCredentialBootstrapFor(agent, sense),
         }))
     })
@@ -758,17 +758,29 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   }
 
   triggerAutoStartSenses(): void {
-    if (this.processManager.triggerAutoStartAgents) {
-      this.processManager.triggerAutoStartAgents()
-      return
-    }
-    void this.processManager.startAutoStartAgents().catch((error) => {
+    void this.refreshEnabledSenseConfigs()
+      .catch((error) => {
         emitNervesEvent({
           level: "error",
           component: "channels",
           event: "channel.daemon_sense_autostart_error",
-          message: "sense autostart failed",
-          meta: { error: error instanceof Error ? error.message : String(error) },
+          message: "sense config refresh failed",
+          meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error refresh rejection @preserve */ String(error) },
+        })
+      })
+      .then(() => {
+        if (this.processManager.triggerAutoStartAgents) {
+          this.processManager.triggerAutoStartAgents()
+          return
+        }
+        void this.processManager.startAutoStartAgents().catch((error) => {
+          emitNervesEvent({
+            level: "error",
+            component: "channels",
+            event: "channel.daemon_sense_autostart_error",
+            message: "sense autostart failed",
+            meta: { error: error instanceof Error ? error.message : String(error) },
+          })
         })
       })
   }

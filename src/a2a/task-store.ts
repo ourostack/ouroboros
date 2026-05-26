@@ -4,8 +4,8 @@ import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { A2ATask } from "./types"
 
-function taskFileName(taskId: string): string {
-  return `${createHash("sha256").update(taskId).digest("hex")}.json`
+function taskFileName(taskId: string, ownerScope: string): string {
+  return `${createHash("sha256").update(`${ownerScope}\n${taskId}`).digest("hex")}.json`
 }
 
 export class FileA2ATaskStore {
@@ -22,13 +22,13 @@ export class FileA2ATaskStore {
     })
   }
 
-  put(task: A2ATask): void {
-    fs.writeFileSync(path.join(this.dir, taskFileName(task.id)), `${JSON.stringify(task, null, 2)}\n`, "utf-8")
+  put(task: A2ATask, ownerScope = "legacy"): void {
+    fs.writeFileSync(path.join(this.dir, taskFileName(task.id, ownerScope)), `${JSON.stringify(task, null, 2)}\n`, "utf-8")
   }
 
-  get(taskId: string): A2ATask | null {
+  get(taskId: string, ownerScope = "legacy"): A2ATask | null {
     try {
-      const raw = fs.readFileSync(path.join(this.dir, taskFileName(taskId)), "utf-8")
+      const raw = fs.readFileSync(path.join(this.dir, taskFileName(taskId, ownerScope)), "utf-8")
       return JSON.parse(raw) as A2ATask
     } catch {
       return null

@@ -96,19 +96,36 @@ describe("flight_hold handler", () => {
   })
 
   it("returns hold acknowledgment for family trust", async () => {
-    const result = await tool.handler({ offer_id: "off_123" }, familyCtx)
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    }, familyCtx)
     const parsed = JSON.parse(result)
     expect(parsed.status).toBe("hold_requested")
     expect(parsed.offerId).toBe("off_123")
+    expect(parsed.amount).toBe(25)
+    expect(parsed.currency).toBe("usd")
   })
 
   it("requires family trust level", async () => {
-    const result = await tool.handler({ offer_id: "off_123" }, friendCtx)
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    }, friendCtx)
     expect(result).toContain("family")
   })
 
   it("returns error when no friend context", async () => {
-    const result = await tool.handler({ offer_id: "off_123" })
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    })
     expect(result).toContain("no friend context")
   })
 })

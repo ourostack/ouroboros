@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.654",
       "changes": [
         "Add A2A sense substrate and AP2-compatible commerce authority primitives.",
-        "Harden A2A and commerce review gates by hashing task storage keys, treating unauthenticated inbound A2A claims as untrusted hints, propagating managed A2A endpoint config, and binding commerce authority to current human confirmation plus exact tool constraints."
+        "Harden A2A and commerce review gates with scoped task access tokens, generated inbound peer ids for unauthenticated A2A turns, canonical card-url onboarding, dynamic managed A2A endpoint refresh, exact one-use commerce authority confirmation, and amount/currency-bound flight holds."
       ]
     },
     {

@@ -8,6 +8,9 @@ import { A2A_DEFAULT_HOST, defaultA2APort, normalizeA2APath } from "./config"
 import { FileA2ATaskStore } from "./task-store"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
+const MAX_A2A_REQUEST_BYTES = 128 * 1024
+const MAX_A2A_MESSAGE_TEXT_CHARS = 16_000
+
 export interface A2ATurnRunnerInput {
   agentName: string
   peerAgentId: string
@@ -39,6 +42,12 @@ export interface A2AServerHandle {
   close(): Promise<void>
 }
 
+class A2ARequestError extends Error {
+  constructor(readonly status: number, readonly code: number, message: string) {
+    super(message)
+  }
+}
+
 function jsonResponse(id: A2AJsonRpcRequest["id"], result: unknown): A2AJsonRpcResponse {
   return { jsonrpc: "2.0", id: id ?? null, result }
 }
@@ -49,9 +58,15 @@ function errorResponse(id: A2AJsonRpcRequest["id"], code: number, message: strin
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
+  let total = 0
   for await (const chunk of req) {
     /* v8 ignore next -- Node HTTP request bodies arrive as Buffers in this runtime; string chunks are defensive stream compatibility @preserve */
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.byteLength
+    if (total > MAX_A2A_REQUEST_BYTES) {
+      throw new A2ARequestError(413, -32000, `A2A request body exceeds ${MAX_A2A_REQUEST_BYTES} bytes`)
+    }
+    chunks.push(buffer)
   }
   return Buffer.concat(chunks).toString("utf-8")
 }
@@ -87,9 +102,22 @@ function messageFromParams(params: unknown): A2AMessage | null {
   return message as A2AMessage
 }
 
-function metadataString(message: A2AMessage | null, key: string): string | undefined {
-  const value = message?.metadata?.[key]
+function metadataRecord(value: unknown): Record<string, unknown> | undefined {
+  /* v8 ignore next -- protocol callers pass JSON-RPC param/message objects; this guard keeps malformed direct input inert @preserve */
+  if (!value || typeof value !== "object") return undefined
+  /* v8 ignore next -- JSON-RPC params/messages are objects in supported calls; array guard protects malformed direct input @preserve */
+  if (Array.isArray(value)) return undefined
+  const metadata = (value as { metadata?: unknown }).metadata
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata as Record<string, unknown> : undefined
+}
+
+function metadataStringFromRecord(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key]
   return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function metadataString(message: A2AMessage | null, key: string): string | undefined {
+  return metadataStringFromRecord(metadataRecord(message), key)
 }
 
 function headerString(req: http.IncomingMessage, key: string): string | undefined {
@@ -122,7 +150,7 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
 }
 /* v8 ignore stop */
 
-function unauthenticatedPeerExternalId(req: http.IncomingMessage, senderHint: string | undefined): string {
+function stableUnauthenticatedTaskScope(req: http.IncomingMessage, senderHint: string | undefined): string {
   /* v8 ignore next -- Node supplies a socket address for accepted HTTP requests; fallback protects unusual runtimes @preserve */
   const remoteAddress = req.socket.remoteAddress ?? "unknown-address"
   /* v8 ignore next -- Node supplies a socket family for accepted HTTP requests; fallback protects unusual runtimes @preserve */
@@ -131,7 +159,19 @@ function unauthenticatedPeerExternalId(req: http.IncomingMessage, senderHint: st
     .update(`${remoteFamily}\n${remoteAddress}\n${senderHint ?? ""}`)
     .digest("hex")
     .slice(0, 32)
-  return `unauthenticated-a2a:${digest}`
+  return `unauthenticated-a2a-task-scope:${digest}`
+}
+
+function taskScopeHash(taskScope: string): string {
+  return createHash("sha256").update(taskScope).digest("hex")
+}
+
+function accessTokenHash(accessToken: string): string {
+  return createHash("sha256").update(accessToken).digest("hex")
+}
+
+function untrustedTurnPeerExternalId(): string {
+  return `unauthenticated-a2a:${randomUUID()}`
 }
 
 function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): { idHint?: string; name: string } {
@@ -148,12 +188,66 @@ function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): 
   return { idHint, name }
 }
 
+function senderHintFromParams(req: http.IncomingMessage, params: unknown): { idHint?: string; name: string } {
+  const metadata = metadataRecord(params)
+  const idHint = metadataStringFromRecord(metadata, "senderAgentId")
+    ?? metadataStringFromRecord(metadata, "senderCardUrl")
+    ?? metadataStringFromRecord(metadata, "agentId")
+    ?? metadataStringFromRecord(metadata, "cardUrl")
+    ?? headerString(req, "x-a2a-agent-id")
+  const name = metadataStringFromRecord(metadata, "senderName")
+    ?? metadataStringFromRecord(metadata, "agentName")
+    ?? headerString(req, "x-a2a-agent-name")
+    ?? idHint
+    ?? "Unauthenticated A2A peer"
+  return { idHint, name }
+}
+
+function accessTokenFromParams(params: unknown): string | undefined {
+  /* v8 ignore next -- GetTask/CancelTask validate object params before token extraction; this keeps direct helper use defensive @preserve */
+  if (!params || typeof params !== "object" || Array.isArray(params)) return undefined
+  const record = params as Record<string, unknown>
+  const direct = record.accessToken ?? record.access_token
+  if (typeof direct === "string" && direct.trim()) return direct.trim()
+  return metadataStringFromRecord(metadataRecord(params), "accessToken")
+}
+
+function taskA2AMetadata(task: A2ATask): Record<string, unknown> {
+  const a2a = task.metadata?.a2a
+  /* v8 ignore next -- server-created tasks always carry object auth metadata; fallback protects legacy/corrupt task files @preserve */
+  if (!a2a || typeof a2a !== "object" || Array.isArray(a2a)) return {}
+  return a2a as Record<string, unknown>
+}
+
+function publicTask(task: A2ATask, accessToken: string): A2ATask {
+  const a2a = taskA2AMetadata(task)
+  const { accessTokenHash: _accessTokenHash, taskScopeHash: _taskScopeHash, ...safeA2A } = a2a
+  return {
+    ...task,
+    metadata: {
+      ...task.metadata,
+      a2a: {
+        ...safeA2A,
+        accessToken,
+      },
+    },
+  }
+}
+
+function taskAuthorized(task: A2ATask, taskScope: string, accessToken: string): boolean {
+  const a2a = taskA2AMetadata(task)
+  return a2a.taskScopeHash === taskScopeHash(taskScope) && a2a.accessTokenHash === accessTokenHash(accessToken)
+}
+
 function taskFor(input: {
   taskId: string
+  accessToken: string
+  taskScope: string
   contextId: string
   inbound: A2AMessage
   state: A2ATask["status"]["state"]
   response?: string
+  clientTaskId?: string
 }): A2ATask {
   const now = new Date().toISOString()
   const history = [input.inbound]
@@ -176,6 +270,13 @@ function taskFor(input: {
       ...(responseMessage ? { message: responseMessage } : {}),
     },
     history,
+    metadata: {
+      a2a: {
+        accessTokenHash: accessTokenHash(input.accessToken),
+        taskScopeHash: taskScopeHash(input.taskScope),
+        ...(input.clientTaskId ? { clientTaskId: input.clientTaskId } : {}),
+      },
+    },
     ...(responseMessage ? {
       artifacts: [{
         artifactId: `artifact-${input.taskId}`,
@@ -215,8 +316,13 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
 
     let rpc: A2AJsonRpcRequest
     try {
-      rpc = JSON.parse(await readBody(req)) as A2AJsonRpcRequest
-    } catch {
+      const rawBody = await readBody(req)
+      rpc = JSON.parse(rawBody) as A2AJsonRpcRequest
+    } catch (error) {
+      if (error instanceof A2ARequestError) {
+        writeJson(res, error.status, errorResponse(null, error.code, error.message))
+        return
+      }
       writeJson(res, 400, errorResponse(null, -32700, "invalid JSON"))
       return
     }
@@ -229,12 +335,19 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "SendMessage requires a text message"))
           return
         }
+        if (text.length > MAX_A2A_MESSAGE_TEXT_CHARS) {
+          writeJson(res, 200, errorResponse(rpc.id, -32602, `SendMessage text exceeds ${MAX_A2A_MESSAGE_TEXT_CHARS} characters`))
+          return
+        }
         const senderHint = senderHintFromMessage(req, inbound)
-        const peerAgentId = unauthenticatedPeerExternalId(req, senderHint.idHint)
+        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
+        const peerAgentId = untrustedTurnPeerExternalId()
         const peerName = senderHint.name
         const contextId = inbound.contextId ?? "default"
-        const taskId = inbound.taskId ?? randomUUID()
-        taskStore.put(taskFor({ taskId, contextId, inbound, state: "TASK_STATE_WORKING" }))
+        const taskId = randomUUID()
+        const accessToken = randomUUID()
+        const clientTaskId = inbound.taskId
+        taskStore.put(taskFor({ taskId, accessToken, taskScope, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId }), taskScope)
         const turn = await turnRunner({
           agentName: options.agentName,
           peerAgentId,
@@ -242,9 +355,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           sessionKey: contextId,
           message: text,
         })
-        const task = taskFor({ taskId, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response })
-        taskStore.put(task)
-        writeJson(res, 200, jsonResponse(rpc.id, { task }))
+        const task = taskFor({ taskId, accessToken, taskScope, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, clientTaskId })
+        taskStore.put(task, taskScope)
+        writeJson(res, 200, jsonResponse(rpc.id, { task: publicTask(task, accessToken) }))
         return
       }
 
@@ -256,8 +369,17 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "GetTask requires id"))
           return
         }
-        const task = taskStore.get(taskId)
-        writeJson(res, 200, task ? jsonResponse(rpc.id, task) : errorResponse(rpc.id, -32001, "task not found"))
+        const accessToken = accessTokenFromParams(rpc.params)
+        if (!accessToken) {
+          writeJson(res, 200, errorResponse(rpc.id, -32602, "GetTask requires accessToken"))
+          return
+        }
+        const senderHint = senderHintFromParams(req, rpc.params)
+        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
+        const task = taskStore.get(taskId, taskScope)
+        writeJson(res, 200, task && taskAuthorized(task, taskScope, accessToken)
+          ? jsonResponse(rpc.id, publicTask(task, accessToken))
+          : errorResponse(rpc.id, -32001, "task not found"))
         return
       }
 
@@ -269,8 +391,15 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "CancelTask requires id"))
           return
         }
-        const task = taskStore.get(taskId)
-        if (!task) {
+        const accessToken = accessTokenFromParams(rpc.params)
+        if (!accessToken) {
+          writeJson(res, 200, errorResponse(rpc.id, -32602, "CancelTask requires accessToken"))
+          return
+        }
+        const senderHint = senderHintFromParams(req, rpc.params)
+        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
+        const task = taskStore.get(taskId, taskScope)
+        if (!task || !taskAuthorized(task, taskScope, accessToken)) {
           writeJson(res, 200, errorResponse(rpc.id, -32001, "task not found"))
           return
         }
@@ -278,8 +407,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           ...task,
           status: { state: "TASK_STATE_CANCELED", timestamp: new Date().toISOString() },
         }
-        taskStore.put(canceled)
-        writeJson(res, 200, jsonResponse(rpc.id, canceled))
+        taskStore.put(canceled, taskScope)
+        writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken)))
         return
       }
 

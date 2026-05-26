@@ -4,7 +4,9 @@ import * as path from "node:path"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import {
   commerceAuthorityToken,
+  confirmationPhrase,
   confirmCommercePreview,
+  consumeCommerceAuthorityToken,
   createCommercePreview,
   readCommerceAccessLog,
   readCommerceRecord,
@@ -175,6 +177,7 @@ describe("commerce authority", () => {
     })
     expect(withItems.items[0]).toEqual({ name: "Widget", quantity: 2, amount: 12.35 })
     expect(withItems.items[1]).toEqual({ name: "Service" })
+    expect(confirmationPhrase()).toBe("CONFIRM_PURCHASE")
 
     const noConstraints = createCommercePreview({
       agentRoot: tmp.agentRoot,
@@ -230,6 +233,50 @@ describe("commerce authority", () => {
       friendId: "family-1",
       currentUserMessage: confirmationMessage(withItems),
     })).toThrow("digest mismatch")
+    const invalidExpiryPreview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Invalid Expiry Store",
+      amount: 11,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use" },
+      reason: "Exercise invalid expiry during confirmation",
+    })
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${invalidExpiryPreview.id}.json`), `${JSON.stringify({
+      ...invalidExpiryPreview,
+      expiresAt: "not-a-date",
+    }, null, 2)}\n`, "utf-8")
+    expect(() => confirmCommercePreview({
+      agentRoot: tmp!.agentRoot,
+      checkoutId: invalidExpiryPreview.id,
+      digest: invalidExpiryPreview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(invalidExpiryPreview),
+    })).toThrow("invalid expiry")
+    const tamperedPreview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Tampered Store",
+      amount: 12,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use" },
+      reason: "Exercise confirmation digest recomputation",
+    })
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${tamperedPreview.id}.json`), `${JSON.stringify({
+      ...tamperedPreview,
+      amount: 13,
+    }, null, 2)}\n`, "utf-8")
+    expect(() => confirmCommercePreview({
+      agentRoot: tmp!.agentRoot,
+      checkoutId: tamperedPreview.id,
+      digest: tamperedPreview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(tamperedPreview),
+    })).toThrow("commerce record digest mismatch")
     expect(() => confirmCommercePreview({
       agentRoot: tmp!.agentRoot,
       checkoutId: withItems.id,
@@ -238,6 +285,14 @@ describe("commerce authority", () => {
       friendId: "family-1",
       currentUserMessage: confirmationMessage(withItems),
     })).toThrow("CONFIRM_PURCHASE")
+    expect(() => confirmCommercePreview({
+      agentRoot: tmp!.agentRoot,
+      checkoutId: withItems.id,
+      digest: withItems.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: `do not ${confirmationMessage(withItems)}`,
+    })).toThrow("exactly equal")
     expect(() => confirmCommercePreview({
       agentRoot: tmp!.agentRoot,
       checkoutId: withItems.id,
@@ -349,7 +404,7 @@ describe("commerce authority", () => {
       token: `commerce:${legacyNoAllowedToolsId}:${legacyNoAllowedToolsDigest}`,
       toolName: "stripe_create_card",
       args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
-    })).toEqual({ ok: false, reason: "tool is not allowed by commerce_authority" })
+    })).toEqual({ ok: false, reason: "commerce_authority is missing allowed tools" })
 
     const legacyNoConstraintsId = "legacy-no-constraints"
     const legacyNoConstraintsDigest = "2".repeat(64)
@@ -366,7 +421,20 @@ describe("commerce authority", () => {
       token: `commerce:${legacyNoConstraintsId}:${legacyNoConstraintsDigest}`,
       toolName: "stripe_create_card",
       args: { spend_limit: "24.69", currency: "usd" },
-    })).toEqual({ ok: false, reason: "commerce_authority is missing required type constraint" })
+    })).toEqual({ ok: false, reason: "commerce_authority constraints are invalid" })
+
+    const tamperedPath = path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${confirmed.id}.json`)
+    fs.writeFileSync(tamperedPath, `${JSON.stringify({
+      ...confirmed,
+      amount: 1,
+    }, null, 2)}\n`, "utf-8")
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "1", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority record digest mismatch" })
+    fs.writeFileSync(tamperedPath, `${JSON.stringify(confirmed, null, 2)}\n`, "utf-8")
 
     const holdPreview = createCommercePreview({
       agentRoot: tmp.agentRoot,
@@ -390,14 +458,43 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: holdConfirmed.authorityToken,
       toolName: "flight_hold",
-      args: { offer_id: "hold-offer-1" },
+      args: { offer_id: "hold-offer-1", amount: "1", currency: "usd" },
     }).ok).toBe(true)
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: holdConfirmed.authorityToken,
       toolName: "flight_hold",
-      args: { offer_id: "hold-offer-2" },
+      args: { offer_id: "hold-offer-1" },
     }).ok).toBe(false)
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: holdConfirmed.authorityToken,
+      toolName: "flight_hold",
+      args: { offer_id: "hold-offer-2", amount: "1", currency: "usd" },
+    }).ok).toBe(false)
+    const missingConstraintPreview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Duffel",
+      amount: 2,
+      currency: "usd",
+      allowedTools: ["flight_book"],
+      reason: "Book offer without stored offer constraint",
+    })
+    const missingConstraintConfirmed = confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: missingConstraintPreview.id,
+      digest: missingConstraintPreview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(missingConstraintPreview),
+    })
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: missingConstraintConfirmed.authorityToken,
+      toolName: "flight_book",
+      args: { offer_id: "offer-any", amount: "2", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority is missing required offer_id constraint" })
 
     const recordPath = path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${confirmed.id}.json`)
     expect(() => confirmCommercePreview({
@@ -421,15 +518,41 @@ describe("commerce authority", () => {
       friendId: "family-1",
       currentUserMessage: confirmationMessage(confirmed),
     })).toThrow("preview has expired")
+    const expiredPreview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Expired Store",
+      amount: 3,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use" },
+      reason: "Exercise expired authority validation",
+      expiresInMinutes: -1,
+    })
+    const expiredToken = commerceAuthorityToken(expiredPreview)
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${expiredPreview.id}.json`), `${JSON.stringify({
+      ...expiredPreview,
+      status: "confirmed",
+      confirmedAt: new Date().toISOString(),
+      confirmation: "CONFIRM_PURCHASE",
+      authorityToken: expiredToken,
+    }, null, 2)}\n`, "utf-8")
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: expiredToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "3", currency: "usd" },
+    })).toEqual({ ok: false, reason: "commerce_authority expired" })
     fs.writeFileSync(recordPath, `${JSON.stringify({
       ...confirmed,
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: "not-a-date",
+      digest: confirmed.digest,
     }, null, 2)}\n`, "utf-8")
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-    }).ok).toBe(false)
+    })).toEqual({ ok: false, reason: "commerce_authority has invalid expiry" })
   })
 
   it("blocks money-moving tools without authority and allows matching authority", () => {
@@ -478,6 +601,29 @@ describe("commerce authority", () => {
       friendId: "family-1",
     })
     expect(allowed.allowed).toBe(true)
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("consumed")
+    const replay = guardInvocation("stripe_create_card", {
+      spend_limit: "100",
+      currency: "usd",
+      type: "single_use",
+      commerce_authority: confirmed.authorityToken!,
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+    })
+    expect(replay.allowed).toBe(false)
+    expect(replay.reason).toContain("consumed")
+
+    const directlyConsumed = consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use" },
+      friendId: "family-1",
+    })
+    expect(directlyConsumed.ok).toBe(false)
   })
 
   it("commerce tools run the preview/commit/read/log flow", async () => {

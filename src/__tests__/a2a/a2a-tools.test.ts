@@ -75,6 +75,16 @@ function requesterContext(input: {
   }
 }
 
+function accessTokenFromTask(task: { metadata?: Record<string, unknown> }): string {
+  const a2a = task.metadata?.a2a && typeof task.metadata.a2a === "object" && !Array.isArray(task.metadata.a2a)
+    ? task.metadata.a2a as { accessToken?: unknown }
+    : undefined
+  if (typeof a2a?.accessToken !== "string" || !a2a.accessToken.trim()) {
+    throw new Error("missing task access token")
+  }
+  return a2a.accessToken
+}
+
 describe("A2A repertoire tools", () => {
   it("lists peers, sends messages, and fetches remote tasks", async () => {
     tmp = createTmpBundle({ agentName: "a2a-tools" })
@@ -123,7 +133,11 @@ describe("A2A repertoire tools", () => {
     expect(sent.status.state).toBe("TASK_STATE_COMPLETED")
     expect(sent.artifacts[0].parts[0].text).toBe("remote:ping")
 
-    const fetched = JSON.parse(await tool("a2a_get_task")({ friend_id: peer.id, task_id: sent.id }, ctx))
+    const fetched = JSON.parse(await tool("a2a_get_task")({
+      friend_id: peer.id,
+      task_id: sent.id,
+      access_token: accessTokenFromTask(sent),
+    }, ctx))
     expect(fetched.id).toBe(sent.id)
   })
 
@@ -211,13 +225,13 @@ describe("A2A repertoire tools", () => {
     expect(externalSent.artifacts[0].parts[0].text).toBe("card:pong")
 
     expect(await tool("a2a_send_message")({ friend_id: cardPeer.id, message: "ping" }, undefined)).toContain("no friend context")
-    expect(await tool("a2a_get_task")({ friend_id: cardPeer.id, task_id: "task" }, requesterContext({ agentRoot: tmp.agentRoot, trustLevel: "acquaintance" }))).toContain("A2A tools require")
+    expect(await tool("a2a_get_task")({ friend_id: cardPeer.id, task_id: "task", access_token: "token" }, requesterContext({ agentRoot: tmp.agentRoot, trustLevel: "acquaintance" }))).toContain("A2A tools require")
     expect(await tool("a2a_send_message")({ friend_id: "missing", message: "ping" }, ctx)).toContain("A2A peer not found")
-    expect(await tool("a2a_get_task")({ friend_id: "missing", task_id: "task" }, ctx)).toContain("A2A peer not found")
+    expect(await tool("a2a_get_task")({ friend_id: "missing", task_id: "task", access_token: "token" }, ctx)).toContain("A2A peer not found")
     expect(await tool("a2a_send_message")({ friend_id: acquaintancePeer.id, message: "ping" }, ctx)).toContain("target A2A peer must be friend or family")
-    expect(await tool("a2a_get_task")({ friend_id: acquaintancePeer.id, task_id: "task" }, ctx)).toContain("target A2A peer must be friend or family")
+    expect(await tool("a2a_get_task")({ friend_id: acquaintancePeer.id, task_id: "task", access_token: "token" }, ctx)).toContain("target A2A peer must be friend or family")
     expect(await tool("a2a_send_message")({ friend_id: invalidPeer.id, message: "ping" }, ctx)).toContain("A2A send error")
-    expect(await tool("a2a_get_task")({ friend_id: invalidPeer.id, task_id: "task" }, ctx)).toContain("A2A task error")
+    expect(await tool("a2a_get_task")({ friend_id: invalidPeer.id, task_id: "task", access_token: "token" }, ctx)).toContain("A2A task error")
   })
 
   it("uses the local bundle name as outbound sender metadata with safe fallbacks", async () => {
@@ -254,6 +268,12 @@ describe("A2A repertoire tools", () => {
       message: "missing root",
     }, requesterContext({ store })))
     expect(missingRootSender.artifacts[0].parts[0].text).toBe("sender:Ouro agent:missing root")
+    const missingRootTask = JSON.parse(await tool("a2a_get_task")({
+      friend_id: peer.id,
+      task_id: missingRootSender.id,
+      access_token: accessTokenFromTask(missingRootSender),
+    }, requesterContext({ store })))
+    expect(missingRootTask.id).toBe(missingRootSender.id)
 
     const nonBundleRootSender = JSON.parse(await tool("a2a_send_message")({
       friend_id: peer.id,

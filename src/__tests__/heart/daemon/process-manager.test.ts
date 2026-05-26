@@ -1134,6 +1134,40 @@ describe("daemon process manager", () => {
     expect(clearTimeoutFn).toHaveBeenCalled()
   })
 
+  it("uses dynamic managed-agent args at spawn time", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+
+    let currentArgs = ["--port", "19991"]
+    const manager = new DaemonProcessManager({
+      agents: [
+        {
+          name: "slugger:a2a",
+          agentArg: "slugger",
+          entry: "senses/a2a-entry.js",
+          channel: "a2a",
+          autoStart: true,
+          args: ["--port", "stale"],
+          getArgs: () => currentArgs,
+        },
+      ],
+      spawn,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+    })
+    currentArgs = ["--port", "20001", "--path", "/fresh-a2a"]
+
+    await manager.startAgent("slugger:a2a")
+
+    expect(spawn).toHaveBeenCalledWith(
+      "node",
+      [expect.stringContaining("senses/a2a-entry.js"), "--agent", "slugger", "--port", "20001", "--path", "/fresh-a2a"],
+      expect.objectContaining({ stdio: ["ignore", "ignore", "ignore", "ipc"] }),
+    )
+  })
+
   it("uses default spawn, clock, and timer helpers when none are injected", async () => {
     vi.resetModules()
     const spawnedChild = new MockChild()

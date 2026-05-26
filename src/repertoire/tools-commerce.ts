@@ -1,7 +1,7 @@
 import { getAgentRoot } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
-  confirmationPhrase,
+  commerceConfirmationMessage,
   confirmCommercePreview,
   createCommercePreview,
   readCommerceAccessLog,
@@ -110,7 +110,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
           constraints: record.constraints,
           expiresAt: record.expiresAt,
           digest: record.digest,
-          next: `Ask the family user to send a new message containing ${confirmationPhrase()}, checkout ${record.id}, and digest ${record.digest}; then call commerce_checkout_commit from that same turn.`,
+          next: `Ask the family user to send this exact message in a new turn: ${commerceConfirmationMessage(record)}; then call commerce_checkout_commit from that same turn.`,
         }, null, 2)
       } catch (error) {
         return `commerce preview error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error parser failures */ String(error)}`

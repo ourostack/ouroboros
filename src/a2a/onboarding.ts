@@ -24,11 +24,10 @@ function storeFor(options: OnboardA2APeerOptions): FriendStore {
   return new FileFriendStore(path.join(options.bundlesRoot ?? getAgentBundlesRoot(), `${options.agentName}.ouro`, "friends"))
 }
 
-function agentIdFor(card: A2AAgentCard, cardUrl: string): string {
-  const metadata = card.metadata as { ouro?: { agentName?: unknown } } | undefined
-  const ouroAgentName = typeof metadata?.ouro?.agentName === "string" ? metadata.ouro.agentName : undefined
-  /* v8 ignore next -- fetchA2AAgentCard rejects cards without endpoint/url before onboarding can see them @preserve */
-  return ouroAgentName ?? endpointForCard(card) ?? cardUrl
+function agentIdFor(_card: A2AAgentCard, cardUrl: string): string {
+  const parsed = new URL(cardUrl)
+  parsed.hash = ""
+  return parsed.toString()
 }
 
 export async function onboardA2APeer(options: OnboardA2APeerOptions): Promise<FriendRecord> {

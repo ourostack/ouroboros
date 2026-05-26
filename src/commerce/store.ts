@@ -80,6 +80,36 @@ function digestFor(input: Parameters<typeof canonicalMandatePayload>[0]): string
   return createHash("sha256").update(canonicalMandatePayload(input)).digest("hex")
 }
 
+function digestForRecord(record: CommerceMandateRecord): string {
+  return digestFor({
+    friendId: record.friendId,
+    merchant: record.merchant,
+    items: record.items,
+    amount: record.amount,
+    currency: record.currency,
+    /* v8 ignore next -- legacy records missing allowedTools are rejected before validation digest checks; fallback keeps digesting total @preserve */
+    allowedTools: record.allowedTools ?? [],
+    /* v8 ignore next -- legacy records missing constraints are rejected before validation digest checks; fallback keeps digesting total @preserve */
+    constraints: record.constraints ?? {},
+    reason: record.reason,
+    expiresAt: record.expiresAt,
+  })
+}
+
+function expectedConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
+  return `${CONFIRMATION_PHRASE} checkout ${record.id} digest ${record.digest}`
+}
+
+export function commerceConfirmationMessage(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.commerce_confirmation_message_built",
+    message: "built commerce confirmation message",
+    meta: { checkoutId: record.id },
+  })
+  return expectedConfirmationMessage(record)
+}
+
 function parseAmount(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error("commerce amount must be a positive number")
@@ -122,6 +152,11 @@ function normalizeConstraints(constraints: Record<string, string> | undefined): 
 function appendAccessLog(agentRoot: string, entry: Omit<CommerceAccessLogEntry, "at">): void {
   fs.mkdirSync(commerceRoot(agentRoot), { recursive: true })
   fs.appendFileSync(accessLogPath(agentRoot), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, "utf-8")
+}
+
+function timestampMillis(value: string): number | null {
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function writeRecord(agentRoot: string, record: CommerceMandateRecord): void {
@@ -221,14 +256,15 @@ export function confirmCommercePreview(input: {
   if (!record) throw new Error(`commerce checkout not found: ${input.checkoutId}`)
   if (record.friendId !== input.friendId) throw new Error("commerce checkout belongs to a different friend")
   if (record.status !== "previewed") throw new Error(`commerce checkout is ${record.status}, not previewed`)
-  if (Date.parse(record.expiresAt) <= Date.now()) throw new Error("commerce checkout preview has expired")
+  const expiresAtMs = timestampMillis(record.expiresAt)
+  if (expiresAtMs === null) throw new Error("commerce checkout preview has invalid expiry")
+  if (expiresAtMs <= Date.now()) throw new Error("commerce checkout preview has expired")
   if (record.digest !== input.digest) throw new Error("commerce digest mismatch")
+  if (digestForRecord(record) !== record.digest) throw new Error("commerce record digest mismatch")
   if (input.confirmation.trim() !== CONFIRMATION_PHRASE) throw new Error(`confirmation must be ${CONFIRMATION_PHRASE}`)
   const currentUserMessage = input.currentUserMessage?.trim() ?? ""
-  if (!currentUserMessage.includes(CONFIRMATION_PHRASE)
-    || !currentUserMessage.includes(record.id)
-    || !currentUserMessage.includes(record.digest)) {
-    throw new Error(`current human message must include ${CONFIRMATION_PHRASE}, checkout id, and digest`)
+  if (currentUserMessage !== expectedConfirmationMessage(record)) {
+    throw new Error(`current human message must exactly equal: ${expectedConfirmationMessage(record)}`)
   }
   const now = new Date().toISOString()
   const confirmed: CommerceMandateRecord = {
@@ -266,7 +302,7 @@ function currencyFromArgs(args: Record<string, string> | undefined): string | nu
 
 function requiredAmountForTool(toolName: string): "amount" | "spend_limit" | null {
   if (toolName === "stripe_create_card") return "spend_limit"
-  if (toolName === "flight_book") return "amount"
+  if (toolName === "flight_hold" || toolName === "flight_book") return "amount"
   return null
 }
 
@@ -286,10 +322,17 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
   const record = readCommerceRecord(input.agentRoot, checkoutId)
   if (!record) return { ok: false, reason: "commerce checkout not found" }
   let reason: string | null = null
-  if (record.status !== "confirmed") reason = `commerce checkout is ${record.status}, not confirmed`
+  const expiresAtMs = timestampMillis(record.expiresAt)
+  if (!Array.isArray(record.allowedTools) || record.allowedTools.length === 0) reason = "commerce_authority is missing allowed tools"
+  if (!reason && (!record.constraints || typeof record.constraints !== "object" || Array.isArray(record.constraints))) {
+    reason = "commerce_authority constraints are invalid"
+  }
+  if (!reason && expiresAtMs === null) reason = "commerce_authority has invalid expiry"
+  if (!reason && record.digest !== digestForRecord(record)) reason = "commerce_authority record digest mismatch"
+  if (!reason && record.status !== "confirmed") reason = `commerce checkout is ${record.status}, not confirmed`
   if (!reason && input.friendId && record.friendId !== input.friendId) reason = "commerce_authority belongs to a different friend"
   if (!reason && record.digest !== digest) reason = "commerce_authority digest mismatch"
-  if (!reason && Date.parse(record.expiresAt) <= Date.now()) reason = "commerce_authority expired"
+  if (!reason && expiresAtMs !== null && expiresAtMs <= Date.now()) reason = "commerce_authority expired"
   const allowedTools = record.allowedTools ?? []
   if (!reason && !allowedTools.includes(input.toolName)) reason = "tool is not allowed by commerce_authority"
   const requiredAmountKey = requiredAmountForTool(input.toolName)
@@ -324,6 +367,34 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
     meta: { checkoutId, toolName: input.toolName, ok, reason: reason ?? "" },
   })
   return ok ? { ok: true, record } : { ok: false, reason: reason! }
+}
+
+export function consumeCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+  const validation = validateCommerceAuthorityToken(input)
+  if (!validation.ok) return validation
+  const now = new Date().toISOString()
+  const consumed: CommerceMandateRecord = {
+    ...validation.record,
+    status: "consumed",
+    consumedAt: now,
+    consumedByTool: input.toolName,
+    updatedAt: now,
+  }
+  writeRecord(input.agentRoot, consumed)
+  appendAccessLog(input.agentRoot, {
+    checkoutId: validation.record.id,
+    action: "consume",
+    toolName: input.toolName,
+    friendId: input.friendId,
+    ok: true,
+  })
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.commerce_authority_consumed",
+    message: "consumed commerce authority token",
+    meta: { checkoutId: validation.record.id, toolName: input.toolName },
+  })
+  return { ok: true, record: consumed }
 }
 
 export function readCommerceAccessLog(agentRoot: string, limit = 20): CommerceAccessLogEntry[] {

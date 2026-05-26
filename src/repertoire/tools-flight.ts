@@ -102,9 +102,11 @@ export const flightToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             offer_id: { type: "string", description: "The Duffel offer ID to hold" },
+            amount: { type: "string", description: "Exact hold amount from the approved commerce preview." },
+            currency: { type: "string", description: "Currency code from the approved commerce preview, e.g. usd." },
             commerce_authority: { type: "string", description: "Authority token returned by commerce_checkout_commit for this exact hold." },
           },
-          required: ["offer_id", "commerce_authority"],
+          required: ["offer_id", "amount", "currency", "commerce_authority"],
         },
       },
     },
@@ -124,6 +126,8 @@ export const flightToolDefinitions: ToolDefinition[] = [
       return JSON.stringify({
         status: "hold_requested",
         offerId: args.offer_id,
+        amount: Number.parseFloat(args.amount),
+        currency: args.currency,
         message: "Hold requested. Confirm or cancel before the hold expires.",
       })
     },
