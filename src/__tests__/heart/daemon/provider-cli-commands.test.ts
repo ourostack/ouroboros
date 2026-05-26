@@ -1225,6 +1225,11 @@ describe("provider CLI command parsing", () => {
       agent: "Slugger",
       target: "voice",
     })
+    expect(parseOuroCommand(["connect", "terminal-workbench", "--agent", "Slugger"])).toEqual({
+      kind: "connect",
+      agent: "Slugger",
+      target: "workbench",
+    })
     expect(parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email", "ari@mendelow.me", "--source", "hey"])).toEqual({
       kind: "connect",
       agent: "Slugger",
@@ -1306,8 +1311,8 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["account", "ensure"])).toEqual({
       kind: "account.ensure",
     })
-    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice")
-    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice")
+    expect(() => parseOuroCommand(["connect", "perplexity", "bluebubbles", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench")
+    expect(() => parseOuroCommand(["connect", "unknown", "--agent", "Slugger"])).toThrow("providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench")
     expect(() => parseOuroCommand(["connect", "teams", "--agent", "Slugger", "--owner-email", "ari@mendelow.me"])).toThrow("Mail source flags require")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--owner-email"])).toThrow("ouro connect")
     expect(() => parseOuroCommand(["connect", "mail", "--agent", "Slugger", "--source", "hey"])).toThrow("--source requires --owner-email")
@@ -1378,6 +1383,142 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Voice foundation for !!!")
     expect(result).toContain("/voice/agents/agent/twilio")
+  })
+
+  it("connects Ouro Workbench by enabling its local sense and registering MCP", async () => {
+    emitTestEvent("provider cli connect workbench")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.sync = { enabled: true }
+    })
+    initBundleGit(agentRoot(bundlesRoot, "Slugger"))
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+
+    const result = await runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: { workbench?: { enabled?: boolean } }
+      mcpServers?: { ouro_workbench?: { command?: string; args?: string[] } }
+    }
+
+    expect(result).toContain("Workbench connected for Slugger")
+    expect(result).toContain("provider secrets stay in the agent vault")
+    expect(result).toContain("bundle sync: ran post-change sync (remote: origin)")
+    expect(config.senses?.workbench?.enabled).toBe(true)
+    expect(config.mcpServers?.ouro_workbench).toEqual({ command: mcpPath, args: [] })
+  })
+
+  it("connects Workbench from the system install fallback and repairs malformed MCP config", async () => {
+    emitTestEvent("provider cli connect workbench system fallback")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-system-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-system-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.mcpServers = [] as unknown as NonNullable<typeof config.mcpServers>
+    })
+    const expectedMcpPath = path.join(os.homedir(), "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+
+    const result = await runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      homeDir: undefined,
+      existsSync: (filePath) => filePath === expectedMcpPath,
+    }))
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      senses?: { workbench?: { enabled?: boolean } }
+      mcpServers?: { ouro_workbench?: { command?: string; args?: string[] } }
+    }
+
+    expect(result).toContain("Workbench connected for Slugger")
+    expect(config.senses?.workbench?.enabled).toBe(true)
+    expect(config.mcpServers?.ouro_workbench).toEqual({ command: expectedMcpPath, args: [] })
+  })
+
+  it("preserves existing MCP registrations when connecting Workbench", async () => {
+    emitTestEvent("provider cli connect workbench preserves mcp")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-preserve-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-preserve-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.mcpServers = {
+        existing_server: { command: "/usr/bin/true", args: ["--ok"] },
+      }
+    })
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+
+    await runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot))
+    const config = JSON.parse(fs.readFileSync(path.join(agentRoot(bundlesRoot, "Slugger"), "agent.json"), "utf-8")) as {
+      mcpServers?: Record<string, unknown>
+    }
+
+    expect(config.mcpServers?.existing_server).toEqual({ command: "/usr/bin/true", args: ["--ok"] })
+    expect(config.mcpServers?.ouro_workbench).toEqual({ command: mcpPath, args: [] })
+  })
+
+  it("explains the missing app install path before connecting Workbench", async () => {
+    emitTestEvent("provider cli connect workbench missing app")
+    const bundlesRoot = makeTempDir("provider-cli-connect-workbench-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-workbench-missing-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+
+    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+      .rejects.toThrow("Ouro Workbench is not installed for Slugger")
+  })
+
+  it("surfaces stale Workbench MCP registration in the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu workbench stale mcp")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-stale-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-stale-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const missingMcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    updateAgentConfig(bundlesRoot, "Slugger", (config) => {
+      config.senses = {
+        ...(config.senses ?? {}),
+        workbench: { enabled: true },
+      }
+      config.mcpServers = {
+        ouro_workbench: { command: missingMcpPath, args: [] },
+      }
+    })
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "needs attention")
+    expect(prompt).toContain("registered MCP command is missing:")
+    expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
+    expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
+  })
+
+  it("routes Workbench setup from the root connect bay", async () => {
+    emitTestEvent("provider cli connect menu workbench")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "9"
+      },
+    }))
+
+    expect(joinedPrompt(prompts)).toContain("9. Ouro Workbench")
+    expect(result).toContain("Workbench connected for Slugger")
   })
 
   it("routes Voice setup from the root connect bay", async () => {
@@ -8159,6 +8300,9 @@ describe("provider CLI command execution", () => {
     const bundlesRoot = makeTempDir("provider-cli-connect-menu-everything-ready-bundles")
     const homeDir = makeTempDir("provider-cli-connect-menu-everything-ready-home")
     writeAgentConfig(bundlesRoot, "Slugger")
+    const workbenchMcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(workbenchMcpPath), { recursive: true })
+    fs.writeFileSync(workbenchMcpPath, "#!/bin/sh\n", "utf-8")
     updateAgentConfig(bundlesRoot, "Slugger", (config) => {
       config.senses = {
         ...(config.senses ?? {}),
@@ -8167,6 +8311,14 @@ describe("provider CLI command execution", () => {
         mail: { enabled: true },
         voice: { enabled: true },
         a2a: { enabled: true },
+        workbench: { enabled: true },
+      }
+      const existingMcpServers = config.mcpServers && typeof config.mcpServers === "object" && !Array.isArray(config.mcpServers)
+        ? config.mcpServers as Record<string, unknown>
+        : {}
+      config.mcpServers = {
+        ...existingMcpServers,
+        ouro_workbench: { command: workbenchMcpPath, args: [] },
       }
     })
     writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection({
@@ -8971,6 +9123,9 @@ describe("provider CLI command execution", () => {
     expect(noninteractive).toContain("ouro connect teams --agent Slugger")
     expect(noninteractive).toContain("ouro connect bluebubbles --agent Slugger")
     expect(noninteractive).toContain("ouro connect mail --agent Slugger")
+    expect(noninteractive).toContain("ouro connect voice --agent Slugger")
+    expect(noninteractive).toContain("ouro connect a2a --agent Slugger")
+    expect(noninteractive).toContain("ouro connect workbench --agent Slugger")
 
     const blueBubblesAnswers = ["5", "http://127.0.0.1:1234", "", "", ""]
     const blueBubbles = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {

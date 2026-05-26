@@ -121,7 +121,7 @@ describe("ouro A2A CLI execution", () => {
         version: 1,
         enabled: true,
         provider: "anthropic",
-        senses: { cli: { enabled: true }, a2a: { enabled: false } },
+        senses: { cli: { enabled: true }, a2a: { enabled: false }, workbench: { enabled: false } },
         phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
       }), "utf-8")
       const stdout: string[] = []
@@ -150,7 +150,7 @@ describe("ouro A2A CLI execution", () => {
           enabled: true,
           provider: "anthropic",
           sync: { enabled: true, remote: "origin" },
-          senses: { cli: { enabled: true }, a2a: { enabled: false } },
+          senses: { cli: { enabled: true }, a2a: { enabled: false }, workbench: { enabled: false } },
           phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
         }), "utf-8")
         const result = await runOuroCli(["connect", "a2a", "--agent", "slugger"], createMockDeps({ bundlesRoot }))

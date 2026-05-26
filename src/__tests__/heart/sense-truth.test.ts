@@ -13,6 +13,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 
@@ -32,6 +33,7 @@ describe("sense truth model", () => {
       expect.objectContaining({ sense: "mail", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "voice", enabled: false, status: "disabled" satisfies SenseStatus }),
       expect.objectContaining({ sense: "a2a", enabled: false, status: "disabled" satisfies SenseStatus }),
+      expect.objectContaining({ sense: "workbench", enabled: false, status: "disabled" satisfies SenseStatus }),
     ])
   })
 
@@ -130,6 +132,19 @@ describe("sense truth model", () => {
 
     expect(inventory.find((item) => item.sense === "teams")).toEqual(
       expect.objectContaining({ enabled: true, daemonManaged: true, status: "ready" satisfies SenseStatus }),
+    )
+  })
+
+  it("reports workbench as an interactive local sense when enabled", () => {
+    const inventory = getSenseInventory({
+      senses: {
+        cli: { enabled: true },
+        workbench: { enabled: true },
+      },
+    })
+
+    expect(inventory.find((item) => item.sense === "workbench")).toEqual(
+      expect.objectContaining({ enabled: true, daemonManaged: false, status: "interactive" satisfies SenseStatus }),
     )
   })
 })

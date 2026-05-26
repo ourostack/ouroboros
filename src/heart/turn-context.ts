@@ -200,6 +200,7 @@ function readSenseStatusLines(): string[] {
     mail: configuredSenses.mail ?? { enabled: false },
     voice: configuredSenses.voice ?? { enabled: false },
     a2a: configuredSenses.a2a ?? { enabled: false },
+    workbench: configuredSenses.workbench ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const agentName = getAgentName()
@@ -248,6 +249,8 @@ function readSenseStatusLines(): string[] {
         ? openAIRealtimeVoiceReady
         : cascadeVoiceReady,
     a2a: true,
+    workbench: typeof config.mcpServers?.ouro_workbench?.command === "string"
+      && config.mcpServers.ouro_workbench.command.trim().length > 0,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -271,6 +274,10 @@ function readSenseStatusLines(): string[] {
     {
       label: "A2A",
       status: senses.a2a.enabled ? "ready" : "disabled",
+    },
+    {
+      label: "Workbench",
+      status: !senses.workbench.enabled ? "disabled" : configured.workbench ? "ready" : "needs_config",
     },
   ]
 

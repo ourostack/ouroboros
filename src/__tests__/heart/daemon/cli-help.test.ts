@@ -254,7 +254,7 @@ describe("getCommandHelp()", () => {
     const result = getCommandHelp("connect")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]")
+    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench] [--agent <name>]")
     expect(result).toContain("providers")
     expect(result).toContain("perplexity")
     expect(result).toContain("embeddings")
@@ -263,6 +263,8 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("mail")
     expect(result).toContain("voice")
     expect(result).toContain("a2a")
+    expect(result).toContain("workbench")
+    expect(getCommandHelp("connect workbench")).toContain("ouro connect workbench [--agent <name>]")
   })
 
   it("returns focused help for A2A subcommands", () => {

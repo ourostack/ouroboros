@@ -203,9 +203,9 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   connect: {
     category: "Auth",
     description: "Set up providers, portable integrations, and local senses from one guided screen",
-    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]",
+    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench] [--agent <name>]",
     example: "ouro connect",
-    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail", "voice", "a2a"],
+    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"],
   },
   a2a: {
     category: "Friends",
@@ -358,6 +358,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Enable the agent-to-agent A2A sense",
     usage: "ouro connect a2a [--agent <name>]",
     example: "ouro connect a2a --agent <agent>",
+  },
+  "connect workbench": {
+    description: "Attach native Ouro Workbench on this machine and register its MCP sense",
+    usage: "ouro connect workbench [--agent <name>]",
+    example: "ouro connect workbench --agent <agent>",
   },
   "a2a card": {
     description: "Print this agent's A2A Agent Card",
