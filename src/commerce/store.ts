@@ -32,6 +32,10 @@ export type CommerceAuthorityValidationResult =
   | { ok: true; record: CommerceMandateRecord }
   | { ok: false; reason: string }
 
+export type CommerceAuthorityReservationResult =
+  | { ok: true; checkoutId: string; reservationToken: string; record: CommerceMandateRecord }
+  | { ok: false; reason: string }
+
 function commerceRoot(agentRoot: string): string {
   return path.join(agentRoot, "state", "commerce")
 }
@@ -220,6 +224,10 @@ function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex")
 }
 
+function reservationToken(): string {
+  return randomUUID()
+}
+
 function createCommerceAuthorityToken(record: Pick<CommerceMandateRecord, "id" | "digest">): string {
   return `commerce:${record.id}:${record.digest}:${randomUUID()}`
 }
@@ -354,7 +362,8 @@ function amountFromArgs(args: Record<string, string> | undefined): number | null
   if (!args) return null
   const raw = args.amount ?? args.spend_limit
   if (!raw) return null
-  const parsed = Number.parseFloat(raw)
+  if (!/^\d+(?:\.\d{1,2})?$/.test(raw.trim())) return Number.NaN
+  const parsed = Number(raw)
   return Number.isFinite(parsed) ? parsed : null
 }
 
@@ -370,9 +379,50 @@ function requiredAmountForTool(toolName: string): "amount" | "spend_limit" | nul
 }
 
 function requiredConstraintsForTool(toolName: string): string[] {
-  if (toolName === "stripe_create_card") return ["type"]
+  if (toolName === "stripe_create_card") return ["type", "merchant_categories"]
   if (toolName === "flight_hold" || toolName === "flight_book") return ["offer_id"]
   return []
+}
+
+function authorityRecordValidationReason(
+  record: CommerceMandateRecord,
+  input: CommerceAuthorityValidationInput,
+  options: { token?: string; digest?: string } = {},
+): string | null {
+  const expiresAtMs = timestampMillis(record.expiresAt)
+  if (!Array.isArray(record.allowedTools) || record.allowedTools.length === 0) return "commerce_authority is missing allowed tools"
+  if (!record.constraints || typeof record.constraints !== "object" || Array.isArray(record.constraints)) {
+    return "commerce_authority constraints are invalid"
+  }
+  if (expiresAtMs === null) return "commerce_authority has invalid expiry"
+  if (record.digest !== digestForRecord(record)) return "commerce_authority record digest mismatch"
+  if (record.status !== "confirmed") return `commerce checkout is ${record.status}, not confirmed`
+  if (timestampMillis(record.confirmedAt ?? "") === null) return "commerce_authority confirmation state is invalid"
+  if (record.confirmation !== CONFIRMATION_PHRASE) return "commerce_authority confirmation state is invalid"
+  if (record.confirmedByMessage !== expectedConfirmationMessage(record)) return "commerce_authority confirmation state is invalid"
+  if (typeof record.authorityTokenHash !== "string" || !/^[a-f0-9]{64}$/.test(record.authorityTokenHash)) {
+    return "commerce_authority confirmation state is invalid"
+  }
+  if (options.token !== undefined && record.authorityTokenHash !== tokenHash(options.token)) return "commerce_authority token mismatch"
+  if (input.friendId && record.friendId !== input.friendId) return "commerce_authority belongs to a different friend"
+  if (options.digest !== undefined && record.digest !== options.digest) return "commerce_authority digest mismatch"
+  if (expiresAtMs <= Date.now()) return "commerce_authority expired"
+  if (!record.allowedTools.includes(input.toolName)) return "tool is not allowed by commerce_authority"
+  const requiredAmountKey = requiredAmountForTool(input.toolName)
+  const amount = amountFromArgs(input.args)
+  if (requiredAmountKey && amount === null) return `tool ${requiredAmountKey} is required for commerce_authority validation`
+  if (amount !== null && (!Number.isFinite(amount) || amount !== record.amount)) return "tool amount does not match commerce_authority amount"
+  const currency = currencyFromArgs(input.args)
+  if (requiredAmountKey && !currency) return "tool currency is required for commerce_authority validation"
+  if (currency && currency !== record.currency) return "tool currency does not match commerce_authority"
+  for (const key of requiredConstraintsForTool(input.toolName)) {
+    if (!record.constraints[key]) return `commerce_authority is missing required ${key} constraint`
+  }
+  for (const [key, expected] of Object.entries(record.constraints)) {
+    const actual = input.args?.[key]?.trim()
+    if (actual !== expected) return `tool ${key} does not match commerce_authority`
+  }
+  return null
 }
 
 export function validateCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
@@ -384,41 +434,7 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
   const digest = match[2]
   const record = readCommerceRecord(input.agentRoot, checkoutId)
   if (!record) return { ok: false, reason: "commerce checkout not found" }
-  let reason: string | null = null
-  const expiresAtMs = timestampMillis(record.expiresAt)
-  if (!Array.isArray(record.allowedTools) || record.allowedTools.length === 0) reason = "commerce_authority is missing allowed tools"
-  if (!reason && (!record.constraints || typeof record.constraints !== "object" || Array.isArray(record.constraints))) {
-    reason = "commerce_authority constraints are invalid"
-  }
-  if (!reason && expiresAtMs === null) reason = "commerce_authority has invalid expiry"
-  if (!reason && record.digest !== digestForRecord(record)) reason = "commerce_authority record digest mismatch"
-  if (!reason && record.status !== "confirmed") reason = `commerce checkout is ${record.status}, not confirmed`
-  if (!reason && timestampMillis(record.confirmedAt ?? "") === null) reason = "commerce_authority confirmation state is invalid"
-  if (!reason && record.confirmation !== CONFIRMATION_PHRASE) reason = "commerce_authority confirmation state is invalid"
-  if (!reason && record.confirmedByMessage !== expectedConfirmationMessage(record)) reason = "commerce_authority confirmation state is invalid"
-  if (!reason && record.authorityTokenHash !== tokenHash(token)) reason = "commerce_authority token mismatch"
-  if (!reason && input.friendId && record.friendId !== input.friendId) reason = "commerce_authority belongs to a different friend"
-  if (!reason && record.digest !== digest) reason = "commerce_authority digest mismatch"
-  if (!reason && expiresAtMs !== null && expiresAtMs <= Date.now()) reason = "commerce_authority expired"
-  const allowedTools = record.allowedTools ?? []
-  if (!reason && !allowedTools.includes(input.toolName)) reason = "tool is not allowed by commerce_authority"
-  const requiredAmountKey = requiredAmountForTool(input.toolName)
-  const amount = amountFromArgs(input.args)
-  if (!reason && requiredAmountKey && amount === null) reason = `tool ${requiredAmountKey} is required for commerce_authority validation`
-  if (!reason && amount !== null && amount !== record.amount) reason = "tool amount does not match commerce_authority amount"
-  const currency = currencyFromArgs(input.args)
-  if (!reason && requiredAmountKey && !currency) reason = "tool currency is required for commerce_authority validation"
-  if (!reason && currency && currency !== record.currency) reason = "tool currency does not match commerce_authority"
-  const constraints = record.constraints ?? {}
-  for (const key of requiredConstraintsForTool(input.toolName)) {
-    if (reason) break
-    if (!constraints[key]) reason = `commerce_authority is missing required ${key} constraint`
-  }
-  for (const [key, expected] of Object.entries(constraints)) {
-    if (reason) break
-    const actual = input.args?.[key]?.trim()
-    if (actual !== expected) reason = `tool ${key} does not match commerce_authority`
-  }
+  const reason = authorityRecordValidationReason(record, input, { token, digest })
   const ok = !reason
   appendAccessLog(input.agentRoot, {
     checkoutId,
@@ -436,36 +452,278 @@ export function validateCommerceAuthorityToken(input: CommerceAuthorityValidatio
   return ok ? { ok: true, record } : { ok: false, reason: reason! }
 }
 
-export function consumeCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+function readAllCommerceRecords(agentRoot: string): CommerceMandateRecord[] {
+  try {
+    return fs.readdirSync(recordsDir(agentRoot))
+      .filter((file) => file.endsWith(".json"))
+      .flatMap((file) => {
+        try {
+          return [JSON.parse(fs.readFileSync(path.join(recordsDir(agentRoot), file), "utf-8")) as CommerceMandateRecord]
+        } catch {
+          return []
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+function matchingCommerceRecords(input: CommerceAuthorityValidationInput): CommerceMandateRecord[] {
+  return readAllCommerceRecords(input.agentRoot)
+    .filter((record) => authorityRecordValidationReason(record, input) === null)
+}
+
+function noMatchingAuthorityReason(records: CommerceMandateRecord[], input: CommerceAuthorityValidationInput): string {
+  const reasons = records
+    .map((record) => authorityRecordValidationReason(record, input))
+    .filter((reason): reason is string => typeof reason === "string")
+  const uniqueReasons = [...new Set(reasons)]
+  return uniqueReasons.length === 1 ? uniqueReasons[0]! : "no matching confirmed commerce_authority"
+}
+
+function validateMatchingCommerceAuthority(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+  const records = readAllCommerceRecords(input.agentRoot)
+  const matching = records.filter((record) => authorityRecordValidationReason(record, input) === null)
+  if (matching.length === 0) return { ok: false, reason: noMatchingAuthorityReason(records, input) }
+  if (matching.length > 1) return { ok: false, reason: "multiple matching confirmed commerce_authority records" }
+  return { ok: true, record: matching[0]! }
+}
+
+export function validateCommerceAuthority(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+  return input.token?.trim() ? validateCommerceAuthorityToken(input) : validateMatchingCommerceAuthority(input)
+}
+
+function consumeValidatedCommerceRecord(
+  agentRoot: string,
+  record: CommerceMandateRecord,
+  input: CommerceAuthorityValidationInput,
+): CommerceAuthorityValidationResult {
+  const now = new Date().toISOString()
+  const consumed: CommerceMandateRecord = {
+    ...record,
+    status: "consumed",
+    reservedAt: undefined,
+    reservedByTool: undefined,
+    reservationTokenHash: undefined,
+    attemptedAt: undefined,
+    attemptedByTool: undefined,
+    consumedAt: now,
+    consumedByTool: input.toolName,
+    updatedAt: now,
+  }
+  writeRecord(agentRoot, consumed)
+  appendAccessLog(agentRoot, {
+    checkoutId: record.id,
+    action: "consume",
+    toolName: input.toolName,
+    friendId: input.friendId,
+    ok: true,
+  })
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.commerce_authority_consumed",
+    message: "consumed commerce authority token",
+    meta: { checkoutId: record.id, toolName: input.toolName },
+  })
+  return { ok: true, record: consumed }
+}
+
+function consumeMatchingCommerceAuthority(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+  const matching = matchingCommerceRecords(input)
+  if (matching.length === 0) return { ok: false, reason: "no matching confirmed commerce_authority" }
+  if (matching.length > 1) return { ok: false, reason: "multiple matching confirmed commerce_authority records" }
+  const record = matching[0]!
+  return withRecordLock(input.agentRoot, record.id, () => {
+    const fresh = readCommerceRecord(input.agentRoot, record.id)
+    /* v8 ignore next -- race-defense: matching records can disappear between directory scan and checkout lock @preserve */
+    if (!fresh) return { ok: false, reason: "commerce checkout not found" }
+    const reason = authorityRecordValidationReason(fresh, input)
+    /* v8 ignore next -- race-defense: matching records can change between directory scan and checkout lock @preserve */
+    if (reason) return { ok: false, reason }
+    return consumeValidatedCommerceRecord(input.agentRoot, fresh, input)
+  })
+}
+
+function checkoutIdFromAuthorityToken(token: string | undefined): string | undefined {
+  return token ? /^commerce:([^:]+):[a-f0-9]{64}:[0-9a-f-]{36}$/.exec(token)?.[1] : undefined
+}
+
+function reserveValidatedCommerceRecord(
+  agentRoot: string,
+  record: CommerceMandateRecord,
+  input: CommerceAuthorityValidationInput,
+): CommerceAuthorityReservationResult {
+  const now = new Date().toISOString()
+  const token = reservationToken()
+  const reserved: CommerceMandateRecord = {
+    ...record,
+    status: "reserved",
+    reservedAt: now,
+    reservedByTool: input.toolName,
+    reservationTokenHash: tokenHash(token),
+    updatedAt: now,
+  }
+  writeRecord(agentRoot, reserved)
+  appendAccessLog(agentRoot, {
+    checkoutId: record.id,
+    action: "reserve",
+    toolName: input.toolName,
+    friendId: input.friendId,
+    ok: true,
+  })
+  emitNervesEvent({
+    component: "repertoire",
+    event: "repertoire.commerce_authority_reserved",
+    message: "reserved commerce authority for tool execution",
+    meta: { checkoutId: record.id, toolName: input.toolName },
+  })
+  return { ok: true, checkoutId: record.id, reservationToken: token, record: reserved }
+}
+
+function reserveMatchingCommerceAuthority(input: CommerceAuthorityValidationInput): CommerceAuthorityReservationResult {
+  const records = readAllCommerceRecords(input.agentRoot)
+  const matching = records.filter((record) => authorityRecordValidationReason(record, input) === null)
+  if (matching.length === 0) return { ok: false, reason: noMatchingAuthorityReason(records, input) }
+  if (matching.length > 1) return { ok: false, reason: "multiple matching confirmed commerce_authority records" }
+  const record = matching[0]!
+  return withRecordLock(input.agentRoot, record.id, () => {
+    const fresh = readCommerceRecord(input.agentRoot, record.id)
+    /* v8 ignore next -- race-defense: matching records can disappear between directory scan and checkout lock @preserve */
+    if (!fresh) return { ok: false, reason: "commerce checkout not found" }
+    const reason = authorityRecordValidationReason(fresh, input)
+    /* v8 ignore next -- race-defense: matching records can change between directory scan and checkout lock @preserve */
+    if (reason) return { ok: false, reason }
+    return reserveValidatedCommerceRecord(input.agentRoot, fresh, input)
+  })
+}
+
+export function reserveCommerceAuthority(input: CommerceAuthorityValidationInput): CommerceAuthorityReservationResult {
   const token = input.token?.trim()
-  const checkoutId = token ? /^commerce:([^:]+):[a-f0-9]{64}:[0-9a-f-]{36}$/.exec(token)?.[1] : undefined
-  if (!checkoutId) return validateCommerceAuthorityToken(input)
+  const checkoutId = checkoutIdFromAuthorityToken(token)
+  if (!checkoutId) {
+    if (!token) return reserveMatchingCommerceAuthority(input)
+    return { ok: false, reason: "invalid commerce_authority token format" }
+  }
   return withRecordLock(input.agentRoot, checkoutId, () => {
     const validation = validateCommerceAuthorityToken(input)
     if (!validation.ok) return validation
+    return reserveValidatedCommerceRecord(input.agentRoot, validation.record, input)
+  })
+}
+
+export function consumeReservedCommerceAuthority(input: {
+  agentRoot: string
+  checkoutId: string
+  reservationToken: string
+  toolName: string
+  friendId?: string
+}): CommerceAuthorityValidationResult {
+  return withRecordLock(input.agentRoot, input.checkoutId, () => {
+    const record = readCommerceRecord(input.agentRoot, input.checkoutId)
+    if (!record) return { ok: false, reason: "commerce checkout not found" }
+    if (record.status !== "reserved" && record.status !== "attempted") {
+      return { ok: false, reason: `commerce checkout is ${record.status}, not reserved or attempted` }
+    }
+    if (record.reservedByTool !== input.toolName) return { ok: false, reason: "commerce_authority reservation belongs to a different tool" }
+    if (input.friendId && record.friendId !== input.friendId) return { ok: false, reason: "commerce_authority belongs to a different friend" }
+    if (record.reservationTokenHash !== tokenHash(input.reservationToken)) return { ok: false, reason: "commerce_authority reservation token mismatch" }
+    return consumeValidatedCommerceRecord(input.agentRoot, record, {
+      agentRoot: input.agentRoot,
+      token: undefined,
+      toolName: input.toolName,
+      friendId: input.friendId,
+    })
+  })
+}
+
+export function markReservedCommerceAuthorityAttempted(input: {
+  agentRoot: string
+  checkoutId: string
+  reservationToken: string
+  toolName: string
+  friendId?: string
+}): CommerceAuthorityValidationResult {
+  return withRecordLock(input.agentRoot, input.checkoutId, () => {
+    const record = readCommerceRecord(input.agentRoot, input.checkoutId)
+    if (!record) return { ok: false, reason: "commerce checkout not found" }
+    if (record.status !== "reserved") return { ok: false, reason: `commerce checkout is ${record.status}, not reserved` }
+    if (record.reservedByTool !== input.toolName) return { ok: false, reason: "commerce_authority reservation belongs to a different tool" }
+    if (input.friendId && record.friendId !== input.friendId) return { ok: false, reason: "commerce_authority belongs to a different friend" }
+    if (record.reservationTokenHash !== tokenHash(input.reservationToken)) return { ok: false, reason: "commerce_authority reservation token mismatch" }
     const now = new Date().toISOString()
-    const consumed: CommerceMandateRecord = {
-      ...validation.record,
-      status: "consumed",
-      consumedAt: now,
-      consumedByTool: input.toolName,
+    const attempted: CommerceMandateRecord = {
+      ...record,
+      status: "attempted",
+      attemptedAt: now,
+      attemptedByTool: input.toolName,
       updatedAt: now,
     }
-    writeRecord(input.agentRoot, consumed)
+    writeRecord(input.agentRoot, attempted)
     appendAccessLog(input.agentRoot, {
-      checkoutId: validation.record.id,
-      action: "consume",
+      checkoutId: record.id,
+      action: "attempt",
       toolName: input.toolName,
       friendId: input.friendId,
       ok: true,
     })
     emitNervesEvent({
       component: "repertoire",
-      event: "repertoire.commerce_authority_consumed",
-      message: "consumed commerce authority token",
-      meta: { checkoutId: validation.record.id, toolName: input.toolName },
+      event: "repertoire.commerce_authority_attempted",
+      message: "marked commerce authority as externally attempted",
+      meta: { checkoutId: record.id, toolName: input.toolName },
     })
-    return { ok: true, record: consumed }
+    return { ok: true, record: attempted }
+  })
+}
+
+export function releaseReservedCommerceAuthority(input: {
+  agentRoot: string
+  checkoutId: string
+  reservationToken: string
+  toolName: string
+  friendId?: string
+}): CommerceAuthorityValidationResult {
+  return withRecordLock(input.agentRoot, input.checkoutId, () => {
+    const record = readCommerceRecord(input.agentRoot, input.checkoutId)
+    if (!record || record.status !== "reserved") return { ok: false, reason: "commerce checkout is not reserved" }
+    if (record.reservedByTool !== input.toolName) return { ok: false, reason: "commerce_authority reservation belongs to a different tool" }
+    if (input.friendId && record.friendId !== input.friendId) return { ok: false, reason: "commerce_authority belongs to a different friend" }
+    if (record.reservationTokenHash !== tokenHash(input.reservationToken)) return { ok: false, reason: "commerce_authority reservation token mismatch" }
+    const now = new Date().toISOString()
+    const released: CommerceMandateRecord = {
+      ...record,
+      status: "confirmed",
+      reservedAt: undefined,
+      reservedByTool: undefined,
+      reservationTokenHash: undefined,
+      updatedAt: now,
+    }
+    writeRecord(input.agentRoot, released)
+    appendAccessLog(input.agentRoot, {
+      checkoutId: record.id,
+      action: "release",
+      toolName: input.toolName,
+      friendId: input.friendId,
+      ok: true,
+    })
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.commerce_authority_released",
+      message: "released reserved commerce authority",
+      meta: { checkoutId: record.id, toolName: input.toolName },
+    })
+    return { ok: true, record: released }
+  })
+}
+
+export function consumeCommerceAuthorityToken(input: CommerceAuthorityValidationInput): CommerceAuthorityValidationResult {
+  const token = input.token?.trim()
+  const checkoutId = checkoutIdFromAuthorityToken(token)
+  if (!checkoutId) return token ? validateCommerceAuthorityToken(input) : consumeMatchingCommerceAuthority(input)
+  return withRecordLock(input.agentRoot, checkoutId, () => {
+    const validation = validateCommerceAuthorityToken(input)
+    if (!validation.ok) return validation
+    return consumeValidatedCommerceRecord(input.agentRoot, validation.record, input)
   })
 }
 

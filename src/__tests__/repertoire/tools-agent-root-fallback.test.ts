@@ -98,7 +98,7 @@ describe("tool agent-root fallbacks", () => {
       amount: "12",
       currency: "usd",
       tool_name: "stripe_create_card",
-      constraints_json: JSON.stringify({ type: "single_use" }),
+      constraints_json: JSON.stringify({ type: "single_use", merchant_categories: "travel" }),
       reason: "Fallback root coverage",
     }, familyContextWithoutAgentRoot())
     const result = JSON.parse(raw)

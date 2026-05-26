@@ -5,7 +5,8 @@ export interface A2AAgentCard {
   description: string
   supportedInterfaces: Array<{
     url: string
-    protocolBinding: "JSONRPC" | "GRPC" | "HTTP+JSON" | string
+    protocolBinding?: "JSONRPC" | "GRPC" | "HTTP+JSON" | string
+    transport?: "JSONRPC" | "GRPC" | "HTTP+JSON" | string
     protocolVersion: string
     tenant?: string
   }>
@@ -53,13 +54,13 @@ export type A2ATaskState =
   | "TASK_STATE_INPUT_REQUIRED"
   | "submitted"
   | "working"
-    | "completed"
-    | "failed"
-    | "canceled"
-    | "rejected"
-    | "auth-required"
-    | "input-required"
-    | "unknown"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "rejected"
+  | "auth-required"
+  | "input-required"
+  | "unknown"
 
 export interface A2AMessagePart {
   kind?: "text"
@@ -67,6 +68,7 @@ export interface A2AMessagePart {
 }
 
 export interface A2AMessage {
+  kind?: "message"
   role: "ROLE_USER" | "ROLE_AGENT" | "user" | "agent"
   parts: A2AMessagePart[]
   messageId?: string
@@ -82,6 +84,7 @@ export interface A2AArtifact {
 }
 
 export interface A2ATask {
+  kind?: "task"
   id: string
   contextId: string
   status: {

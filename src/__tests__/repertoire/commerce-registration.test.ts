@@ -106,10 +106,10 @@ describe("commerce tools in tool registry", () => {
       amount: 25,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Registry contract authority",
     })
-    const confirmed = confirmCommercePreview({
+    confirmCommercePreview({
       agentRoot: tmp.agentRoot,
       checkoutId: preview.id,
       digest: preview.digest,
@@ -121,13 +121,13 @@ describe("commerce tools in tool registry", () => {
       type: "single_use",
       spend_limit: "25",
       currency: "usd",
-      commerce_authority: confirmed.authorityToken!,
+      merchant_categories: "travel",
     }, {
       readPaths: new Set(),
       trustLevel: "family",
       agentRoot: tmp.agentRoot,
       friendId: "family-1",
     })
-    expect(familyCreate.allowed, "stripe_create_card should allow family trust with commerce authority").toBe(true)
+    expect(familyCreate.allowed, "stripe_create_card should allow family trust with matching commerce authority").toBe(true)
   })
 })

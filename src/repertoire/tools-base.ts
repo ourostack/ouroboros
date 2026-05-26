@@ -98,6 +98,10 @@ export interface ToolContext {
   daemonSocketPath?: string;
   agentRoot?: string;
   currentUserMessage?: string;
+  commerceAuthority?: {
+    checkoutId: string;
+    reservationToken: string;
+  };
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

@@ -1,6 +1,6 @@
 /* v8 ignore file -- type-only commerce authority records */
 
-export type CommerceMandateStatus = "previewed" | "confirmed" | "consumed" | "voided"
+export type CommerceMandateStatus = "previewed" | "confirmed" | "reserved" | "attempted" | "consumed" | "voided"
 
 export interface CommerceMandateItem {
   name: string
@@ -28,6 +28,11 @@ export interface CommerceMandateRecord {
     confirmedByMessage?: string
     authorityToken?: string
     authorityTokenHash?: string
+    reservedAt?: string
+    reservedByTool?: string
+    reservationTokenHash?: string
+    attemptedAt?: string
+    attemptedByTool?: string
     consumedAt?: string
     consumedByTool?: string
   }
@@ -35,7 +40,7 @@ export interface CommerceMandateRecord {
 export interface CommerceAccessLogEntry {
   at: string
   checkoutId: string
-  action: "preview" | "confirm" | "validate" | "consume" | "read" | "void"
+  action: "preview" | "confirm" | "validate" | "reserve" | "attempt" | "release" | "consume" | "read" | "void"
   toolName?: string
   friendId?: string
   ok: boolean

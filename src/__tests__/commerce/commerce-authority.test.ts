@@ -9,9 +9,14 @@ import {
   confirmationPhrase,
   confirmCommercePreview,
   consumeCommerceAuthorityToken,
+  consumeReservedCommerceAuthority,
   createCommercePreview,
+  markReservedCommerceAuthorityAttempted,
   readCommerceAccessLog,
   readCommerceRecord,
+  releaseReservedCommerceAuthority,
+  reserveCommerceAuthority,
+  validateCommerceAuthority,
   validateCommerceAuthorityToken,
 } from "../../commerce/store"
 import { guardInvocation } from "../../repertoire/guardrails"
@@ -124,6 +129,35 @@ describe("commerce authority", () => {
     expect(readCommerceAccessLog(tmp.agentRoot, 10).length).toBeGreaterThanOrEqual(4)
   })
 
+  it("rejects tokenless forged confirmations without an authority token hash", () => {
+    tmp = createTmpBundle({ agentName: "commerce-tokenless-forge" })
+    const preview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 55,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use", merchant_categories: "travel" },
+      reason: "Forged confirmation without authority token",
+    })
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${preview.id}.json`), `${JSON.stringify({
+      ...preview,
+      status: "confirmed",
+      confirmedAt: new Date().toISOString(),
+      confirmation: "CONFIRM_PURCHASE",
+      confirmedByMessage: confirmationMessage(preview),
+    }, null, 2)}\n`, "utf-8")
+
+    expect(validateCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      token: undefined,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "55", currency: "usd", merchant_categories: "travel" },
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
+  })
+
   it("covers commerce store validation and readback failures", () => {
     tmp = createTmpBundle({ agentName: "commerce-store-errors" })
     expect(() => createCommercePreview({
@@ -186,7 +220,7 @@ describe("commerce authority", () => {
       amount: 24.69,
       currency: "USD",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Custom items",
     })
     expect(withItems.items[0]).toEqual({ name: "Widget", quantity: 2, amount: 12.35 })
@@ -263,7 +297,7 @@ describe("commerce authority", () => {
       amount: 11,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Exercise invalid expiry during confirmation",
     })
     fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${invalidExpiryPreview.id}.json`), `${JSON.stringify({
@@ -285,7 +319,7 @@ describe("commerce authority", () => {
       amount: 12,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Exercise confirmation digest recomputation",
     })
     fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${tamperedPreview.id}.json`), `${JSON.stringify({
@@ -342,7 +376,7 @@ describe("commerce authority", () => {
         agentRoot: tmp.agentRoot,
         token: statusFlipToken,
         toolName: "stripe_create_card",
-        args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+        args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
       })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
       fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", `${withItems.id}.json`), `${JSON.stringify(withItems, null, 2)}\n`, "utf-8")
       expect(validateCommerceAuthorityToken({
@@ -381,7 +415,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: badConfirmationToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
     })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
     const badMessageToken = testToken("bad-message", confirmed.digest)
     fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", "bad-message.json"), `${JSON.stringify({
@@ -394,7 +428,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: badMessageToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
     })).toEqual({ ok: false, reason: "commerce_authority confirmation state is invalid" })
     const digestMismatchId = "digest-mismatch"
     const digestMismatchToken = testToken(digestMismatchId, "3".repeat(64))
@@ -409,7 +443,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: digestMismatchToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
     })).toEqual({ ok: false, reason: "commerce_authority digest mismatch" })
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
@@ -421,14 +455,31 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
+    })).toEqual({ ok: false, reason: "tool spend_limit is required for commerce_authority validation" })
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
       args: { spend_limit: "bogus" },
-    }).ok).toBe(false)
+    })).toEqual({ ok: false, reason: "tool amount does not match commerce_authority amount" })
+    expect(validateCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { type: "single_use", spend_limit: "9".repeat(400), currency: "usd", merchant_categories: "travel" },
+    })).toEqual({ ok: false, reason: "tool spend_limit is required for commerce_authority validation" })
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "flight_book",
       args: { offer_id: "offer-123", amount: "24.69", currency: "usd" },
     }).ok).toBe(false)
+    expect(consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "flight_book",
+      args: { offer_id: "offer-123", amount: "24.69", currency: "usd" },
+    })).toEqual({ ok: false, reason: "tool is not allowed by commerce_authority" })
     expect(validateCommerceAuthorityToken({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
@@ -445,7 +496,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+      args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
       friendId: "family-2",
     }).ok).toBe(false)
     expect(validateCommerceAuthorityToken({
@@ -457,7 +508,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-      args: { spend_limit: "24.69", currency: "eur" },
+      args: { type: "single_use", spend_limit: "24.69", currency: "eur", merchant_categories: "travel" },
     }).ok).toBe(false)
 
     const legacyNoAllowedToolsId = "legacy-no-allowed-tools"
@@ -474,7 +525,7 @@ describe("commerce authority", () => {
         agentRoot: tmp.agentRoot,
         token: `commerce:${legacyNoAllowedToolsId}:${legacyNoAllowedToolsDigest}:${randomUUID()}`,
         toolName: "stripe_create_card",
-        args: { type: "single_use", spend_limit: "24.69", currency: "usd" },
+        args: { type: "single_use", spend_limit: "24.69", currency: "usd", merchant_categories: "travel" },
       })).toEqual({ ok: false, reason: "commerce_authority is missing allowed tools" })
 
     const legacyNoConstraintsId = "legacy-no-constraints"
@@ -503,7 +554,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "1", currency: "usd" },
+      args: { type: "single_use", spend_limit: "1", currency: "usd", merchant_categories: "travel" },
     })).toEqual({ ok: false, reason: "commerce_authority record digest mismatch" })
     fs.writeFileSync(tamperedPath, `${JSON.stringify(confirmed, null, 2)}\n`, "utf-8")
 
@@ -596,7 +647,7 @@ describe("commerce authority", () => {
       amount: 3,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
         reason: "Exercise expired authority validation",
         expiresInMinutes: -1,
       })
@@ -613,7 +664,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: expiredToken,
       toolName: "stripe_create_card",
-      args: { type: "single_use", spend_limit: "3", currency: "usd" },
+      args: { type: "single_use", spend_limit: "3", currency: "usd", merchant_categories: "travel" },
     })).toEqual({ ok: false, reason: "commerce_authority expired" })
     fs.writeFileSync(recordPath, `${JSON.stringify({
       ...confirmed,
@@ -636,7 +687,7 @@ describe("commerce authority", () => {
       amount: 100,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Virtual card for approved purchase",
     })
     const confirmed = confirmCommercePreview({
@@ -661,11 +712,25 @@ describe("commerce authority", () => {
     expect(noAgentRoot.allowed).toBe(false)
     expect(noAgentRoot.reason).toContain("agent root")
 
+    const wrongMerchant = guardInvocation("stripe_create_card", {
+      spend_limit: "100",
+      currency: "usd",
+      type: "single_use",
+      merchant_categories: "electronics",
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+    })
+    expect(wrongMerchant.allowed).toBe(false)
+    expect(wrongMerchant.reason).toContain("merchant_categories")
+
     const allowed = guardInvocation("stripe_create_card", {
       spend_limit: "100",
       currency: "usd",
       type: "single_use",
-      commerce_authority: confirmed.authorityToken!,
+      merchant_categories: "travel",
     }, {
       readPaths: new Set(),
       trustLevel: "family",
@@ -673,12 +738,64 @@ describe("commerce authority", () => {
       friendId: "family-1",
     })
     expect(allowed.allowed).toBe(true)
-    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("consumed")
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("confirmed")
+    const replayBeforeExecution = guardInvocation("stripe_create_card", {
+      spend_limit: "100",
+      currency: "usd",
+      type: "single_use",
+      merchant_categories: "travel",
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+    })
+    expect(replayBeforeExecution.allowed).toBe(true)
+
+    const reserved = reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })
+    expect(reserved.ok).toBe(true)
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("reserved")
+    const reservedReplay = guardInvocation("stripe_create_card", {
+      spend_limit: "100",
+      currency: "usd",
+      type: "single_use",
+      merchant_categories: "travel",
+    }, {
+      readPaths: new Set(),
+      trustLevel: "family",
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+    })
+    expect(reservedReplay.allowed).toBe(false)
+    expect(reservedReplay.reason).toContain("reserved")
+    if (!reserved.ok) throw new Error("expected reservation")
+    const released = releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: reserved.checkoutId,
+      reservationToken: reserved.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })
+    expect(released.ok).toBe(true)
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("confirmed")
+
+    const consumed = consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })
+    expect(consumed.ok).toBe(true)
     const replay = guardInvocation("stripe_create_card", {
       spend_limit: "100",
       currency: "usd",
       type: "single_use",
-      commerce_authority: confirmed.authorityToken!,
+      merchant_categories: "travel",
     }, {
       readPaths: new Set(),
       trustLevel: "family",
@@ -688,14 +805,336 @@ describe("commerce authority", () => {
     expect(replay.allowed).toBe(false)
     expect(replay.reason).toContain("consumed")
 
+    const secondPreview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 100,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use", merchant_categories: "travel" },
+      reason: "Second matching authority",
+    })
+    const secondConfirmed = confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: secondPreview.id,
+      digest: secondPreview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(secondPreview),
+    })
     const directlyConsumed = consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: secondConfirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })
+    expect(directlyConsumed.ok).toBe(true)
+  })
+
+  it("reserves authority explicitly and tolerates malformed checkout files", () => {
+    tmp = createTmpBundle({ agentName: "commerce-reserve" })
+    expect(reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "no matching confirmed commerce_authority" })
+    expect(reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      token: "not-a-commerce-token",
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "invalid commerce_authority token format" })
+    expect(consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: "not-a-commerce-token",
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "invalid commerce_authority token format" })
+
+    const preview = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 100,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use", merchant_categories: "travel" },
+      reason: "Virtual card for approved purchase",
+    })
+    const confirmed = confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: preview.id,
+      digest: preview.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(preview),
+    })
+    expect(validateCommerceAuthority({
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-      args: { spend_limit: "100", currency: "usd", type: "single_use" },
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    }).ok).toBe(true)
+    expect(reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      token: `commerce:${confirmed.id}:${"0".repeat(64)}:${randomUUID()}`,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority token mismatch" })
+    fs.writeFileSync(path.join(tmp.agentRoot, "state", "commerce", "checkouts", "malformed.json"), "{", "utf-8")
+
+    const reserved = reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
       friendId: "family-1",
     })
-    expect(directlyConsumed.ok).toBe(false)
+    expect(reserved.ok).toBe(true)
+    if (!reserved.ok) throw new Error("expected reservation")
+    expect(releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: reserved.checkoutId,
+      reservationToken: reserved.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    }).ok).toBe(true)
+
+    const explicitReserved = reserveCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      token: confirmed.authorityToken,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    })
+    expect(explicitReserved.ok).toBe(true)
+  })
+
+  it("rejects ambiguous matching authority before reserving or consuming", () => {
+    tmp = createTmpBundle({ agentName: "commerce-ambiguous-authority" })
+    const createConfirmed = () => {
+      const preview = createCommercePreview({
+        agentRoot: tmp!.agentRoot,
+        friendId: "family-1",
+        merchant: "Stripe",
+        amount: 100,
+        currency: "usd",
+        allowedTools: ["stripe_create_card"],
+        constraints: { type: "single_use", merchant_categories: "travel" },
+        reason: "Virtual card for approved purchase",
+      })
+      confirmCommercePreview({
+        agentRoot: tmp!.agentRoot,
+        checkoutId: preview.id,
+        digest: preview.digest,
+        confirmation: "CONFIRM_PURCHASE",
+        friendId: "family-1",
+        currentUserMessage: confirmationMessage(preview),
+      })
+    }
+    createConfirmed()
+    createConfirmed()
+    const input = {
+      agentRoot: tmp.agentRoot,
+      toolName: "stripe_create_card",
+      args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+      friendId: "family-1",
+    }
+    expect(validateCommerceAuthority(input)).toEqual({ ok: false, reason: "multiple matching confirmed commerce_authority records" })
+    expect(reserveCommerceAuthority(input)).toEqual({ ok: false, reason: "multiple matching confirmed commerce_authority records" })
+    expect(consumeCommerceAuthorityToken(input)).toEqual({ ok: false, reason: "multiple matching confirmed commerce_authority records" })
+  })
+
+  it("reports reservation ownership mismatches without consuming or releasing", () => {
+    tmp = createTmpBundle({ agentName: "commerce-reservation-mismatches" })
+    const reserve = () => {
+      const preview = createCommercePreview({
+        agentRoot: tmp!.agentRoot,
+        friendId: "family-1",
+        merchant: "Stripe",
+        amount: 100,
+        currency: "usd",
+        allowedTools: ["stripe_create_card"],
+        constraints: { type: "single_use", merchant_categories: "travel" },
+        reason: "Virtual card for approved purchase",
+      })
+      confirmCommercePreview({
+        agentRoot: tmp!.agentRoot,
+        checkoutId: preview.id,
+        digest: preview.digest,
+        confirmation: "CONFIRM_PURCHASE",
+        friendId: "family-1",
+        currentUserMessage: confirmationMessage(preview),
+      })
+      const reserved = reserveCommerceAuthority({
+        agentRoot: tmp!.agentRoot,
+        toolName: "stripe_create_card",
+        args: { spend_limit: "100", currency: "usd", type: "single_use", merchant_categories: "travel" },
+        friendId: "family-1",
+      })
+      if (!reserved.ok) throw new Error("expected reservation")
+      return reserved
+    }
+
+    const confirmedButNotReserved = createCommercePreview({
+      agentRoot: tmp.agentRoot,
+      friendId: "family-1",
+      merchant: "Stripe",
+      amount: 5,
+      currency: "usd",
+      allowedTools: ["stripe_create_card"],
+      constraints: { type: "single_use", merchant_categories: "travel" },
+      reason: "Unreserved checkout",
+    })
+    confirmCommercePreview({
+      agentRoot: tmp.agentRoot,
+      checkoutId: confirmedButNotReserved.id,
+      digest: confirmedButNotReserved.digest,
+      confirmation: "CONFIRM_PURCHASE",
+      friendId: "family-1",
+      currentUserMessage: confirmationMessage(confirmedButNotReserved),
+    })
+    expect(consumeReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: confirmedButNotReserved.id,
+      reservationToken: "not-reserved",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce checkout is confirmed, not reserved or attempted" })
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: "missing",
+      reservationToken: "not-reserved",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce checkout not found" })
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: confirmedButNotReserved.id,
+      reservationToken: "not-reserved",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce checkout is confirmed, not reserved" })
+
+    const wrongTool = reserve()
+    expect(consumeReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: wrongTool.checkoutId,
+      reservationToken: wrongTool.reservationToken,
+      toolName: "flight_book",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation belongs to a different tool" })
+
+    const wrongFriend = reserve()
+    expect(consumeReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: wrongFriend.checkoutId,
+      reservationToken: wrongFriend.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-2",
+    })).toEqual({ ok: false, reason: "commerce_authority belongs to a different friend" })
+
+    const wrongToken = reserve()
+    expect(consumeReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: wrongToken.checkoutId,
+      reservationToken: "wrong-token",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation token mismatch" })
+
+    const attemptWrongTool = reserve()
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attemptWrongTool.checkoutId,
+      reservationToken: attemptWrongTool.reservationToken,
+      toolName: "flight_book",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation belongs to a different tool" })
+
+    const attemptWrongFriend = reserve()
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attemptWrongFriend.checkoutId,
+      reservationToken: attemptWrongFriend.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-2",
+    })).toEqual({ ok: false, reason: "commerce_authority belongs to a different friend" })
+
+    const attemptWrongToken = reserve()
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attemptWrongToken.checkoutId,
+      reservationToken: "wrong-token",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation token mismatch" })
+
+    const attempted = reserve()
+    expect(markReservedCommerceAuthorityAttempted({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attempted.checkoutId,
+      reservationToken: attempted.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    }).ok).toBe(true)
+    expect(readCommerceRecord(tmp.agentRoot, attempted.checkoutId)?.status).toBe("attempted")
+    expect(releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attempted.checkoutId,
+      reservationToken: attempted.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce checkout is not reserved" })
+    expect(consumeReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: attempted.checkoutId,
+      reservationToken: attempted.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    }).ok).toBe(true)
+
+    const releaseWrongTool = reserve()
+    expect(releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: releaseWrongTool.checkoutId,
+      reservationToken: releaseWrongTool.reservationToken,
+      toolName: "flight_book",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation belongs to a different tool" })
+
+    const releaseWrongFriend = reserve()
+    expect(releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: releaseWrongFriend.checkoutId,
+      reservationToken: releaseWrongFriend.reservationToken,
+      toolName: "stripe_create_card",
+      friendId: "family-2",
+    })).toEqual({ ok: false, reason: "commerce_authority belongs to a different friend" })
+
+    const releaseWrongToken = reserve()
+    expect(releaseReservedCommerceAuthority({
+      agentRoot: tmp.agentRoot,
+      checkoutId: releaseWrongToken.checkoutId,
+      reservationToken: "wrong-token",
+      toolName: "stripe_create_card",
+      friendId: "family-1",
+    })).toEqual({ ok: false, reason: "commerce_authority reservation token mismatch" })
+
+    const badToolConsume = consumeCommerceAuthorityToken({
+      agentRoot: tmp.agentRoot,
+      token: confirmedButNotReserved.authorityToken,
+      toolName: "flight_book",
+      args: { offer_id: "offer-1", amount: "5", currency: "usd" },
+      friendId: "family-1",
+    })
+    expect(badToolConsume.ok).toBe(false)
   })
 
   it("cleans stale commerce locks and times out on live lock contention", () => {
@@ -707,7 +1146,7 @@ describe("commerce authority", () => {
       amount: 25,
       currency: "usd",
       allowedTools: ["stripe_create_card"],
-      constraints: { type: "single_use" },
+      constraints: { type: "single_use", merchant_categories: "travel" },
       reason: "Virtual card for approved purchase",
     })
     const confirmed = confirmCommercePreview({
@@ -726,7 +1165,7 @@ describe("commerce authority", () => {
       agentRoot: tmp.agentRoot,
       token: confirmed.authorityToken,
       toolName: "stripe_create_card",
-      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      args: { spend_limit: "25", currency: "usd", type: "single_use", merchant_categories: "travel" },
       friendId: "family-1",
     })
     expect(consumed.ok).toBe(true)
@@ -745,7 +1184,7 @@ describe("commerce authority", () => {
       agentRoot: tmp!.agentRoot,
       token: `commerce:${lockedId}:${"0".repeat(64)}:${randomUUID()}`,
       toolName: "stripe_create_card",
-      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      args: { spend_limit: "25", currency: "usd", type: "single_use", merchant_categories: "travel" },
       friendId: "family-1",
     })).toThrow("commerce_authority lock timed out")
     vi.restoreAllMocks()
@@ -753,7 +1192,7 @@ describe("commerce authority", () => {
       agentRoot: tmp!.agentRoot,
       token: `commerce:${"x".repeat(300)}:${"0".repeat(64)}:${randomUUID()}`,
       toolName: "stripe_create_card",
-      args: { spend_limit: "25", currency: "usd", type: "single_use" },
+      args: { spend_limit: "25", currency: "usd", type: "single_use", merchant_categories: "travel" },
       friendId: "family-1",
     })).toThrow()
   })
@@ -782,7 +1221,8 @@ describe("commerce authority", () => {
         confirmation: "CONFIRM_PURCHASE",
       }, { ...ctx, currentUserMessage: preview.confirmationMessage })
     const committed = JSON.parse(committedRaw)
-    expect(committed.authorityToken).toMatch(/^commerce:/)
+    expect(committed.authorityToken).toBeUndefined()
+    expect(committed.use).toContain("without exposing a bearer token")
 
     const receipt = JSON.parse(await commerceTool("commerce_receipt_get")({ checkout_id: preview.checkoutId }, ctx))
     expect(receipt.status).toBe("confirmed")
@@ -799,7 +1239,7 @@ describe("commerce authority", () => {
       amount: "15",
       currency: "usd",
       tool_name: "stripe_create_card",
-      constraints_json: JSON.stringify({ type: "single_use" }),
+      constraints_json: JSON.stringify({ type: "single_use", merchant_categories: "travel" }),
       reason: "Default item and expiry",
     }, ctx)
     const minimalPreview = JSON.parse(minimalPreviewRaw)
@@ -810,7 +1250,7 @@ describe("commerce authority", () => {
       amount: "15",
       currency: "usd",
       tool_name: "stripe_create_card",
-      constraints_json: JSON.stringify({ type: "single_use" }),
+      constraints_json: JSON.stringify({ type: "single_use", merchant_categories: "travel" }),
       reason: "Optional item fields",
       items_json: JSON.stringify([{ name: "Service" }]),
     }, ctx)
@@ -869,12 +1309,35 @@ describe("commerce authority", () => {
     }, family)).toContain("tool_name is required")
     expect(await commerceTool("commerce_checkout_preview")({
       merchant: "Duffel",
+      amount: "10usd",
+      currency: "usd",
+      tool_name: "flight_book",
+      reason: "Bad amount",
+    }, family)).toContain("amount must be an exact decimal")
+    expect(await commerceTool("commerce_checkout_preview")({
+      merchant: "Duffel",
       amount: "10",
       currency: "usd",
       tool_name: "stripe_create_card",
       reason: "Bad constraints",
       constraints_json: "[]",
     }, family)).toContain("constraints_json must be a JSON object")
+    expect(await commerceTool("commerce_checkout_preview")({
+      merchant: "Duffel",
+      amount: "10",
+      currency: "usd",
+      tool_name: "stripe_create_card",
+      reason: "Missing card type",
+      constraints_json: JSON.stringify({ merchant_categories: "travel" }),
+    }, family)).toContain("constraints_json.type is required")
+    expect(await commerceTool("commerce_checkout_preview")({
+      merchant: "Duffel",
+      amount: "10",
+      currency: "usd",
+      tool_name: "stripe_create_card",
+      reason: "Missing merchant categories",
+      constraints_json: JSON.stringify({ type: "single_use" }),
+    }, family)).toContain("constraints_json.merchant_categories is required")
     expect(await commerceTool("commerce_checkout_commit")({
       checkout_id: "missing",
       digest: "digest",

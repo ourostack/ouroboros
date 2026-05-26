@@ -152,28 +152,16 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
 }
 /* v8 ignore stop */
 
-function stableUnauthenticatedTaskScope(req: http.IncomingMessage, senderHint: string | undefined): string {
-  /* v8 ignore next -- Node supplies a socket address for accepted HTTP requests; fallback protects unusual runtimes @preserve */
-  const remoteAddress = req.socket.remoteAddress ?? "unknown-address"
-  /* v8 ignore next -- Node supplies a socket family for accepted HTTP requests; fallback protects unusual runtimes @preserve */
-  const remoteFamily = req.socket.remoteFamily ?? "unknown-family"
-  const digest = createHash("sha256")
-    .update(`${remoteFamily}\n${remoteAddress}\n${senderHint ?? ""}`)
-    .digest("hex")
-    .slice(0, 32)
-  return `unauthenticated-a2a-task-scope:${digest}`
-}
-
-function taskScopeHash(taskScope: string): string {
-  return createHash("sha256").update(taskScope).digest("hex")
-}
-
 function accessTokenHash(accessToken: string): string {
   return createHash("sha256").update(accessToken).digest("hex")
 }
 
+function accessTokenScope(accessToken: string): string {
+  return `a2a-task-token:${accessTokenHash(accessToken)}`
+}
+
 function untrustedTurnPeerExternalId(): string {
-  return `unauthenticated-a2a:${randomUUID()}`
+  return "unauthenticated-a2a-peer"
 }
 
 function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): { idHint?: string; name: string } {
@@ -190,19 +178,15 @@ function senderHintFromMessage(req: http.IncomingMessage, inbound: A2AMessage): 
   return { idHint, name }
 }
 
-function senderHintFromParams(req: http.IncomingMessage, params: unknown): { idHint?: string; name: string } {
-  const metadata = metadataRecord(params)
-  const idHint = metadataStringFromRecord(metadata, "senderAgentId")
-    ?? metadataStringFromRecord(metadata, "senderCardUrl")
-    ?? metadataStringFromRecord(metadata, "agentId")
-    ?? metadataStringFromRecord(metadata, "cardUrl")
-    ?? headerString(req, "x-a2a-agent-id")
-  const name = metadataStringFromRecord(metadata, "senderName")
-    ?? metadataStringFromRecord(metadata, "agentName")
-    ?? headerString(req, "x-a2a-agent-name")
-    ?? idHint
-    ?? "Unauthenticated A2A peer"
-  return { idHint, name }
+function isTerminalTaskState(state: A2ATask["status"]["state"]): boolean {
+  return state === "TASK_STATE_COMPLETED"
+    || state === "TASK_STATE_FAILED"
+    || state === "TASK_STATE_CANCELED"
+    || state === "TASK_STATE_REJECTED"
+    || state === "completed"
+    || state === "failed"
+    || state === "canceled"
+    || state === "rejected"
 }
 
 function accessTokenFromParams(params: unknown): string | undefined {
@@ -225,9 +209,10 @@ function publicMessage(message: A2AMessage, style: A2AResponseStyle): A2AMessage
   const parts = message.parts
     .filter((part) => part && typeof part === "object" && typeof part.text === "string")
     .map((part) => style === "legacy" ? { ...part, kind: part.kind ?? "text" } : part)
-  if (style === "latest") return { ...message, parts }
+  if (style === "latest") return { ...message, kind: "message", parts }
   return {
     ...message,
+    kind: "message",
     role: message.role === "ROLE_AGENT" ? "agent" : message.role === "ROLE_USER" ? "user" : message.role,
     parts,
   }
@@ -245,12 +230,13 @@ function legacyTaskState(state: A2ATask["status"]["state"]): A2ATask["status"]["
   return state
 }
 
-function publicTask(task: A2ATask, accessToken: string, style: A2AResponseStyle): A2ATask {
+function publicTask(task: A2ATask, accessToken: string, style: A2AResponseStyle, includeAccessToken: boolean): A2ATask {
   const a2a = taskA2AMetadata(task)
   const { accessTokenHash: _accessTokenHash, taskScopeHash: _taskScopeHash, ...safeA2A } = a2a
   const statusMessage = task.status.message ? publicMessage(task.status.message, style) : undefined
   return {
     ...task,
+    kind: task.kind ?? "task",
     status: {
       ...task.status,
       state: style === "legacy" ? legacyTaskState(task.status.state) : task.status.state,
@@ -269,31 +255,33 @@ function publicTask(task: A2ATask, accessToken: string, style: A2AResponseStyle)
       ...task.metadata,
       a2a: {
         ...safeA2A,
-        accessToken,
+        ...(includeAccessToken ? { accessToken } : {}),
       },
     },
   }
 }
 
-function taskAuthorized(task: A2ATask, taskScope: string, accessToken: string): boolean {
+function taskAuthorized(task: A2ATask, accessToken: string): boolean {
   const a2a = taskA2AMetadata(task)
-  return a2a.taskScopeHash === taskScopeHash(taskScope) && a2a.accessTokenHash === accessTokenHash(accessToken)
+  return a2a.accessTokenHash === accessTokenHash(accessToken)
 }
 
 function taskFor(input: {
   taskId: string
   accessToken: string
-  taskScope: string
   contextId: string
   inbound: A2AMessage
   state: A2ATask["status"]["state"]
   response?: string
   clientTaskId?: string
+  previousTask?: A2ATask
 }): A2ATask {
   const now = new Date().toISOString()
-  const history = [input.inbound]
+  const history = [...(input.previousTask?.history ?? []), input.inbound]
+  const previousA2A = input.previousTask ? taskA2AMetadata(input.previousTask) : {}
   const responseMessage: A2AMessage | undefined = input.response
       ? {
+        kind: "message",
         role: "ROLE_AGENT",
         taskId: input.taskId,
         contextId: input.contextId,
@@ -303,6 +291,7 @@ function taskFor(input: {
     : undefined
   if (responseMessage) history.push(responseMessage)
   return {
+    kind: "task",
     id: input.taskId,
     contextId: input.contextId,
     status: {
@@ -312,9 +301,10 @@ function taskFor(input: {
     },
     history,
     metadata: {
+      ...input.previousTask?.metadata,
       a2a: {
+        ...previousA2A,
         accessTokenHash: accessTokenHash(input.accessToken),
-        taskScopeHash: taskScopeHash(input.taskScope),
         ...(input.clientTaskId ? { clientTaskId: input.clientTaskId } : {}),
       },
     },
@@ -371,7 +361,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     try {
       if (rpc.method === "SendMessage" || rpc.method === "message/send") {
         const responseStyle: A2AResponseStyle = rpc.method === "message/send" ? "legacy" : "latest"
-        const inbound = messageFromParams(rpc.params)
+        const parsedInbound = messageFromParams(rpc.params)
+        const inbound = parsedInbound ? { ...parsedInbound, kind: parsedInbound.kind ?? "message" } : null
         const text = textFromMessage(inbound)
         if (!inbound || !text) {
           writeJson(res, 200, errorResponse(rpc.id, -32602, "SendMessage requires a text message"))
@@ -382,14 +373,26 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           return
         }
         const senderHint = senderHintFromMessage(req, inbound)
-        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
         const peerAgentId = untrustedTurnPeerExternalId()
         const peerName = senderHint.name
-        const contextId = inbound.contextId ?? "default"
-        const taskId = randomUUID()
-        const accessToken = randomUUID()
-        const clientTaskId = inbound.taskId
-        taskStore.put(taskFor({ taskId, accessToken, taskScope, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId }), taskScope)
+        const continuationToken = accessTokenFromParams(rpc.params)
+        const continuationTask = inbound.taskId && continuationToken
+          ? taskStore.get(inbound.taskId, accessTokenScope(continuationToken))
+          : null
+        if (inbound.taskId && continuationToken && (!continuationTask || !taskAuthorized(continuationTask, continuationToken))) {
+          writeJson(res, 200, errorResponse(rpc.id, -32001, "task not found"))
+          return
+        }
+        if (continuationTask && isTerminalTaskState(continuationTask.status.state)) {
+          writeJson(res, 200, errorResponse(rpc.id, -32002, "task is terminal; start a new task"))
+          return
+        }
+        const contextId = inbound.contextId ?? continuationTask?.contextId ?? "default"
+        const taskId = continuationTask?.id ?? randomUUID()
+        const accessToken = continuationToken && continuationTask ? continuationToken : randomUUID()
+        const tokenScope = accessTokenScope(accessToken)
+        const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
+        taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
         const turn = await turnRunner({
           agentName: options.agentName,
           peerAgentId,
@@ -397,9 +400,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           sessionKey: contextId,
           message: text,
         })
-        const task = taskFor({ taskId, accessToken, taskScope, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, clientTaskId })
-        taskStore.put(task, taskScope)
-        writeJson(res, 200, jsonResponse(rpc.id, { task: publicTask(task, accessToken, responseStyle) }))
+        const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, clientTaskId, previousTask: continuationTask ?? undefined })
+        taskStore.put(task, tokenScope)
+        writeJson(res, 200, jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, true)))
         return
       }
 
@@ -417,11 +420,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "GetTask requires accessToken"))
           return
         }
-        const senderHint = senderHintFromParams(req, rpc.params)
-        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
-        const task = taskStore.get(taskId, taskScope)
-        writeJson(res, 200, task && taskAuthorized(task, taskScope, accessToken)
-          ? jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle))
+        const task = taskStore.get(taskId, accessTokenScope(accessToken))
+        writeJson(res, 200, task && taskAuthorized(task, accessToken)
+          ? jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, false))
           : errorResponse(rpc.id, -32001, "task not found"))
         return
       }
@@ -440,10 +441,9 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           writeJson(res, 200, errorResponse(rpc.id, -32602, "CancelTask requires accessToken"))
           return
         }
-        const senderHint = senderHintFromParams(req, rpc.params)
-        const taskScope = stableUnauthenticatedTaskScope(req, senderHint.idHint)
-        const task = taskStore.get(taskId, taskScope)
-        if (!task || !taskAuthorized(task, taskScope, accessToken)) {
+        const tokenScope = accessTokenScope(accessToken)
+        const task = taskStore.get(taskId, tokenScope)
+        if (!task || !taskAuthorized(task, accessToken)) {
           writeJson(res, 200, errorResponse(rpc.id, -32001, "task not found"))
           return
         }
@@ -451,8 +451,8 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           ...task,
           status: { state: "TASK_STATE_CANCELED", timestamp: new Date().toISOString() },
         }
-        taskStore.put(canceled, taskScope)
-        writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken, responseStyle)))
+        taskStore.put(canceled, tokenScope)
+        writeJson(res, 200, jsonResponse(rpc.id, publicTask(canceled, accessToken, responseStyle, false)))
         return
       }
 
@@ -463,8 +463,18 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
     }
   })
 
-  await new Promise<void>((resolve) => {
-    server.listen(port, host, () => resolve())
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.off("error", onError)
+      resolve()
+    }
+    server.once("error", onError)
+    server.once("listening", onListening)
+    server.listen(port, host)
   })
   const address = server.address()
   /* v8 ignore next -- server.address() is an address object after successful listen on TCP @preserve */

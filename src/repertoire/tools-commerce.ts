@@ -41,6 +41,12 @@ function parseExpiryMinutes(raw: string | undefined): number | undefined {
   return value
 }
 
+function parseExactAmount(raw: string | undefined): number {
+  const value = raw?.trim()
+  if (!value || !/^\d+(?:\.\d{1,2})?$/.test(value)) throw new Error("amount must be an exact decimal with at most two places")
+  return Number(value)
+}
+
 function parseToolName(raw: string | undefined): string {
   const toolName = raw?.trim()
   if (!toolName) throw new Error("tool_name is required")
@@ -52,6 +58,12 @@ function parseConstraints(raw: string | undefined): Record<string, string> | und
   const parsed = JSON.parse(raw) as unknown
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("constraints_json must be a JSON object")
   return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
+}
+
+function validateToolConstraints(toolName: string, constraints: Record<string, string> | undefined): void {
+  if (toolName !== "stripe_create_card") return
+  if (!constraints?.type) throw new Error("constraints_json.type is required for stripe_create_card")
+  if (!constraints.merchant_categories) throw new Error("constraints_json.merchant_categories is required for stripe_create_card")
 }
 
 export const commerceToolDefinitions: ToolDefinition[] = [
@@ -68,7 +80,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
             amount: { type: "string", description: "Exact total amount." },
             currency: { type: "string", description: "Currency code, e.g. usd." },
             tool_name: { type: "string", description: "Exact tool this authority may be used with, e.g. stripe_create_card, flight_hold, or flight_book." },
-            constraints_json: { type: "string", description: "Optional JSON object of exact tool-argument constraints, e.g. {\"offer_id\":\"off_123\"}." },
+            constraints_json: { type: "string", description: "JSON object of exact tool-argument constraints; required for stripe_create_card type and merchant_categories, and recommended for flight offer_id." },
             reason: { type: "string", description: "Why this purchase/booking is being made." },
             items_json: { type: "string", description: "Optional JSON array of {name, quantity, amount} items." },
             expires_minutes: { type: "string", description: "Optional expiry window in minutes; defaults to 30." },
@@ -89,18 +101,21 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       try {
         const expiresInMinutes = parseExpiryMinutes(args.expires_minutes)
         const toolName = parseToolName(args.tool_name)
+        const constraints = parseConstraints(args.constraints_json)
+        const items = parseItems(args.items_json)
+        validateToolConstraints(toolName, constraints)
         const record = createCommercePreview({
           agentRoot: guard.agentRoot,
           friendId: guard.friendId,
           merchant: args.merchant,
-          amount: Number.parseFloat(args.amount),
+          amount: parseExactAmount(args.amount),
           currency: args.currency,
           allowedTools: [toolName],
-          constraints: parseConstraints(args.constraints_json),
+          constraints,
           reason: args.reason,
-          items: parseItems(args.items_json),
+          items,
           ...(expiresInMinutes ? { expiresInMinutes } : {}),
-	        })
+        })
 	        const confirmationMessage = commerceConfirmationMessage(record)
 	        return JSON.stringify({
 	          checkoutId: record.id,
@@ -126,7 +141,7 @@ export const commerceToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "commerce_checkout_commit",
-        description: "Confirm an exact checkout preview and return a commerce_authority token for the payment/booking tool. Requires family trust and confirmation=CONFIRM_PURCHASE.",
+        description: "Confirm an exact checkout preview for the next matching payment/booking tool call. Requires family trust and confirmation=CONFIRM_PURCHASE.",
         parameters: {
           type: "object",
           properties: {
@@ -159,9 +174,8 @@ export const commerceToolDefinitions: ToolDefinition[] = [
         return JSON.stringify({
           checkoutId: record.id,
           status: record.status,
-          authorityToken: record.authorityToken,
           expiresAt: record.expiresAt,
-          use: "Pass this as commerce_authority to stripe_create_card, flight_hold, or flight_book.",
+          use: "Call the approved payment or booking tool with the exact merchant/tool/amount/currency/constraint arguments; Ouro will consume the matching authority without exposing a bearer token.",
         }, null, 2)
       } catch (error) {
         return `commerce commit error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error store failures */ String(error)}`

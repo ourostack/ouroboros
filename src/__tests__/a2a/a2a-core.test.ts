@@ -86,7 +86,10 @@ describe("A2A core substrate", () => {
       senderName: "Local Agent",
       sessionKey: "case-1",
     })
-    expect(task.status.state).toBe("TASK_STATE_COMPLETED")
+    expect(task.kind).toBe("task")
+    expect(task.status.state).toBe("completed")
+    expect(task.history[0]?.kind).toBe("message")
+    expect(task.status.message?.kind).toBe("message")
     expect(task.artifacts?.[0]?.parts[0]?.text).toBe("echo:hello peer")
 
     const fetched = await getA2ATask({
@@ -97,6 +100,17 @@ describe("A2A core substrate", () => {
       senderName: "Local Agent",
     })
     expect(fetched.id).toBe(task.id)
+    expect((fetched.metadata?.a2a as { accessToken?: unknown } | undefined)?.accessToken).toBeUndefined()
+
+    await expect(sendA2AMessage({
+      endpointUrl: server.endpointUrl,
+      taskId: task.id,
+      accessToken: taskAccessToken(task),
+      message: "continued peer",
+      senderAgentId: "local-agent",
+      senderName: "Local Agent",
+      sessionKey: "case-1",
+    })).rejects.toThrow("task is terminal")
   })
 
   it("handles client validation and legacy JSON-RPC result shapes", async () => {
@@ -113,11 +127,22 @@ describe("A2A core substrate", () => {
         skills: [],
       }
       expect(endpointForCard(legacyCard)).toBe("https://legacy.example/a2a")
+    expect(endpointForCard({
+      ...legacyCard,
+      preferredTransport: "GRPC",
+      additionalInterfaces: [{ url: "https://legacy.example/jsonrpc", transport: "JSONRPC" }],
+    })).toBe("https://legacy.example/jsonrpc")
       expect(endpointForCard({
         ...legacyCard,
         preferredTransport: "GRPC",
-        additionalInterfaces: [{ url: "https://legacy.example/jsonrpc", transport: "JSONRPC" }],
-      })).toBe("https://legacy.example/jsonrpc")
+        supportedInterfaces: [{ url: "https://legacy.example/supported-transport", transport: "JSONRPC", protocolVersion: "1.0" }],
+      })).toBe("https://legacy.example/supported-transport")
+      expect(endpointForCard({
+        ...legacyCard,
+        preferredTransport: "GRPC",
+        supportedInterfaces: [{ url: "https://legacy.example/no-binding", protocolVersion: "1.0" }],
+        additionalInterfaces: [{ url: "https://legacy.example/jsonrpc-after-empty-supported", transport: "JSONRPC" }],
+      })).toBe("https://legacy.example/jsonrpc-after-empty-supported")
       expect(endpointForCard({ ...legacyCard, supportedInterfaces: undefined, url: "https://legacy.example/fallback" })).toBe("https://legacy.example/fallback")
     expect(endpointForCard({
       ...legacyCard,
@@ -174,7 +199,8 @@ describe("A2A core substrate", () => {
     expect(direct.id).toBe("task-direct")
       expect((directRequest?.params as { message?: { metadata?: Record<string, string> } }).message?.metadata?.senderCardUrl)
         .toBe("https://local.example/card")
-      expect((directRequest?.params as { message?: { role?: string; parts?: Array<{ kind?: string }> } }).message?.role).toBe("ROLE_USER")
+      expect((directRequest?.params as { message?: { role?: string; parts?: Array<{ kind?: string }> } }).message?.role).toBe("user")
+      expect((directRequest?.params as { message?: { kind?: string } }).message?.kind).toBe("message")
       expect((directRequest?.params as { message?: { parts?: Array<{ kind?: string }> } }).message?.parts?.[0]?.kind).toBe("text")
 
       const fallbackRequests: A2AJsonRpcRequest[] = []
@@ -205,8 +231,8 @@ describe("A2A core substrate", () => {
         },
       })
       expect(fallback.id).toBe("legacy-task")
-      expect(fallbackRequests.map((request) => request.method)).toEqual(["SendMessage", "message/send"])
-      expect((fallbackRequests[1]?.params as { message?: { role?: string } }).message?.role).toBe("user")
+      expect(fallbackRequests.map((request) => request.method)).toEqual(["message/send", "SendMessage"])
+      expect((fallbackRequests[1]?.params as { message?: { role?: string } }).message?.role).toBe("ROLE_USER")
 
       const getFallbackRequests: A2AJsonRpcRequest[] = []
       const fetchedFallback = await getA2ATask({
@@ -231,7 +257,7 @@ describe("A2A core substrate", () => {
         },
       })
       expect(fetchedFallback.id).toBe("legacy-task")
-      expect(getFallbackRequests.map((request) => request.method)).toEqual(["GetTask", "tasks/get"])
+      expect(getFallbackRequests.map((request) => request.method)).toEqual(["tasks/get", "GetTask"])
 
     await expect(getA2ATask({
       endpointUrl: "https://bad.example/a2a",
@@ -246,13 +272,15 @@ describe("A2A core substrate", () => {
 
   it("covers A2A server error routes, legacy aliases, cancellation, and task misses", async () => {
     tmp = createTmpBundle({ agentName: "a2a-server-routes" })
+    const observedPeerIds: string[] = []
     server = await startA2AServer({
       agentName: tmp.agentName,
       agentRoot: tmp.agentRoot,
       port: 0,
-      turnRunner: async ({ message, peerAgentId, peerName, sessionKey }) => ({
-        response: `route:${peerAgentId}:${peerName}:${sessionKey}:${message}`,
-      }),
+      turnRunner: async ({ message, peerAgentId, peerName, sessionKey }) => {
+        observedPeerIds.push(peerAgentId)
+        return { response: `route:${peerAgentId}:${peerName}:${sessionKey}:${message}` }
+      },
     })
 
     const alternateCard = await fetchA2AAgentCard(`${server.url}/agent-card.json`)
@@ -324,12 +352,17 @@ describe("A2A core substrate", () => {
       "x-a2a-agent-name": "Header Peer",
     })
     const legacyTask = taskFromRpc(legacySend)
+    if ("result" in legacySend) expect("task" in (legacySend.result as Record<string, unknown>)).toBe(false)
     const legacyAccessToken = taskAccessToken(legacyTask)
     const legacyText = legacyTask.artifacts?.[0]?.parts[0]?.text ?? ""
+      expect(legacyTask.kind).toBe("task")
       expect(legacyTask.status.state).toBe("completed")
+      expect(legacyTask.history[0]?.kind).toBe("message")
+      expect(legacyTask.status.message?.kind).toBe("message")
       expect(legacyTask.artifacts?.[0]?.parts[0]?.kind).toBe("text")
-    expect(legacyText).toContain("route:unauthenticated-a2a:")
+    expect(legacyText).toContain("route:unauthenticated-a2a-peer")
     expect(legacyText).toContain(":Claimed Peer:default:legacy hello")
+    expect(observedPeerIds.at(-1)).toBe("unauthenticated-a2a-peer")
     expect(legacyTask.id).not.toBe("task-1")
     expect((legacyTask.metadata?.a2a as { clientTaskId?: unknown } | undefined)?.clientTaskId).toBe("task-1")
 
@@ -388,6 +421,7 @@ describe("A2A core substrate", () => {
     })
     const anonymousTask = taskFromRpc(anonymousSend)
     expect(anonymousTask.artifacts?.[0]?.parts[0]?.text ?? "").toContain(":Unauthenticated A2A peer:default:anonymous hello")
+    expect(observedPeerIds.at(-1)).toBe("unauthenticated-a2a-peer")
 
     const traversal = await postRpc("SendMessage", {
       message: {
@@ -448,6 +482,7 @@ describe("A2A core substrate", () => {
       const stored = JSON.parse(fs.readFileSync(headerTaskPath, "utf-8")) as A2ATask
       const nextTask: A2ATask = {
         ...stored,
+        ...(index === 0 ? { kind: undefined } : {}),
         status: { ...stored.status, state },
         ...(index === 0 ? {
           history: stored.history.map((message) => ({ ...message, role: "agent" })),
@@ -463,6 +498,7 @@ describe("A2A core substrate", () => {
         "x-a2a-agent-name": "Header Peer",
       })
       const legacyStateTask = taskFromRpc(legacyStateFetched)
+      if (index === 0) expect(legacyStateTask.kind).toBe("task")
       expect(legacyStateTask.status.state).toBe(legacyState)
       if (index === 0) {
         expect(legacyStateTask.history[0]?.role).toBe("agent")
@@ -497,12 +533,58 @@ describe("A2A core substrate", () => {
       metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
     })
     expect("error" in wrongToken ? wrongToken.error.message : "").toContain("task not found")
-    const wrongSender = await postRpc("GetTask", {
+    const spoofedSenderWithToken = await postRpc("GetTask", {
       id: legacyTask.id,
       accessToken: legacyAccessToken,
       metadata: { senderAgentId: "different-peer", senderName: "Claimed Peer" },
     })
-    expect("error" in wrongSender ? wrongSender.error.message : "").toContain("task not found")
+    expect(taskFromRpc(spoofedSenderWithToken).id).toBe(legacyTask.id)
+
+    const legacyTaskPath = fs.readdirSync(taskDir)
+      .map((file) => path.join(taskDir, file))
+      .find((file) => (JSON.parse(fs.readFileSync(file, "utf-8")) as A2ATask).id === legacyTask.id)
+    if (!legacyTaskPath) throw new Error("missing legacy task file")
+    const storedLegacyTask = JSON.parse(fs.readFileSync(legacyTaskPath, "utf-8")) as A2ATask
+    fs.writeFileSync(legacyTaskPath, `${JSON.stringify({
+      ...storedLegacyTask,
+      status: { ...storedLegacyTask.status, state: "TASK_STATE_INPUT_REQUIRED" },
+    }, null, 2)}\n`, "utf-8")
+    const continuedOpen = await postRpc("SendMessage", {
+      accessToken: legacyAccessToken,
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-continue-open",
+        taskId: legacyTask.id,
+        parts: [{ text: "continue open legacy task" }],
+        metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+      },
+    })
+    const continuedOpenTask = taskFromRpc(continuedOpen)
+    expect(continuedOpenTask.id).toBe(legacyTask.id)
+    expect(continuedOpenTask.history.length).toBeGreaterThan(legacyTask.history.length)
+
+    const continued = await postRpc("SendMessage", {
+      accessToken: legacyAccessToken,
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-continue",
+        taskId: legacyTask.id,
+        parts: [{ text: "continue legacy task" }],
+        metadata: { senderAgentId: "claimed-trusted-peer", senderName: "Claimed Peer" },
+      },
+    })
+    expect("error" in continued ? continued.error.message : "").toContain("task is terminal")
+
+    const badContinuation = await postRpc("SendMessage", {
+      accessToken: "wrong-token",
+      message: {
+        role: "ROLE_USER",
+        messageId: "message-bad-continue",
+        taskId: legacyTask.id,
+        parts: [{ text: "bad continue" }],
+      },
+    })
+    expect("error" in badContinuation ? badContinuation.error.message : "").toContain("task not found")
 
     const missingCancelId = await postRpc("CancelTask", {})
     expect("error" in missingCancelId ? missingCancelId.error.message : "").toContain("requires id")
@@ -690,5 +772,22 @@ describe("A2A core substrate", () => {
     expect(context.friend.trustLevel).toBe("stranger")
     expect(context.channel.channel).toBe("a2a")
     expect(context.channel.senseType).toBe("open")
+  })
+
+  it("rejects A2A startup cleanly when the port is already bound", async () => {
+    tmp = createTmpBundle({ agentName: "a2a-port-collision" })
+    server = await startA2AServer({
+      agentName: tmp.agentName,
+      agentRoot: tmp.agentRoot,
+      port: 0,
+      turnRunner: async () => ({ response: "first" }),
+    })
+    const port = new URL(server.endpointUrl).port
+    await expect(startA2AServer({
+      agentName: `${tmp.agentName}-second`,
+      agentRoot: tmp.agentRoot,
+      port: Number(port),
+      turnRunner: async () => ({ response: "second" }),
+    })).rejects.toMatchObject({ code: "EADDRINUSE" })
   })
 })

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import * as path from "node:path"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { startA2AServer, type A2AServerHandle } from "../../a2a/server"
+import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 import { FileFriendStore } from "../../mind/friends/store-file"
 import type { FriendRecord } from "../../mind/friends/types"
 import { a2aToolDefinitions } from "../../repertoire/tools-a2a"
@@ -75,16 +76,6 @@ function requesterContext(input: {
   }
 }
 
-function accessTokenFromTask(task: { metadata?: Record<string, unknown> }): string {
-  const a2a = task.metadata?.a2a && typeof task.metadata.a2a === "object" && !Array.isArray(task.metadata.a2a)
-    ? task.metadata.a2a as { accessToken?: unknown }
-    : undefined
-  if (typeof a2a?.accessToken !== "string" || !a2a.accessToken.trim()) {
-    throw new Error("missing task access token")
-  }
-  return a2a.accessToken
-}
-
 describe("A2A repertoire tools", () => {
   it("lists peers, sends messages, and fetches remote tasks", async () => {
     tmp = createTmpBundle({ agentName: "a2a-tools" })
@@ -130,15 +121,16 @@ describe("A2A repertoire tools", () => {
     expect(peers.find((entry: { id: string }) => entry.id === fallbackTrustPeer.id)?.trustLevel).toBe("friend")
 
     const sent = JSON.parse(await tool("a2a_send_message")({ friend_id: peer.id, message: "ping" }, ctx))
-    expect(sent.status.state).toBe("TASK_STATE_COMPLETED")
+    expect(sent.status.state).toBe("completed")
     expect(sent.artifacts[0].parts[0].text).toBe("remote:ping")
+    expect(sent.metadata.a2a.accessToken).toBeUndefined()
 
     const fetched = JSON.parse(await tool("a2a_get_task")({
       friend_id: peer.id,
       task_id: sent.id,
-      access_token: accessTokenFromTask(sent),
     }, ctx))
     expect(fetched.id).toBe(sent.id)
+    expect(fetched.metadata.a2a.accessToken).toBeUndefined()
   })
 
   it("enforces requester and store guards", async () => {
@@ -236,6 +228,7 @@ describe("A2A repertoire tools", () => {
 
   it("uses the local bundle name as outbound sender metadata with safe fallbacks", async () => {
     tmp = createTmpBundle({ agentName: "a2a-sender-fallbacks" })
+    cacheMachineRuntimeCredentialConfig(tmp.agentName, { a2a: { publicUrl: "https://sender.example" } })
     server = await startA2AServer({
       agentName: "remote-sender",
       agentRoot: tmp.agentRoot,
@@ -263,6 +256,20 @@ describe("A2A repertoire tools", () => {
     }, requesterContext({ agentRoot: tmp.agentRoot, store })))
     expect(bundleRootSender.artifacts[0].parts[0].text).toBe("sender:a2a-sender-fallbacks:bundle root")
 
+    cacheMachineRuntimeCredentialConfig(tmp.agentName, { a2a: { publicUrl: " " } })
+    const blankPublicUrlSender = JSON.parse(await tool("a2a_send_message")({
+      friend_id: peer.id,
+      message: "blank public url",
+    }, requesterContext({ agentRoot: tmp.agentRoot, store })))
+    expect(blankPublicUrlSender.artifacts[0].parts[0].text).toBe("sender:a2a-sender-fallbacks:blank public url")
+
+    cacheMachineRuntimeCredentialConfig(tmp.agentName, { a2a: [] })
+    const invalidConfigSender = JSON.parse(await tool("a2a_send_message")({
+      friend_id: peer.id,
+      message: "invalid config",
+    }, requesterContext({ agentRoot: tmp.agentRoot, store })))
+    expect(invalidConfigSender.artifacts[0].parts[0].text).toBe("sender:a2a-sender-fallbacks:invalid config")
+
     const missingRootSender = JSON.parse(await tool("a2a_send_message")({
       friend_id: peer.id,
       message: "missing root",
@@ -271,7 +278,6 @@ describe("A2A repertoire tools", () => {
     const missingRootTask = JSON.parse(await tool("a2a_get_task")({
       friend_id: peer.id,
       task_id: missingRootSender.id,
-      access_token: accessTokenFromTask(missingRootSender),
     }, requesterContext({ store })))
     expect(missingRootTask.id).toBe(missingRootSender.id)
 

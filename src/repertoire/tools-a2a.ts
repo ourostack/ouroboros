@@ -1,12 +1,47 @@
 import * as path from "node:path"
 import { getAgentRoot } from "../heart/identity"
+import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { isTrustedLevel } from "../mind/friends/types"
 import type { FriendRecord } from "../mind/friends/types"
 import { FileFriendStore } from "../mind/friends/store-file"
 import type { FriendStore } from "../mind/friends/store"
 import { emitNervesEvent } from "../nerves/runtime"
 import { endpointForCard, fetchA2AAgentCard, getA2ATask, sendA2AMessage } from "../a2a/client"
+import type { A2ATask } from "../a2a/types"
 import type { ToolContext, ToolDefinition } from "./tools-base"
+
+const outboundTaskTokens = new Map<string, string>()
+
+function tokenKey(ctx: ToolContext | undefined, friendId: string, taskId: string): string {
+  return `${ctx?.agentRoot ?? "ambient"}\n${friendId}\n${taskId}`
+}
+
+function rememberTaskToken(ctx: ToolContext | undefined, friendId: string, task: A2ATask): void {
+  /* v8 ignore next -- defensive metadata-shape guard; protocol tasks from Ouro servers always use object metadata @preserve */
+  const token = task.metadata?.a2a && typeof task.metadata.a2a === "object" && !Array.isArray(task.metadata.a2a)
+    ? (task.metadata.a2a as { accessToken?: unknown }).accessToken
+    : undefined
+  if (typeof token === "string" && token.trim()) {
+    outboundTaskTokens.set(tokenKey(ctx, friendId, task.id), token.trim())
+  }
+}
+
+function rememberedTaskToken(ctx: ToolContext | undefined, friendId: string, taskId: string): string | undefined {
+  return outboundTaskTokens.get(tokenKey(ctx, friendId, taskId))
+}
+
+function redactTaskToken(task: A2ATask): A2ATask {
+  const a2a = task.metadata?.a2a
+  if (!a2a || typeof a2a !== "object" || Array.isArray(a2a) || !("accessToken" in a2a)) return task
+  const { accessToken: _accessToken, ...safeA2A } = a2a as Record<string, unknown>
+  return {
+    ...task,
+    metadata: {
+      ...task.metadata,
+      a2a: safeA2A,
+    },
+  }
+}
 
 function storeFor(ctx?: ToolContext): FriendStore {
   if (ctx?.friendStore) return ctx.friendStore
@@ -29,6 +64,22 @@ function agentNameFromRoot(agentRoot: string | undefined): string | undefined {
   if (!agentRoot) return undefined
   const base = path.basename(agentRoot)
   return base.endsWith(".ouro") ? base.slice(0, -".ouro".length) : undefined
+}
+
+function textField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function localA2ACardUrl(agentRoot: string | undefined): string | undefined {
+  const agentName = agentNameFromRoot(agentRoot)
+  if (!agentName) return undefined
+  const result = readMachineRuntimeCredentialConfig(agentName)
+  if (!result.ok) return undefined
+  const a2a = result.config.a2a
+  if (!a2a || typeof a2a !== "object" || Array.isArray(a2a)) return undefined
+  const publicUrl = textField(a2a as Record<string, unknown>, "publicUrl")
+  return publicUrl ? `${publicUrl.replace(/\/+$/, "")}/.well-known/agent-card.json` : undefined
 }
 
 async function resolveA2AEndpoint(friend: FriendRecord): Promise<{ endpointUrl: string; agentId?: string; peerName: string }> {
@@ -130,9 +181,11 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           message: args.message,
           senderAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
           senderName: agentNameFromRoot(ctx?.agentRoot) ?? "Ouro agent",
+          senderCardUrl: localA2ACardUrl(ctx?.agentRoot),
           sessionKey: args.session_key,
         })
-        return JSON.stringify(task, null, 2)
+        rememberTaskToken(ctx, peer.id, task)
+        return JSON.stringify(redactTaskToken(task), null, 2)
       } catch (error) {
         return `A2A send error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
       }
@@ -151,9 +204,9 @@ export const a2aToolDefinitions: ToolDefinition[] = [
           properties: {
             friend_id: { type: "string", description: "Friend record ID for the A2A agent peer." },
             task_id: { type: "string", description: "Remote A2A task ID." },
-            access_token: { type: "string", description: "Task access token returned in the SendMessage task metadata." },
+            access_token: { type: "string", description: "Optional task access token from an external A2A response; omitted for tasks sent through a2a_send_message because Ouro stores it out of transcript." },
           },
-          required: ["friend_id", "task_id", "access_token"],
+          required: ["friend_id", "task_id"],
         },
       },
     },
@@ -174,11 +227,13 @@ export const a2aToolDefinitions: ToolDefinition[] = [
         const task = await getA2ATask({
           endpointUrl: endpoint.endpointUrl,
           taskId: args.task_id,
-          accessToken: args.access_token,
+          accessToken: args.access_token ?? rememberedTaskToken(ctx, peer.id, args.task_id),
           senderAgentId: agentNameFromRoot(ctx?.agentRoot) ?? "ouro-agent",
           senderName: agentNameFromRoot(ctx?.agentRoot) ?? "Ouro agent",
+          senderCardUrl: localA2ACardUrl(ctx?.agentRoot),
         })
-        return JSON.stringify(task, null, 2)
+        rememberTaskToken(ctx, peer.id, task)
+        return JSON.stringify(redactTaskToken(task), null, 2)
       } catch (error) {
         return `A2A task error: ${error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error transport failures */ String(error)}`
       }
