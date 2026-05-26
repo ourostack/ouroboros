@@ -22,6 +22,8 @@ import { flightToolDefinitions } from "./tools-flight";
 import { attachmentToolDefinitions } from "./tools-attachments";
 import { mailToolDefinitions } from "./tools-mail"
 import { tripToolDefinitions } from "./tools-trip"
+import { a2aToolDefinitions } from "./tools-a2a"
+import { commerceToolDefinitions } from "./tools-commerce"
 import { awaitingToolDefinitions } from "./tools-awaiting"
 import { obligationToolDefinitions } from "./tools-obligations"
 import { evolutionToolDefinitions } from "./tools-evolution"
@@ -94,6 +96,12 @@ export interface ToolContext {
   voiceCall?: VoiceCallControl;
   orientationFrame?: OrientationFrame;
   daemonSocketPath?: string;
+  agentRoot?: string;
+  currentUserMessage?: string;
+  commerceAuthority?: {
+    checkoutId: string;
+    reservationToken: string;
+  };
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -142,6 +150,8 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...attachmentToolDefinitions,
   ...mailToolDefinitions,
   ...tripToolDefinitions,
+  ...a2aToolDefinitions,
+  ...commerceToolDefinitions,
   ...awaitingToolDefinitions,
   ...obligationToolDefinitions,
   ...evolutionToolDefinitions,

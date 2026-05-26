@@ -254,13 +254,15 @@ describe("getCommandHelp()", () => {
     const result = getCommandHelp("connect")
 
     expect(result).not.toBeNull()
-    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]")
+    expect(result).toContain("ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]")
     expect(result).toContain("providers")
     expect(result).toContain("perplexity")
     expect(result).toContain("embeddings")
     expect(result).toContain("teams")
     expect(result).toContain("bluebubbles")
     expect(result).toContain("mail")
+    expect(result).toContain("voice")
+    expect(result).toContain("a2a")
   })
 
   it("returns focused help for mail import-mbox", () => {

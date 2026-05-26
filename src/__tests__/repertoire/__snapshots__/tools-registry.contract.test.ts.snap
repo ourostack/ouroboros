@@ -2,6 +2,9 @@
 
 exports[`tool registry contract > tool surface area snapshot 1`] = `
 [
+  "a2a_get_task",
+  "a2a_list_peers",
+  "a2a_send_message",
   "await_condition",
   "bridge_manage",
   "cancel_await",
@@ -13,6 +16,10 @@ exports[`tool registry contract > tool surface area snapshot 1`] = `
   "coding_spawn",
   "coding_status",
   "coding_tail",
+  "commerce_access_log",
+  "commerce_checkout_commit",
+  "commerce_checkout_preview",
+  "commerce_receipt_get",
   "consult_notes",
   "credential_delete",
   "credential_generate_password",

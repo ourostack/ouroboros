@@ -69,11 +69,12 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
     if (line.includes("mcp-serve") || line.includes("mcp serve")) continue
     // Match only daemon-owned JS entry points.
     if (
-      !line.includes("agent-entry.js")
-      && !line.includes("daemon-entry.js")
+        !line.includes("agent-entry.js")
+        && !line.includes("daemon-entry.js")
       && !line.includes("bluebubbles/entry.js")
       && !line.includes("mail-entry.js")
       && !line.includes("teams-entry.js")
+      && !line.includes("a2a-entry.js")
     ) continue
     // Parse `<pid> <ppid> <command...>`. ps pads these with leading spaces.
     // Regex guarantees both groups are \d+ so parseInt can't produce NaN.

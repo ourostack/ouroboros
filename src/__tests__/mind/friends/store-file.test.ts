@@ -399,6 +399,64 @@ describe("FileFriendStore", () => {
       expect(result!.agentMeta!.outcomes).toHaveLength(1)
     })
 
+    it("normalizes optional A2A metadata on agent friends", async () => {
+      const store = new FileFriendStore(friendsPath)
+      const friend = makeFriend({
+        id: "uuid-agent-a2a-meta",
+        kind: "agent",
+        agentMeta: {
+          bundleName: "remote.ouro",
+          familiarity: 2,
+          sharedMissions: [],
+          outcomes: [],
+          a2a: {
+            cardUrl: "https://remote.example/.well-known/agent-card.json",
+            endpointUrl: "https://remote.example/a2a",
+            agentId: "remote-agent",
+            protocolVersion: "1.0",
+          },
+        },
+      })
+      await store.put(friend.id, friend)
+      const result = await store.get(friend.id)
+      expect(result!.agentMeta!.a2a).toEqual({
+        cardUrl: "https://remote.example/.well-known/agent-card.json",
+        endpointUrl: "https://remote.example/a2a",
+        agentId: "remote-agent",
+        protocolVersion: "1.0",
+      })
+    })
+
+    it("drops empty A2A metadata on agent friends", async () => {
+      const store = new FileFriendStore(friendsPath)
+      await fs.mkdir(friendsPath, { recursive: true })
+      await fs.writeFile(
+        path.join(friendsPath, "uuid-agent-empty-a2a-meta.json"),
+        JSON.stringify({
+          id: "uuid-agent-empty-a2a-meta",
+          name: "Empty A2A",
+          kind: "agent",
+          agentMeta: { bundleName: "remote.ouro", familiarity: 0, sharedMissions: [], outcomes: [], a2a: {} },
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          schemaVersion: 1,
+        }),
+      )
+
+      const result = await store.get("uuid-agent-empty-a2a-meta")
+      expect(result!.agentMeta).toEqual({
+        bundleName: "remote.ouro",
+        familiarity: 0,
+        sharedMissions: [],
+        outcomes: [],
+      })
+    })
+
     it("strips agentMeta when kind is human", async () => {
       const store = new FileFriendStore(friendsPath)
       await fs.mkdir(friendsPath, { recursive: true })

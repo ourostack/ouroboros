@@ -203,9 +203,16 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   connect: {
     category: "Auth",
     description: "Set up providers, portable integrations, and local senses from one guided screen",
-    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail] [--agent <name>]",
+    usage: "ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]",
     example: "ouro connect",
-    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail"],
+    subcommands: ["providers", "perplexity", "embeddings", "teams", "bluebubbles", "mail", "voice", "a2a"],
+  },
+  a2a: {
+    category: "Friends",
+    description: "Publish A2A cards, onboard agent peers, and run the A2A sense server",
+    usage: "ouro a2a <card|onboard|serve> [--agent <name>]",
+    example: "ouro a2a card --agent <agent> --base-url https://agent.example",
+    subcommands: ["card", "onboard", "serve"],
   },
   mail: {
     category: "Auth",
@@ -346,6 +353,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     description: "Provision portable Agent Mail / Mailroom access and enable the Mail sense",
     usage: "ouro connect mail [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     example: "ouro connect mail --agent <agent> --owner-email you@example.com --source hey",
+  },
+  "connect a2a": {
+    description: "Enable the agent-to-agent A2A sense",
+    usage: "ouro connect a2a [--agent <name>]",
+    example: "ouro connect a2a --agent <agent>",
   },
   "account ensure": {
     description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",

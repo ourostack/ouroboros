@@ -187,7 +187,7 @@ describe("execTool", () => {
       ["user_profile_store", { fields: "{\"legalName\":{\"first\":\"Wrong\",\"last\":\"Referent\"}}" }],
       ["send_message", { friendId: "friend-1", channel: "bluebubbles", content: "wrong referent" }],
       ["coding_spawn", { runner: "codex", workdir: "/mock/repo", prompt: "wrong referent", taskRef: "wrong" }],
-      ["stripe_create_card", { type: "single_use", spend_limit: "500", currency: "usd" }],
+      ["stripe_create_card", { type: "single_use", spend_limit: "500", currency: "usd", merchant_categories: "travel" }],
       ["flight_book", { offer_id: "off_123", amount: "100", currency: "usd" }],
       ["mail_send", { draft_id: "draft_123", reason: "wrong referent" }],
       ["await_condition", { name: "wrong", condition: "wrong referent", cadence: "5m" }],

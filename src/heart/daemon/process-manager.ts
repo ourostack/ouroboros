@@ -20,6 +20,7 @@ export interface DaemonManagedAgent {
   channel: string
   autoStart: boolean
   args?: string[]
+  getArgs?: () => string[]
   env?: Record<string, string>
   getRuntimeCredentialBootstrap?: () => RuntimeCredentialBootstrap | null
 }
@@ -386,7 +387,8 @@ export class DaemonProcessManager {
         return
       }
 
-      const args = [entryScript, "--agent", state.config.agentArg ?? agent, ...(state.config.args ?? [])]
+      const agentArgs = state.config.getArgs?.() ?? state.config.args ?? []
+      const args = [entryScript, "--agent", state.config.agentArg ?? agent, ...agentArgs]
       const child = this.spawnFn("node", args, {
         cwd: runCwd,
         env: state.config.env ? { ...process.env, ...state.config.env } : process.env,

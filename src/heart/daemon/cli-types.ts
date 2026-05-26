@@ -22,7 +22,7 @@ import type { VaultItemCompatibilityAlias, VaultItemTemplate } from "./vault-ite
 
 export type RuntimeConfigScope = "agent" | "machine"
 export type RuntimeConfigStatusScope = RuntimeConfigScope | "all"
-export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice"
+export type ConnectTarget = "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a"
 export type DnsWorkflowAction = "backup" | "plan" | "apply" | "verify" | "rollback" | "certificate"
 
 export type OuroCliCommand =
@@ -67,6 +67,9 @@ export type OuroCliCommand =
   | { kind: "friend.update"; friendId: string; trustLevel: TrustLevel; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("../../mind/friends/types").IdentityProvider; externalId: string }
+  | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
+  | { kind: "a2a.onboard"; agent?: string; cardUrl: string; trustLevel?: TrustLevel; name?: string }
+  | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
@@ -218,6 +221,7 @@ export interface DiscoveredCredential {
 
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
+export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 export type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 export type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>

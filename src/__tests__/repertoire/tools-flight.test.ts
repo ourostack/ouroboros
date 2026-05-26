@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import * as fs from "node:fs"
+import * as path from "node:path"
 
 // Track nerves events
-const nervesEvents: Array<Record<string, unknown>> = []
+const nervesEvents = vi.hoisted((): Array<Record<string, unknown>> => [])
 vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn((event: Record<string, unknown>) => {
     nervesEvents.push(event)
@@ -36,7 +38,22 @@ vi.mock("../../repertoire/credential-access", () => ({
 }))
 
 import { flightToolDefinitions, resetDuffelClient } from "../../repertoire/tools-flight"
+import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
+import {
+  commerceConfirmationMessage,
+  confirmCommercePreview,
+  createCommercePreview,
+  readCommerceRecord,
+  reserveCommerceAuthority,
+} from "../../commerce/store"
 import type { ToolContext } from "../../repertoire/tools-base"
+
+let tmp: TmpBundleHandle | null = null
+
+afterEach(() => {
+  tmp?.cleanup()
+  tmp = null
+})
 
 function findTool(name: string) {
   const def = flightToolDefinitions.find((d) => d.tool.function.name === name)
@@ -54,6 +71,35 @@ const friendCtx: ToolContext = {
   context: {
     friend: { id: "f-1", name: "Friend", trustLevel: "friend" },
   } as any,
+}
+
+function reserveFlightAuthority(input: { agentRoot: string; toolName: "flight_hold" | "flight_book"; amount: number; offerId: string }) {
+  const preview = createCommercePreview({
+    agentRoot: input.agentRoot,
+    friendId: "f-1",
+    merchant: "Duffel",
+    amount: input.amount,
+    currency: "usd",
+    allowedTools: [input.toolName],
+    constraints: { offer_id: input.offerId },
+    reason: "Approved flight action",
+  })
+  confirmCommercePreview({
+    agentRoot: input.agentRoot,
+    checkoutId: preview.id,
+    digest: preview.digest,
+    confirmation: "CONFIRM_PURCHASE",
+    friendId: "f-1",
+    currentUserMessage: commerceConfirmationMessage(preview),
+  })
+  const reserved = reserveCommerceAuthority({
+    agentRoot: input.agentRoot,
+    toolName: input.toolName,
+    args: { offer_id: input.offerId, amount: String(input.amount), currency: "usd" },
+    friendId: "f-1",
+  })
+  if (!reserved.ok) throw new Error("expected reservation")
+  return { preview, reserved }
 }
 
 describe("flightToolDefinitions", () => {
@@ -96,19 +142,79 @@ describe("flight_hold handler", () => {
   })
 
   it("returns hold acknowledgment for family trust", async () => {
-    const result = await tool.handler({ offer_id: "off_123" }, familyCtx)
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    }, familyCtx)
     const parsed = JSON.parse(result)
     expect(parsed.status).toBe("hold_requested")
     expect(parsed.offerId).toBe("off_123")
+    expect(parsed.amount).toBe(25)
+    expect(parsed.currency).toBe("usd")
+  })
+
+  it("reports a reserved-commerce attempt error for missing hold reservation state", async () => {
+    tmp = createTmpBundle({ agentName: "flight-hold-commerce-consume-error" })
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: "missing", reservationToken: "missing" },
+    })
+    expect(result).toContain("commerce authority attempt error")
+  })
+
+  it("consumes reserved commerce authority for successful holds", async () => {
+    tmp = createTmpBundle({ agentName: "flight-hold-commerce-success" })
+    const { preview, reserved } = reserveFlightAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "flight_hold",
+      amount: 25,
+      offerId: "off_123",
+    })
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: reserved.checkoutId, reservationToken: reserved.reservationToken },
+    })
+    expect(JSON.parse(result).status).toBe("hold_requested")
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("consumed")
+  })
+
+  it("rejects invalid exact hold amounts", async () => {
+    await expect(tool.handler({
+      offer_id: "off_123",
+      amount: "25usd",
+      currency: "usd",
+    }, familyCtx)).rejects.toThrow("exact decimal")
   })
 
   it("requires family trust level", async () => {
-    const result = await tool.handler({ offer_id: "off_123" }, friendCtx)
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    }, friendCtx)
     expect(result).toContain("family")
   })
 
   it("returns error when no friend context", async () => {
-    const result = await tool.handler({ offer_id: "off_123" })
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "25",
+      currency: "usd",
+      commerce_authority: "commerce:checkout:digest",
+    })
     expect(result).toContain("no friend context")
   })
 })
@@ -235,6 +341,136 @@ describe("flight_book handler", () => {
     }, familyCtx)
 
     expect(result).toContain("profile")
+  })
+
+  it("reports a reserved-commerce attempt error before booking if reservation state is missing", async () => {
+    mockGetUserProfileField.mockImplementation((_id: string, field: string) => {
+      if (field === "legalName") return Promise.resolve({ first: "John", last: "Doe" })
+      if (field === "dateOfBirth") return Promise.resolve("1990-01-15")
+      return Promise.resolve(undefined)
+    })
+    mockCreateOrder.mockResolvedValue({
+      orderId: "ord_123",
+      bookingReference: "ABC123",
+      totalAmount: "350.00",
+      totalCurrency: "USD",
+    })
+    tmp = createTmpBundle({ agentName: "flight-book-commerce-consume-error" })
+
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "350",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: "missing", reservationToken: "missing" },
+    })
+
+    expect(result).toContain("commerce authority attempt error")
+    expect(mockCreateOrder).not.toHaveBeenCalled()
+  })
+
+  it("consumes reserved commerce authority for successful bookings", async () => {
+    tmp = createTmpBundle({ agentName: "flight-book-commerce-success" })
+    const { preview, reserved } = reserveFlightAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "flight_book",
+      amount: 350,
+      offerId: "off_123",
+    })
+    mockGetUserProfileField.mockImplementation((_id: string, field: string) => {
+      if (field === "legalName") return Promise.resolve({ first: "John", last: "Doe" })
+      if (field === "dateOfBirth") return Promise.resolve("1990-01-15")
+      return Promise.resolve(undefined)
+    })
+    mockCreateOrder.mockResolvedValue({
+      orderId: "ord_123",
+      bookingReference: "ABC123",
+      totalAmount: "350.00",
+      totalCurrency: "USD",
+    })
+
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "350",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: reserved.checkoutId, reservationToken: reserved.reservationToken },
+    })
+
+    expect(result).toContain("ord_123")
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("consumed")
+  })
+
+  it("leaves attempted commerce authority when provider total differs from approval", async () => {
+    tmp = createTmpBundle({ agentName: "flight-book-total-mismatch" })
+    const { preview, reserved } = reserveFlightAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "flight_book",
+      amount: 350,
+      offerId: "off_123",
+    })
+    mockGetUserProfileField.mockImplementation((_id: string, field: string) => {
+      if (field === "legalName") return Promise.resolve({ first: "John", last: "Doe" })
+      return Promise.resolve(undefined)
+    })
+    mockCreateOrder.mockResolvedValue({
+      orderId: "ord_123",
+      bookingReference: "ABC123",
+      totalAmount: "351.00",
+      totalCurrency: "USD",
+    })
+
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "350",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: reserved.checkoutId, reservationToken: reserved.reservationToken },
+    })
+
+    expect(result).toContain("does not match approved")
+    expect(readCommerceRecord(tmp.agentRoot, preview.id)?.status).toBe("attempted")
+  })
+
+  it("reports a consume error after booking if reservation state disappears post-attempt", async () => {
+    tmp = createTmpBundle({ agentName: "flight-book-post-attempt-consume-error" })
+    const { preview, reserved } = reserveFlightAuthority({
+      agentRoot: tmp.agentRoot,
+      toolName: "flight_book",
+      amount: 350,
+      offerId: "off_123",
+    })
+    mockGetUserProfileField.mockImplementation((_id: string, field: string) => {
+      if (field === "legalName") return Promise.resolve({ first: "John", last: "Doe" })
+      return Promise.resolve(undefined)
+    })
+    mockCreateOrder.mockImplementation(async () => {
+      fs.unlinkSync(path.join(tmp!.agentRoot, "state", "commerce", "checkouts", `${preview.id}.json`))
+      return {
+        orderId: "ord_123",
+        bookingReference: "ABC123",
+        totalAmount: "350.00",
+        totalCurrency: "USD",
+      }
+    })
+
+    const result = await tool.handler({
+      offer_id: "off_123",
+      amount: "350",
+      currency: "usd",
+    }, {
+      ...familyCtx,
+      agentRoot: tmp.agentRoot,
+      commerceAuthority: { checkoutId: reserved.checkoutId, reservationToken: reserved.reservationToken },
+    })
+
+    expect(result).toContain("commerce authority consume error")
   })
 
   it("emits nerves events", async () => {

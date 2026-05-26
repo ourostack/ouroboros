@@ -189,6 +189,16 @@ function providerLaneForChannel(channel: Channel): ProviderLane {
   return channel === "inner" ? "inner" : "outward"
 }
 
+function latestUserAuthoredText(messages: ChatCompletionMessageParam[], continuityIngressTexts: string[] | undefined): string | undefined {
+  const ingress = continuityIngressTexts?.map((entry) => entry.trim()).filter(Boolean)
+  if (ingress?.length) return ingress[ingress.length - 1]
+  const userMessages = messages
+    .filter((message) => message.role === "user")
+    .map((message) => typeof message.content === "string" ? message.content.trim() : "")
+    .filter(Boolean)
+  return userMessages[userMessages.length - 1]
+}
+
 function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
   const agentRoot = getAgentRoot()
   const { config: agentConfig } = readAgentConfigForAgent(agentName, path.dirname(agentRoot))
@@ -815,6 +825,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 5: runAgent
   const existingToolContext = input.runAgentOptions?.toolContext
+  const currentUserMessage = existingToolContext?.currentUserMessage
+    ?? latestUserAuthoredText(input.messages, input.continuityIngressTexts)
   const runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     ...(orientationFrame ? { orientationFrame } : {}),
@@ -841,6 +853,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
       signin: async () => undefined,
       ...existingToolContext,
+      ...(currentUserMessage ? { currentUserMessage } : {}),
       context: resolvedContext,
       friendStore: input.friendStore,
       currentSession,

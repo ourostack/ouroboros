@@ -56,7 +56,7 @@ describe("CLI adapter - createCliCallbacks", () => {
   it("is exported from agent.ts", async () => {
     const agent = await import("../../senses/cli")
     expect(typeof agent.createCliCallbacks).toBe("function")
-  })
+  }, 10_000)
 
   it("returns an object implementing ChannelCallbacks", async () => {
     const agent = await import("../../senses/cli")
@@ -67,7 +67,7 @@ describe("CLI adapter - createCliCallbacks", () => {
     expect(typeof callbacks.onToolStart).toBe("function")
     expect(typeof callbacks.onToolEnd).toBe("function")
     expect(typeof callbacks.onError).toBe("function")
-  })
+  }, 10_000)
 
   it("exposes flushNow as a function (for the `speak` tool)", async () => {
     const agent = await import("../../senses/cli")

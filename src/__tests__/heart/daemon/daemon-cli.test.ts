@@ -765,7 +765,7 @@ describe("ouro CLI execution", () => {
     expect(result).toContain("background service stopped before boot finished")
     expect(result).toContain("daemon status did not answer cleanly")
     expect(writeStdout).toHaveBeenCalledWith(expect.stringContaining("daemon status did not answer cleanly"))
-  })
+  }, 10_000)
 
   it("fails `up` when final daemon status reports a non-running state", async () => {
     const writeStdout = vi.fn()

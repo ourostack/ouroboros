@@ -61,6 +61,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ agent: "slugger", sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ agent: "slugger", sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
 
     await manager.startAutoStartSenses()
@@ -88,8 +89,256 @@ describe("daemon sense manager", () => {
 
     manager.triggerAutoStartSenses()
 
-    expect(processManager.triggerAutoStartAgents).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(processManager.triggerAutoStartAgents).toHaveBeenCalledTimes(1)
+    })
     expect(processManager.startAutoStartAgents).not.toHaveBeenCalled()
+  })
+
+  it("reports enabled A2A as a daemon-managed ready sense", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      a2a: {
+        port: 19999,
+        path: "agent-a2a",
+        publicUrl: "https://agent.example",
+      },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "a2a",
+      status: "ready",
+      detail: "https://agent.example/agent-a2a",
+    }))
+  })
+
+  it("reports enabled A2A with default path and local port when no public URL is configured", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("slugger", {
+      a2a: { port: 19998 },
+    })
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      bundlesRoot,
+      processManager,
+    })
+
+    expect(manager.listSenseRows()).toContainEqual(expect.objectContaining({
+      agent: "slugger",
+      sense: "a2a",
+      status: "ready",
+      detail: ":19998 /a2a",
+    }))
+  })
+
+  it("builds A2A managed process args from defaults when machine config is missing or malformed", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-bundles-"))
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    writeAgentJson(bundlesRoot, "curie", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+    await cacheMachineRuntimeConfig("curie", { a2a: [] as unknown })
+    const processManagerCtor = vi.fn()
+
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(options: unknown) {
+          processManagerCtor(options)
+        }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+
+    const { defaultA2APort } = await import("../../../a2a/config")
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    new DaemonSenseManager({
+      agents: ["slugger", "curie"],
+      bundlesRoot,
+    })
+
+    const managedAgents = (processManagerCtor.mock.calls[0]?.[0] as {
+      agents: Array<{ name: string; args?: string[] }>
+    }).agents
+    expect(managedAgents.find((agent) => agent.name === "slugger:a2a")?.args)
+      .toEqual(["--port", String(defaultA2APort("slugger")), "--path", "/a2a"])
+    expect(managedAgents.find((agent) => agent.name === "curie:a2a")?.args)
+      .toEqual(["--port", String(defaultA2APort("curie")), "--path", "/a2a"])
+  })
+
+  it("refreshes A2A machine runtime config before trigger autostart computes process args", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-home-"))
+    const bundlesRoot = path.join(homeRoot, "AgentBundles")
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        a2a: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    let machineRuntimeConfig: Record<string, unknown> = {}
+    const triggerArgs = vi.fn()
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
+      machineRuntimeConfig = {
+        a2a: {
+          host: "127.0.0.1",
+          port: 20001,
+          path: "fresh-a2a",
+          publicUrl: "https://fresh.example",
+        },
+      }
+      return {
+        ok: true as const,
+        itemPath: "vault:slugger:runtime/machines/machine_test/config",
+        config: machineRuntimeConfig,
+        revision: "runtime_test",
+        updatedAt: new Date(0).toISOString(),
+      }
+    })
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => homeRoot,
+      }
+    })
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        constructor(private readonly options: unknown) {}
+        startAutoStartAgents = vi.fn(async () => undefined)
+        triggerAutoStartAgents = vi.fn(() => {
+          const a2aAgent = (this.options as {
+            agents: Array<{ name: string; args?: string[]; getArgs?: () => string[] }>
+          }).agents.find((agent) => agent.name === "slugger:a2a")
+          triggerArgs(a2aAgent?.getArgs?.() ?? a2aAgent?.args)
+        })
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: {},
+        revision: "runtime_cached",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      readMachineRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+        config: machineRuntimeConfig,
+        revision: "machine_cached",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(async (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: {},
+        revision: "runtime_refreshed",
+        updatedAt: new Date(0).toISOString(),
+      })),
+      refreshMachineRuntimeCredentialConfig,
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+    })
+
+    manager.triggerAutoStartSenses()
+
+    await vi.waitFor(() => {
+      expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalled()
+      expect(triggerArgs).toHaveBeenCalledWith([
+        "--port",
+        "20001",
+        "--host",
+        "127.0.0.1",
+        "--path",
+        "/fresh-a2a",
+        "--base-url",
+        "https://fresh.example",
+      ])
+    })
   })
 
   it("restarts managed sense workers through the process manager when available", async () => {
@@ -318,11 +567,84 @@ describe("daemon sense manager", () => {
 
     first.triggerAutoStartSenses()
     second.triggerAutoStartSenses()
-    await Promise.resolve()
-    await Promise.resolve()
 
-    expect(firstProcessManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
-    expect(secondProcessManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(firstProcessManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+      expect(secondProcessManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it("contains trigger-time sense config refresh failures and still attempts autostart", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sense-manager-home-"))
+    const bundlesRoot = path.join(homeRoot, "AgentBundles")
+    writeAgentJson(bundlesRoot, "slugger", {
+      version: 1,
+      enabled: true,
+      provider: "anthropic",
+      senses: {
+        cli: { enabled: true },
+        mail: { enabled: true },
+      },
+      phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
+    })
+
+    const emitNervesEvent = vi.fn()
+    const processManager = {
+      startAutoStartAgents: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      listAgentSnapshots: vi.fn(() => []),
+    }
+
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return {
+        ...actual,
+        homedir: () => homeRoot,
+      }
+    })
+    vi.doMock("../../../nerves/runtime", () => ({
+      emitNervesEvent,
+    }))
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: (agentName: string) => ({
+        ok: true,
+        itemPath: `vault:${agentName}:runtime/config`,
+        config: {
+          mailroom: {
+            mailboxAddress: "slugger@ouro.bot",
+            privateKeys: { mail_slugger_primary: "secret" },
+          },
+        },
+        revision: "runtime_cached",
+        updatedAt: new Date(0).toISOString(),
+      }),
+      readMachineRuntimeCredentialConfig: (agentName: string) => ({
+        ok: false,
+        reason: "missing",
+        itemPath: `vault:${agentName}:runtime/machines/machine_test/config`,
+        error: "missing",
+      }),
+      refreshRuntimeCredentialConfig: vi.fn(async () => {
+        throw new Error("refresh offline")
+      }),
+      refreshMachineRuntimeCredentialConfig: vi.fn(),
+    }))
+
+    const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+    const manager = new DaemonSenseManager({
+      agents: ["slugger"],
+      processManager,
+    })
+
+    manager.triggerAutoStartSenses()
+
+    await vi.waitFor(() => {
+      expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "channel.daemon_sense_autostart_error",
+        message: "sense config refresh failed",
+      }))
+      expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
+    })
   })
 
   it("reports needs_config for Teams and not_attached for local BlueBubbles when vault runtime/config is missing", async () => {
@@ -357,6 +679,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "not_attached", detail: "not attached on this machine" }),
       expect.objectContaining({ sense: "mail", status: "needs_config", detail: "missing vault runtime/config (slugger)" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -497,6 +820,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "running", detail: ":18888 /hooks/bb" }),
       expect.objectContaining({ sense: "mail", status: "ready", detail: "slugger@ouro.bot" }),
       expect.objectContaining({ sense: "voice", status: "disabled", detail: "not enabled in agent.json" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -544,6 +868,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "mail", status: "disabled", detail: "not enabled in agent.json" }),
       expect.objectContaining({ sense: "voice", status: "running", detail: "local Whisper.cpp STT + ElevenLabs TTS" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -900,6 +1225,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -975,6 +1301,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1048,6 +1375,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1123,6 +1451,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1336,6 +1665,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1411,6 +1741,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1484,6 +1815,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1558,6 +1890,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1633,6 +1966,7 @@ describe("daemon sense manager", () => {
         status: "disabled",
         detail: "not enabled in agent.json",
       }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -1648,6 +1982,7 @@ describe("daemon sense manager", () => {
         teams: { enabled: true },
         bluebubbles: { enabled: true },
         mail: { enabled: true },
+        a2a: { enabled: true },
       },
       phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] },
     })
@@ -1679,6 +2014,12 @@ describe("daemon sense manager", () => {
       bluebubbles: {
         serverUrl: "http://localhost:1234",
         password: "pw",
+      },
+      a2a: {
+        host: "127.0.0.1",
+        port: 19991,
+        path: "agent-a2a",
+        publicUrl: "https://agent.example",
       },
     })
     await cacheProviderCredentials("slugger")
@@ -1715,6 +2056,12 @@ describe("daemon sense manager", () => {
           expect.objectContaining({ name: "slugger:teams", agentArg: "slugger", entry: "senses/teams-entry.js" }),
           expect.objectContaining({ name: "slugger:bluebubbles", agentArg: "slugger", entry: "senses/bluebubbles/entry.js" }),
           expect.objectContaining({ name: "slugger:mail", agentArg: "slugger", entry: "senses/mail-entry.js" }),
+          expect.objectContaining({
+            name: "slugger:a2a",
+            agentArg: "slugger",
+            entry: "senses/a2a-entry.js",
+            args: ["--port", "19991", "--host", "127.0.0.1", "--path", "/agent-a2a", "--base-url", "https://agent.example"],
+          }),
         ],
       }),
     )
@@ -1740,6 +2087,12 @@ describe("daemon sense manager", () => {
         bluebubbles: {
           serverUrl: "http://localhost:1234",
           password: "pw",
+        },
+        a2a: {
+          host: "127.0.0.1",
+          port: 19991,
+          path: "agent-a2a",
+          publicUrl: "https://agent.example",
         },
       },
       machineId: expect.stringMatching(/^machine_/),
@@ -2547,6 +2900,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
     expect(manager.listSenseRows().filter((row) => row.agent === "ouroboros")).toEqual([
       expect.objectContaining({ sense: "cli", status: "interactive" }),
@@ -2554,6 +2908,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 
@@ -2778,6 +3133,7 @@ describe("daemon sense manager", () => {
       expect.objectContaining({ sense: "bluebubbles", status: "disabled" }),
       expect.objectContaining({ sense: "mail", status: "disabled" }),
       expect.objectContaining({ sense: "voice", status: "disabled" }),
+      expect.objectContaining({ sense: "a2a", status: "disabled", detail: "not enabled in agent.json" }),
     ])
   })
 })

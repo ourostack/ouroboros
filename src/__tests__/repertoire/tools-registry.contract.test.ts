@@ -235,7 +235,16 @@ describe("tool registry contract", () => {
     // Added in orientation substrate: 1 turn-frame inspection tool
     expect(names).toContain("orientation_get");
 
-    // Exact count: 100 tools (92 prior + 8 evolution loop tools)
-    expect(names).toHaveLength(100);
+    // Added in A2A + commerce substrate: 3 A2A tools and 4 commerce authority tools
+    expect(names).toContain("a2a_list_peers");
+    expect(names).toContain("a2a_send_message");
+    expect(names).toContain("a2a_get_task");
+    expect(names).toContain("commerce_checkout_preview");
+    expect(names).toContain("commerce_checkout_commit");
+    expect(names).toContain("commerce_receipt_get");
+    expect(names).toContain("commerce_access_log");
+
+    // Exact count: 107 tools
+    expect(names).toHaveLength(107);
   });
 });

@@ -1,6 +1,7 @@
 import type { ToolDefinition, ToolContext } from "./tools-base"
 import { createStripeClient, type StripeClient } from "./stripe-client"
 import { emitNervesEvent } from "../nerves/runtime"
+import { consumeReservedCommerceAuthority, markReservedCommerceAuthorityAttempted } from "../commerce/store"
 
 // Lazy-initialized Stripe client singleton
 let _stripeClient: StripeClient | null = null
@@ -21,6 +22,36 @@ function requireFamilyContext(ctx?: ToolContext): { friendId: string } | string 
   return { friendId: ctx.context.friend.id }
 }
 
+function parseExactSpendLimit(raw: string): number {
+  const value = raw.trim()
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) throw new Error("spend_limit must be an exact decimal with at most two places")
+  return Number(value)
+}
+
+function consumeReservedCommerce(ctx: ToolContext | undefined, toolName: string): string | null {
+  if (!ctx?.commerceAuthority || !ctx.agentRoot) return null
+  const result = consumeReservedCommerceAuthority({
+    agentRoot: ctx.agentRoot,
+    checkoutId: ctx.commerceAuthority.checkoutId,
+    reservationToken: ctx.commerceAuthority.reservationToken,
+    toolName,
+    friendId: ctx.context?.friend?.id,
+  })
+  return result.ok ? null : `commerce authority consume error: ${result.reason}`
+}
+
+function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): string | null {
+  if (!ctx?.commerceAuthority || !ctx.agentRoot) return null
+  const result = markReservedCommerceAuthorityAttempted({
+    agentRoot: ctx.agentRoot,
+    checkoutId: ctx.commerceAuthority.checkoutId,
+    reservationToken: ctx.commerceAuthority.reservationToken,
+    toolName,
+    friendId: ctx.context?.friend?.id,
+  })
+  return result.ok ? null : `commerce authority attempt error: ${result.reason}`
+}
+
 export const stripeToolDefinitions: ToolDefinition[] = [
   {
     tool: {
@@ -28,7 +59,7 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       function: {
         name: "stripe_create_card",
         description:
-          "Create a virtual card for a transaction. Returns card ID and last 4 digits (never the full card number). Requires family trust level.",
+          "Create a virtual card for an approved transaction. Returns card ID and last 4 digits (never the full card number). Requires family trust level and a matching confirmed commerce checkout.",
         parameters: {
           type: "object",
           properties: {
@@ -47,10 +78,14 @@ export const stripeToolDefinitions: ToolDefinition[] = [
             },
             merchant_categories: {
               type: "string",
-              description: "Comma-separated allowed merchant categories (optional)",
+              description: "Comma-separated allowed merchant categories from the confirmed commerce constraints.",
+            },
+            commerce_authority: {
+              type: "string",
+              description: "Optional explicit authority token for external/manual flows; normally omit so Ouro consumes the matching confirmed checkout without exposing a bearer token.",
             },
           },
-          required: ["type", "spend_limit", "currency"],
+          required: ["type", "spend_limit", "currency", "merchant_categories"],
         },
       },
     },
@@ -66,17 +101,22 @@ export const stripeToolDefinitions: ToolDefinition[] = [
       if (typeof guard === "string") return guard
 
       try {
-        const client = await getStripeClient()
-        const categories = args.merchant_categories
-          ? args.merchant_categories.split(",").map((c: string) => c.trim())
-          : undefined
+        const categories = args.merchant_categories.split(",").map((c: string) => c.trim()).filter(Boolean)
+        if (categories.length === 0) throw new Error("merchant_categories is required")
+        const spendLimit = parseExactSpendLimit(args.spend_limit)
+        const attemptError = markCommerceAttempted(ctx, "stripe_create_card")
+        if (attemptError) return attemptError
 
+        const client = await getStripeClient()
         const card = await client.createVirtualCard({
           type: args.type as "single_use" | "persistent",
-          spendLimit: parseFloat(args.spend_limit),
+          spendLimit,
           currency: args.currency,
           merchantCategories: categories,
         })
+
+        const consumeError = consumeReservedCommerce(ctx, "stripe_create_card")
+        if (consumeError) return consumeError
 
         return JSON.stringify({
           cardId: card.cardId,
