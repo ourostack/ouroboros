@@ -18,7 +18,7 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -33,6 +33,7 @@ export interface AgentSensesConfig {
   mail: AgentSenseConfig
   voice: AgentSenseConfig
   a2a: AgentSenseConfig
+  workbench: AgentSenseConfig
 }
 
 export interface McpServerConfig {
@@ -179,6 +180,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   mail: { enabled: false },
   voice: { enabled: false },
   a2a: { enabled: false },
+  workbench: { enabled: false },
 }
 
 export function normalizeSenses(value: unknown, configFile: string): AgentSensesConfig {
@@ -189,6 +191,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     mail: { ...DEFAULT_AGENT_SENSES.mail },
     voice: { ...DEFAULT_AGENT_SENSES.voice },
     a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+    workbench: { ...DEFAULT_AGENT_SENSES.workbench },
   }
 
   if (value === undefined) {
@@ -206,7 +209,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -253,6 +256,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       mail: { ...DEFAULT_AGENT_SENSES.mail },
       voice: { ...DEFAULT_AGENT_SENSES.voice },
       a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+      workbench: { ...DEFAULT_AGENT_SENSES.workbench },
     },
     phrases: {
       thinking: [...DEFAULT_AGENT_PHRASES.thinking],

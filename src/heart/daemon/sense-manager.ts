@@ -111,6 +111,7 @@ function defaultSenses(): AgentSensesConfig {
     mail: { ...DEFAULT_AGENT_SENSES.mail },
     voice: { ...DEFAULT_AGENT_SENSES.voice },
     a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+    workbench: { ...DEFAULT_AGENT_SENSES.workbench },
   }
 }
 
@@ -139,7 +140,7 @@ function readAgentSenses(agentJsonPath: string): AgentSensesConfig {
     return defaults
   }
 
-  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a"] as SenseName[]) {
+  for (const sense of ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"] as SenseName[]) {
     const rawSense = (rawSenses as Record<string, unknown>)[sense]
     if (!rawSense || typeof rawSense !== "object" || Array.isArray(rawSense)) {
       continue
@@ -217,6 +218,7 @@ function senseFactsFromRuntimeConfig(
     mail: { configured: false, detail: "not enabled in agent.json" },
     voice: { configured: false, detail: "not enabled in agent.json" },
     a2a: { configured: false, detail: "not enabled in agent.json" },
+    workbench: { configured: false, detail: "not enabled in agent.json" },
   }
 
   const payload = runtimeConfig.ok ? runtimeConfig.config : {}
@@ -375,6 +377,13 @@ function senseFactsFromRuntimeConfig(
     }
   }
 
+  if (senses.workbench.enabled) {
+    base.workbench = {
+      configured: true,
+      detail: "native Workbench local control room; MCP registration is stored in agent.json",
+    }
+  }
+
   return base
 }
 
@@ -391,6 +400,9 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   /* v8 ignore next -- A2A currently has no credential-gated not-configured state; kept for future repair copy symmetry @preserve */
   if (sense === "a2a") {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
+  }
+  if (sense === "workbench") {
+    return `Agent-runnable: run 'ouro connect workbench --agent ${agent}' to enable senses.workbench.enabled and mcpServers.ouro_workbench in agent.json.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }
@@ -412,7 +424,7 @@ function runtimeInfoFor(status: string): SenseRuntimeInfo {
   return { runtime: "error" }
 }
 
-function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
+function managedSenseEntry(sense: Exclude<SenseName, "cli" | "workbench">): string {
   if (sense === "teams") return "senses/teams-entry.js"
   if (sense === "bluebubbles") return "senses/bluebubbles/entry.js"
   if (sense === "voice") return "senses/voice-entry.js"
@@ -420,7 +432,7 @@ function managedSenseEntry(sense: Exclude<SenseName, "cli">): string {
   return "senses/mail-entry.js"
 }
 
-function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli">): {
+function runtimeCredentialBootstrapFor(agent: string, sense: Exclude<SenseName, "cli" | "workbench">): {
   agentName: string
   runtimeConfig?: RuntimeCredentialConfig
   machineRuntimeConfig?: RuntimeCredentialConfig
@@ -632,7 +644,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     )
 
     const managedSenseAgents = [...this.contexts.entries()].flatMap(([agent, context]) => {
-      return (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli">[])
+      return (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
         .map((sense) => ({
           name: `${agent}:${sense}`,
@@ -733,7 +745,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
   private async refreshEnabledSenseConfigs(): Promise<void> {
     const refreshes = [...this.contexts.entries()].map(async ([agent, context]) => {
-      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli">[])
+      const enabledManagedSenses = (["teams", "bluebubbles", "mail", "voice", "a2a"] as Exclude<SenseName, "cli" | "workbench">[])
         .filter((sense) => context.senses[sense].enabled)
       /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
       if (enabledManagedSenses.length === 0) return
@@ -894,6 +906,9 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
         a2a: {
           configured: context.facts.a2a.configured,
           ...(runtime.get(agent)?.a2a ?? {}),
+        },
+        workbench: {
+          configured: context.facts.workbench.configured,
         },
       }
       const inventory = getSenseInventory({ senses: context.senses }, runtimeInfo)

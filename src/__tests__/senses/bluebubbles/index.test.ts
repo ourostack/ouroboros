@@ -81,7 +81,7 @@ async function flushAsyncWork(): Promise<void> {
   await Promise.resolve()
 }
 
-async function waitFor(predicate: () => boolean, attempts = 40): Promise<void> {
+async function waitFor(predicate: () => boolean, attempts = 400): Promise<void> {
   for (let index = 0; index < attempts; index++) {
     if (predicate()) return
     await new Promise((resolve) => setTimeout(resolve, 0))

@@ -95,7 +95,7 @@ export function usage(): string {
     "  ouro -v|--version",
     "  ouro auth [--agent <name>] [--provider <provider>]",
     "  ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
-    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
+    "  ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
     "  ouro mail import-mbox --file <path> [--owner-email <email>] [--source <label>] [--agent <name>] [--foreground]",
     "  ouro mail backfill-indexes [--agent <name>] [--foreground]",
     "  ouro auth verify [--agent <name>] [--provider <provider>]",
@@ -755,7 +755,7 @@ function parseVaultConfigCommand(args: string[]): OuroCliCommand {
   return { kind: "vault.config.set", ...(agent ? { agent } : {}), key, ...(value !== undefined ? { value } : {}), ...(scope ? { scope } : {}) }
 }
 
-function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | undefined {
+function normalizeConnectTarget(value: string | undefined): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench" | undefined {
   if (!value) return undefined
   if (value === "providers" || value === "provider" || value === "auth") return "providers"
   if (value === "perplexity" || value === "perplexity-search") return "perplexity"
@@ -765,7 +765,8 @@ function normalizeConnectTarget(value: string | undefined): "providers" | "perpl
   if (value === "mail" || value === "email" || value === "mailroom") return "mail"
   if (value === "voice" || value === "audio" || value === "speech") return "voice"
   if (value === "a2a" || value === "agent2agent" || value === "agent-to-agent") return "a2a"
-  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>]")
+  if (value === "workbench" || value === "ouro-workbench" || value === "terminal-workbench") return "workbench"
+  throw new Error("Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench] [--agent <name>]")
 }
 
 interface MailSourceFlagParse {
@@ -829,7 +830,7 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
 }
 
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
   const { agent, rest: afterAgent } = extractAgentFlag(args)
   const mailFlags = extractMailSourceFlags(afterAgent, usageText)
   if (mailFlags.rest.length > 1) throw new Error(usageText)

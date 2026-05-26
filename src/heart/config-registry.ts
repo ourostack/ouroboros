@@ -201,6 +201,15 @@ const registryData: ConfigRegistryEntry[] = [
     validate: validateObject({ enabled: validateBoolean }),
   },
   {
+    path: "senses.workbench",
+    tier: "self",
+    description: "Workbench sense configuration. Controls whether the native terminal-agent control room is enabled for this agent.",
+    default: { enabled: false },
+    effects: "Enables the local Ouro Workbench sense. Workbench MCP registration remains in mcpServers.ouro_workbench.",
+    topics: ["senses", "workbench", "mcp", "terminal", "channels", "interface"],
+    validate: validateObject({ enabled: validateBoolean }),
+  },
+  {
     path: "sync.enabled",
     tier: "self",
     description: "Whether git-based bundle sync is enabled.",

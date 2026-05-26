@@ -215,6 +215,7 @@ describe("buildDefaultAgentTemplate", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        workbench: { enabled: false },
       },
     })
     expect((template as any).name).toBeUndefined()
@@ -367,6 +368,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      workbench: { enabled: false },
     })
   })
 
@@ -392,6 +394,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      workbench: { enabled: false },
     })
   })
 
@@ -420,6 +423,7 @@ describe("loadAgentConfig", () => {
       mail: { enabled: false },
       voice: { enabled: false },
       a2a: { enabled: false },
+      workbench: { enabled: false },
     })
   })
 

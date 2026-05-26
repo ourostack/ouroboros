@@ -10,7 +10,7 @@ vi.mock("../../nerves/runtime", () => ({
 const mockGetAgentRoot = vi.fn().mockReturnValue("/mock/agent-root")
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({
-  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false } },
+  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false }, workbench: { enabled: false } },
 })
 
 vi.mock("../../heart/identity", () => ({
@@ -458,7 +458,8 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true }, a2a: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true }, a2a: { enabled: true }, workbench: { enabled: true } },
+      mcpServers: { ouro_workbench: { command: "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP" } },
     })
     mockLoadConfig.mockReturnValue({
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
@@ -476,6 +477,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: ready",
       "- A2A: ready",
+      "- Workbench: ready",
     ])
   })
 
@@ -500,6 +502,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 
@@ -540,6 +543,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 
@@ -569,6 +573,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 
@@ -598,6 +603,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 
@@ -615,6 +621,7 @@ describe("buildTurnContext", () => {
       "- Mail: needs_config",
       "- Voice: needs_config",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 
@@ -629,6 +636,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Workbench: disabled",
     ])
   })
 

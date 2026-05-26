@@ -3062,7 +3062,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "workbench", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3079,18 +3079,27 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     mail: senses.mail ?? { enabled: false },
     voice: senses.voice ?? { enabled: false },
     a2a: senses.a2a ?? { enabled: false },
+    workbench: senses.workbench ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
 }
 
-const CONNECT_MENU_PROMPT = "Choose [1-8] or type a name: "
+const CONNECT_MENU_PROMPT = "Choose [1-9] or type a name: "
 
 function connectMenuIsTTY(deps: OuroCliDeps): boolean {
   return deps.isTTY ?? process.stdout.isTTY === true
 }
 
-function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnabled: boolean; blueBubblesEnabled: boolean; mailEnabled: boolean; voiceEnabled: boolean; a2aEnabled: boolean } {
+function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): {
+  teamsEnabled: boolean
+  blueBubblesEnabled: boolean
+  mailEnabled: boolean
+  voiceEnabled: boolean
+  a2aEnabled: boolean
+  workbenchEnabled: boolean
+  workbenchMcpCommand: string | null
+} {
   const configPath = path.join(providerCliAgentRoot({ agent }, deps), "agent.json")
   const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
     senses?: {
@@ -3099,15 +3108,60 @@ function readConnectBaySenseFlags(agent: string, deps: OuroCliDeps): { teamsEnab
       mail?: { enabled?: boolean }
       voice?: { enabled?: boolean }
       a2a?: { enabled?: boolean }
+      workbench?: { enabled?: boolean }
     }
+    mcpServers?: Record<string, { command?: unknown }>
   }
+  const workbenchCommand = parsed.mcpServers?.ouro_workbench?.command
   return {
     teamsEnabled: parsed.senses?.teams?.enabled === true,
     blueBubblesEnabled: parsed.senses?.bluebubbles?.enabled === true,
     mailEnabled: parsed.senses?.mail?.enabled === true,
     voiceEnabled: parsed.senses?.voice?.enabled === true,
     a2aEnabled: parsed.senses?.a2a?.enabled === true,
+    workbenchEnabled: parsed.senses?.workbench?.enabled === true,
+    workbenchMcpCommand: typeof workbenchCommand === "string" && workbenchCommand.trim().length > 0
+      ? workbenchCommand
+      : null,
   }
+}
+
+function defaultWorkbenchMcpCandidates(deps: OuroCliDeps): string[] {
+  const homeDir = deps.homeDir ?? os.homedir()
+  return [
+    path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP"),
+    path.join("/Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP"),
+  ]
+}
+
+function cliPathExists(deps: OuroCliDeps, filePath: string | null | undefined): boolean {
+  return !!filePath && (deps.existsSync ?? fs.existsSync)(filePath)
+}
+
+function findInstalledWorkbenchMcp(deps: OuroCliDeps, preferred?: string | null): string | null {
+  const candidates = [
+    ...(preferred ? [preferred] : []),
+    ...defaultWorkbenchMcpCandidates(deps),
+  ]
+  return candidates.find((candidate) => cliPathExists(deps, candidate)) ?? null
+}
+
+function writeWorkbenchMcpRegistration(agent: string, executablePath: string, deps: OuroCliDeps): void {
+  const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
+  enableAgentSense(agent, "workbench", deps)
+
+  const nextRaw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
+  const mcpServers = nextRaw.mcpServers && typeof nextRaw.mcpServers === "object" && !Array.isArray(nextRaw.mcpServers)
+    ? nextRaw.mcpServers as Record<string, unknown>
+    : {}
+  nextRaw.mcpServers = {
+    ...mcpServers,
+    ouro_workbench: {
+      command: executablePath,
+      args: [],
+    },
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(nextRaw, null, 2)}\n`, "utf-8")
 }
 
 async function buildConnectMenu(
@@ -3141,7 +3195,15 @@ async function buildConnectMenu(
   const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
   onProgress?.("loading this machine's settings")
   const machineRuntime = await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { preserveCachedOnFailure: true })
-  const { teamsEnabled, blueBubblesEnabled, mailEnabled, voiceEnabled, a2aEnabled } = readConnectBaySenseFlags(agent, deps)
+  const {
+    teamsEnabled,
+    blueBubblesEnabled,
+    mailEnabled,
+    voiceEnabled,
+    a2aEnabled,
+    workbenchEnabled,
+    workbenchMcpCommand,
+  } = readConnectBaySenseFlags(agent, deps)
   const perplexityApiKey = runtimeConfig.ok
     ? readRuntimeConfigString(runtimeConfig.config, "integrations.perplexityApiKey")
     : null
@@ -3296,6 +3358,26 @@ async function buildConnectMenu(
       : "missing"
     : runtimeConfigReadStatus(runtimeConfig)
   const a2aStatus = a2aEnabled ? "ready" : "missing"
+  const installedWorkbenchMcp = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
+  const configuredWorkbenchMcpExists = cliPathExists(deps, workbenchMcpCommand)
+  const workbenchStatus: ConnectMenuEntry["status"] = workbenchEnabled && configuredWorkbenchMcpExists
+    ? "ready"
+    : workbenchEnabled || workbenchMcpCommand
+      ? "needs attention"
+      : installedWorkbenchMcp
+        ? "not attached"
+        : "missing"
+  const workbenchDetailLines = [
+    workbenchEnabled ? "senses.workbench.enabled = true" : "senses.workbench.enabled is not enabled",
+    workbenchMcpCommand
+      ? configuredWorkbenchMcpExists
+        ? `MCP command registered: ${workbenchMcpCommand}`
+        : `registered MCP command is missing: ${workbenchMcpCommand}`
+      : "mcpServers.ouro_workbench is not registered",
+    installedWorkbenchMcp
+      ? `OuroWorkbenchMCP found: ${installedWorkbenchMcp}`
+      : "OuroWorkbenchMCP not found in ~/Applications or /Applications",
+  ]
 
   const entries: ConnectMenuEntry[] = [
     {
@@ -3424,6 +3506,20 @@ async function buildConnectMenu(
         section: "Portable",
         status: a2aStatus,
       }) ? `ouro connect a2a --agent ${agent}` : undefined,
+    },
+    {
+      option: "9",
+      name: "Ouro Workbench",
+      section: "This machine",
+      status: workbenchStatus,
+      description: "Native terminal-agent control room and local MCP sense.",
+      detailLines: workbenchDetailLines,
+      nextAction: connectEntryNeedsAttention({
+        option: "9",
+        name: "Ouro Workbench",
+        section: "This machine",
+        status: workbenchStatus,
+      }) ? `ouro connect workbench --agent ${agent}` : undefined,
     },
   ]
 
@@ -5177,7 +5273,7 @@ function machineRuntimeReadStatus(
   return "needs attention"
 }
 
-function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "cancel" {
+function connectMenuTarget(answer: string): "providers" | "perplexity" | "embeddings" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench" | "cancel" {
   const normalized = answer.trim().toLowerCase()
   if (normalized === "1" || normalized === "providers" || normalized === "provider" || normalized === "auth") return "providers"
   if (normalized === "2" || normalized === "perplexity" || normalized === "perplexity-search" || normalized === "search") return "perplexity"
@@ -5188,6 +5284,7 @@ function connectMenuTarget(answer: string): "providers" | "perplexity" | "embedd
   if (normalized === "7" || normalized === "voice" || normalized === "audio" || normalized === "speech") return "voice"
   /* v8 ignore next -- direct `ouro connect a2a` covers behavior; interactive menu requires broader provider/vault readiness work @preserve */
   if (normalized === "8" || normalized === "a2a" || normalized === "agent2agent" || normalized === "agent-to-agent") return "a2a"
+  if (normalized === "9" || normalized === "workbench" || normalized === "ouro-workbench" || normalized === "terminal-workbench") return "workbench"
   return "cancel"
 }
 
@@ -5248,6 +5345,32 @@ async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<stri
   return message
 }
 
+async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promise<string> {
+  const { workbenchMcpCommand } = readConnectBaySenseFlags(agent, deps)
+  const executablePath = findInstalledWorkbenchMcp(deps, workbenchMcpCommand)
+  if (!executablePath) {
+    throw new Error([
+      `Ouro Workbench is not installed for ${agent} on this machine.`,
+      "Expected the MCP executable at one of:",
+      ...defaultWorkbenchMcpCandidates(deps).map((candidate) => `  ${candidate}`),
+      "Install or copy Ouro Workbench.app there, then run:",
+      `  ouro connect workbench --agent ${agent}`,
+    ].join("\n"))
+  }
+
+  writeWorkbenchMcpRegistration(agent, executablePath, deps)
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  const message = [
+    `Workbench connected for ${agent}`,
+    "agent.json: senses.workbench.enabled = true",
+    `agent.json: mcpServers.ouro_workbench.command = ${executablePath}`,
+    "Workbench is a local machine sense; provider secrets stay in the agent vault.",
+    ...(syncSummary ? [syncSummary] : []),
+  ].join("\n")
+  deps.writeStdout(message)
+  return message
+}
+
 async function executeConnect(
   command: Extract<ResolvedOuroCliCommand, { kind: "connect" }>,
   deps: OuroCliDeps,
@@ -5260,6 +5383,7 @@ async function executeConnect(
   if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
   if (command.target === "voice") return executeConnectVoice(command.agent, deps)
   if (command.target === "a2a") return executeConnectA2A(command.agent, deps)
+  if (command.target === "workbench") return executeConnectWorkbench(command.agent, deps)
 
   const progress = createHumanCommandProgress(deps, "connect")
   let menu: string
@@ -5276,7 +5400,7 @@ async function executeConnect(
   const promptInput = deps.promptInput
   if (!promptInput) {
     const message = [
-      menu.replace(/\nChoose \[1-8\] or type a name: $/, ""),
+      menu.replace(/\nChoose \[1-9\] or type a name: $/, ""),
       "",
       `Run: ouro connect providers --agent ${command.agent}`,
       `Run: ouro connect perplexity --agent ${command.agent}`,
@@ -5286,6 +5410,7 @@ async function executeConnect(
       `Run: ouro connect mail --agent ${command.agent}`,
       `Run: ouro connect voice --agent ${command.agent}`,
       `Run: ouro connect a2a --agent ${command.agent}`,
+      `Run: ouro connect workbench --agent ${command.agent}`,
     ].join("\n")
     deps.writeStdout(message)
     return message
@@ -5300,6 +5425,7 @@ async function executeConnect(
   if (answer === "voice") return executeConnectVoice(command.agent, deps)
   /* v8 ignore next -- direct `ouro connect a2a` covers behavior; interactive menu requires broader provider/vault readiness work @preserve */
   if (answer === "a2a") return executeConnectA2A(command.agent, deps)
+  if (answer === "workbench") return executeConnectWorkbench(command.agent, deps)
   const message = "connect cancelled."
   deps.writeStdout(message)
   return message

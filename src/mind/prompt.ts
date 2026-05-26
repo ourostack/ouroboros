@@ -454,6 +454,7 @@ function localSenseStatusLines(): string[] {
     mail: configuredSenses.mail ?? { enabled: false },
     voice: configuredSenses.voice ?? { enabled: false },
     a2a: configuredSenses.a2a ?? { enabled: false },
+    workbench: configuredSenses.workbench ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
@@ -477,6 +478,8 @@ function localSenseStatusLines(): string[] {
       && hasTextField(voice, "whisperCliPath")
       && hasTextField(voice, "whisperModelPath"),
     a2a: true,
+    workbench: typeof config.mcpServers?.ouro_workbench?.command === "string"
+      && config.mcpServers.ouro_workbench.command.trim().length > 0,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -501,6 +504,10 @@ function localSenseStatusLines(): string[] {
       label: "A2A",
       status: senses.a2a.enabled ? "ready" : "disabled",
     },
+    {
+      label: "Workbench",
+      status: !senses.workbench.enabled ? "disabled" : configured.workbench ? "ready" : "needs_config",
+    },
   ]
 
   return rows.map((row) => `- ${row.label}: ${row.status}`)
@@ -521,6 +528,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   lines.push("a2a setup truth: run `ouro connect a2a --agent <agent>` to enable the A2A sense, `ouro a2a card --agent <agent> --base-url <public-url>` to publish an agent card, and `ouro a2a onboard --agent <agent> --card-url <peer-card-url>` to add a peer as an agent friend. A2A uses the existing friend trust model, not a separate trust registry.")
+  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. Enabling it means `agent.json` has `senses.workbench.enabled=true` and an `mcpServers.ouro_workbench` entry pointing at the installed `OuroWorkbenchMCP` executable. The boss observes and queues auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use.")
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")

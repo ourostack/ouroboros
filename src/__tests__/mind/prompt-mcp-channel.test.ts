@@ -174,7 +174,7 @@ describe("runtimeInfoSection mcp channel", () => {
     vi.mocked(identity.loadAgentConfig).mockReturnValueOnce({
       name: "testagent",
       provider: "minimax",
-      senses: { cli: { enabled: true }, a2a: { enabled: true } },
+      senses: { cli: { enabled: true }, a2a: { enabled: true }, workbench: { enabled: true } },
       context: { maxTokens: 80000, contextMargin: 20 },
     } as any)
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
