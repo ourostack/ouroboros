@@ -359,6 +359,21 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     usage: "ouro connect a2a [--agent <name>]",
     example: "ouro connect a2a --agent <agent>",
   },
+  "a2a card": {
+    description: "Print this agent's A2A Agent Card",
+    usage: "ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
+    example: "ouro a2a card --agent <agent> --base-url https://agent.example --json",
+  },
+  "a2a onboard": {
+    description: "Onboard an A2A peer into the existing friend model",
+    usage: "ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]",
+    example: "ouro a2a onboard --agent <agent> --card-url https://peer.example/.well-known/agent-card.json --trust friend",
+  },
+  "a2a serve": {
+    description: "Run this agent's local A2A JSON-RPC sense server",
+    usage: "ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
+    example: "ouro a2a serve --agent <agent> --base-url https://agent.example",
+  },
   "account ensure": {
     description: "Idempotently prepare an agent's vault-backed work substrate account and private Mailroom mailbox",
     usage: "ouro account ensure [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]",
