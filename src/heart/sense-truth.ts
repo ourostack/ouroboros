@@ -24,6 +24,7 @@ const SENSES: Array<{ sense: SenseName; label: string; daemonManaged: boolean }>
   { sense: "bluebubbles", label: "BlueBubbles", daemonManaged: true },
   { sense: "mail", label: "Mail", daemonManaged: true },
   { sense: "voice", label: "Voice", daemonManaged: true },
+  { sense: "a2a", label: "A2A", daemonManaged: true },
 ]
 
 function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
@@ -35,6 +36,7 @@ function configuredSenses(senses?: AgentSensesConfig): AgentSensesConfig {
     bluebubbles: configured.bluebubbles ?? { ...DEFAULT_AGENT_SENSES.bluebubbles },
     mail: configured.mail ?? { ...DEFAULT_AGENT_SENSES.mail },
     voice: configured.voice ?? { ...DEFAULT_AGENT_SENSES.voice },
+    a2a: configured.a2a ?? { ...DEFAULT_AGENT_SENSES.a2a },
   }
 }
 

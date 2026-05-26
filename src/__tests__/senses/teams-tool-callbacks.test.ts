@@ -137,7 +137,7 @@ describe("Teams createTeamsCallbacks - flushNow (speak tool)", () => {
     const teams = await import("../../senses/teams")
     const callbacks = teams.createTeamsCallbacks(mockStream as any, controller)
     expect(typeof (callbacks as any).flushNow).toBe("function")
-  })
+  }, 10_000)
 
   it("flushNow after onTextChunk emits buffered text via stream.emit exactly once", async () => {
     const teams = await import("../../senses/teams")

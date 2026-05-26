@@ -167,4 +167,25 @@ describe("runtimeInfoSection mcp channel", () => {
     expect(result).toContain("use speak before any tool work")
     expect(result).toContain("text transcript")
   })
+
+  it("a2a channel includes agent-peer trust guidance", async () => {
+    setupReadFileSync()
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.loadAgentConfig).mockReturnValueOnce({
+      name: "testagent",
+      provider: "minimax",
+      senses: { cli: { enabled: true }, a2a: { enabled: true } },
+      context: { maxTokens: 80000, contextMargin: 20 },
+    } as any)
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("a2a")
+    expect(result).toContain("A2A sense")
+    expect(result).toContain("- A2A: ready")
+    expect(result).toContain("agent friend record")
+    expect(result).toContain("existing friend trust model")
+  })
 })

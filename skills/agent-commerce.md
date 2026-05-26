@@ -10,14 +10,16 @@ For services with direct API access: Duffel flights, LiteAPI hotels.
 
 1. Search using the API tool (`flight_search`, LiteAPI MCP)
 2. Present options to the human with prices and details
-3. Human approves a specific option and price
-4. Book using the API tool with passenger data from `user_profile_get`
-5. Create a single-use virtual card via `stripe_create_card`
-6. Complete payment through the API
-7. Deactivate the card via `stripe_deactivate_card`
-8. Confirm booking to the human
+3. Create a checkout preview with `commerce_checkout_preview` for the exact merchant, item, amount, currency, allowed tool, and exact tool constraints
+4. Human approves in a new message that exactly equals the preview's `confirmationMessage`, including checkout id, digest, merchant, amount, currency, allowed tool, and constraints
+5. Commit the preview with `commerce_checkout_commit`; then call the approved payment or booking tool with the exact amount, currency, and constraints from the preview. Ouro consumes the matching authority without exposing a bearer token in the transcript.
+6. Book using the API tool with passenger data from `user_profile_get`
+7. Create a single-use virtual card via `stripe_create_card` when needed
+8. Complete payment through the API
+9. Deactivate the card via `stripe_deactivate_card`
+10. Confirm booking to the human and record/read back the receipt with `commerce_receipt_get`
 
-**Key tools**: `flight_search`, `flight_book`, `flight_cancel`, `user_profile_get`, `user_profile_store`, `stripe_create_card`, `stripe_deactivate_card`, `stripe_list_cards`
+**Key tools**: `commerce_checkout_preview`, `commerce_checkout_commit`, `commerce_receipt_get`, `flight_search`, `flight_book`, `flight_cancel`, `user_profile_get`, `user_profile_store`, `stripe_create_card`, `stripe_deactivate_card`, `stripe_list_cards`
 
 ### Pattern B: Browser (Best-Effort)
 
@@ -26,9 +28,10 @@ For sites without API access, use browser automation via Playwright MCP.
 1. Navigate to the booking site
 2. Search for the requested service
 3. Fill forms using data from `user_profile_get`
-4. Use a virtual card from `stripe_create_card` for payment
-5. If blocked by anti-bot measures, fall back to Pattern C
-6. Complete and confirm the booking
+4. Create and commit a checkout preview before entering payment details
+5. Use a virtual card from `stripe_create_card` for payment
+6. If blocked by anti-bot measures, fall back to Pattern C
+7. Complete and confirm the booking
 
 **Limitations**: Browser automation is fragile. Sites may block, layouts change, CAPTCHAs appear. Always have Pattern C as fallback.
 
@@ -51,6 +54,10 @@ For sites that block automation or require complex human interaction.
 - **Level 3**: Full delegation with spending limits. Agent manages a budget and books as needed.
 
 Default is Level 1. Level changes require explicit human approval.
+
+## Commerce Authority
+
+Money-moving tools (`stripe_create_card`, `flight_hold`, `flight_book`) require a one-use confirmed commerce authority. This is the local AP2-compatible primitive: an exact mandate record with merchant, amount, currency, allowed tool, exact tool constraints, reason, digest, expiry, confirmation, reservation/attempt/consumption state, and access log. `commerce_checkout_commit` confirms the authority but does not reveal a live bearer token to the model; the runtime reserves the one matching confirmed authority under a checkout lock, marks it attempted before crossing an external provider boundary, and consumes it only after the successful side effect is verified. A pre-attempt validation failure can release the reservation; an attempted Stripe/Duffel call stays non-replayable so ambiguous provider failures cannot create duplicate cards or bookings. Stripe card authority must include exact `type` and `merchant_categories` constraints so the card is counterparty/category-bound. If the tool, amount, currency, offer id, card type, merchant category, or other constraint changes, create a new preview and get a new confirmation.
 
 ## Error Handling
 

@@ -110,6 +110,7 @@ export class FriendResolver {
     }
 
     const isFirstImprint = !hasAnyFriends
+    const isA2AAgent = this.params.provider === "a2a-agent"
 
     // BlueBubbles group chats route through here as `imessage-handle` with an
     // externalId of the form `group:any;+;<chatHash>`. When the harness auto-
@@ -131,8 +132,8 @@ export class FriendResolver {
     const friend: FriendRecord = {
       id: randomUUID(),
       name: this.params.displayName,
-      role: isFirstImprint ? "primary" : "stranger",
-      trustLevel: isFirstImprint ? "family" : "stranger",
+      role: isA2AAgent ? "agent-peer" : isFirstImprint ? "primary" : "stranger",
+      trustLevel: isA2AAgent ? "stranger" : isFirstImprint ? "family" : "stranger",
       connections: [],
       externalIds: [externalId],
       tenantMemberships,
@@ -142,6 +143,16 @@ export class FriendResolver {
       createdAt: now,
       updatedAt: now,
       schemaVersion: CURRENT_SCHEMA_VERSION,
+      kind: isA2AAgent ? "agent" : "human",
+      ...(isA2AAgent ? {
+        agentMeta: {
+          bundleName: this.params.displayName,
+          familiarity: 0,
+          sharedMissions: [],
+          outcomes: [],
+          a2a: { agentId: this.params.externalId },
+        },
+      } : {}),
     }
 
     // Persist -- log and continue on failure (D16)

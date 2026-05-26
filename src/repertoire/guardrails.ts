@@ -2,11 +2,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { isTrustedLevel, type TrustLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
+import { validateCommerceAuthority } from "../commerce/store"
 
 export interface GuardContext {
   readPaths: ReadonlySet<string>
   trustLevel?: TrustLevel
   agentRoot?: string
+  friendId?: string
   senseType?: string
   isGroupChat?: boolean
   /** For first-class MCP tools: the server this tool belongs to. */
@@ -297,6 +299,9 @@ const CREDENTIAL_TRUSTED_TOOLS = new Set(["credential_get", "credential_list"])
 // advisory and geocode are public APIs but gated for consistency)
 // Flight search is also friend+ (read-only, no payment)
 const TRAVEL_TRUSTED_TOOLS = new Set(["weather_lookup", "travel_advisory", "geocode_search", "flight_search"])
+const A2A_TRUSTED_TOOLS = new Set(["a2a_list_peers", "a2a_send_message", "a2a_get_task"])
+const COMMERCE_FAMILY_TOOLS = new Set(["commerce_checkout_preview", "commerce_checkout_commit", "commerce_receipt_get", "commerce_access_log"])
+const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 const MAIL_FAMILY_TOOLS = new Set(["mail_screener", "mail_decide", "mail_access_log", "mail_send", "mail_index_refresh"])
 const MAIL_DELEGATED_READ_TOOLS = new Set(["mail_recent", "mail_search"])
 
@@ -319,15 +324,29 @@ function mailTrustGuardrail(toolName: string, args: Record<string, string>, cont
 }
 
 function checkCredentialTrustGuardrails(toolName: string, context: GuardContext): GuardResult {
-  if (CREDENTIAL_FAMILY_TOOLS.has(toolName)) {
+  if (CREDENTIAL_FAMILY_TOOLS.has(toolName) || COMMERCE_FAMILY_TOOLS.has(toolName)) {
     if (context.trustLevel === "family") return allow
     return deny(REASONS.needsTrust)
   }
-  if (CREDENTIAL_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName)) {
+  if (CREDENTIAL_TRUSTED_TOOLS.has(toolName) || TRAVEL_TRUSTED_TOOLS.has(toolName) || A2A_TRUSTED_TOOLS.has(toolName)) {
     if (isTrustedLevel(context.trustLevel)) return allow
     return deny(REASONS.needsTrust)
   }
   return allow
+}
+
+function checkCommerceAuthorityGuardrails(toolName: string, args: Record<string, string>, context: GuardContext): GuardResult {
+  if (!COMMERCE_AUTHORITY_TOOLS.has(toolName)) return allow
+  if (!context.agentRoot) return deny("commerce authority unavailable: agent root could not be resolved.")
+  const result = validateCommerceAuthority({
+    agentRoot: context.agentRoot,
+    token: args.commerce_authority,
+    toolName,
+    args,
+    friendId: context.friendId,
+  })
+  if (result.ok) return allow
+  return deny(`commerce authority required: ${result.reason}`)
 }
 
 function checkFirstClassMcpTrust(context: GuardContext): GuardResult {
@@ -349,6 +368,9 @@ function checkTrustLevelGuardrails(toolName: string, args: Record<string, string
   // Credential tools have their own trust rules that apply at all levels
   const credentialResult = checkCredentialTrustGuardrails(toolName, context)
   if (!credentialResult.allowed) return credentialResult
+
+  const commerceAuthorityResult = checkCommerceAuthorityGuardrails(toolName, args, context)
+  if (!commerceAuthorityResult.allowed) return commerceAuthorityResult
 
   // First-class MCP tool trust (e.g. browser_navigate) — applies at all trust levels
   const firstClassMcpResult = checkFirstClassMcpTrust(context)

@@ -6,7 +6,7 @@ import type { ChannelCapabilities, Channel } from "./types"
 
 export type Facing = "human" | "agent"
 
-const AGENT_FACING_CHANNELS: ReadonlySet<string> = new Set(["inner", "mcp"])
+const AGENT_FACING_CHANNELS: ReadonlySet<string> = new Set(["inner", "mcp", "a2a"])
 
 export function channelToFacing(channel?: Channel | string): Facing {
   const facing: Facing = channel && AGENT_FACING_CHANNELS.has(channel) ? "agent" : "human"
@@ -62,6 +62,15 @@ const CHANNEL_CAPABILITIES: Record<string, ChannelCapabilities> = {
     availableIntegrations: [],
     supportsMarkdown: false,
     supportsStreaming: true,
+    supportsRichCards: false,
+    maxMessageLength: Infinity,
+  },
+  a2a: {
+    channel: "a2a",
+    senseType: "open",
+    availableIntegrations: [],
+    supportsMarkdown: true,
+    supportsStreaming: false,
     supportsRichCards: false,
     maxMessageLength: Infinity,
   },

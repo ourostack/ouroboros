@@ -62,12 +62,13 @@ describe("parseOrphanPidsFromPs", () => {
       "  PID  PPID COMMAND",
       " 100     1 node /x/dist/heart/daemon/agent-entry.js --agent Alpha",
       " 101     1 node /x/dist/heart/daemon/daemon-entry.js --socket /tmp/x.sock",
-      " 102     1 node /x/dist/senses/bluebubbles/entry.js --agent Alpha",
-      " 103     1 node /x/dist/senses/teams-entry.js --agent Alpha",
-      " 104     1 node /x/dist/senses/mail-entry.js --agent Alpha",
-    ].join("\n")
-    expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104])
-  })
+        " 102     1 node /x/dist/senses/bluebubbles/entry.js --agent Alpha",
+        " 103     1 node /x/dist/senses/teams-entry.js --agent Alpha",
+        " 104     1 node /x/dist/senses/mail-entry.js --agent Alpha",
+        " 105     1 node /x/dist/senses/a2a-entry.js --agent Alpha",
+      ].join("\n")
+      expect(parseOrphanPidsFromPs(psOutput, 99)).toEqual([100, 101, 102, 103, 104, 105])
+    })
 
   it("excludes mcp-serve processes even when they would otherwise match", () => {
     // MCP server sessions share the ouro-entry.js binary entry point but

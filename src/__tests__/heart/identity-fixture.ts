@@ -47,6 +47,7 @@ export const FULL_AGENT_JSON = {
     bluebubbles: { enabled: true },
     mail: { enabled: false },
     voice: { enabled: false },
+    a2a: { enabled: false },
   },
   mcpServers: {
     "test-server": {

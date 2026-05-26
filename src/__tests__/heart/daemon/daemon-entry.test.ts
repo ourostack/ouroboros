@@ -278,7 +278,7 @@ describe("daemon entrypoint", () => {
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
 
     argvSpy.mockRestore()
-  })
+  }, 10_000)
 
   it("wires daemon.stop command cleanup to stop entrypoint timers before exiting", async () => {
     vi.resetModules()

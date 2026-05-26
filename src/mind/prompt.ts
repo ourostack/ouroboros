@@ -337,6 +337,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   bluebubbles: "bluebubbles handler",
   mail: "mail handler",
   voice: "voice handler",
+  a2a: "a2a handler",
   mcp: "mcp bridge",
 }
 
@@ -414,6 +415,10 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     lines.push(
       "i am responding from an agent mail session. i keep the response clear, auditable, and grounded in visible mail facts.",
     )
+  } else if (channel === "a2a") {
+    lines.push(
+      "i am responding through the A2A sense to another agent peer. i treat the peer as an agent friend record, keep the exchange task-oriented and auditable, and rely on the existing friend trust model for authority.",
+    )
   } else if (channel === "voice") {
     lines.push(
       "i am responding in a live voice session. the person is waiting in real time, so i answer early and often, keep spoken turns to one or two short sentences, stay interruption-friendly, avoid markdown and lists unless explicitly asked, and use speak before any tool work that may take more than a moment. if a later transcript says the caller interrupted or followed up while i was speaking, i prioritize that newest utterance before continuing the older answer. the overview shows the text transcript as the durable record.",
@@ -448,6 +453,7 @@ function localSenseStatusLines(): string[] {
     bluebubbles: configuredSenses.bluebubbles ?? { enabled: false },
     mail: configuredSenses.mail ?? { enabled: false },
     voice: configuredSenses.voice ?? { enabled: false },
+    a2a: configuredSenses.a2a ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
   const runtimeConfig = readRuntimeCredentialConfig(getAgentName())
@@ -470,6 +476,7 @@ function localSenseStatusLines(): string[] {
       && (hasTextField(integrations, "elevenLabsVoiceId") || hasTextField(portableVoice, "elevenLabsVoiceId"))
       && hasTextField(voice, "whisperCliPath")
       && hasTextField(voice, "whisperModelPath"),
+    a2a: true,
   }
 
   const rows: Array<{ label: string; status: string }> = [
@@ -490,6 +497,10 @@ function localSenseStatusLines(): string[] {
       label: "Voice",
       status: !senses.voice.enabled ? "disabled" : configured.voice ? "ready" : "needs_config",
     },
+    {
+      label: "A2A",
+      status: senses.a2a.enabled ? "ready" : "disabled",
+    },
   ]
 
   return rows.map((row) => `- ${row.label}: ${row.status}`)
@@ -509,6 +520,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("If asked how to enable another sense, I explain the relevant agent.json senses entry and required agent-vault runtime/config fields instead of guessing.")
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
+  lines.push("a2a setup truth: run `ouro connect a2a --agent <agent>` to enable the A2A sense, `ouro a2a card --agent <agent> --base-url <public-url>` to publish an agent card, and `ouro a2a onboard --agent <agent> --card-url <peer-card-url>` to add a peer as an agent friend. A2A uses the existing friend trust model, not a separate trust registry.")
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")

@@ -4,6 +4,7 @@ import { getUserProfileField } from "./user-profile"
 import { getCredentialStore } from "./credential-access"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { UserProfileName, UserProfilePassport } from "./user-profile"
+import { consumeReservedCommerceAuthority, markReservedCommerceAuthorityAttempted } from "../commerce/store"
 
 // Lazy-initialized Duffel client singleton
 let _duffelClient: DuffelClient | null = null
@@ -29,6 +30,45 @@ function requireFriendContext(ctx?: ToolContext): { friendId: string } | string 
     return "no friend context — cannot search flights."
   }
   return { friendId: ctx.context.friend.id }
+}
+
+function parseExactAmount(raw: string): number {
+  const value = raw.trim()
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) throw new Error("amount must be an exact decimal with at most two places")
+  return Number(value)
+}
+
+function consumeReservedCommerce(ctx: ToolContext | undefined, toolName: string): string | null {
+  if (!ctx?.commerceAuthority || !ctx.agentRoot) return null
+  const result = consumeReservedCommerceAuthority({
+    agentRoot: ctx.agentRoot,
+    checkoutId: ctx.commerceAuthority.checkoutId,
+    reservationToken: ctx.commerceAuthority.reservationToken,
+    toolName,
+    friendId: ctx.context?.friend?.id,
+  })
+  return result.ok ? null : `commerce authority consume error: ${result.reason}`
+}
+
+function markCommerceAttempted(ctx: ToolContext | undefined, toolName: string): string | null {
+  if (!ctx?.commerceAuthority || !ctx.agentRoot) return null
+  const result = markReservedCommerceAuthorityAttempted({
+    agentRoot: ctx.agentRoot,
+    checkoutId: ctx.commerceAuthority.checkoutId,
+    reservationToken: ctx.commerceAuthority.reservationToken,
+    toolName,
+    friendId: ctx.context?.friend?.id,
+  })
+  return result.ok ? null : `commerce authority attempt error: ${result.reason}`
+}
+
+function normalizeCurrency(raw: string): string {
+  return raw.trim().toLowerCase()
+}
+
+function orderMatchesApprovedTotal(input: { totalAmount: string; totalCurrency: string }, amount: number, currency: string): boolean {
+  const orderAmount = parseExactAmount(input.totalAmount)
+  return orderAmount === amount && normalizeCurrency(input.totalCurrency) === normalizeCurrency(currency)
 }
 
 export const flightToolDefinitions: ToolDefinition[] = [
@@ -97,13 +137,16 @@ export const flightToolDefinitions: ToolDefinition[] = [
       function: {
         name: "flight_hold",
         description:
-          "Hold a flight offer for a short period before committing to book. Not all airlines support holds.",
+          "Hold a flight offer for a short period before committing to book. Not all airlines support holds. Requires a matching confirmed commerce checkout.",
         parameters: {
           type: "object",
           properties: {
             offer_id: { type: "string", description: "The Duffel offer ID to hold" },
+            amount: { type: "string", description: "Exact hold amount from the approved commerce preview." },
+            currency: { type: "string", description: "Currency code from the approved commerce preview, e.g. usd." },
+            commerce_authority: { type: "string", description: "Optional explicit authority token for external/manual flows; normally omit so Ouro consumes the matching confirmed checkout." },
           },
-          required: ["offer_id"],
+          required: ["offer_id", "amount", "currency"],
         },
       },
     },
@@ -120,9 +163,18 @@ export const flightToolDefinitions: ToolDefinition[] = [
 
       // Hold functionality would call Duffel's offer hold API.
       // For pre-build, we return a structured acknowledgment.
+      const amount = parseExactAmount(args.amount)
+      const attemptError = markCommerceAttempted(ctx, "flight_hold")
+      if (attemptError) return attemptError
+      const consumeError = consumeReservedCommerce(ctx, "flight_hold")
+      /* v8 ignore next -- hold pre-build has no provider callback between attempt and consume; this branch is race-defense for file/process interference @preserve */
+      if (consumeError) return consumeError
+
       return JSON.stringify({
         status: "hold_requested",
         offerId: args.offer_id,
+        amount,
+        currency: args.currency,
         message: "Hold requested. Confirm or cancel before the hold expires.",
       })
     },
@@ -136,13 +188,14 @@ export const flightToolDefinitions: ToolDefinition[] = [
       function: {
         name: "flight_book",
         description:
-          "Book a flight. Pulls passenger name/DOB/passport from the user's profile. Creates a virtual card, books the flight, then deactivates the card. Requires family trust level.",
+          "Book a flight. Pulls passenger name/DOB/passport from the user's profile. Creates a virtual card, books the flight, then deactivates the card. Requires family trust level and a matching confirmed commerce checkout.",
         parameters: {
           type: "object",
           properties: {
             offer_id: { type: "string", description: "The Duffel offer ID to book" },
             amount: { type: "string", description: "Expected total amount in dollars" },
             currency: { type: "string", description: "Currency code (e.g. 'usd')" },
+            commerce_authority: { type: "string", description: "Optional explicit authority token for external/manual flows; normally omit so Ouro consumes the matching confirmed checkout." },
           },
           required: ["offer_id", "amount", "currency"],
         },
@@ -160,6 +213,8 @@ export const flightToolDefinitions: ToolDefinition[] = [
       if (typeof guard === "string") return guard
 
       try {
+        const amount = parseExactAmount(args.amount)
+        const currency = normalizeCurrency(args.currency)
         const store = getCredentialStore()
 
         // Get passenger data from profile
@@ -172,6 +227,8 @@ export const flightToolDefinitions: ToolDefinition[] = [
         const passport = await getUserProfileField(guard.friendId, "passport", store) as UserProfilePassport | undefined
 
         const client = await getDuffelClient()
+        const attemptError = markCommerceAttempted(ctx, "flight_book")
+        if (attemptError) return attemptError
         const result = await client.createOrder({
           offerId: args.offer_id,
           passengers: [{
@@ -184,9 +241,15 @@ export const flightToolDefinitions: ToolDefinition[] = [
             passportCountry: passport?.country,
             passportExpiry: passport?.expiry,
           }],
-          amount: parseFloat(args.amount),
-          currency: args.currency,
+          amount,
+          currency,
         })
+        if (!orderMatchesApprovedTotal(result, amount, currency)) {
+          return `booking error: completed order total ${result.totalAmount} ${result.totalCurrency} does not match approved ${args.amount} ${args.currency}`
+        }
+
+        const consumeError = consumeReservedCommerce(ctx, "flight_book")
+        if (consumeError) return consumeError
 
         return JSON.stringify(result, null, 2)
       } catch (err) {

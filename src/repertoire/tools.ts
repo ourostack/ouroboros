@@ -11,6 +11,7 @@ import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
 import { getAgentRoot } from "../heart/identity";
+import { releaseReservedCommerceAuthority, reserveCommerceAuthority } from "../commerce/store";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
@@ -35,6 +36,7 @@ export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
 const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, surfaceToolDefinition];
+const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
 // Kept separate from allDefinitions so execTool can find them.
@@ -283,7 +285,8 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
   const guardContext = {
     readPaths: editFileReadTracker,
     trustLevel: ctx?.context?.friend?.trustLevel,
-    agentRoot: safeGetAgentRoot(),
+    agentRoot: ctx?.agentRoot ?? safeGetAgentRoot(),
+    friendId: ctx?.context?.friend?.id,
     ...(mcpDef?.mcpServer ? { mcpServerName: mcpDef.mcpServer } : {}),
     ...((ctx?.context as any)?.isGroupChat !== undefined ? { isGroupChat: (ctx?.context as any).isGroupChat } : {}),
   }
@@ -300,8 +303,38 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return guardResult.reason
   }
 
+  const commerceReservation = COMMERCE_AUTHORITY_TOOLS.has(name) && guardContext.agentRoot
+    ? reserveCommerceAuthority({
+      agentRoot: guardContext.agentRoot,
+      token: guardArgs.commerce_authority,
+      toolName: name,
+      args: guardArgs,
+      friendId: guardContext.friendId,
+    })
+    : null
+  if (commerceReservation && !commerceReservation.ok) {
+    emitNervesEvent({
+      level: "warn",
+      event: "tool.guardrail_block",
+      component: "tools",
+      message: "guardrail blocked tool execution",
+      meta: { name, reason: commerceReservation.reason },
+    });
+    return `commerce authority required: ${commerceReservation.reason}`
+  }
+  const toolContext: ToolContext | undefined = commerceReservation?.ok
+    ? {
+      ...ctx,
+      agentRoot: guardContext.agentRoot,
+      commerceAuthority: {
+        checkoutId: commerceReservation.checkoutId,
+        reservationToken: commerceReservation.reservationToken,
+      },
+    } as ToolContext
+    : ctx
+
   try {
-    const result = await def.handler(args, ctx);
+    const result = await def.handler(args, toolContext);
     emitNervesEvent({
       event: "tool.end",
       component: "tools",
@@ -318,6 +351,20 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
       meta: { name },
     });
     throw error;
+  } finally {
+    if (commerceReservation?.ok && guardContext.agentRoot) {
+      try {
+        releaseReservedCommerceAuthority({
+          agentRoot: guardContext.agentRoot,
+          checkoutId: commerceReservation.checkoutId,
+          reservationToken: commerceReservation.reservationToken,
+          toolName: name,
+          friendId: guardContext.friendId,
+        })
+      } catch {
+        /* v8 ignore next -- external tool result/error should not be masked by best-effort reservation cleanup @preserve */
+      }
+    }
   }
 }
 

@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.654",
+      "changes": [
+        "Add A2A sense substrate and AP2-compatible commerce authority primitives.",
+        "Harden A2A and commerce review gates with scoped task access tokens, bounded anonymous A2A peer identity, sender-card onboarding, continuation support, token-redacted task reads, clean port-collision failures, dynamic managed A2A endpoint refresh, dual-shape A2A discovery compatibility, A2A orphan cleanup and bundle sync, detail-rich one-use commerce authority confirmation, random hash-stored commerce tokens, exact amount parsing, Stripe merchant-category constraints, locked reservation/consumption/release, and amount/currency-bound flight holds."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.653",
       "changes": [
         "`ouro up` now waits long enough for a full daemon health-monitor cycle during final handoff, preventing false install failures when enabled senses become healthy shortly after the previous 20s cutoff."

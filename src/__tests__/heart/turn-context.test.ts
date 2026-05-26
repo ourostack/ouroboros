@@ -10,7 +10,7 @@ vi.mock("../../nerves/runtime", () => ({
 const mockGetAgentRoot = vi.fn().mockReturnValue("/mock/agent-root")
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({
-  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false } },
+  senses: { cli: { enabled: true }, teams: { enabled: false }, bluebubbles: { enabled: false }, mail: { enabled: false }, voice: { enabled: false }, a2a: { enabled: false } },
 })
 
 vi.mock("../../heart/identity", () => ({
@@ -458,7 +458,7 @@ describe("buildTurnContext", () => {
 
   it("detects configured senses from runtime config and enabled config", async () => {
     mockLoadAgentConfig.mockReturnValue({
-      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true } },
+      senses: { cli: { enabled: true }, teams: { enabled: true }, bluebubbles: { enabled: true }, mail: { enabled: true }, voice: { enabled: true }, a2a: { enabled: true } },
     })
     mockLoadConfig.mockReturnValue({
       teams: { clientId: "cid", clientSecret: "csecret", tenantId: "tid" },
@@ -475,6 +475,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: ready",
       "- Mail: ready",
       "- Voice: ready",
+      "- A2A: ready",
     ])
   })
 
@@ -498,6 +499,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: disabled",
       "- Mail: disabled",
       "- Voice: ready",
+      "- A2A: disabled",
     ])
   })
 
@@ -537,6 +539,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: disabled",
       "- Mail: disabled",
       "- Voice: ready",
+      "- A2A: disabled",
     ])
   })
 
@@ -565,6 +568,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: disabled",
       "- Mail: ready",
       "- Voice: disabled",
+      "- A2A: disabled",
     ])
   })
 
@@ -593,6 +597,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: ready",
       "- Mail: disabled",
       "- Voice: disabled",
+      "- A2A: disabled",
     ])
   })
 
@@ -609,6 +614,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: not_attached",
       "- Mail: needs_config",
       "- Voice: needs_config",
+      "- A2A: disabled",
     ])
   })
 
@@ -622,6 +628,7 @@ describe("buildTurnContext", () => {
       "- BlueBubbles: disabled",
       "- Mail: disabled",
       "- Voice: disabled",
+      "- A2A: disabled",
     ])
   })
 
