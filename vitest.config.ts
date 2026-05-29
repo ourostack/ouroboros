@@ -101,6 +101,8 @@ export default defineConfig({
         "src/heart/bridges/manager.ts",
         "src/heart/bridges/state-machine.ts",
         "src/heart/daemon/task-scheduler.ts",
+        "src/mailpals/types.ts",
+        "src/repertoire/tools-mailpals.ts",
       ],
       thresholds: {
         lines: 100,

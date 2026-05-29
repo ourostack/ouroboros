@@ -28,6 +28,7 @@ import { awaitingToolDefinitions } from "./tools-awaiting"
 import { obligationToolDefinitions } from "./tools-obligations"
 import { evolutionToolDefinitions } from "./tools-evolution"
 import { runtimeToolDefinitions } from "./tools-runtime"
+import { mailpalsToolDefinitions } from "./tools-mailpals"
 import { orientationToolDefinitions } from "./tools-orientation"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
@@ -157,6 +158,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...evolutionToolDefinitions,
   ...orientationToolDefinitions,
   ...runtimeToolDefinitions,
+  ...mailpalsToolDefinitions,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).
