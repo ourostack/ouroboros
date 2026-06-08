@@ -3154,7 +3154,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("When I am returning a held thought or session-linked work, I call `surface`")
     expect(result).toContain("When I intentionally want to contact a person or sibling directly, I call `send_message`")
     expect(result).toContain("I do not use `surface` as a substitute for intentional live contact")
-    expect(result).not.toContain("I do not call `send_message` or `settle` from inner dialogue")
+    expect(result).not.toContain("I do not call `send_message` or `settle` from an inner-lane turn")
+    expect(result).toContain("I do not call `settle` from an inner-lane turn")
     expect(result).not.toContain("my outward delivery tool is `surface`, not `send_message`")
     expect(result).not.toContain("when i need a sibling's help, i `send_message` them")
 

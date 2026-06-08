@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.658",
       "changes": [
-        "Add Work Card visibility projection for Workbench."
+        "Add Work Card visibility projection for Workbench.",
+        "Document the AX-first Arc Flight Recorder plan, remove the disabled session archive shim, and demote stale inner-dialogue framing to private agent-facing turn language."
       ]
     },
     {

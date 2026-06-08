@@ -48,7 +48,7 @@ The shared harness lives in `src/`:
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), Voice (in senses/voice/), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), Voice (in senses/voice/), activity transport, private-turn orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -96,7 +96,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for inner dialogue.
+- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for private agent-facing turns.
 - Legacy `humanFacing`/`agentFacing` provider fields are read only as compatibility aliases for `outward`/`inner`; they are not a second config surface.
 - Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
@@ -207,7 +207,7 @@ ouro poke <agent> --task <task-id>
 ouro poke <agent> --habit <habit-name>
 ouro habit list --agent <agent>
 ouro habit create --agent <agent> <name> --cadence <interval>
-ouro inner --agent <agent>           # inner dialog status
+ouro inner --agent <agent>           # private turn status
 ouro attention --agent <agent>       # attention queue
 ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>
 ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a dev tool
@@ -252,7 +252,7 @@ This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, Pos
 
 **The conversation pattern:** `send_message` or `ask` sends a message and gets back your synchronous response. `ponder` no longer creates a magical outward deferral. Instead, it bookmarks deeper work as a packet while the current sense session keeps moving. If that work later surfaces something back, the dev tool can still use `check_response` to see the returned result.
 
-**Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Your inner dialog sees these sessions in its checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
+**Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Private agent-facing turns see these sessions in their checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
 
 See `skills/configure-dev-tools.md` for the full tool inventory and troubleshooting guide.
 

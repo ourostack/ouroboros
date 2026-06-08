@@ -330,7 +330,7 @@ function formatActiveLane(frame: ActiveWorkFrame, obligation: Obligation | null)
     return "this same thread"
   }
   if (frame.inner?.job?.status === "running") {
-    return "inner dialog"
+    return "inner lane"
   }
   return null
 }

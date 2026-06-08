@@ -139,8 +139,6 @@ interface NormalizedProviderMessage {
   hadToolCallsField: boolean
 }
 
-let archiveDisabledEmitted = false
-
 export const EVENT_CONTENT_MAX_CHARS = 256 * 1024
 
 export function truncateLargeEventContent(
@@ -1349,35 +1347,6 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
       state: normalizeContinuityState(options.state),
     },
     evictedEvents,
-  }
-}
-
-function agentFromSessionPath(sessPath: string): string {
-  const match = sessPath.match(/(?:^|[/\\])AgentBundles[/\\]([^/\\]+)\.ouro(?:[/\\]|$)/)
-  return match?.[1] ?? "unknown"
-}
-
-/**
- * Archive writes are intentionally disabled. The session envelope remains the
- * bounded working-memory record; evicted events are no longer persisted to an
- * unbounded sidecar.
- */
-export function appendEvictedToArchive(sessPath: string, evictedEvents: SessionEvent[]): void {
-  if (evictedEvents.length === 0) return
-  if (!archiveDisabledEmitted) {
-    archiveDisabledEmitted = true
-    emitNervesEvent({
-      component: "heart",
-      event: "heart.session_archive_disabled",
-      message: "session archive append disabled",
-      meta: {
-        type: "session_archive_disabled",
-        agent: agentFromSessionPath(sessPath),
-        sessionPath: sessPath,
-        evictedCount: evictedEvents.length,
-        ts: new Date().toISOString(),
-      },
-    })
   }
 }
 

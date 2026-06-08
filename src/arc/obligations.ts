@@ -235,7 +235,7 @@ export function enrichObligation(
 //   Created when a friend asks something that requires sustained work.
 //   Rich lifecycle: pending → investigating → waiting_for_merge → fulfilled.
 //
-// - ReturnObligation (below): "I've been delegated work via inner dialog
+// - ReturnObligation (below): "I've been delegated work via the inner lane
 //   and need to route the result back." Created when ponder delegates
 //   inward. Lightweight lifecycle: queued → running → returned/deferred.
 //

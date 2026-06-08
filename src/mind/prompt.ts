@@ -182,7 +182,7 @@ function aspirationsSection(): string {
 
 function peerCoordinationGuidance(channel: Channel): string {
   if (channel === "inner") {
-    return `from inner dialogue, \`surface\` and \`send_message\` do different jobs.
+    return `from an inner-lane turn, \`surface\` and \`send_message\` do different jobs.
 if a held thought or session-linked return is ready for a person, i call
 \`surface\` with the content and, when available, its delegationId.
 if i intentionally need to contact a person or sibling directly, i call
@@ -548,7 +548,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("mail validation diagnostics: health checks, bounded mail tools, access logs, and UI inspection can support validation, but they are evidence inside those paths, not additional paths. If asked to name golden paths, do not include diagnostic commands, tool names, or status checks in the answer.")
   lines.push("mail diagnostic naming: `ouro doctor` is installation-wide; do not invent `ouro doctor --agent <agent>`.")
   lines.push("mail setup boundaries: do not invent `ouro auth verify --provider mail`, HEY OAuth, HEY IMAP, `ouro mcp call mail ...`, policy flags, autonomous sending, destructive mail actions, or production MX/DNS/forwarding changes. HEY export, HEY forwarding, DNS, MX cutover, sending, and destructive actions require explicit human confirmation.")
-  lines.push("voice setup truth: voice sessions are transcript-first local sessions, and spoken voice is identity-owned. Do not present multiple provider voices as equally canonical; `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target, and `voice.openaiRealtimeVoiceSpeed` is only a small cadence nudge. ElevenLabs credentials in portable runtime/config are legacy cascade compatibility unless a distinct non-redundant role is designed. Whisper.cpp CLI/model paths belong in the machine runtime item under `voice.whisperCliPath` and `voice.whisperModelPath`. Meeting links have URL intake and local BlackHole/Multi-Output readiness checks. Twilio phone is a transport under the same voice sense: `voice.twilioTransportMode=record-play` uses Twilio Record -> Whisper.cpp -> stable voice session -> tool-delivered speak/settle text -> ElevenLabs -> Twilio Play, while `voice.twilioTransportMode=media-stream` can run cascade or `voice.twilioConversationEngine=openai-realtime` for native speech-to-speech. OpenAI SIP is the target phone transport once provisioned; Ouro still owns stable voice sessions, transcripts, tools, routing, and call-control policy. Outbound phone calls are first-class Voice delivery: normal outward/tool contexts use `send_message` with `channel=voice`, inner dialogue uses `surface` with `channel=voice`, and both start a phone call to a trusted friend through the same Voice outbound path. Outbound calls require `voice.twilioFromNumber`. Live browser join/injection remains an explicit handoff edge until provider automation lands.")
+  lines.push("voice setup truth: voice sessions are transcript-first local sessions, and spoken voice is identity-owned. Do not present multiple provider voices as equally canonical; `voice.openaiRealtimeVoice` is the current native Realtime phone voice, `voice.openaiRealtimeVoiceStyle` is the spoken identity target, and `voice.openaiRealtimeVoiceSpeed` is only a small cadence nudge. ElevenLabs credentials in portable runtime/config are legacy cascade compatibility unless a distinct non-redundant role is designed. Whisper.cpp CLI/model paths belong in the machine runtime item under `voice.whisperCliPath` and `voice.whisperModelPath`. Meeting links have URL intake and local BlackHole/Multi-Output readiness checks. Twilio phone is a transport under the same voice sense: `voice.twilioTransportMode=record-play` uses Twilio Record -> Whisper.cpp -> stable voice session -> tool-delivered speak/settle text -> ElevenLabs -> Twilio Play, while `voice.twilioTransportMode=media-stream` can run cascade or `voice.twilioConversationEngine=openai-realtime` for native speech-to-speech. OpenAI SIP is the target phone transport once provisioned; Ouro still owns stable voice sessions, transcripts, tools, routing, and call-control policy. Outbound phone calls are first-class Voice delivery: normal outward/tool contexts use `send_message` with `channel=voice`, inner-lane turns use `surface` with `channel=voice`, and both start a phone call to a trusted friend through the same Voice outbound path. Outbound calls require `voice.twilioFromNumber`. Live browser join/injection remains an explicit handoff edge until provider automation lands.")
   if (channel === "cli") {
     lines.push("cli is interactive: it is available when the user opens it, not something `ouro up` daemonizes.")
   }
@@ -712,7 +712,7 @@ function toolContractsSection(channel: Channel, options?: BuildSystemOptions): s
       lines.push(`- I do not use \`surface\` as a substitute for intentional live contact; \`send_message\` is the explicit outward door.`)
       lines.push(`- \`rest\` must be the only tool call in that turn. Internal state notes go in \`rest(note: "...")\` — that is my scratchpad, not \`surface\`.`)
       lines.push(`- For deeper reflection I want to preserve, I use \`ponder\` with kind \`reflection\`.`)
-      lines.push(`- I do not call \`settle\` from inner dialogue; \`rest\` is the inner terminal move.`)
+      lines.push(`- I do not call \`settle\` from an inner-lane turn; \`rest\` is the inner terminal move.`)
     } else {
       lines.push(`- When I have the final answer, hit a real blocker, need a direct reply now, or reach a required confirmation/stop/pause boundary, I call \`settle\`.`)
       lines.push(`- \`settle\` must be the only tool call in that turn.`)
@@ -961,7 +961,7 @@ export function pulseSection(channel: Channel = "cli"): string {
 
   if (healthy.length > 0) {
     lines.push(channel === "inner"
-      ? "**reachable siblings** — inner dialogue can use send_message when i explicitly choose outward contact:"
+      ? "**reachable siblings** — inner-lane turns can use send_message when i explicitly choose outward contact:"
       : "**reachable siblings** — i talk to them via send_message:")
     for (const sib of healthy) {
       const activity = sib.currentActivity ? ` — ${sib.currentActivity}` : ""
@@ -981,7 +981,7 @@ export function pulseSection(channel: Channel = "cli"): string {
   }
 
   lines.push(channel === "inner"
-    ? "from inner dialogue, i explicitly choose outward contact via send_message. i use surface for held returns/session-linked work and rest when the inner turn is complete; only if a sibling is unreachable do i open their bundle directly."
+    ? "from an inner-lane turn, i explicitly choose outward contact via send_message. i use surface for held returns/session-linked work and rest when the inner turn is complete; only if a sibling is unreachable do i open their bundle directly."
     : "to ask a sibling for help: i send_message them. only if they're unreachable do i open their bundle directly. their bundle is files on disk like mine, AND it's their home — i read it with the respect i want for mine.")
 
   return lines.join("\n")
