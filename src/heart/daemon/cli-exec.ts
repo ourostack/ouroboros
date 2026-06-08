@@ -98,6 +98,7 @@ import type {
   RollbackCliCommand,
   VersionsCliCommand,
   AttentionCliCommand,
+  WorkCardCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -527,6 +528,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.list":
     case "attention.show":
     case "attention.history":
+    case "work.card":
     case "inner.status":
     case "session.list":
       return "return-message"
@@ -1572,7 +1574,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -8319,6 +8321,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     }
   }
   /* v8 ignore stop */
+
+  // ── work card (local, no daemon socket needed) ──
+  if (command.kind === "work.card") {
+    const { buildWorkCard, formatWorkCardText } = await import("../work-card")
+    if (!command.agent) throw new Error("work card requires --agent <name>")
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
+    const card = buildWorkCard(command.agent, agentRoot)
+    const message = command.format === "json" ? JSON.stringify(card, null, 2) : formatWorkCardText(card)
+    deps.writeStdout(message)
+    return message
+  }
 
   // ── inner dialog status (local, no daemon socket needed) ──
   /* v8 ignore start -- inner status handler: requires real agent state on disk @preserve */

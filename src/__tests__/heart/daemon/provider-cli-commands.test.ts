@@ -1464,7 +1464,9 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-workbench-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
-    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
+    })))
       .rejects.toThrow("Ouro Workbench is not installed for Slugger")
   })
 
@@ -1486,6 +1488,7 @@ describe("provider CLI command execution", () => {
     const prompts: string[] = []
 
     const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
       promptInput: async (question) => {
         prompts.push(question)
         return "cancel"

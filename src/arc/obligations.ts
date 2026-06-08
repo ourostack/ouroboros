@@ -270,6 +270,10 @@ export function getReturnObligationsDir(agentName: string): string {
   return path.join(getAgentRoot(agentName), "arc", "obligations", "inner")
 }
 
+export function getReturnObligationsDirForRoot(agentRoot: string): string {
+  return path.join(agentRoot, "arc", "obligations", "inner")
+}
+
 export function createReturnObligation(agentName: string, obligation: ReturnObligation): string {
   const dir = getReturnObligationsDir(agentName)
   const cappedObligation: ReturnObligation = {
@@ -352,13 +356,34 @@ const RETURN_OBLIGATION_INJECTION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
 const ACTIVE_RETURN_OBLIGATION_STATUSES: ReadonlySet<ReturnObligationStatus> = new Set(["queued", "running"])
 
 function isSelfInnerReturnObligation(obligation: ReturnObligation): boolean {
-  return obligation.origin.friendId === "self" && obligation.origin.channel === "inner"
+  return obligation.origin?.friendId === "self" && obligation.origin.channel === "inner"
+}
+
+function isReturnObligationRecord(value: unknown): value is ReturnObligation {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<ReturnObligation>
+  return typeof candidate.id === "string"
+    && typeof candidate.status === "string"
+    && typeof candidate.delegatedContent === "string"
+    && typeof candidate.createdAt === "number"
+    && !!candidate.origin
+    && typeof candidate.origin.friendId === "string"
+    && typeof candidate.origin.channel === "string"
+    && typeof candidate.origin.key === "string"
 }
 
 export function listActiveReturnObligations(agentName: string, options: { now?: () => number } = {}): ReturnObligation[] {
-  const all = readJsonDir<ReturnObligation>(getReturnObligationsDir(agentName))
+  return listActiveReturnObligationsForRoot(getAgentRoot(agentName), options)
+}
+
+export function listActiveReturnObligationsForRoot(
+  agentRoot: string,
+  options: { now?: () => number } = {},
+): ReturnObligation[] {
+  const all = readJsonDir<ReturnObligation>(getReturnObligationsDirForRoot(agentRoot))
   const nowMs = (options.now ?? Date.now)()
   return all
+    .filter(isReturnObligationRecord)
     .filter((parsed) => ACTIVE_RETURN_OBLIGATION_STATUSES.has(parsed.status))
     .filter((parsed) => !isSelfInnerReturnObligation(parsed))
     .filter((parsed) => nowMs - parsed.createdAt <= RETURN_OBLIGATION_INJECTION_MAX_AGE_MS)

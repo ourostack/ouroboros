@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.657",
+  "version": "0.1.0-alpha.658",
   "main": "dist/heart/daemon/ouro-entry.js",
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
@@ -79,12 +79,12 @@
     "@types/mailparser": "^3.4.6",
     "@types/semver": "^7.7.1",
     "@types/smtp-server": "^3.5.13",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^4.1.8",
     "eslint": "^10.0.2",
     "jsdom": "^29.0.2",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "@microsoft/teams.apps": {
