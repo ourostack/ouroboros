@@ -9,23 +9,28 @@ consumer is the agent.
 
 ## Core Contract
 
-Arc is the agent's working memory:
+Arc is the agent's live continuity record:
 
 - the harness writes the important lifecycle facts automatically;
 - the agent can query it when orienting;
-- the agent can append low-authority working-memory events mid-turn;
+- the agent can append low-authority continuity events mid-turn;
 - every claim carries authority and evidence status;
 - missing state is explicit, never rendered as zero or clear state.
 
-The Work Card and Workbench are projections over this memory. They must not
+The Work Card and Workbench are projections over this record. They must not
 become source-of-truth stores.
+
+The surrounding orientation substrate is scoped in
+[Agent Orientation Substrate](agent-orientation-substrate.md). In that target
+shape, Arc owns live continuity while Desk owns durable work and the maintained
+record.
 
 ## Source Ownership
 
 Existing primitives keep their authority:
 
-- `state/sessions`: bounded working-memory projection for provider replay.
-- `arc/episodes`: salient narrative memory, not a turn log.
+- `state/sessions`: bounded working-context projection for provider replay.
+- `arc/episodes`: salient narrative record, not a turn log.
 - `arc/obligations`: owed work.
 - `arc/obligations/inner`: private return routes and held work.
 - `arc/intentions`: lightweight future nudges.
@@ -34,7 +39,7 @@ Existing primitives keep their authority:
 - `heart/active-work`: live projection input, not durable authority.
 - `heart/work-card`: read-only projection.
 - Workbench: UI and MCP lens over projections.
-- Nerves: runtime observability, not agent memory.
+- Nerves: runtime observability, not agent record.
 
 Flight Recorder connects these primitives. It does not absorb them.
 
@@ -128,7 +133,7 @@ type ClaimStatus =
   | "superseded"
 ```
 
-`authority: "agent"` is useful working memory, but it is not verification.
+`authority: "agent"` is useful agent-authored record, but it is not verification.
 Verified claims require concrete evidence: command/tool id, result, timestamp,
 source locator, and freshness relationship to the thing being claimed. If the
 source changes later, verification downgrades to `stale_risky` or `unverified`.

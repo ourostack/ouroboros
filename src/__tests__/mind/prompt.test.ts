@@ -3133,7 +3133,7 @@ describe("buildSystem with context", () => {
     expect(result).toContain("repeated heartbeat/test pokes do not mean i am failing")
     expect(result).toContain("## ponder packet sops")
     expect(result).toContain("harness_friction")
-    expect(result).toContain("think. journal. share. rest.")
+    expect(result).toContain("think. record. share. rest.")
   })
 
   it("buildSystem('inner') exposes send_message as the explicit outward escape hatch", async () => {
@@ -3462,7 +3462,7 @@ describe("loopOrientationSection", () => {
     resetPsycheCache()
     const result = flattenSystemPrompt(await buildSystem("inner"))
     // Inner dialog has metacognitive framing with its own loop text
-    expect(result).toContain("think. journal. share. rest.")
+    expect(result).toContain("think. record. share. rest.")
     // But not the external channel version
     expect(result).not.toContain("sometimes a thought of mine surfaces")
   })
@@ -4827,7 +4827,7 @@ describe("toolContractsSection (Unit 1.5)", () => {
     expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
     expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
     expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
-    expect(result).toContain("4. `search_notes` -- when I need older diary or journal material")
+    expect(result).toContain("4. `search_notes` -- when I need older written-record material")
     expect(result).toContain("5. `consult_notes` -- when I need semantic search across durable notes")
   })
 
@@ -5166,7 +5166,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
-    expect(result).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
+    expect(result).toContain("The pre-turn record check may surface relevant written-record or friend-note material")
   })
 
   it("includes 'My psyche files are always loaded'", async () => {

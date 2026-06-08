@@ -138,7 +138,7 @@ describe("note-keeping judgement heuristics — locked content", () => {
     // The tool contracts section should still have the tool descriptions
     expect(system).toContain("save_friend_note")
     expect(system).toContain("diary_write")
-    expect(system).toContain("written records")
+    expect(system).toContain("written-record material")
 
     // AND the note-keeping judgement heuristics should be present (either in the same
     // section or in a dedicated section)
@@ -200,7 +200,7 @@ describe("note-keeping judgement heuristics — routing rules", () => {
     resetPsycheCache()
     const system = flattenSystemPrompt(await buildSystem("cli")
 )
-    // Regression guard: slugger once spent a diary/journal search looking for a custom
+    // Regression guard: slugger once spent written-record search looking for a custom
     // travel/ folder that was right at the bundle root, then said "i should
     // know my own folder structure next time" — which is impossible without
     // writing it down. The diary guidance now explicitly flags bundle-layout
@@ -210,7 +210,7 @@ describe("note-keeping judgement heuristics — routing rules", () => {
     expect(system).toContain("save the fact with diary_write")
   })
 
-  it("body map says custom top-level folders may exist and instructs glob before diary/journal search", async () => {
+  it("body map says custom top-level folders may exist and instructs glob before record search", async () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
     const system = flattenSystemPrompt(await buildSystem("cli")
@@ -218,9 +218,9 @@ describe("note-keeping judgement heuristics — routing rules", () => {
     // Same slugger incident — bodyMapSection only listed the 7 standard
     // folders. Agents had no signal that bundles can have custom top-level
     // folders and no nudge to glob the bundle root before falling back to
-    // diary/journal search. (The file-listing tool is `glob`, not `list_directory`.)
+    // record search. (The file-listing tool is `glob`, not `list_directory`.)
     expect(system).toContain("custom top-level folders")
     expect(system).toContain("`glob`")
-    expect(system).toContain("BEFORE using diary/journal search")
+    expect(system).toContain("BEFORE using record search")
   })
 })

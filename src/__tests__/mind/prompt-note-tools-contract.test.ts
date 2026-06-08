@@ -104,7 +104,7 @@ describe("prompt note/friend contracts", () => {
     expect(system).toContain("not in this conversation")
 
     expect(system).toContain("search_notes")
-    expect(system).toContain("when I need older diary or journal material")
+    expect(system).toContain("when I need older written-record material")
 
     expect(system).toContain("consult_notes")
     expect(system).toContain("durable")
@@ -122,7 +122,7 @@ describe("prompt note/friend contracts", () => {
       1. \`save_friend_note\` -- when I learn something about a person, I save it immediately.
       2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately.
       3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.
-      4. \`search_notes\` -- when I need older diary or journal material, I search the written records.
+      4. \`search_notes\` -- when I need older written-record material, I search the records.
       5. \`consult_notes\` -- when I need semantic search across durable notes, I consult the note index."
     `)
   })
@@ -166,7 +166,7 @@ describe("prompt note/friend contracts", () => {
     const system = flattenSystemPrompt(await buildSystem("teams", {}, context as any)
 )
     expect(system).toContain("My active friend's notes are auto-loaded")
-    expect(system).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
+    expect(system).toContain("The pre-turn record check may surface relevant written-record or friend-note material")
     expect(system).toContain("My psyche files")
     expect(system).toContain("My desk")
   })

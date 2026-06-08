@@ -1,6 +1,6 @@
 # Ouroboros Agent Harness
 
-If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your diary, your journal, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
+If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
 
@@ -80,8 +80,9 @@ The canonical bundle shape is enforced by `src/mind/bundle-manifest.ts`. Importa
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — durable conclusions and facts the agent chose to keep
-- `journal/` — the agent's desk: working notes, thinking-in-progress, drafts
+- `arc/` — live continuity, obligations, claims, and resume state
+- `desk/` — durable work and, per the target substrate, the maintained record
+- `diary/` and `journal/` — current compatibility paths slated for the hard cut in [Agent Orientation Substrate](docs/agent-orientation-substrate.md)
 - `habits/` — the agent's autonomous rhythms (heartbeat, reflections, check-ins)
 - `friends/`
 - `state/`
@@ -225,13 +226,13 @@ To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2
 
 Agents in Ouroboros aren't just responders — they have an autonomous inner life.
 
-**Habits** are the agent's rhythms. The most fundamental is *heartbeat* — a periodic nudge that brings the agent back to their thinking space with their journal visible, obligations in view, and a sense of how long it's been. But agents can create any rhythm they want: daily reflections, weekly friend check-ins, inbox triage. Each habit fires independently via OS cron, and the agent sees their own instructions (the habit body they wrote) when it fires.
+**Habits** are the agent's rhythms. A habit is an Ouro-native cron wrapper: it fires a private agent-facing session, can surface to family or the habit originator when it needs help or needs to report back, and leaves an audit receipt.
 
-**The inner session** is where the agent thinks privately. When a sense session hits meaningful friction, the agent can *ponder* a typed packet so the work survives the current turn without losing the original objective. When a habit fires, it arrives here too. The agent can *journal* their thinking (writing to `journal/`), *surface* thoughts outward to friends, and *rest* when they're done thinking. On an idle heartbeat, `rest(status="HEARTBEAT_OK")` is the clean no-op move.
+**The inner lane** is where private sessions run. Habit runs, private returns, awaits, and self-maintenance can happen there, but the lane is not a record substrate. Anything durable leaves the lane: live continuity and audit go to Arc; work goes to Desk; learned facts and reference notes go to the Desk record.
 
-**The diary** (at `diary/`) is the agent's permanent written record — things they've learned, conclusions they've reached. The *journal* (at `journal/`) is their desk — working notes, thinking-in-progress, drafts. The diary is the shelf; the journal is the desk. Both are searchable via `search_notes`.
+**Desk and Arc** are the durable orientation pair. Arc owns live continuity, claims, obligations, and habit run receipts. Desk owns durable work and the maintained record. The target substrate is captured in [Agent Orientation Substrate](docs/agent-orientation-substrate.md).
 
-The whole system is designed so the agent *owns* their inner life. They control their breathing rate, write their own habit instructions, choose when to journal, and decide what to shelve in their diary.
+The whole system is designed so the agent *owns* its rhythms without forcing everything private to become a permanent transcript.
 
 Attachments are first-class across senses. Every attachment should remain reachable via a stable `attachment:<source>:<id>` handle, and image normalization should produce a VLM-safe variant without hiding the original artifact.
 

@@ -5,17 +5,19 @@ import * as path from "path"
 
 // ── bodyMapSection tests ─────────────────────────────────────────
 
-describe("bodyMapSection journal/diary paths", () => {
-  it("includes journal/ in the body map", async () => {
+describe("bodyMapSection written-record paths", () => {
+  it("marks journal/ as compatibility scratch, not the authoritative desk", async () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("testagent")
     expect(result).toContain("journal/")
+    expect(result).toContain("current compatibility scratch path; not my authoritative desk")
   })
 
-  it("includes diary/ in the body map", async () => {
+  it("marks diary/ as the current compatibility path", async () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("testagent")
     expect(result).toContain("diary/")
+    expect(result).toContain("current compatibility path")
   })
 
   it("does NOT include the old note-store path as a standalone section in the body map", async () => {
@@ -33,10 +35,10 @@ describe("bodyMapSection journal/diary paths", () => {
 // ── metacognitiveFramingSection tests ─────────────────────────────
 
 describe("metacognitiveFramingSection vocabulary", () => {
-  it("mentions journal", async () => {
+  it("does not teach journal as the default durable move", async () => {
     const { metacognitiveFramingSection } = await import("../../mind/prompt")
     const result = metacognitiveFramingSection("inner")
-    expect(result.toLowerCase()).toContain("journal")
+    expect(result).toContain("I do not use journal as my default durable move")
   })
 
   it("mentions diary", async () => {
@@ -57,11 +59,10 @@ describe("metacognitiveFramingSection vocabulary", () => {
     expect(result.toLowerCase()).toContain("rest")
   })
 
-  it("mentions morning briefings", async () => {
+  it("mentions where durable inner-lane output goes", async () => {
     const { metacognitiveFramingSection } = await import("../../mind/prompt")
     const result = metacognitiveFramingSection("inner")
-    // Should mention the concept of morning briefings / surfacing what you've been thinking
-    expect(result.toLowerCase()).toMatch(/morning|briefing/)
+    expect(result).toContain("Arc, Desk, or the written record")
   })
 
   it("mentions habits/ directory as home for autonomous rhythms", async () => {
