@@ -65,6 +65,7 @@ const mockWriteAgentProviderSelection = vi.fn()
 const mockPingProvider = vi.fn()
 const mockRefreshProviderCredentialPool = vi.fn()
 const mockRefreshOpenAICodexProviderCredentials = vi.fn()
+const mockRefreshContextLossSentinel = vi.fn()
 
 function defaultCredentialPool() {
   const stamp = "2026-04-13T05:30:00.000Z"
@@ -136,6 +137,10 @@ vi.mock("../../heart/providers/openai-codex-token", async () => {
     refreshOpenAICodexProviderCredentials: (...args: any[]) => mockRefreshOpenAICodexProviderCredentials(...args),
   }
 })
+
+vi.mock("../../heart/context-loss-sentinel", () => ({
+  refreshContextLossSentinel: (...args: any[]) => mockRefreshContextLossSentinel(...args),
+}))
 
 vi.mock("../../heart/auth/auth-flow", async () => {
   const actual = await vi.importActual<typeof import("../../heart/auth/auth-flow")>("../../heart/auth/auth-flow")
@@ -363,6 +368,7 @@ describe("handleInboundTurn", () => {
     mockFileStateCacheClear.mockReset()
     mockResetSessionModifiedFiles.mockReset()
     mockRefreshOpenAICodexProviderCredentials.mockReset()
+    mockRefreshContextLossSentinel.mockReset()
     mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
   })
 
@@ -905,6 +911,42 @@ describe("handleInboundTurn", () => {
       } finally {
         agentRootSpy.mockRestore()
         agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
+    it("refreshes context-loss Sentinel after normal post-turn checkpointing", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-sentinel-post-turn-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      mockRefreshContextLossSentinel.mockImplementation(async (_agentName: string, root: string) => {
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(root)
+        expect(resume.currentAsk.value).toBe("refresh Sentinel after checkpoint")
+        expect(resume.lastSafeCheckpoint.sessionRef).toBe("friend-1/cli/sentinel-test")
+      })
+      try {
+        const input = makeInput({
+          messages: [{ role: "user", content: "refresh Sentinel after checkpoint" }],
+          continuityIngressTexts: ["refresh Sentinel after checkpoint"],
+          sessionKey: "sentinel-test",
+          sessionLoader: {
+            loadOrCreate: vi.fn().mockResolvedValue({
+              messages: [{ role: "system", content: "You are helpful." }],
+              sessionPath: path.join(agentRoot, "state", "sessions", "friend-1", "cli", "sentinel-test.json"),
+            }),
+          },
+          runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
+        })
+
+        await handleInboundTurn(input)
+
+        expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
+          trigger: "post_turn",
+        }))
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
         fs.rmSync(agentRoot, { recursive: true, force: true })
       }
     })
