@@ -5,6 +5,7 @@ import { randomUUID } from "crypto"
 import {
   isFlightRecorderResume,
   readFlightRecorderResume,
+  recordFlightRecorderEvent,
   type FlightRecorderEvent,
   type FlightRecorderResume,
 } from "../arc/flight-recorder"
@@ -728,6 +729,32 @@ function syncLatestReadyLocator(receipt: ContextLossSentinelReceipt, hasLatestRe
   return receipt
 }
 
+function blockedSignalSummaries(receipt: ContextLossSentinelReceipt): string[] {
+  return receipt.signals
+    .filter((signal) => signal.verdictImpact === "blocked")
+    .map((signal) => `${signal.id}: ${signal.summary}`)
+}
+
+function recordBlockedReceiptEvent(agentRoot: string, receipt: ContextLossSentinelReceipt): void {
+  if (receipt.verdict !== "blocked") return
+  recordFlightRecorderEvent(agentRoot, {
+    id: `fr-${receipt.id}`,
+    kind: "blocker_detected",
+    recordedAt: receipt.generatedAt,
+    summary: "context-loss Sentinel blocked recovery",
+    blockedBecause: blockedSignalSummaries(receipt).map((summary) => `context-loss Sentinel blocked: ${summary}`),
+    producedRefs: [{
+      kind: "arc",
+      locator: receipt.receiptLocator,
+    }],
+    meta: {
+      source: "context-loss-sentinel",
+      receiptId: receipt.id,
+      trigger: receipt.trigger,
+    },
+  })
+}
+
 async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelReceipt, lockTimeoutMs: number): Promise<void> {
   const paths = contextLossSentinelPaths(agentRoot)
   await withFileLock(paths.lock, lockTimeoutMs, async () => {
@@ -759,6 +786,7 @@ export async function refreshContextLossSentinel(
     await sleep(options.delayBeforeWriteMs)
   }
   await persistReceipt(agentRoot, receipt, options.lockTimeoutMs ?? 5_000)
+  recordBlockedReceiptEvent(agentRoot, receipt)
   emitNervesEvent({
     component: "engine",
     event: "engine.context_loss_sentinel_refreshed",
