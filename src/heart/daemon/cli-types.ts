@@ -84,7 +84,7 @@ export type OuroCliCommand =
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
   | { kind: "inner.status"; agent?: string }
-  | { kind: "mcp-serve"; agent: string; friendId?: string }
+  | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
   | { kind: "plugin.install"; source: string; agent?: string; version?: string }
   | { kind: "plugin.list"; agent?: string }

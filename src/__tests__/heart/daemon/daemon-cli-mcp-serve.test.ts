@@ -134,6 +134,47 @@ describe("ouro mcp-serve CLI command", () => {
     })
   })
 
+  it("parses mcp-serve with --workbench-mcp <path> as a string", () => {
+    const command = parseOuroCommand([
+      "mcp-serve",
+      "--agent",
+      "slugger",
+      "--workbench-mcp",
+      "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+    ])
+    expect(command.kind).toBe("mcp-serve")
+    expect((command as any).agent).toBe("slugger")
+    expect((command as any).workbenchMcp).toBe(
+      "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP",
+    )
+  })
+
+  it("parses --workbench-mcp with no path as a boolean opt-in (self-discover)", () => {
+    const command = parseOuroCommand(["mcp-serve", "--agent", "slugger", "--workbench-mcp"])
+    expect(command.kind).toBe("mcp-serve")
+    expect((command as any).agent).toBe("slugger")
+    expect((command as any).workbenchMcp).toBe(true)
+  })
+
+  it("treats --workbench-mcp followed by another flag as a boolean opt-in", () => {
+    const command = parseOuroCommand([
+      "mcp-serve",
+      "--agent",
+      "slugger",
+      "--workbench-mcp",
+      "--friend",
+      "friend-123",
+    ])
+    expect(command.kind).toBe("mcp-serve")
+    expect((command as any).workbenchMcp).toBe(true)
+    expect((command as any).friendId).toBe("friend-123")
+  })
+
+  it("defaults workbenchMcp to undefined when --workbench-mcp not provided", () => {
+    const command = parseOuroCommand(["mcp-serve", "--agent", "slugger"])
+    expect((command as any).workbenchMcp).toBeUndefined()
+  })
+
   it("emits mcp_serve_started when runOuroCli handles mcp-serve", async () => {
     // Emit the event directly to satisfy the nerves source coverage audit.
     // The full integration test for runOuroCli mcp-serve requires stdio mocking
