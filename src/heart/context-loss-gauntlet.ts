@@ -304,7 +304,7 @@ export function runContextLossGauntlet(
   agentRoot: string,
   options: BuildWorkCardOptions = {},
 ): ContextLossGauntletReport {
-  const flightRecorderResume = readFlightRecorderResume(agentRoot)
+  const flightRecorderResume = options.flightRecorderResume ?? readFlightRecorderResume(agentRoot)
   const card = buildWorkCard(agentName, agentRoot, { ...options, flightRecorderResume })
   const generatedAt = (options.now ?? (() => new Date()))().toISOString()
   const checks = [
