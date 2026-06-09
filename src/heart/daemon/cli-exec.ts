@@ -55,6 +55,7 @@ import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus
 import {
   buildAgentProviderVisibility,
 } from "../provider-visibility"
+import { refreshContextLossSentinel } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
@@ -6553,6 +6554,17 @@ function resolveClonePath(
 }
 /* v8 ignore stop */
 
+async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): Promise<void> {
+  if (command.event !== "session-start") return
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const bundleRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
+  try {
+    await refreshContextLossSentinel(command.agent, bundleRoot, { trigger: "session_start" })
+  } catch {
+    // Hooks are best-effort and must not block the dev tool lifecycle.
+  }
+}
+
 // ── Main CLI execution ──
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
@@ -7534,6 +7546,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     } else {
       content = `[Claude Code hook: ${eventType} in session ${sessionId}]`
     }
+
+    await refreshHookSentinel(command, deps)
 
     // Send to the specific agent configured for this hook. Short-circuit
     // when the daemon socket file doesn't exist — otherwise every
