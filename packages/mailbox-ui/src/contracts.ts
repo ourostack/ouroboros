@@ -23,7 +23,6 @@ export type {
   MailboxFriendView,
   MailboxHabitItem,
   MailboxHabitView,
-  MailboxJournalEntry,
   MailboxLogEntry,
   MailboxLogView,
   MailboxMailAccessEntry,

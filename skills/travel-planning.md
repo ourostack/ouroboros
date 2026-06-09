@@ -92,7 +92,7 @@ an interactive sign-up flow.
 
 ### Post-Booking
 - Save confirmation details (confirmation number, dates, hotel name, airline, booking reference)
-- Save to diary/journal for future reference
+- Save durable travel facts to the Desk record diary or notes for future reference
 - Set reminders for check-in windows
 - Note cancellation deadlines
 

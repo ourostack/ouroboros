@@ -167,6 +167,20 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     example: "ouro task list",
     subcommands: ["list", "new", "done", "archive", "show"],
   },
+  work: {
+    category: "Tasks",
+    description: "Show the agent's durable Work Card compiled from arc records.",
+    usage: "ouro work card [--agent <name>] [--format text|json|--json]",
+    example: "ouro work card --agent slugger --format json",
+    subcommands: ["card"],
+  },
+  "work card": {
+    category: "Tasks",
+    description: "Show the agent's durable Work Card compiled from arc records.",
+    usage: "ouro work card [--agent <name>] [--format text|json|--json]",
+    example: "ouro work card --agent slugger --format json",
+    hidden: true,
+  },
   "migrate-to-desk": {
     category: "Tasks",
     description: "Migrate a legacy `tasks/` tree into the new `desk/` shape (copy semantics — source untouched).",

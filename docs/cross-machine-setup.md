@@ -184,7 +184,7 @@ After setup, open Claude Code in PowerShell — the agent is there.
 | Syncs across machines | Per-machine (not synced) |
 |---|---|
 | Psyche (SOUL.md, IDENTITY.md, etc.) | Machine identity (`~/.ouro-cli/machine.json`) |
-| Diary, journal | Provider/model lane selection (`agent.json`) |
+| Desk record diary and notes | Provider/model lane selection (`agent.json`) |
 | Habits | Daemon state (pids, health, logs) |
 | Friends | Dev tool registrations (MCP, hooks) |
 | Tasks | Vault unlock material (Keychain/DPAPI/Secret Service) |

@@ -324,7 +324,7 @@ function credentialRecordForLane(
 }
 
 function laneAudienceLabel(lane: ProviderLane): string {
-  return lane === "outward" ? "chat" : "inner dialog"
+  return lane === "outward" ? "chat" : "inner lane"
 }
 
 function bindingLabel(binding: { provider: AgentProvider; model: string }): string {

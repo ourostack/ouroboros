@@ -7,6 +7,8 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { storeProviderCredentials } from "../auth/auth-flow"
 import { getDefaultModelForProvider } from "../provider-models"
 import { renderHabitFile } from "../habits/habit-parser"
+import { createBundleMeta } from "../../mind/bundle-manifest"
+import { resolveDeskRecordPaths } from "../../mind/record-paths"
 import {
   getRepoSpecialistIdentitiesDir,
   getSpecialistIdentitySourceDir,
@@ -96,7 +98,7 @@ function writeHeartbeatHabit(bundleRoot: string, now: Date): void {
       status: "active",
       created: now.toISOString(),
     },
-    "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Journal anything important.",
+    "Run a lightweight heartbeat cycle. Review task board and inbox.\nCheck on pending obligations. Write important durable outputs to Arc or Desk record.",
   )
   fs.writeFileSync(filePath, content, "utf-8")
 }
@@ -131,12 +133,15 @@ function writeFriendImprint(bundleRoot: string, humanName: string, now: Date): v
   fs.writeFileSync(path.join(friendsDir, `${id}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf-8")
 }
 
-function writeDiaryScaffold(bundleRoot: string): void {
-  const diaryRoot = path.join(bundleRoot, "diary")
-  fs.mkdirSync(path.join(diaryRoot, "daily"), { recursive: true })
-  fs.mkdirSync(path.join(diaryRoot, "archive"), { recursive: true })
-  fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), "", "utf-8")
-  fs.writeFileSync(path.join(diaryRoot, "entities.json"), "{}\n", "utf-8")
+function writeRecordScaffold(bundleRoot: string): void {
+  const recordPaths = resolveDeskRecordPaths(bundleRoot)
+  fs.mkdirSync(recordPaths.diaryDailyDir, { recursive: true })
+  fs.mkdirSync(recordPaths.notesRoot, { recursive: true })
+  fs.writeFileSync(recordPaths.factsPath, "", "utf-8")
+  fs.writeFileSync(recordPaths.entitiesPath, "{}\n", "utf-8")
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "events"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "habit-receipts"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "claims"), { recursive: true })
 }
 
 function writeHatchlingAgentConfig(bundleRoot: string, input: HatchFlowInput): void {
@@ -179,7 +184,9 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
 
   writeReadme(bundleRoot, "Root of this agent bundle.")
   writeReadme(path.join(bundleRoot, "psyche"), "Identity and behavior files.")
-  writeReadme(path.join(bundleRoot, "diary"), "Persistent diary -- things I have learned and chosen to keep.")
+  writeReadme(path.join(bundleRoot, "arc"), "Live continuity, claims, obligations, and resume state.")
+  writeReadme(path.join(bundleRoot, "desk"), "Durable work and maintained record.")
+  writeReadme(path.join(bundleRoot, "desk", "_record"), "Desk record: diary facts and maintained reference notes.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")
@@ -190,8 +197,9 @@ export async function runHatchFlow(input: HatchFlowInput, deps: HatchFlowDeps = 
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
   writeHatchlingAgentConfig(bundleRoot, input)
+  fs.writeFileSync(path.join(bundleRoot, "bundle-meta.json"), `${JSON.stringify(createBundleMeta(), null, 2)}\n`, "utf-8")
   const credentialPath = await storeHatchlingProviderCredentials(input.agentName, input.provider, input.credentials)
-  writeDiaryScaffold(bundleRoot)
+  writeRecordScaffold(bundleRoot)
   writeFriendImprint(bundleRoot, input.humanName, now)
   writeHeartbeatHabit(bundleRoot, now)
 

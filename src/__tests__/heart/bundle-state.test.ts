@@ -150,7 +150,7 @@ describe("detectBundleState", () => {
           error: "rebase left conflicts",
           failedAt: new Date().toISOString(),
           classification: "pull_rebase_conflict",
-          conflictFiles: ["journal/entry.md", "friends/ari.json"],
+          conflictFiles: ["desk/_record/notes/entry.md", "friends/ari.json"],
         }),
         "utf-8",
       )

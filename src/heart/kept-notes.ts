@@ -1,13 +1,11 @@
 import type OpenAI from "openai"
-import * as fs from "fs"
-import * as path from "path"
 
 import { readDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../mind/diary"
 import type { FriendRecord } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface KeptNoteSource {
-  kind: "diary" | "journal" | "friend-note"
+  kind: "diary" | "friend-note"
   label: string
   ref?: string
 }
@@ -38,18 +36,12 @@ export type KeptNotesOutcome =
 
 export interface InjectKeptNotesOptions {
   diaryRoot?: string
-  journalDir?: string
   friend?: FriendRecord
   judge?: KeptNotesJudge
   timeoutMs?: number
   channel?: string
   traceId?: string
   signal?: AbortSignal
-}
-
-interface JournalIndexEntry {
-  filename: string
-  preview: string
 }
 
 interface KeptNotesRuntimeCallbacks {
@@ -119,27 +111,6 @@ function scoreText(queryTerms: Set<string>, text: string): number {
   return matches / queryTerms.size
 }
 
-function readJournalIndex(journalDir: string): JournalIndexEntry[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(journalDir, ".index.json"), "utf8")) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((entry): entry is JournalIndexEntry => (
-        typeof entry === "object" &&
-        entry !== null &&
-        typeof (entry as { filename?: unknown }).filename === "string" &&
-        typeof (entry as { preview?: unknown }).preview === "string"
-      ))
-  } catch {
-    return []
-  }
-}
-
-function journalDirForDiaryRoot(diaryRoot: string, explicitJournalDir?: string): string {
-  if (explicitJournalDir) return explicitJournalDir
-  return path.join(path.dirname(diaryRoot), "journal")
-}
-
 function diaryCandidate(fact: DiaryEntry): KeptNoteCandidate {
   return {
     text: fact.text,
@@ -173,18 +144,7 @@ export function gatherKeptNotesCandidates(query: string, options: InjectKeptNote
     .map((fact) => ({ candidate: diaryCandidate(fact), score: scoreText(queryTerms, fact.text) }))
     .filter((entry) => entry.score > 0)
 
-  const journalDir = journalDirForDiaryRoot(diaryRoot, options.journalDir)
-  const journalCandidates = readJournalIndex(journalDir)
-    .map((entry) => ({
-      candidate: {
-        text: `${entry.filename}: ${entry.preview}`,
-        source: { kind: "journal" as const, label: "journal", ref: entry.filename },
-      },
-      score: scoreText(queryTerms, `${entry.filename} ${entry.preview}`),
-    }))
-    .filter((entry) => entry.score > 0)
-
-  return [...diaryCandidates, ...journalCandidates, ...friendNoteCandidates(options.friend, queryTerms)]
+  return [...diaryCandidates, ...friendNoteCandidates(options.friend, queryTerms)]
     .sort((left, right) => right.score - left.score)
     .slice(0, MAX_CANDIDATES)
     .map((entry) => entry.candidate)
@@ -217,17 +177,15 @@ function fuzzyLine(text: string): string {
   return `I may have kept something related: ${trimmed}`
 }
 
-const SOURCE_KIND_ORDER: KeptNoteSource["kind"][] = ["diary", "journal", "friend-note"]
+const SOURCE_KIND_ORDER: KeptNoteSource["kind"][] = ["diary", "friend-note"]
 const SOURCE_KIND_LABELS: Record<KeptNoteSource["kind"], string> = {
-  diary: "my diary",
-  journal: "my journal",
+  diary: "my Desk record diary",
   "friend-note": "my friend notes",
 }
 
 function joinLabels(labels: string[]): string {
   if (labels.length === 1) return labels[0]
-  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`
-  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`
+  return `${labels[0]} and ${labels[1]}`
 }
 
 function sourceHeading(sources: KeptNoteSource[]): string {
@@ -235,7 +193,7 @@ function sourceHeading(sources: KeptNoteSource[]): string {
   const labels = SOURCE_KIND_ORDER
     .filter((kind) => sourceKinds.has(kind))
     .map((kind) => SOURCE_KIND_LABELS[kind])
-  if (labels.length === 0) return "## from notes i chose to keep"
+  if (labels.length === 0) return "## from my kept record"
   return `## from ${joinLabels(labels)}`
 }
 

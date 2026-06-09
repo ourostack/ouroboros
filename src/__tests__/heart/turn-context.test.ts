@@ -122,9 +122,27 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
   getDefaultHealthPath: () => mockGetDefaultHealthPath(),
 }))
 
-const mockReadJournalFiles = vi.fn().mockReturnValue([])
-vi.mock("../../mind/prompt", () => ({
-  readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
+const baseFlightRecorderResume = {
+  schemaVersion: 1,
+  hasCompleteState: false,
+  canContinue: false,
+  missing: ["currentAsk", "nextSafeAction"],
+  gaps: [],
+  currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+  nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+  blockedBecause: [],
+  activeObligationIds: [],
+  activeReturnObligationIds: [],
+  activePacketIds: [],
+  openEvolutionCaseIds: [],
+  recentClaimIds: [],
+  unverifiedClaimIds: [],
+  lastSafeCheckpoint: { turnId: null, sessionRef: null, recordedAt: null, sourceEventIds: [] },
+  recorderHealth: { status: "degraded", issues: ["latest.json missing"] },
+} as const
+const mockReadFlightRecorderResume = vi.fn().mockReturnValue(baseFlightRecorderResume)
+vi.mock("../../arc/flight-recorder", () => ({
+  readFlightRecorderResume: (...args: any[]) => mockReadFlightRecorderResume(...args),
 }))
 
 const mockListVisibleBackgroundOperations = vi.fn().mockReturnValue([])
@@ -198,7 +216,7 @@ describe("buildTurnContext", () => {
       error: "missing machine runtime config",
     })
     mockReadHealth.mockReturnValue(null)
-    mockReadJournalFiles.mockReturnValue([])
+    mockReadFlightRecorderResume.mockReturnValue(baseFlightRecorderResume)
     mockListVisibleBackgroundOperations.mockReturnValue([])
     mockReadInnerDialogRawData.mockReturnValue({
       pendingMessages: [],
@@ -243,7 +261,7 @@ describe("buildTurnContext", () => {
     expect(ctx.senseStatusLines).toEqual(expect.arrayContaining([expect.stringContaining("CLI")]))
     expect(ctx.bundleMeta).toBeNull()
     expect(ctx.daemonHealth).toBeNull()
-    expect(ctx.journalFiles).toEqual([])
+    expect(ctx.flightRecorderResume).toEqual(baseFlightRecorderResume)
   })
 
   it("emits a nerves event with context metadata", async () => {
@@ -409,15 +427,23 @@ describe("buildTurnContext", () => {
     expect(ctx.syncConfig).toEqual({ enabled: false, remote: "origin" })
   })
 
-  it("reads daemon health and journal files for prompt pre-reads", async () => {
+  it("reads daemon health and Arc resume for prompt pre-reads", async () => {
     const healthState = { habits: {}, degraded: [] }
-    const journalEntry = { name: "entry.md", mtime: 12345, preview: "hello" }
+    const resume = {
+      ...baseFlightRecorderResume,
+      hasCompleteState: true,
+      canContinue: true,
+      currentAsk: { value: "finish the migration", confidence: "current", sourceEventIds: ["fr-1"] },
+      nextSafeAction: { value: "run the tests", stopBefore: ["merge"], sourceEventIds: ["fr-1"] },
+      missing: [],
+      recorderHealth: { status: "ok", issues: [] },
+    }
     mockReadHealth.mockReturnValue(healthState)
-    mockReadJournalFiles.mockReturnValue([journalEntry])
+    mockReadFlightRecorderResume.mockReturnValue(resume)
 
     const ctx = await buildTurnContext(makeInput())
     expect(ctx.daemonHealth).toEqual(healthState)
-    expect(ctx.journalFiles).toEqual([journalEntry])
+    expect(ctx.flightRecorderResume).toEqual(resume)
   })
 
   it("handles daemon health read failure gracefully", async () => {
@@ -427,11 +453,12 @@ describe("buildTurnContext", () => {
     expect(ctx.daemonHealth).toBeNull()
   })
 
-  it("handles journal files read failure gracefully", async () => {
-    mockReadJournalFiles.mockImplementation(() => { throw new Error("journal fail") })
+  it("handles Arc resume read failure gracefully", async () => {
+    mockReadFlightRecorderResume.mockImplementation(() => { throw new Error("flight recorder fail") })
 
     const ctx = await buildTurnContext(makeInput())
-    expect(ctx.journalFiles).toEqual([])
+    expect(ctx.flightRecorderResume.recorderHealth.status).toBe("degraded")
+    expect(ctx.flightRecorderResume.recorderHealth.issues[0]).toContain("flight recorder fail")
   })
 
   it("handles inner work state read failure gracefully", async () => {

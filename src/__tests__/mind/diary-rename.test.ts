@@ -21,11 +21,11 @@ describe("diary tool definitions", () => {
     })
   })
 
-  it("has a search_notes tool (replaces the old search tool)", async () => {
+  it("has a search_facts tool (replaces the old search tool)", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
-    const search_notes = baseToolDefinitions.find((d) => d.tool.function.name === "search_notes")
-    expect(search_notes).toBeDefined()
-    expect(search_notes!.tool.function.parameters).toMatchObject({
+    const searchFacts = baseToolDefinitions.find((d) => d.tool.function.name === "search_facts")
+    expect(searchFacts).toBeDefined()
+    expect(searchFacts!.tool.function.parameters).toMatchObject({
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
@@ -61,17 +61,19 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 describe("diary default path", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockGetAgentRoot.mockReset()
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("")
+    const { resetRecordStoreMigrationTrackingForTests } = await import("../../mind/record-paths")
+    resetRecordStoreMigrationTrackingForTests()
   })
 
-  it("readDiaryEntries defaults to diary/ without using the old psyche store", async () => {
+  it("readDiaryEntries defaults to the Desk record diary", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-path-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create diary/ with a facts file
-    const diaryDir = path.join(agentRoot, "diary")
+    const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
+    const diaryDir = resolveDeskRecordPaths(agentRoot).diaryRoot
     fs.mkdirSync(diaryDir, { recursive: true })
     const fact = { id: "f1", text: "test fact", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [] }
     fs.writeFileSync(path.join(diaryDir, "facts.jsonl"), JSON.stringify(fact) + "\n", "utf8")
@@ -82,8 +84,8 @@ describe("diary default path", () => {
     expect(facts[0].text).toBe("test fact")
   })
 
-  it("readDiaryEntries does NOT fall back to the old psyche store -- always uses diary/", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-no-fallback-"))
+  it("migrates the old psyche store into the Desk record diary", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-legacy-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
     const legacyDir = path.join(agentRoot, "psyche", "mem" + "ory")
@@ -93,10 +95,12 @@ describe("diary default path", () => {
 
     const { readDiaryEntries } = await import("../../mind/diary")
     const facts = readDiaryEntries()
-    expect(facts).toHaveLength(0)
+    expect(facts).toHaveLength(1)
+    expect(facts[0].text).toBe("legacy fact")
+    expect(fs.existsSync(legacyDir)).toBe(false)
   })
 
-  it("saveDiaryEntry writes to diary/ by default", async () => {
+  it("saveDiaryEntry writes to the Desk record diary by default", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-write-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
@@ -108,7 +112,8 @@ describe("diary default path", () => {
       now: () => new Date("2026-03-25T00:00:00Z"),
     })
 
-    const diaryDir = path.join(agentRoot, "diary")
+    const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
+    const diaryDir = resolveDeskRecordPaths(agentRoot).diaryRoot
     expect(fs.existsSync(path.join(diaryDir, "facts.jsonl"))).toBe(true)
     const content = fs.readFileSync(path.join(diaryDir, "facts.jsonl"), "utf8")
     expect(content).toContain("new diary entry")
@@ -135,7 +140,7 @@ describe("migrateToolNames diary renames", () => {
     expect((migrated[0] as any).tool_calls[0].function.name).toBe("diary_write")
   })
 
-  it("rewrites the old search tool to search_notes in session history", async () => {
+  it("rewrites the old search tool to search_facts in session history", async () => {
     const { migrateToolNames } = await import("../../mind/context")
     const messages: any[] = [
       {
@@ -145,7 +150,7 @@ describe("migrateToolNames diary renames", () => {
       { role: "tool", tool_call_id: "tc1", content: "results" },
     ]
     const migrated = migrateToolNames(messages)
-    expect((migrated[0] as any).tool_calls[0].function.name).toBe("search_notes")
+    expect((migrated[0] as any).tool_calls[0].function.name).toBe("search_facts")
   })
 })
 
@@ -155,18 +160,20 @@ const mockFetch = vi.fn()
 vi.stubGlobal("fetch", mockFetch)
 
 describe("injectNoteSearchContext diary path", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     mockGetAgentRoot.mockReset()
     mockGetOpenAIEmbeddingsApiKey.mockReset().mockReturnValue("test-key")
     mockFetch.mockReset()
+    const { resetRecordStoreMigrationTrackingForTests } = await import("../../mind/record-paths")
+    resetRecordStoreMigrationTrackingForTests()
   })
 
-  it("reads from diary/ by default without using the old psyche store", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-diary-"))
+  it("reads from the Desk record diary by default", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-diary-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
-    // Create diary/ with facts
-    const diaryDir = path.join(agentRoot, "diary")
+    const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
+    const diaryDir = resolveDeskRecordPaths(agentRoot).diaryRoot
     fs.mkdirSync(diaryDir, { recursive: true })
     const fact = { id: "f1", text: "auth uses oauth2", source: "test", createdAt: "2026-03-25T00:00:00Z", embedding: [0.1, 0.2, 0.3] }
     fs.writeFileSync(path.join(diaryDir, "facts.jsonl"), JSON.stringify(fact) + "\n", "utf8")
@@ -184,12 +191,11 @@ describe("injectNoteSearchContext diary path", () => {
     ]
 
     await injectNoteSearchContext(messages)
-    // Should find the fact from diary/ and inject it
     expect(messages[0].content).toContain("auth uses oauth2")
   })
 
-  it("does NOT fall back to the old psyche store when diary/ does not exist", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-no-fallback-"))
+  it("migrates the old psyche store before retrieval", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-migrate-"))
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
     const legacyDir = path.join(agentRoot, "psyche", "mem" + "ory")
@@ -209,7 +215,8 @@ describe("injectNoteSearchContext diary path", () => {
     ]
 
     await injectNoteSearchContext(messages)
-    expect(messages[0].content).not.toContain("legacy auth fact")
+    expect(messages[0].content).toContain("legacy auth fact")
+    expect(fs.existsSync(legacyDir)).toBe(false)
   })
 })
 
@@ -242,7 +249,7 @@ describe("diary_write tool handler", () => {
 
     await diaryWrite!.handler({ entry: "test entry" }, undefined)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const content = fs.readFileSync(factsPath, "utf8")
     expect(content).toContain("tool:diary_write")
   })

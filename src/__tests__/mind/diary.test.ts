@@ -280,7 +280,7 @@ describe("diary write path", () => {
   it("keeps friend note tools available alongside agent diary tools", () => {
     const names = baseToolDefinitions.map((def) => def.tool.function.name);
     expect(names).toContain("save_friend_note");
-    expect(names).toContain("search_notes");
+    expect(names).toContain("search_facts");
   });
 
   it("saveDiaryEntry writes embedding vectors when provider succeeds", async () => {
@@ -713,7 +713,7 @@ describe("diary write path", () => {
   it("backfillEmbeddings uses default diary root when not provided", async () => {
     vi.resetModules();
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-backfill-default-"));
-    const notesDir = path.join(tmpRoot, "diary");
+    const notesDir = path.join(tmpRoot, "desk", "_record", "diary");
     fs.mkdirSync(notesDir, { recursive: true });
     const factsPath = path.join(notesDir, "facts.jsonl");
     fs.writeFileSync(factsPath, JSON.stringify({ id: "f1", text: "test", source: "cli", createdAt: "", embedding: [] }) + "\n", "utf8");

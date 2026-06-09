@@ -381,7 +381,7 @@ describe("postTurnPush", () => {
       }
       if (argv[0] === "status" && argv[1] === "--porcelain=v1") {
         // Simulate unmerged files after rebase conflict
-        return Buffer.from("UU journal/entry.md\nUU friends/ari.json\n")
+        return Buffer.from("UU desk/_record/notes/entry.md\nUU friends/ari.json\n")
       }
       if (argv[0] === "remote") return Buffer.from("origin\n")
       if (argv[0] === "push") throw new Error("push rejected")
@@ -397,7 +397,7 @@ describe("postTurnPush", () => {
     expect(fs.existsSync(pendingPath)).toBe(true)
     const pending = JSON.parse(fs.readFileSync(pendingPath, "utf-8"))
     expect(pending.classification).toBe("pull_rebase_conflict")
-    expect(pending.conflictFiles).toEqual(["journal/entry.md", "friends/ari.json"])
+    expect(pending.conflictFiles).toEqual(["desk/_record/notes/entry.md", "friends/ari.json"])
 
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })

@@ -13,7 +13,7 @@
  *   - Build artifacts (rare in bundles, but possible).
  *
  * It DOES NOT handle PII. The bundle is inherently full of PII — `friends/`,
- * `diary/`, `journal/`, `psyche/`, `arc/`, `facts/`, `family/`, `travel/`
+ * `desk/_record/`, `psyche/`, `arc/`, `facts/`, `family/`, `travel/`
  * etc. That's the point of the bundle; blocking those via .gitignore would
  * defeat the purpose.
  *
@@ -53,19 +53,18 @@ dist/
 `
 
 /**
- * PII-sensitive top-level directories. Enumerated here so `bundle_first_push_review`
+ * PII-sensitive bundle directories. Enumerated here so `bundle_first_push_review`
  * can categorize and count. Adding a new PII bucket to the bundle means adding
  * it here so the first-push warning includes it.
  */
 export const PII_BUNDLE_DIRECTORIES: readonly string[] = [
   "friends",
-  "diary",
-  "journal",
+  "desk/_record/diary",
+  "desk/_record/notes",
   "psyche",
   "arc",
   "facts",
   "family",
   "travel",
-  "notes",
   "sessions",
 ] as const

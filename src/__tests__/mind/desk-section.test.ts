@@ -63,15 +63,15 @@ describe("deskSection", () => {
     vi.clearAllMocks()
   })
 
-  it("always includes the static desk-room body and all three 'what doesn't' bullets", () => {
+  it("always includes the static desk-room body and the current 'what doesn't' boundaries", () => {
     const result = deskSection(NOW)
     expect(result).toContain("## my desk")
     expect(result).toContain("i have a desk")
-    // all three "what doesn't" bullets including the first-class systems one
     expect(result).toContain("- a single-turn answer")
     expect(result).toContain("- ephemeral debugging that resolves in the same exchange")
-    expect(result).toContain("work that has its own room")
-    expect(result).toContain("trips live in a travel folder")
+    expect(result).toContain("live continuity, claims, and obligations")
+    expect(result).toContain("habit definitions")
+    expect(result).toContain("maintained record belongs under desk/_record")
   })
 
   it("returns empty-desk stub when no <bundle>/desk/ dir exists", () => {

@@ -28,7 +28,7 @@ Do not introduce a second credential source of truth. Raw credentials belong in 
 Every agent has two provider lanes in `agent.json`:
 
 - `outward`: CLI, Teams, BlueBubbles, Mail, Voice, and other human-facing senses.
-- `inner`: inner dialogue and agent-facing model calls.
+- `inner`: private agent-facing turns and agent-facing model calls.
 
 Both lanes must be complete on each machine:
 

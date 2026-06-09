@@ -26,6 +26,9 @@ export interface HabitTurnMessageOptions {
   staleObligations: StaleObligationInfo[]
   parseErrors: HabitParseErrorInfo[]
   degradedComponents: DegradedComponentInfo[]
+  arcResume?: string
+  deskOrientation?: string
+  surfacePolicy?: string
   now: () => Date
 }
 
@@ -49,10 +52,14 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
     staleObligations,
     parseErrors,
     degradedComponents,
+    arcResume,
+    deskOrientation,
+    surfacePolicy,
     now,
   } = options
 
   const hasBody = habitBody !== undefined && habitBody !== ""
+  const leadingSections = buildLeadingSections(arcResume, deskOrientation, surfacePolicy)
 
   // First beat: lastRun is null
   if (lastRun === null) {
@@ -64,7 +71,7 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
         message: "habit turn message built (cold start)",
         meta: { habitName, coldStart: true },
       })
-      return "...time passing. anything stirring?"
+      return joinSections(leadingSections, ["...time passing. anything stirring?"])
     }
 
     if (!hasBody) {
@@ -80,7 +87,7 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
         message: "habit turn message built (first beat, no body)",
         meta: { habitName, firstBeat: true, hasBody: false },
       })
-      return sections.join("\n\n")
+      return joinSections(leadingSections, sections)
     }
 
     const sections: string[] = [
@@ -95,7 +102,7 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
       message: "habit turn message built (first beat)",
       meta: { habitName, firstBeat: true },
     })
-    return sections.join("\n\n")
+    return joinSections(leadingSections, sections)
   }
 
   // Normal turn
@@ -134,7 +141,19 @@ export function buildHabitTurnMessage(options: HabitTurnMessageOptions): string 
     },
   })
 
-  return sections.join("\n\n")
+  return joinSections(leadingSections, sections)
+}
+
+function buildLeadingSections(arcResume?: string, deskOrientation?: string, surfacePolicy?: string): string[] {
+  const sections: string[] = []
+  if (arcResume?.trim()) sections.push(arcResume.trim())
+  if (deskOrientation?.trim()) sections.push(deskOrientation.trim())
+  if (surfacePolicy?.trim()) sections.push(surfacePolicy.trim())
+  return sections
+}
+
+function joinSections(leadingSections: string[], sections: string[]): string {
+  return [...leadingSections, ...sections].filter((section) => section.trim().length > 0).join("\n\n")
 }
 
 function appendTrailingExtras(

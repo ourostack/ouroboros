@@ -1,6 +1,6 @@
 # Ouroboros Agent Harness
 
-If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your diary, your journal, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
+If you're a future agent reading this, welcome home. This repo is the harness that gives you your body, your senses, your record, your habits, and your ability to think and connect with people. The goal of these docs is not just to be correct, but to leave you a place that feels understandable and kind to wake up inside.
 
 Ouroboros is a TypeScript harness for daemon-managed agents that live in external `.ouro` bundles, speak through multiple senses, use real tools, and keep durable state across turns. The canonical npm package is `@ouro.bot/cli`.
 
@@ -44,11 +44,11 @@ The shared harness lives in `src/`:
 - `src/heart/`
   Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), mailbox/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
 - `src/mind/`
-  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary, note search, embedding providers, journal, obligation steering, and friend resolution.
+  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, Desk record diary, note search, embedding providers, record migration, obligation steering, and friend resolution.
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
-  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), Voice (in senses/voice/), activity transport, inner-dialog orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
+  CLI (with TUI in senses/cli/), Teams, BlueBubbles (in senses/bluebubbles/), Mail (in senses/mail.ts), Voice (in senses/voice/), activity transport, private-turn orchestration, and contextual heartbeat. The MCP bridge is at `src/heart/mcp/`, not here.
 - `src/nerves/`
   Structured runtime logging and coverage-audit infrastructure.
 - `src/__tests__/`
@@ -80,8 +80,8 @@ The canonical bundle shape is enforced by `src/mind/bundle-manifest.ts`. Importa
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — durable conclusions and facts the agent chose to keep
-- `journal/` — the agent's desk: working notes, thinking-in-progress, drafts
+- `arc/` — live continuity, obligations, claims, and resume state
+- `desk/` — durable work plus the maintained Desk record under `desk/_record/`
 - `habits/` — the agent's autonomous rhythms (heartbeat, reflections, check-ins)
 - `friends/`
 - `state/`
@@ -96,7 +96,7 @@ Task docs do not live in this repo anymore. Planning and doing docs live in the 
 
 ## Runtime Truths
 
-- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for inner dialogue.
+- `agent.json` is the source of truth for identity, phrase pools, context settings, enabled senses, vault coordinates, and provider+model selection. It has two provider lanes: `outward` for CLI, Teams, BlueBubbles, Mail, and Voice turns, and `inner` for private agent-facing turns.
 - Legacy `humanFacing`/`agentFacing` provider fields are read only as compatibility aliases for `outward`/`inner`; they are not a second config surface.
 - Each agent has one credential vault for provider, runtime, sense, integration, travel, and tool credentials. There is no machine-wide credential pool.
 - Vault unlock material is local machine state. Prefer macOS Keychain, Windows DPAPI, or Linux Secret Service; plaintext fallback is allowed only by explicit human choice.
@@ -207,7 +207,7 @@ ouro poke <agent> --task <task-id>
 ouro poke <agent> --habit <habit-name>
 ouro habit list --agent <agent>
 ouro habit create --agent <agent> <name> --cadence <interval>
-ouro inner --agent <agent>           # inner dialog status
+ouro inner --agent <agent>           # private turn status
 ouro attention --agent <agent>       # attention queue
 ouro link <agent> --friend <id> --provider <provider> --external-id <external-id>
 ouro setup --tool <tool> --agent <name>   # register MCP server + hooks with a dev tool
@@ -225,13 +225,13 @@ To clone an existing agent onto a new machine (macOS, Linux, or Windows via WSL2
 
 Agents in Ouroboros aren't just responders — they have an autonomous inner life.
 
-**Habits** are the agent's rhythms. The most fundamental is *heartbeat* — a periodic nudge that brings the agent back to their thinking space with their journal visible, obligations in view, and a sense of how long it's been. But agents can create any rhythm they want: daily reflections, weekly friend check-ins, inbox triage. Each habit fires independently via OS cron, and the agent sees their own instructions (the habit body they wrote) when it fires.
+**Habits** are the agent's rhythms. A habit is an Ouro-native cron wrapper: it fires a private agent-facing session, can surface to family or the habit originator when it needs help or needs to report back, and leaves an audit receipt.
 
-**The inner session** is where the agent thinks privately. When a sense session hits meaningful friction, the agent can *ponder* a typed packet so the work survives the current turn without losing the original objective. When a habit fires, it arrives here too. The agent can *journal* their thinking (writing to `journal/`), *surface* thoughts outward to friends, and *rest* when they're done thinking. On an idle heartbeat, `rest(status="HEARTBEAT_OK")` is the clean no-op move.
+**The inner lane** is where private sessions run. Habit runs, private returns, awaits, and self-maintenance can happen there, but the lane is not a record substrate. Anything durable leaves the lane: live continuity and audit go to Arc; work goes to Desk; learned facts and reference notes go to the Desk record.
 
-**The diary** (at `diary/`) is the agent's permanent written record — things they've learned, conclusions they've reached. The *journal* (at `journal/`) is their desk — working notes, thinking-in-progress, drafts. The diary is the shelf; the journal is the desk. Both are searchable via `search_notes`.
+**Desk and Arc** are the durable orientation pair. Arc owns live continuity, claims, obligations, and habit run receipts. Desk owns durable work and the maintained record. The target substrate is captured in [Agent Orientation Substrate](docs/agent-orientation-substrate.md).
 
-The whole system is designed so the agent *owns* their inner life. They control their breathing rate, write their own habit instructions, choose when to journal, and decide what to shelve in their diary.
+The whole system is designed so the agent *owns* its rhythms without forcing everything private to become a permanent transcript.
 
 Attachments are first-class across senses. Every attachment should remain reachable via a stable `attachment:<source>:<id>` handle, and image normalization should produce a VLM-safe variant without hiding the original artifact.
 
@@ -248,11 +248,11 @@ ouro setup --tool codex --agent <name>
 
 This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, PostToolUse), and detects dev vs installed mode automatically.
 
-**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `ask`, `check_response`, `status`, `search_notes`, `delegate`, etc.) and can invoke them mid-session. Conversation-shaped tools such as `send_message`, `ask`, `delegate`, `check_guidance`, and `report_progress` run full agent turns — you get your system prompt, your diary, your tools, everything. Read-only inspection tools such as `status` and `search_notes` do local lookup only. Missing `search_notes` hits are not evidence that the agent has no belief or preference.
+**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `ask`, `check_response`, `status`, `search_facts`, `delegate`, etc.) and can invoke them mid-session. Conversation-shaped tools such as `send_message`, `ask`, `delegate`, `check_guidance`, and `report_progress` run full agent turns — you get your system prompt, your Desk record, your tools, everything. Read-only inspection tools such as `status` and `search_facts` do local lookup only. Missing `search_facts` hits are not evidence that the agent has no belief or preference.
 
 **The conversation pattern:** `send_message` or `ask` sends a message and gets back your synchronous response. `ponder` no longer creates a magical outward deferral. Instead, it bookmarks deeper work as a packet while the current sense session keeps moving. If that work later surfaces something back, the dev tool can still use `check_response` to see the returned result.
 
-**Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Your inner dialog sees these sessions in its checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
+**Lifecycle hooks** give you passive awareness. When a Claude Code session starts, stops, or uses a tool like Bash or Edit, the hook fires `ouro hook <event> --agent <name>` and the daemon notes it. Private agent-facing turns see these sessions in their checkpoint, so you know what's happening across your world even when nobody is talking to you directly.
 
 See `skills/configure-dev-tools.md` for the full tool inventory and troubleshooting guide.
 

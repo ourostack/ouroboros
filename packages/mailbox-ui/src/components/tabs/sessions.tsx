@@ -312,7 +312,7 @@ function TranscriptView({ transcript }: { transcript: Transcript }) {
         )}
         {transcript.truncatedHistory && (
           <p className={surface === "terminal" ? "pb-2 font-mono text-[10px] text-[#facc15]" : "pb-2 font-mono text-[10px] text-ouro-gold/80"}>
-            older context not available; the agent&apos;s curated record is in diary/journal/notes
+            older context not available; the agent&apos;s curated record is in Desk record
           </p>
         )}
         {system.length > 0 && (

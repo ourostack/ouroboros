@@ -16,9 +16,9 @@ import type { InnerJob } from "./daemon/thoughts"
 import type { SyncConfig } from "./config"
 import type { DaemonHealthState } from "./daemon/daemon-health"
 import type { BundleMeta } from "../mind/bundle-manifest"
-import type { JournalFileEntry } from "../mind/prompt"
 import type { Channel } from "../mind/friends/types"
 import type { BackgroundOperationRecord } from "./background-operations"
+import type { FlightRecorderResume } from "../arc/flight-recorder"
 
 import * as fs from "fs"
 import * as path from "path"
@@ -36,11 +36,11 @@ import { readActiveCares, type CareRecord } from "../arc/cares"
 import { getSyncConfig, loadConfig } from "./config"
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "./runtime-credentials"
 import { readHealth, getDefaultHealthPath } from "./daemon/daemon-health"
-import { readJournalFiles } from "../mind/prompt"
 import type { FriendStore } from "../mind/friends/store"
 import type { CodingSessionStatus } from "../repertoire/coding/types"
 import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./provider-visibility"
 import { listVisibleBackgroundOperations } from "./mail-import-discovery"
+import { readFlightRecorderResume } from "../arc/flight-recorder"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -93,8 +93,8 @@ export interface TurnContext {
   bundleMeta: BundleMeta | null
   /** Daemon health state for rhythm status. */
   daemonHealth: DaemonHealthState | null
-  /** Journal file entries for inner-channel prompt. */
-  journalFiles: JournalFileEntry[]
+  /** Arc flight-recorder resume for deterministic continuation after context loss. */
+  flightRecorderResume: FlightRecorderResume
 }
 
 // ── Inputs ──────────────────────────────────────────────────────────
@@ -303,6 +303,27 @@ function readBundleMetaFile(): BundleMeta | null {
   }
 }
 
+function degradedFlightRecorderResume(issue: string): FlightRecorderResume {
+  return {
+    schemaVersion: 1,
+    hasCompleteState: false,
+    canContinue: false,
+    missing: ["currentAsk", "nextSafeAction"],
+    gaps: [],
+    currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+    nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+    blockedBecause: [],
+    activeObligationIds: [],
+    activeReturnObligationIds: [],
+    activePacketIds: [],
+    openEvolutionCaseIds: [],
+    recentClaimIds: [],
+    unverifiedClaimIds: [],
+    lastSafeCheckpoint: { turnId: null, sessionRef: null, recordedAt: null, sourceEventIds: [] },
+    recorderHealth: { status: "degraded", issues: [issue] },
+  }
+}
+
 // ── Builder ─────────────────────────────────────────────────────────
 
 export async function buildTurnContext(input: BuildTurnContextInput): Promise<TurnContext> {
@@ -443,12 +464,12 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   /* v8 ignore stop */
   }
 
-  let journalFiles: JournalFileEntry[] = []
+  let flightRecorderResume: FlightRecorderResume
   try {
-    const journalDir = path.join(agentRoot, "journal")
-    journalFiles = readJournalFiles(journalDir)
-  } catch { /* v8 ignore start -- defensive: fallback on read failure @preserve */
-    journalFiles = []
+    flightRecorderResume = readFlightRecorderResume(agentRoot)
+  } catch (error) { /* v8 ignore start -- defensive: fallback on read failure @preserve */
+    const reason = error instanceof Error ? error.message : String(error)
+    flightRecorderResume = degradedFlightRecorderResume(`flight recorder read failed: ${reason}`)
   /* v8 ignore stop */
   }
 
@@ -486,6 +507,6 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     senseStatusLines,
     bundleMeta,
     daemonHealth,
-    journalFiles,
+    flightRecorderResume,
   }
 }

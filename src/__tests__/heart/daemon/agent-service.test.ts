@@ -7,7 +7,10 @@ const mockSendDaemonCommand = vi.fn()
 vi.mock("../../../mind/diary", () => ({
   readDiaryEntries: vi.fn(() => []),
   searchDiaryEntries: vi.fn(async () => []),
-  resolveDiaryRoot: vi.fn((p?: string) => p ?? "/mock/diary"),
+}))
+
+vi.mock("../../../mind/record-paths", () => ({
+  resolveRecordDiaryRoot: vi.fn((agentRoot: string) => `${agentRoot}/desk/_record/diary`),
 }))
 
 vi.mock("../../../heart/identity", () => ({
@@ -29,7 +32,8 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
 }))
 
 import * as fs from "fs"
-import { readDiaryEntries, searchDiaryEntries, resolveDiaryRoot } from "../../../mind/diary"
+import { readDiaryEntries, searchDiaryEntries } from "../../../mind/diary"
+import { resolveRecordDiaryRoot } from "../../../mind/record-paths"
 
 describe("agent-service handlers", () => {
   beforeEach(() => {
@@ -54,16 +58,10 @@ describe("agent-service handlers", () => {
       expect(r.message).not.toBe("Agent test status")
     })
 
-    it("resolves diary root via diary/ path, not psyche/notes/", async () => {
+    it("resolves diary root via the Desk record path", async () => {
       const { handleAgentStatus } = await import("../../../heart/daemon/agent-service")
       await handleAgentStatus({ agent: "test", friendId: "f1" })
-      // agentDiaryRoot should pass diary/ path, not psyche/notes/
-      expect(vi.mocked(resolveDiaryRoot)).toHaveBeenCalledWith(
-        expect.stringContaining("/diary"),
-      )
-      expect(vi.mocked(resolveDiaryRoot)).not.toHaveBeenCalledWith(
-        expect.stringContaining("psyche/notes"),
-      )
+      expect(vi.mocked(resolveRecordDiaryRoot)).toHaveBeenCalledWith("/mock/agents/test.ouro")
     })
 
     it("reports diary entries when diary entries exist", async () => {
@@ -335,7 +333,7 @@ describe("agent-service handlers", () => {
       expect(r.ok).toBe(false)
     })
 
-    it("delegates to searchDiaryEntries (same as search_notes tool)", async () => {
+    it("delegates to searchDiaryEntries (same as search_facts tool)", async () => {
       vi.mocked(searchDiaryEntries).mockResolvedValue([
         { id: "1", text: "ouroboros is an agent runtime", source: "test", createdAt: "2026-01-01", embedding: [] },
       ])
@@ -349,23 +347,23 @@ describe("agent-service handlers", () => {
     it("returns no-matches message when search finds nothing", async () => {
       const { handleAgentAsk } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentAsk({ agent: "test", friendId: "f1", question: "unknown" })
-      expect(r.message).toContain("No relevant notes found")
+      expect(r.message).toContain("No relevant facts found")
     })
   })
 
-  describe("handleAgentSearchNotes", () => {
+  describe("handleAgentSearchFacts", () => {
     it("returns error when query is missing", async () => {
-      const { handleAgentSearchNotes } = await import("../../../heart/daemon/agent-service")
-      const r = await handleAgentSearchNotes({ agent: "test", friendId: "f1" })
+      const { handleAgentSearchFacts } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentSearchFacts({ agent: "test", friendId: "f1" })
       expect(r.ok).toBe(false)
     })
 
-    it("formats results like the search_notes tool ([diary] prefix)", async () => {
+    it("formats results like the search_facts tool ([diary] prefix)", async () => {
       vi.mocked(searchDiaryEntries).mockResolvedValue([
         { id: "1", text: "MCP server bridge", source: "tool:diary_write", createdAt: "2026-03-26", embedding: [] },
       ])
-      const { handleAgentSearchNotes } = await import("../../../heart/daemon/agent-service")
-      const r = await handleAgentSearchNotes({ agent: "test", friendId: "f1", query: "MCP" })
+      const { handleAgentSearchFacts } = await import("../../../heart/daemon/agent-service")
+      const r = await handleAgentSearchFacts({ agent: "test", friendId: "f1", query: "MCP" })
       expect(r.ok).toBe(true)
       const matches = (r.data as { matches: string[] }).matches
       expect(matches[0]).toContain("[diary]")
@@ -508,15 +506,15 @@ describe("agent-service handlers", () => {
       ])
       const { handleAgentGetContext } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentGetContext({ agent: "test", friendId: "f1" })
-      expect((r.data as Record<string, unknown>).noteSummary).toContain("fact one")
-      expect((r.data as Record<string, unknown>).noteSummary).toContain("fact two")
+      expect((r.data as Record<string, unknown>).recordSummary).toContain("fact one")
+      expect((r.data as Record<string, unknown>).recordSummary).toContain("fact two")
     })
 
     it("returns no-match message when query finds nothing", async () => {
       vi.mocked(searchDiaryEntries).mockResolvedValue([])
       const { handleAgentGetContext } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentGetContext({ agent: "test", friendId: "f1", question: "nonexistent" })
-      expect((r.data as Record<string, unknown>).noteSummary).toContain("No relevant notes")
+      expect((r.data as Record<string, unknown>).recordSummary).toContain("No relevant facts")
     })
 
     it("uses searchDiaryEntries when query is provided", async () => {
@@ -525,7 +523,7 @@ describe("agent-service handlers", () => {
       ])
       const { handleAgentGetContext } = await import("../../../heart/daemon/agent-service")
       const r = await handleAgentGetContext({ agent: "test", friendId: "f1", query: "context" })
-      expect((r.data as Record<string, unknown>).noteSummary).toContain("relevant")
+      expect((r.data as Record<string, unknown>).recordSummary).toContain("relevant")
       expect(searchDiaryEntries).toHaveBeenCalled()
     })
   })

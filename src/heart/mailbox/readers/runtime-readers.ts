@@ -20,7 +20,6 @@ import {
   type MailboxFriendView,
   type MailboxHabitItem,
   type MailboxHabitView,
-  type MailboxJournalEntry,
   type MailboxLogEntry,
   type MailboxLogView,
   type MailboxNotesView,
@@ -40,6 +39,7 @@ import {
 } from "./shared"
 import { readObligationSummary } from "./agent-machine"
 import { readSessionInventory } from "./sessions"
+import { resolveDeskRecordPaths } from "../../../mind/record-paths"
 
 const NOTES_VIEW_LIMIT = 20
 
@@ -339,74 +339,44 @@ export function readDaemonHealthDeep(healthPath?: string): MailboxDaemonHealthDe
 /* v8 ignore stop */
 
 export function readNotesView(agentRoot: string): MailboxNotesView {
-  const diaryRoot = path.join(agentRoot, "diary")
-  const effectiveDiaryRoot = fs.existsSync(diaryRoot) ? diaryRoot : null
+  const recordPaths = resolveDeskRecordPaths(agentRoot)
 
   const diaryEntries: MailboxDiaryEntry[] = []
-  if (effectiveDiaryRoot) {
-    const factsPath = path.join(effectiveDiaryRoot, "facts.jsonl")
-    try {
-      const raw = fs.readFileSync(factsPath, "utf-8")
-      for (const line of raw.split("\n")) {
-        if (!line.trim()) continue
-        try {
-          const entry = JSON.parse(line) as Record<string, unknown>
-          if (typeof entry.id === "string" && typeof entry.text === "string") {
-            diaryEntries.push({
-              id: entry.id,
-              text: entry.text,
-              source: typeof entry.source === "string" ? entry.source : "",
-              createdAt: typeof entry.createdAt === "string" ? entry.createdAt : "",
-            })
-          }
-        } catch {
-          // skip unparseable lines
+  try {
+    const raw = fs.readFileSync(recordPaths.factsPath, "utf-8")
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>
+        if (typeof entry.id === "string" && typeof entry.text === "string") {
+          diaryEntries.push({
+            id: entry.id,
+            text: entry.text,
+            source: typeof entry.source === "string" ? entry.source : "",
+            createdAt: typeof entry.createdAt === "string" ? entry.createdAt : "",
+          })
         }
+      } catch {
+        // skip unparseable lines
       }
-    } catch {
-      // no diary facts file
     }
+  } catch {
+    // no diary facts file
   }
 
   diaryEntries.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
-  const journalDir = path.join(agentRoot, "journal")
-  const journalEntries: MailboxJournalEntry[] = []
-  const indexPath = path.join(journalDir, ".index.json")
-  try {
-    const raw = fs.readFileSync(indexPath, "utf-8")
-    const index = JSON.parse(raw) as Array<Record<string, unknown>>
-    if (Array.isArray(index)) {
-      for (const entry of index) {
-        if (typeof entry.filename === "string") {
-          journalEntries.push({
-            filename: entry.filename,
-            preview: typeof entry.preview === "string" ? entry.preview : "",
-            mtime: typeof entry.mtime === "number" ? entry.mtime : 0,
-          })
-        }
-      }
-    }
-  } catch {
-    // no journal index
-  }
-
-  journalEntries.sort((a, b) => b.mtime - a.mtime)
-
-  const canonicalNotes = readCanonicalNotes(agentRoot)
+  const canonicalNotes = readCanonicalNotes(recordPaths.notesRoot)
 
   return {
     diaryEntryCount: diaryEntries.length,
     recentDiaryEntries: diaryEntries.slice(0, NOTES_VIEW_LIMIT),
-    journalEntryCount: journalEntries.length,
-    recentJournalEntries: journalEntries.slice(0, NOTES_VIEW_LIMIT),
     canonicalNoteCount: canonicalNotes.length,
     recentCanonicalNotes: canonicalNotes.slice(0, NOTES_VIEW_LIMIT),
   }
 }
 
-function readCanonicalNotes(agentRoot: string): MailboxCanonicalNoteEntry[] {
-  const notesRoot = path.join(agentRoot, "notes")
+function readCanonicalNotes(notesRoot: string): MailboxCanonicalNoteEntry[] {
   const notes: MailboxCanonicalNoteEntry[] = []
 
   for (const filename of safeReaddir(notesRoot)) {

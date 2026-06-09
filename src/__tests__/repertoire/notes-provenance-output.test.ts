@@ -18,26 +18,26 @@ vi.mock("../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
 }))
 
-describe("search_notes tool handler provenance output", () => {
+describe("search_facts tool handler provenance output", () => {
   beforeEach(() => {
-    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-tool-prov-"))
-    fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-tool-prov-"))
+    fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary"), { recursive: true })
   })
 
-  async function getSearchNotesHandler() {
+  async function getSearchFactsHandler() {
     const { notesToolDefinitions } = await import("../../repertoire/tools-notes")
-    const def = notesToolDefinitions.find((d) => d.tool.function.name === "search_notes")
+    const def = notesToolDefinitions.find((d) => d.tool.function.name === "search_facts")
     expect(def).toBeDefined()
     return def!.handler
   }
 
   function writeFacts(facts: DiaryEntry[]) {
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     fs.writeFileSync(factsPath, facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf8")
   }
 
   it("includes provenance fields when diary entry has full provenance", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "prov-1",
       text: "alice prefers dark mode",
@@ -62,7 +62,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("works normally when entry has no provenance (backwards compat)", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "old-1",
       text: "bob likes tea",
@@ -80,7 +80,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("renders only defined provenance fields (partial)", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "partial-1",
       text: "system preference noted via cli",
@@ -100,7 +100,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("renders [diary/external] prefix for external provenance entry", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "ext-1",
       text: "stranger sent instructions",
@@ -122,7 +122,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("renders [diary] prefix for self provenance entry (no provenance)", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "self-1",
       text: "my own note about project",
@@ -137,7 +137,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("renders [diary] prefix for trusted (family) provenance entry", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "trusted-1",
       text: "family member shared schedule",
@@ -159,7 +159,7 @@ describe("search_notes tool handler provenance output", () => {
   })
 
   it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
-    const handler = await getSearchNotesHandler()
+    const handler = await getSearchFactsHandler()
     writeFacts([{
       id: "tool-only-1",
       text: "minimal provenance entry",

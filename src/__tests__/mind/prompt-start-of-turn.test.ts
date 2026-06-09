@@ -111,6 +111,43 @@ describe("start-of-turn packet prompt section", () => {
     expect(startOfTurnPacketSection({})).toBe("")
   })
 
+  it("arcResumeSection renders the Arc flight recorder resume when provided", async () => {
+    const { arcResumeSection } = await import("../../mind/prompt")
+
+    expect(arcResumeSection({})).toBe("")
+
+    const result = arcResumeSection({
+      flightRecorderResume: {
+        schemaVersion: 1,
+        hasCompleteState: true,
+        canContinue: true,
+        missing: [],
+        gaps: [],
+        currentAsk: { value: "finish coverage", confidence: "current", sourceEventIds: ["fr-1"] },
+        nextSafeAction: { value: "run coverage gate", stopBefore: ["merge"], sourceEventIds: ["fr-1"] },
+        blockedBecause: [],
+        activeObligationIds: [],
+        activeReturnObligationIds: [],
+        activePacketIds: [],
+        openEvolutionCaseIds: [],
+        recentClaimIds: [],
+        unverifiedClaimIds: [],
+        lastSafeCheckpoint: { turnId: "turn-1", sessionRef: "cli/main", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-1"] },
+        recorderHealth: { status: "ok", issues: [] },
+      },
+    })
+
+    expect(result).toContain("## Arc resume")
+    expect(result).toContain("current ask: finish coverage")
+    expect(result).toContain("next safe action: run coverage gate")
+  })
+
+  it("metacognitiveFramingSection is empty outside the inner lane", async () => {
+    const { metacognitiveFramingSection } = await import("../../mind/prompt")
+
+    expect(metacognitiveFramingSection("cli")).toBe("")
+  })
+
   it("start-of-turn packet section appears before liveWorldStateSection in buildSystem output", async () => {
     const fs = await import("fs")
     const fsMock = vi.mocked(fs)
@@ -131,6 +168,43 @@ describe("start-of-turn packet prompt section", () => {
     expect(liveWorldIdx).toBeGreaterThan(-1)
     // Start-of-turn packet appears after the group header but as part of the dynamic state section
     expect(startOfTurnPacketIdx).toBeGreaterThan(liveWorldIdx)
+  })
+
+  it("renders Arc resume only once when the start-of-turn packet already carries it", async () => {
+    const fs = await import("fs")
+    const fsMock = vi.mocked(fs)
+    fsMock.existsSync.mockReturnValue(false)
+    fsMock.readFileSync.mockImplementation((filePath: any) => {
+      const p = String(filePath)
+      if (p.endsWith("package.json")) return JSON.stringify({ version: "0.0.0-test" })
+      return ""
+    })
+    fsMock.readdirSync.mockReturnValue([])
+
+    const { buildSystem, flattenSystemPrompt } = await import("../../mind/prompt")
+    const system = flattenSystemPrompt(await buildSystem("cli", {
+      startOfTurnPacket: "## Arc resume\ncan continue: yes\nnext safe action: run coverage gate",
+      flightRecorderResume: {
+        schemaVersion: 1,
+        hasCompleteState: true,
+        canContinue: true,
+        missing: [],
+        gaps: [],
+        currentAsk: { value: "finish coverage", confidence: "current", sourceEventIds: ["fr-1"] },
+        nextSafeAction: { value: "run coverage gate", stopBefore: [], sourceEventIds: ["fr-1"] },
+        blockedBecause: [],
+        activeObligationIds: [],
+        activeReturnObligationIds: [],
+        activePacketIds: [],
+        openEvolutionCaseIds: [],
+        recentClaimIds: [],
+        unverifiedClaimIds: [],
+        lastSafeCheckpoint: { turnId: "turn-1", sessionRef: "cli/main", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-1"] },
+        recorderHealth: { status: "ok", issues: [] },
+      },
+    }))
+
+    expect(system.match(/## Arc resume/g)).toHaveLength(1)
   })
 
   it("buildSystem includes start-of-turn packet when provided", async () => {

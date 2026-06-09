@@ -35,7 +35,7 @@ export type EvolutionEvidenceKind =
   | "release"
   | "installed_runtime"
   | "diary_entry"
-  | "journal_file"
+  | "desk_record_note"
   | "skill_file"
   | "sense_artifact"
   | "hosted_audit"
@@ -77,7 +77,7 @@ export interface EvolutionBudget {
 export type EvolutionActionClass =
   | "create_case"
   | "add_evidence"
-  | "write_journal"
+  | "write_record"
   | "write_desk"
   | "write_diary"
   | "spawn_coding"
@@ -111,7 +111,7 @@ export interface EvolutionOrigin {
 }
 
 export interface EvolutionDecision {
-  decision: "ignore" | "defer" | "journal" | "ask" | "delegate" | "act" | "abandon"
+  decision: "ignore" | "defer" | "record" | "ask" | "delegate" | "act" | "abandon"
   reason: string
   authorityMode: string
   decidedAt: string
@@ -147,7 +147,7 @@ export interface EvolutionRatification {
     | "desk_lesson"
     | "desk_task"
     | "diary"
-    | "journal"
+    | "desk_record"
     | "habit"
     | "policy"
     | "agent_config"
@@ -241,7 +241,7 @@ const TERMINAL_STATUSES: ReadonlySet<EvolutionCaseStatus> = new Set(["closed", "
 const ALL_ACTIONS: readonly EvolutionActionClass[] = [
   "create_case",
   "add_evidence",
-  "write_journal",
+  "write_record",
   "write_desk",
   "write_diary",
   "spawn_coding",

@@ -2,7 +2,7 @@
  * Agent service layer — handles MCP-facing daemon commands.
  * Each handler receives { agent, friendId, ...params } and returns DaemonResponse.
  *
- * DRY: uses the same shared functions the agent's own tools use (diary, session transcript).
+ * DRY: uses the same shared functions the agent's own tools use (Desk record diary, session transcript).
  * This file is a thin adapter — no reimplemented search, parsing, or state reading.
  */
 
@@ -10,7 +10,8 @@ import * as fs from "fs"
 import * as path from "path"
 import type { DaemonResponse } from "./daemon"
 import { getAgentRoot } from "../identity"
-import { readDiaryEntries, searchDiaryEntries, resolveDiaryRoot, type DiaryEntry } from "../../mind/diary"
+import { readDiaryEntries, searchDiaryEntries, type DiaryEntry } from "../../mind/diary"
+import { resolveRecordDiaryRoot } from "../../mind/record-paths"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH, sendDaemonCommand } from "./socket-client"
 
@@ -21,7 +22,7 @@ export interface AgentServiceParams {
   [key: string]: unknown
 }
 
-/** Format diary hits the same way the search_notes tool does. */
+/** Format diary hits the same way the search_facts tool does. */
 function formatDiaryHits(hits: DiaryEntry[]): string[] {
   return hits.map((f) => `[diary] ${f.text} (source=${f.source}, createdAt=${f.createdAt})`)
 }
@@ -35,7 +36,7 @@ function readAgentFile(agent: string, ...segments: string[]): string | null {
 
 /** Resolve the diary root for a specific agent. */
 function agentDiaryRoot(agent: string): string {
-  return resolveDiaryRoot(path.join(getAgentRoot(agent), "diary"))
+  return resolveRecordDiaryRoot(getAgentRoot(agent))
 }
 
 /** Read inner dialog runtime status. */
@@ -327,12 +328,12 @@ export async function handleAgentAsk(params: AgentServiceParams): Promise<Daemon
     emit("daemon.agent_service_error", "agent.ask missing question", { agent: params.agent })
     return { ok: false, error: "Missing required parameter: question" }
   }
-  // Use the same searchDiaryEntries the search_notes tool uses (substring fallback — no embedding provider in shim)
+  // Use the same searchDiaryEntries the search_facts tool uses (substring fallback; no embedding provider in shim).
   const diaryRoot = agentDiaryRoot(params.agent)
   const hits = await searchDiaryEntries(question, readDiaryEntries(diaryRoot))
   const context = hits.length > 0
     ? hits.slice(0, 10).map((f) => f.text).join("\n")
-    : `No relevant notes found for: ${question}`
+    : `No relevant facts found for: ${question}`
   emit("daemon.agent_service_end", "completed agent.ask", { agent: params.agent })
   return { ok: true, message: context }
 }
@@ -385,15 +386,15 @@ export async function handleAgentGetContext(params: AgentServiceParams): Promise
   const sessions = enumerateSessions(params.agent)
   const taskFiles = listTaskFiles(params.agent)
 
-  let noteSummary: string | null = null
+  let recordSummary: string | null = null
   if (query) {
     const hits = await searchDiaryEntries(query, facts)
-    noteSummary = hits.length > 0
+    recordSummary = hits.length > 0
       ? hits.slice(0, 10).map((f) => f.text).join("\n")
-      : `No relevant notes for: ${query}`
+      : `No relevant facts for: ${query}`
   } else {
     const recent = facts.slice(-10)
-    if (recent.length > 0) noteSummary = recent.map((f) => f.text).join("\n")
+    if (recent.length > 0) recordSummary = recent.map((f) => f.text).join("\n")
   }
   emit("daemon.agent_service_end", "completed agent.getContext", { agent: params.agent })
   return {
@@ -402,7 +403,7 @@ export async function handleAgentGetContext(params: AgentServiceParams): Promise
       agent: params.agent,
       hasDiaryEntries: facts.length > 0,
       factCount: facts.length,
-      noteSummary,
+      recordSummary,
       taskCount: taskFiles.length,
       sessionCount: sessions.length,
       innerStatus: innerStatus?.status ?? null,
@@ -410,18 +411,18 @@ export async function handleAgentGetContext(params: AgentServiceParams): Promise
   }
 }
 
-export async function handleAgentSearchNotes(params: AgentServiceParams): Promise<DaemonResponse> {
-  emit("daemon.agent_service_start", "handling agent.searchNotes", { agent: params.agent })
+export async function handleAgentSearchFacts(params: AgentServiceParams): Promise<DaemonResponse> {
+  emit("daemon.agent_service_start", "handling agent.searchFacts", { agent: params.agent })
   const query = params.query as string | undefined
   if (!query) {
-    emit("daemon.agent_service_error", "agent.searchNotes missing query", { agent: params.agent })
+    emit("daemon.agent_service_error", "agent.searchFacts missing query", { agent: params.agent })
     return { ok: false, error: "Missing required parameter: query" }
   }
-  // Same searchDiaryEntries as the search_notes tool
+  // Same searchDiaryEntries as the search_facts tool.
   const diaryRoot = agentDiaryRoot(params.agent)
   const hits = await searchDiaryEntries(query, readDiaryEntries(diaryRoot))
   const formatted = formatDiaryHits(hits.slice(0, 20))
-  emit("daemon.agent_service_end", "completed agent.searchNotes", { agent: params.agent, matchCount: hits.length })
+  emit("daemon.agent_service_end", "completed agent.searchFacts", { agent: params.agent, matchCount: hits.length })
   return {
     ok: true,
     message: hits.length > 0 ? `Found ${hits.length} matches` : "No matches found",
@@ -476,7 +477,7 @@ export async function handleAgentCheckGuidance(params: AgentServiceParams): Prom
     emit("daemon.agent_service_error", "agent.checkGuidance missing topic", { agent: params.agent })
     return { ok: false, error: "Missing required parameter: topic" }
   }
-  // Same searchDiaryEntries as the search_notes tool
+  // Same searchDiaryEntries as the search_facts tool.
   const diaryRoot = agentDiaryRoot(params.agent)
   const hits = await searchDiaryEntries(topic, readDiaryEntries(diaryRoot))
   const guidance = hits.length > 0

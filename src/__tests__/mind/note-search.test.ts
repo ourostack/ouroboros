@@ -87,7 +87,7 @@ describe("note search", () => {
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
-  it("injects from my diary and journal into the system prompt before model call", async () => {
+  it("injects from my Desk record diary into the system prompt before model call", async () => {
     const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
 
@@ -111,7 +111,7 @@ describe("note search", () => {
     })
 
     expect(typeof messages[0].content).toBe("string")
-    expect(messages[0].content).toContain("## from my diary and journal")
+    expect(messages[0].content).toContain("## retrieved from my Desk record diary")
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -119,6 +119,35 @@ describe("note search", () => {
         message: "note search injected",
       }),
     )
+  })
+
+  it("sorts multiple retrieved diary facts by score before injection", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-sort-"))
+    writeFacts(diaryRoot, [
+      makeFact("low", "Lower scoring pizza fact", [0.6, 0.4]),
+      makeFact("high", "Higher scoring pizza fact", [1, 0]),
+    ])
+
+    const provider: EmbeddingProvider = {
+      async embed(): Promise<number[][]> {
+        return [[1, 0]]
+      },
+    }
+
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "system", content: "base system prompt" },
+      { role: "user", content: "pizza" },
+    ]
+
+    await injectNoteSearchContext(messages, {
+      provider,
+      diaryRoot,
+      minScore: 0,
+      topK: 2,
+    })
+
+    const content = String(messages[0].content)
+    expect(content.indexOf("Higher scoring pizza fact")).toBeLessThan(content.indexOf("Lower scoring pizza fact"))
   })
 
   it("does nothing when message[0] is not a system string message", async () => {
@@ -182,7 +211,7 @@ describe("note search", () => {
     expect(provider.embed).not.toHaveBeenCalled()
   })
 
-  it("does nothing when search_notes returns no matches above threshold", async () => {
+  it("does nothing when search_facts returns no matches above threshold", async () => {
     const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "note-search-"))
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0, 1])])
     const provider: EmbeddingProvider = {
@@ -227,7 +256,7 @@ describe("note search", () => {
 
   it("uses default agent-root diary path when options.diaryRoot is omitted", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-root-"))
-    const diaryRoot = path.join(agentRoot, "diary")
+    const diaryRoot = path.join(agentRoot, "desk", "_record", "diary")
     writeFacts(diaryRoot, [makeFact("f1", "Ari likes mushroom pizza", [0.99, 0.01])])
     mockGetAgentRoot.mockReturnValue(agentRoot)
 
@@ -338,7 +367,7 @@ describe("note search", () => {
     ]
 
     await injectNoteSearchContext(messages, { diaryRoot, provider })
-    // Falls back to substring, finds match, injects search_notes
+    // Falls back to substring, finds match, injects record context.
     expect(messages[0].content).toContain("Ari likes mushroom pizza")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(
       expect.objectContaining({

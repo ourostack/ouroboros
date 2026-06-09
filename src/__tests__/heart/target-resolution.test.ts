@@ -318,7 +318,7 @@ describe("listTargetSessionCandidates", () => {
     }))
   })
 
-  it("surfaces empty and unavailable search_notes states explicitly and formats no candidates as empty output", async () => {
+  it("surfaces empty and unavailable search_facts states explicitly and formats no candidates as empty output", async () => {
     vi.resetModules()
     vi.doMock("../../heart/session-transcript", async () => {
       const actual = await vi.importActual<typeof import("../../heart/session-transcript")>("../../heart/session-transcript")

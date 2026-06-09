@@ -7,9 +7,9 @@ export interface InnerRuntimeState {
   lastCompletedAt?: string
 }
 
-export interface JournalFileEntry {
-  name: string
-  mtimeMs: number
+export interface RecordSummary {
+  diaryFactCount: number
+  noteCount: number
 }
 
 export interface HeartbeatInfo {
@@ -20,7 +20,7 @@ export interface HeartbeatInfo {
 export interface BuildInnerStatusInput {
   agentName: string
   runtimeState: InnerRuntimeState | null
-  journalFiles: JournalFileEntry[]
+  recordSummary: RecordSummary
   heartbeat: HeartbeatInfo | null
   attentionCount: number
   now: number
@@ -46,7 +46,7 @@ function formatCadence(cadenceMs: number): string {
 }
 
 export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
-  const { agentName, runtimeState, journalFiles, heartbeat, attentionCount, now } = input
+  const { agentName, runtimeState, recordSummary, heartbeat, attentionCount, now } = input
   const lines: string[] = []
 
   lines.push(`inner dialog status: ${agentName}`)
@@ -82,18 +82,7 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
     lines.push("  heartbeat: unknown")
   }
 
-  // Journal
-  if (journalFiles.length === 0) {
-    lines.push("  journal: (empty)")
-  } else {
-    lines.push("  journal:")
-    const sorted = [...journalFiles].sort((a, b) => b.mtimeMs - a.mtimeMs)
-    for (const file of sorted) {
-      const elapsed = now - file.mtimeMs
-      const relativeTime = formatRelativeTime(elapsed)
-      lines.push(`    - ${file.name} (${relativeTime})`)
-    }
-  }
+  lines.push(`  Desk record: ${recordSummary.diaryFactCount} diary facts, ${recordSummary.noteCount} notes`)
 
   // Attention
   const thoughtWord = attentionCount === 1 ? "thought" : "thoughts"
@@ -106,7 +95,8 @@ export function buildInnerStatusOutput(input: BuildInnerStatusInput): string {
     meta: {
       agentName,
       status: runtimeState?.status ?? "unknown",
-      journalCount: journalFiles.length,
+      diaryFactCount: recordSummary.diaryFactCount,
+      noteCount: recordSummary.noteCount,
       attentionCount,
     },
   })

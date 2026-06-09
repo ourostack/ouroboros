@@ -41,12 +41,15 @@ describe("bundle-manifest", () => {
     expect(isCanonicalBundlePath("\\\\tasks\\\\habit.md")).toBe(true)
     expect(isCanonicalBundlePath("tasks/backlog/task-1.md")).toBe(true)
     expect(isCanonicalBundlePath("skills/custom/review.md")).toBe(true)
-    expect(isCanonicalBundlePath("diary/facts.jsonl")).toBe(true)
-    expect(isCanonicalBundlePath("diary/daily/2026-03-25.md")).toBe(true)
+    expect(isCanonicalBundlePath("desk/_record/diary/facts.jsonl")).toBe(true)
+    expect(isCanonicalBundlePath("desk/_record/diary/daily/2026-03-25.md")).toBe(true)
+    expect(isCanonicalBundlePath("desk/_record/notes/auth.md")).toBe(true)
     expect(isCanonicalBundlePath("arc/episodes/ep-123.json")).toBe(true)
     expect(isCanonicalBundlePath("arc/obligations/ob-123.json")).toBe(true)
     expect(isCanonicalBundlePath("arc/cares/care-123.json")).toBe(true)
     expect(isCanonicalBundlePath("arc/intentions/int-123.json")).toBe(true)
+    expect(isCanonicalBundlePath("arc/flight-recorder/latest.json")).toBe(true)
+    expect(isCanonicalBundlePath("arc/flight-recorder/events/2026-06-08.jsonl")).toBe(true)
     expect(isCanonicalBundlePath("state/sessions/self/inner/dialog.json")).toBe(true)
   })
 
@@ -154,9 +157,9 @@ describe("createBundleMeta", () => {
     expect(meta.runtimeVersion).toBe(getPackageVersion())
   })
 
-  it("returns bundleSchemaVersion 1", () => {
+  it("returns bundleSchemaVersion 3", () => {
     const meta: BundleMeta = createBundleMeta()
-    expect(meta.bundleSchemaVersion).toBe(1)
+    expect(meta.bundleSchemaVersion).toBe(3)
   })
 
   it("returns a valid ISO timestamp for lastUpdated", () => {
@@ -182,7 +185,7 @@ describe("backfillBundleMeta", () => {
     expect(fs.existsSync(metaPath)).toBe(true)
     const meta = JSON.parse(fs.readFileSync(metaPath, "utf-8")) as BundleMeta
     expect(meta.runtimeVersion).toBe(getPackageVersion())
-    expect(meta.bundleSchemaVersion).toBe(1)
+    expect(meta.bundleSchemaVersion).toBe(3)
     expect(meta.lastUpdated).toBeTruthy()
   })
 
