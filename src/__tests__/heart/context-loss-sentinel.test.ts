@@ -1,6 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { spawn } from "child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -11,6 +12,7 @@ import {
 import {
   contextLossSentinelPaths,
   deriveContextLossSentinelProviderSignals,
+  formatContextLossSentinelJson,
   formatContextLossSentinelText,
   readContextLossSentinelView,
   refreshContextLossSentinel,
@@ -153,6 +155,42 @@ function signal(receiptSignals: ContextLossSentinelSignal[], id: string): Contex
   return found!
 }
 
+function runChildVitest(testPath: string, env: Record<string, string>): Promise<void> {
+  const repoRoot = process.cwd()
+  const vitestBin = path.join(repoRoot, "node_modules", "vitest", "vitest.mjs")
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      vitestBin,
+      "run",
+      testPath,
+      "--config",
+      path.join(repoRoot, "vitest.config.ts"),
+      "--pool",
+      "forks",
+    ], {
+      cwd: repoRoot,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk)
+    })
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve()
+        return
+      }
+      reject(new Error(`child Vitest exited ${code}\nSTDOUT:\n${stdout}\nSTDERR:\n${stderr}`))
+    })
+  })
+}
+
 afterEach(() => {
   vi.useRealTimers()
   for (const dir of tempDirs.splice(0)) {
@@ -225,6 +263,22 @@ describe("context-loss Sentinel core", () => {
     expect(rendered).toContain("verdict: ready")
     expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
     expect(rendered).toContain("provider:outward")
+
+    const json = formatContextLossSentinelJson(view)
+    expect(JSON.parse(json)).toMatchObject({
+      schemaVersion: 1,
+      latest: { id: "sentinel-ready", verdict: "ready" },
+      latestReady: { id: "sentinel-ready", verdict: "ready" },
+      history: [{ id: "sentinel-ready" }],
+      degraded: { issues: [] },
+    })
+
+    const mtimes = [paths.latest, paths.latestReady, path.join(paths.receiptsDir, "sentinel-ready.json")]
+      .map((filePath) => [filePath, fs.statSync(filePath).mtimeMs] as const)
+    readContextLossSentinelView(agentRoot, { limit: 5 })
+    formatContextLossSentinelText(view)
+    formatContextLossSentinelJson(view)
+    expect(mtimes.map(([filePath, mtime]) => [filePath, fs.statSync(filePath).mtimeMs])).toEqual(mtimes)
   })
 
   it("preserves latest-ready when a later blocked receipt becomes latest", async () => {
@@ -272,95 +326,96 @@ describe("context-loss Sentinel core", () => {
     expect(view.history.map((entry) => entry.id)).toEqual(["sentinel-ready", "sentinel-blocked"])
   })
 
-  it("classifies provider lanes with repair actors, sources, severity, and verdict impact", () => {
+  it("classifies every provider state for both outward and inner lanes with repair actors, sources, severity, and verdict impact", () => {
+    const lanes = ["outward", "inner"] as const
     const cases: Array<{
       label: string
-      lane: ProviderVisibilityLane
-      expected: Partial<ContextLossSentinelSignal>
-      expectedRepair?: Partial<NonNullable<ContextLossSentinelSignal["repair"]>>
-      expectedSummary: string
+      makeLane: (lane: "outward" | "inner") => ProviderVisibilityLane
+      expected: (lane: "outward" | "inner") => Partial<ContextLossSentinelSignal>
+      expectedRepair?: (lane: "outward" | "inner") => Partial<NonNullable<ContextLossSentinelSignal["repair"]>>
+      expectedSummary: (lane: "outward" | "inner") => string
     }> = [
       {
-        label: "outward configured and ready",
-        lane: configuredLane("outward"),
-        expected: { id: "provider:outward", status: "pass", severity: "info", verdictImpact: "none" },
-        expectedSummary: "outward provider ready",
+        label: "configured and ready",
+        makeLane: (lane) => configuredLane(lane),
+        expected: (lane) => ({ id: `provider:${lane}`, status: "pass", severity: "info", verdictImpact: "none" }),
+        expectedSummary: (lane) => `${lane} provider ready`,
       },
       {
-        label: "inner unconfigured",
-        lane: unconfiguredLane("inner"),
-        expected: { id: "provider:inner", status: "fail", severity: "critical", verdictImpact: "blocked" },
-        expectedRepair: {
+        label: "unconfigured",
+        makeLane: (lane) => unconfiguredLane(lane),
+        expected: (lane) => ({ id: `provider:${lane}`, status: "fail", severity: "critical", verdictImpact: "blocked" }),
+        expectedRepair: (lane) => ({
           actor: "human-choice",
           kind: "provider-selection",
-          command: "ouro use --agent slugger --lane inner --provider <provider> --model <model>",
-        },
-        expectedSummary: "inner provider unconfigured",
+          command: `ouro use --agent slugger --lane ${lane} --provider <provider> --model <model>`,
+        }),
+        expectedSummary: (lane) => `${lane} provider unconfigured`,
       },
       {
-        label: "outward missing credentials",
-        lane: configuredLane("outward", {
+        label: "missing credentials",
+        makeLane: (lane) => configuredLane(lane, {
           credential: {
             status: "missing",
-            repairCommand: "ouro auth --agent slugger --provider minimax",
+            repairCommand: `ouro auth --agent slugger --provider ${lane === "outward" ? "minimax" : "anthropic"}`,
           },
         }),
-        expected: { id: "provider:outward", status: "fail", severity: "critical", verdictImpact: "blocked" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "fail", severity: "critical", verdictImpact: "blocked" }),
+        expectedRepair: (lane) => ({
           actor: "human-required",
           kind: "provider-credential",
-          command: "ouro auth --agent slugger --provider minimax",
-        },
-        expectedSummary: "outward credentials missing",
+          command: `ouro auth --agent slugger --provider ${lane === "outward" ? "minimax" : "anthropic"}`,
+        }),
+        expectedSummary: (lane) => `${lane} credentials missing`,
       },
       {
-        label: "inner vault unavailable",
-        lane: configuredLane("inner", {
+        label: "vault unavailable",
+        makeLane: (lane) => configuredLane(lane, {
           credential: {
             status: "invalid-pool",
             repairCommand: "ouro vault unlock --agent slugger",
           },
         }),
-        expected: { id: "provider:inner", status: "fail", severity: "critical", verdictImpact: "blocked" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "fail", severity: "critical", verdictImpact: "blocked" }),
+        expectedRepair: () => ({
           actor: "human-required",
           kind: "vault-unavailable",
           command: "ouro vault unlock --agent slugger",
-        },
-        expectedSummary: "inner credential vault unavailable",
+        }),
+        expectedSummary: (lane) => `${lane} credential vault unavailable`,
       },
       {
-        label: "outward credential cache not loaded",
-        lane: configuredLane("outward", {
+        label: "credential cache not loaded",
+        makeLane: (lane) => configuredLane(lane, {
           credential: {
             status: "not-loaded",
             repairCommand: "ouro provider refresh --agent slugger",
           },
         }),
-        expected: { id: "provider:outward", status: "warn", severity: "warn", verdictImpact: "watch" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "warn", severity: "warn", verdictImpact: "watch" }),
+        expectedRepair: () => ({
           actor: "agent-runnable",
           kind: "provider-credential-cache",
           command: "ouro provider refresh --agent slugger",
-        },
-        expectedSummary: "outward credentials not loaded",
+        }),
+        expectedSummary: (lane) => `${lane} credentials not loaded`,
       },
       {
-        label: "inner unknown readiness",
-        lane: configuredLane("inner", {
+        label: "unknown readiness",
+        makeLane: (lane) => configuredLane(lane, {
           readiness: { status: "unknown", reason: "no live check has run after daemon start" },
         }),
-        expected: { id: "provider:inner", status: "warn", severity: "warn", verdictImpact: "watch" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "warn", severity: "warn", verdictImpact: "watch" }),
+        expectedRepair: (lane) => ({
           actor: "agent-runnable",
           kind: "provider-live-check",
-          command: "ouro provider check --agent slugger --lane inner",
-        },
-        expectedSummary: "inner readiness unknown",
+          command: `ouro provider check --agent slugger --lane ${lane}`,
+        }),
+        expectedSummary: (lane) => `${lane} readiness unknown`,
       },
       {
-        label: "outward failed live check",
-        lane: configuredLane("outward", {
+        label: "failed live check",
+        makeLane: (lane) => configuredLane(lane, {
           readiness: {
             status: "failed",
             checkedAt: "2026-06-08T20:12:00.000Z",
@@ -368,62 +423,111 @@ describe("context-loss Sentinel core", () => {
             attempts: 2,
           },
         }),
-        expected: { id: "provider:outward", status: "fail", severity: "critical", verdictImpact: "blocked" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "fail", severity: "critical", verdictImpact: "blocked" }),
+        expectedRepair: (lane) => ({
           actor: "agent-runnable",
           kind: "provider-live-check",
-          command: "ouro provider check --agent slugger --lane outward",
-        },
-        expectedSummary: "outward live check failed",
+          command: `ouro provider check --agent slugger --lane ${lane}`,
+        }),
+        expectedSummary: (lane) => `${lane} live check failed`,
       },
       {
-        label: "inner stale readiness with persisted source",
-        lane: configuredLane("inner", {
+        label: "stale readiness with persisted source",
+        makeLane: (lane) => configuredLane(lane, {
           readiness: {
             status: "stale",
             checkedAt: "2026-06-08T17:00:00.000Z",
             reason: "persisted readiness older than policy",
           },
         }),
-        expected: { id: "provider:inner", status: "warn", severity: "warn", verdictImpact: "watch" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "warn", severity: "warn", verdictImpact: "watch" }),
+        expectedRepair: (lane) => ({
           actor: "agent-runnable",
           kind: "provider-live-check",
-          command: "ouro provider check --agent slugger --lane inner",
-        },
-        expectedSummary: "inner readiness stale",
+          command: `ouro provider check --agent slugger --lane ${lane}`,
+        }),
+        expectedSummary: (lane) => `${lane} readiness stale`,
       },
       {
-        label: "outward stale readiness without evidence degrades to unknown",
-        lane: configuredLane("outward", {
+        label: "stale readiness without evidence degrades to unknown",
+        makeLane: (lane) => configuredLane(lane, {
           readiness: { status: "stale" },
         }),
-        expected: { id: "provider:outward", status: "warn", severity: "warn", verdictImpact: "watch" },
-        expectedRepair: {
+        expected: (lane) => ({ id: `provider:${lane}`, status: "warn", severity: "warn", verdictImpact: "watch" }),
+        expectedRepair: (lane) => ({
           actor: "agent-runnable",
           kind: "provider-live-check",
-          command: "ouro provider check --agent slugger --lane outward",
-        },
-        expectedSummary: "outward readiness unknown",
+          command: `ouro provider check --agent slugger --lane ${lane}`,
+        }),
+        expectedSummary: (lane) => `${lane} readiness unknown`,
       },
     ]
 
     for (const testCase of cases) {
-      const signals = deriveContextLossSentinelProviderSignals(providerVisibility([testCase.lane]))
-      const providerSignal = signal(signals, `provider:${testCase.lane.lane}`)
-      expect(providerSignal, testCase.label).toMatchObject({
-        kind: "provider_lane",
-        source: {
-          kind: "provider-visibility",
-          locator: `agent.json#providers.${testCase.lane.lane}`,
-        },
-        ...testCase.expected,
-      })
-      expect(providerSignal.summary).toContain(testCase.expectedSummary)
-      if (testCase.expectedRepair) {
-        expect(providerSignal.repair).toMatchObject(testCase.expectedRepair)
+      for (const lane of lanes) {
+        const otherLane = lane === "outward" ? "inner" : "outward"
+        const signals = deriveContextLossSentinelProviderSignals(providerVisibility([
+          testCase.makeLane(lane),
+          configuredLane(otherLane),
+        ]))
+        const providerSignal = signal(signals, `provider:${lane}`)
+        expect(providerSignal, `${testCase.label} ${lane}`).toMatchObject({
+          kind: "provider_lane",
+          source: {
+            kind: "provider-visibility",
+            locator: `agent.json#providers.${lane}`,
+          },
+          ...testCase.expected(lane),
+        })
+        expect(providerSignal.summary).toContain(testCase.expectedSummary(lane))
+        if (testCase.expectedRepair) {
+          expect(providerSignal.repair).toMatchObject(testCase.expectedRepair(lane))
+        }
       }
     }
+
+    const partialSignals = deriveContextLossSentinelProviderSignals(providerVisibility([configuredLane("outward")]))
+    expect(signal(partialSignals, "provider:inner")).toMatchObject({
+      kind: "provider_lane",
+      status: "fail",
+      severity: "critical",
+      verdictImpact: "blocked",
+      summary: "inner provider visibility missing from deterministic provider report",
+      repair: {
+        actor: "agent-runnable",
+        kind: "provider-visibility",
+        command: "ouro work sentinel refresh --agent slugger",
+      },
+    })
+
+    const missingSignals = deriveContextLossSentinelProviderSignals(providerVisibility([]))
+    expect(signal(missingSignals, "provider:outward").summary).toBe("outward provider visibility missing from deterministic provider report")
+    expect(signal(missingSignals, "provider:inner").summary).toBe("inner provider visibility missing from deterministic provider report")
+  })
+
+  it("constructs provider visibility during refresh when no injected provider report is supplied", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_startup",
+      now: () => new Date("2026-06-08T20:13:00.000Z"),
+      createReceiptId: () => "sentinel-provider-built",
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+      homeDir: agentRoot,
+    })
+
+    expect(receipt.signals.map((entry) => entry.id)).toEqual(expect.arrayContaining([
+      "provider:outward",
+      "provider:inner",
+    ]))
+    expect(signal(receipt.signals, "provider:outward").source).toMatchObject({
+      kind: "provider-visibility",
+      locator: "agent.json#providers.outward",
+    })
+    expect(signal(receipt.signals, "provider:inner").source).toMatchObject({
+      kind: "provider-visibility",
+      locator: "agent.json#providers.inner",
+    })
   })
 
   it("turns unhealthy sense and bundle state into deterministic Sentinel signals", async () => {
@@ -524,31 +628,147 @@ describe("context-loss Sentinel core", () => {
     ])
   })
 
-  it("keeps independent module refreshes monotonic through file-backed sequence protection", async () => {
+  it("keeps latest and latest-ready correct when ready and blocked refreshes interleave", async () => {
     const agentRoot = makeAgentRoot()
 
-    vi.resetModules()
-    const firstModule = await import("../../heart/context-loss-sentinel")
-    vi.resetModules()
-    const secondModule = await import("../../heart/context-loss-sentinel")
+    await Promise.all([
+      refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "post_turn",
+        now: () => new Date("2026-06-08T20:22:00.000Z"),
+        createReceiptId: () => "sentinel-ready-slow",
+        providerVisibility: providerVisibility(),
+        daemonHealthResults: okHealth(),
+        gitStatus: () => ({ ok: true, porcelain: "" }),
+        delayBeforeWriteMs: 40,
+      }),
+      refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "daemon_health",
+        now: () => new Date("2026-06-08T20:23:00.000Z"),
+        createReceiptId: () => "sentinel-blocked-fast",
+        providerVisibility: providerVisibility([
+          configuredLane("outward", {
+            readiness: { status: "failed", checkedAt: "2026-06-08T20:23:00.000Z", error: "MiniMax 503" },
+          }),
+          configuredLane("inner"),
+        ]),
+        daemonHealthResults: okHealth(),
+        gitStatus: () => ({ ok: true, porcelain: "" }),
+      }),
+    ])
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 10 })
+    expect(view.latest?.id).toBe("sentinel-blocked-fast")
+    expect(view.latestReady?.id).toBe("sentinel-ready-slow")
 
     await Promise.all([
-      firstModule.refreshContextLossSentinel("slugger", agentRoot, {
-        trigger: "post_turn",
-        now: () => new Date("2026-06-08T20:30:00.000Z"),
-        createReceiptId: () => "sentinel-process-a",
-        providerVisibility: providerVisibility(),
+      refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "provider_failover",
+        now: () => new Date("2026-06-08T20:24:00.000Z"),
+        createReceiptId: () => "sentinel-blocked-slow",
+        providerVisibility: providerVisibility([
+          configuredLane("outward"),
+          configuredLane("inner", {
+            credential: { status: "missing", repairCommand: "ouro auth --agent slugger --provider anthropic" },
+          }),
+        ]),
         daemonHealthResults: okHealth(),
         gitStatus: () => ({ ok: true, porcelain: "" }),
-        delayBeforeWriteMs: 30,
+        delayBeforeWriteMs: 40,
       }),
-      secondModule.refreshContextLossSentinel("slugger", agentRoot, {
-        trigger: "daemon_health",
-        now: () => new Date("2026-06-08T20:31:00.000Z"),
-        createReceiptId: () => "sentinel-process-b",
+      refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "post_turn",
+        now: () => new Date("2026-06-08T20:25:00.000Z"),
+        createReceiptId: () => "sentinel-ready-fast",
         providerVisibility: providerVisibility(),
         daemonHealthResults: okHealth(),
         gitStatus: () => ({ ok: true, porcelain: "" }),
+      }),
+    ])
+
+    const nextView = readContextLossSentinelView(agentRoot, { limit: 10 })
+    expect(nextView.latest?.id).toBe("sentinel-ready-fast")
+    expect(nextView.latestReady?.id).toBe("sentinel-ready-fast")
+    expect(nextView.history.map((entry) => entry.id)).toEqual([
+      "sentinel-blocked-fast",
+      "sentinel-ready-slow",
+      "sentinel-ready-fast",
+      "sentinel-blocked-slow",
+    ])
+  })
+
+  it("keeps independent child-process refreshes monotonic through file-backed sequence protection", async () => {
+    const agentRoot = makeAgentRoot()
+    const helperPath = path.join(agentRoot, "sentinel-child-process.test.ts")
+    fs.writeFileSync(helperPath, `
+import { describe, expect, it } from "vitest"
+import { refreshContextLossSentinel } from ${JSON.stringify(path.join(process.cwd(), "src", "heart", "context-loss-sentinel.ts"))}
+import { readContextLossSentinelView } from ${JSON.stringify(path.join(process.cwd(), "src", "heart", "context-loss-sentinel.ts"))}
+
+const agentRoot = process.env.SENTINEL_AGENT_ROOT!
+const receiptId = process.env.SENTINEL_RECEIPT_ID!
+const generatedAt = process.env.SENTINEL_GENERATED_AT!
+const delayBeforeWriteMs = Number(process.env.SENTINEL_DELAY_MS ?? "0")
+
+function providerVisibility() {
+  return {
+    agentName: "slugger",
+    lanes: [
+      {
+        lane: "outward",
+        status: "configured",
+        provider: "minimax",
+        model: "minimax-text-01",
+        source: "agent.json",
+        readiness: { status: "ready", checkedAt: generatedAt },
+        credential: { status: "present", source: "vault:slugger:providers/outward" },
+        warnings: [],
+      },
+      {
+        lane: "inner",
+        status: "configured",
+        provider: "anthropic",
+        model: "claude-opus-4",
+        source: "agent.json",
+        readiness: { status: "ready", checkedAt: generatedAt },
+        credential: { status: "present", source: "vault:slugger:providers/inner" },
+        warnings: [],
+      },
+    ],
+  }
+}
+
+describe("child Sentinel refresh", () => {
+  it("writes one receipt from a separate process", async () => {
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: process.env.SENTINEL_TRIGGER as any,
+      now: () => new Date(generatedAt),
+      createReceiptId: () => receiptId,
+      providerVisibility: providerVisibility() as any,
+      daemonHealthResults: [
+        { name: "agent-processes", status: "ok", message: "all managed agents running" },
+      ],
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+      delayBeforeWriteMs,
+    })
+    expect(readContextLossSentinelView(agentRoot, { limit: 10 }).history.map((entry) => entry.id)).toContain(receiptId)
+  })
+})
+`, "utf-8")
+
+    await Promise.all([
+      runChildVitest(helperPath, {
+        SENTINEL_AGENT_ROOT: agentRoot,
+        SENTINEL_RECEIPT_ID: "sentinel-process-a",
+        SENTINEL_GENERATED_AT: "2026-06-08T20:30:00.000Z",
+        SENTINEL_DELAY_MS: "70",
+        SENTINEL_TRIGGER: "post_turn",
+      }),
+      runChildVitest(helperPath, {
+        SENTINEL_AGENT_ROOT: agentRoot,
+        SENTINEL_RECEIPT_ID: "sentinel-process-b",
+        SENTINEL_GENERATED_AT: "2026-06-08T20:31:00.000Z",
+        SENTINEL_DELAY_MS: "0",
+        SENTINEL_TRIGGER: "daemon_health",
       }),
     ])
 
@@ -617,6 +837,7 @@ describe("context-loss Sentinel core", () => {
     expect(view.history).toEqual([])
     expect(view.degraded.issues.join("\n")).toContain("latest.json unreadable")
     expect(view.degraded.issues.join("\n")).toContain("latest-ready.json malformed")
+    expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 1 malformed")
     expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 2 unreadable")
     expect(fs.statSync(paths.latest).mtimeMs).toBe(latestMtime)
   })
