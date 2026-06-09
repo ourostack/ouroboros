@@ -5,6 +5,7 @@ import { spawn } from "child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  readFlightRecorderResume,
   recordFlightRecorderEvent,
   writeFlightRecorderResume,
   type FlightRecorderResume,
@@ -773,6 +774,55 @@ describe("context-loss Sentinel core", () => {
       verdictImpact: "blocked",
     })
     expect(formatContextLossSentinelText(blockedReceipt)).toContain("latest-ready: unavailable")
+  })
+
+  it("records blocked Sentinel receipts as flight-recorder blocker events", async () => {
+    const agentRoot = makeAgentRoot()
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "provider_failover",
+      now: () => new Date("2026-06-08T20:19:15.000Z"),
+      createReceiptId: () => "sentinel-provider-blocked-event",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:19:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const eventsPath = path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl")
+    const events = fs.readFileSync(eventsPath, "utf-8")
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const blockerEvent = events.find((event) => event.kind === "blocker_detected")
+
+    expect(receipt.verdict).toBe("blocked")
+    expect(blockerEvent).toMatchObject({
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:19:15.000Z",
+      summary: "context-loss Sentinel blocked recovery",
+      blockedBecause: expect.arrayContaining([
+        expect.stringContaining("provider:outward"),
+      ]),
+      producedRefs: [{
+        kind: "arc",
+        locator: receipt.receiptLocator,
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: receipt.id,
+        trigger: "provider_failover",
+      },
+    })
+    const resume = readFlightRecorderResume(agentRoot)
+    expect(resume.canContinue).toBe(false)
+    expect(resume.blockedBecause).toEqual(expect.arrayContaining([
+      expect.stringContaining("context-loss Sentinel blocked"),
+    ]))
   })
 
   it("reports warn-level sense probes and singular dirty git entries", async () => {
