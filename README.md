@@ -44,7 +44,7 @@ The shared harness lives in `src/`:
 - `src/heart/`
   Core runtime, provider adapters, daemon, bootstrap, identity, and entrypoints. Organized into topic subdirectories: daemon/ (lifecycle), mailbox/ (calendar), habits/ (scheduling), hatch/ (agent creation), versioning/ (updates), auth/, mcp/, providers/, bridges/.
 - `src/mind/`
-  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, diary, note search, embedding providers, journal, obligation steering, and friend resolution.
+  Prompt assembly, session persistence, bundle manifest enforcement, phrases, formatting, Desk record diary, note search, embedding providers, record migration, obligation steering, and friend resolution.
 - `src/repertoire/`
   Tool registry (split into category modules: files, shell, notes, bridge, session, continuity, flow, surface, config, and sense-specific tools), coding orchestration, task tools, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
@@ -81,8 +81,7 @@ The canonical bundle shape is enforced by `src/mind/bundle-manifest.ts`. Importa
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
 - `arc/` — live continuity, obligations, claims, and resume state
-- `desk/` — durable work and, per the target substrate, the maintained record
-- `diary/` and `journal/` — current compatibility paths slated for the hard cut in [Agent Orientation Substrate](docs/agent-orientation-substrate.md)
+- `desk/` — durable work plus the maintained Desk record under `desk/_record/`
 - `habits/` — the agent's autonomous rhythms (heartbeat, reflections, check-ins)
 - `friends/`
 - `state/`
@@ -249,7 +248,7 @@ ouro setup --tool codex --agent <name>
 
 This registers the MCP server, installs lifecycle hooks (SessionStart, Stop, PostToolUse), and detects dev vs installed mode automatically.
 
-**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `ask`, `check_response`, `status`, `search_notes`, `delegate`, etc.) and can invoke them mid-session. Conversation-shaped tools such as `send_message`, `ask`, `delegate`, `check_guidance`, and `report_progress` run full agent turns — you get your system prompt, your diary, your tools, everything. Read-only inspection tools such as `status` and `search_notes` do local lookup only. Missing `search_notes` hits are not evidence that the agent has no belief or preference.
+**How it works:** When a developer starts a Claude Code session, the MCP server launches as a subprocess. The dev tool sees your MCP tools (`send_message`, `ask`, `check_response`, `status`, `search_facts`, `delegate`, etc.) and can invoke them mid-session. Conversation-shaped tools such as `send_message`, `ask`, `delegate`, `check_guidance`, and `report_progress` run full agent turns — you get your system prompt, your Desk record, your tools, everything. Read-only inspection tools such as `status` and `search_facts` do local lookup only. Missing `search_facts` hits are not evidence that the agent has no belief or preference.
 
 **The conversation pattern:** `send_message` or `ask` sends a message and gets back your synchronous response. `ponder` no longer creates a magical outward deferral. Instead, it bookmarks deeper work as a packet while the current sense session keeps moving. If that work later surfaces something back, the dev tool can still use `check_response` to see the returned result.
 

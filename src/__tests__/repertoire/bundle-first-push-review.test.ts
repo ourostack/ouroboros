@@ -78,8 +78,8 @@ describe("bundle_init_git writes the full template", () => {
     // Create files that should be TRACKED
     fs.mkdirSync(path.join(tmp.agentRoot, "friends"), { recursive: true })
     fs.writeFileSync(path.join(tmp.agentRoot, "friends", "ari.json"), "{}", "utf-8")
-    fs.mkdirSync(path.join(tmp.agentRoot, "journal"), { recursive: true })
-    fs.writeFileSync(path.join(tmp.agentRoot, "journal", "entry.md"), "hi", "utf-8")
+    fs.mkdirSync(path.join(tmp.agentRoot, "desk", "_record", "notes"), { recursive: true })
+    fs.writeFileSync(path.join(tmp.agentRoot, "desk", "_record", "notes", "entry.md"), "hi", "utf-8")
 
     const result = await invoke("bundle_list_first_commit")
     expect(result.ok).toBe(true)
@@ -88,7 +88,7 @@ describe("bundle_init_git writes the full template", () => {
 
     // Tracked files present
     expect(allFiles).toContain(path.join("friends", "ari.json"))
-    expect(allFiles).toContain(path.join("journal", "entry.md"))
+    expect(allFiles).toContain(path.join("desk", "_record", "notes", "entry.md"))
     // Ignored files absent
     expect(allFiles).not.toContain(path.join("state", "session.json"))
     expect(allFiles).not.toContain(".env")
@@ -150,21 +150,21 @@ describe("bundle_first_push_review", () => {
       cwd: tmp.agentRoot,
       stdio: "pipe",
     })
-    // Populate friends and journal
+    // Populate friends and Desk record notes
     fs.mkdirSync(path.join(tmp.agentRoot, "friends"), { recursive: true })
     fs.writeFileSync(path.join(tmp.agentRoot, "friends", "ari.json"), "{}", "utf-8")
     fs.writeFileSync(path.join(tmp.agentRoot, "friends", "bob.json"), "{}", "utf-8")
-    fs.mkdirSync(path.join(tmp.agentRoot, "journal"), { recursive: true })
-    fs.writeFileSync(path.join(tmp.agentRoot, "journal", "e1.md"), "hi", "utf-8")
+    fs.mkdirSync(path.join(tmp.agentRoot, "desk", "_record", "notes"), { recursive: true })
+    fs.writeFileSync(path.join(tmp.agentRoot, "desk", "_record", "notes", "e1.md"), "hi", "utf-8")
 
     const result = await invoke("bundle_first_push_review")
     expect(result.ok).toBe(true)
     const piiCounts = result.piiCounts as Record<string, number>
     expect(piiCounts.friends).toBe(2)
-    expect(piiCounts.journal).toBe(1)
+    expect(piiCounts["desk/_record/notes"]).toBe(1)
     expect(result.totalPiiRecords).toBe(3)
     expect(String(result.warningText)).toContain("2 friends records")
-    expect(String(result.warningText)).toContain("1 journal record")
+    expect(String(result.warningText)).toContain("1 desk/_record/notes record")
   })
 
   it("returns public_github warning when GitHub API reports private: false", async () => {

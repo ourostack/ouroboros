@@ -46,6 +46,11 @@ describe("parseFrontmatter", () => {
     expect(parseFrontmatter(raw)).toEqual({ status: [] })
   })
 
+  it("parses nested key/value maps under a key", () => {
+    const raw = ["surface:", "  family: true", "  originator: false"].join("\n")
+    expect(parseFrontmatter(raw)).toEqual({ surface: { family: true, originator: false } })
+  })
+
   it("handles CRLF line endings", () => {
     const raw = "status: done\r\ncategory: ship"
     expect(parseFrontmatter(raw)).toEqual({ status: "done", category: "ship" })

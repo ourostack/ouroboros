@@ -64,7 +64,7 @@ Once connected, these tools are available:
 - **status** -- Get agent's current status and activity
 - **catchup** -- Get recent activity summary
 - **get_context** -- Get agent's current working context
-- **search_notes** -- Read-only note search for specific topics; missing hits are not evidence that the agent has no belief or preference
+- **search_facts** -- Read-only Desk record fact search for specific topics; missing hits are not evidence that the agent has no belief or preference
 - **get_task** -- Get details of the agent's current task
 
 ## Troubleshooting

@@ -2032,7 +2032,7 @@ describe("daemon CLI default dependency branches", () => {
     makeBundle("alpha", JSON.stringify({ enabled: true }))
     makeBundle("disabled", JSON.stringify({ enabled: false }))
     makeBundle("broken", "{")
-    fs.mkdirSync(path.join(tmpBundlesRoot, "notes"), { recursive: true })
+    fs.mkdirSync(path.join(tmpBundlesRoot, "scratch"), { recursive: true })
 
     vi.doMock("net", () => ({ createConnection: vi.fn() }))
     vi.doMock("child_process", () => ({ spawn: vi.fn() }))

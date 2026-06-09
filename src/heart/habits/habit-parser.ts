@@ -4,6 +4,18 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 export type HabitStatus = "active" | "paused"
 
+export interface HabitOrigin {
+  friendId: string
+  channel: string
+  key: string
+}
+
+export interface HabitSurface {
+  family: boolean
+  originator: boolean
+  extra: string[]
+}
+
 export interface HabitFile {
   name: string
   title: string
@@ -12,6 +24,8 @@ export interface HabitFile {
   lastRun: string | null
   created: string | null
   tools: string[] | undefined
+  origin: HabitOrigin | null
+  surface: HabitSurface
   body: string
 }
 
@@ -32,6 +46,53 @@ function parseToolsField(raw: unknown): string[] | undefined {
     return inner.split(",").map((s) => s.trim()).filter(Boolean)
   }
   return undefined
+}
+
+function objectRecord(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key]
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null
+}
+
+function booleanField(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = record[key]
+  if (typeof value === "boolean") return value
+  if (typeof value === "string") {
+    if (value === "true") return true
+    if (value === "false") return false
+  }
+  return fallback
+}
+
+function parseStringArray(raw: unknown): string[] {
+  if (typeof raw === "string" && raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1)
+    if (!inner.trim()) return []
+    return inner.split(",").map((item) => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function parseOrigin(raw: unknown): HabitOrigin | null {
+  const record = objectRecord(raw)
+  if (!record) return null
+  const friendId = stringField(record, "friendId")
+  const channel = stringField(record, "channel")
+  const key = stringField(record, "key")
+  if (!friendId || !channel || !key) return null
+  return { friendId, channel, key }
+}
+
+function parseSurface(raw: unknown): HabitSurface {
+  const record = objectRecord(raw)
+  return {
+    family: record ? booleanField(record, "family", true) : true,
+    originator: record ? booleanField(record, "originator", true) : true,
+    extra: record ? parseStringArray(record.extra) : [],
+  }
 }
 
 function extractFrontmatterAndBody(content: string): { frontmatter: Record<string, unknown>; body: string } | null {
@@ -70,6 +131,8 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
       lastRun: null,
       created: null,
       tools: undefined,
+      origin: null,
+      surface: { family: true, originator: true, extra: [] },
       body: content.trim(),
     }
   }
@@ -93,6 +156,8 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
   const created = typeof rawCreated === "string" && rawCreated.length > 0 ? rawCreated : null
 
   const tools = parseToolsField(frontmatter.tools)
+  const origin = parseOrigin(frontmatter.origin)
+  const surface = parseSurface(frontmatter.surface)
 
   return {
     name: stem,
@@ -102,6 +167,8 @@ export function parseHabitFile(content: string, filePath: string): HabitFile {
     lastRun,
     created,
     tools,
+    origin,
+    surface,
     body,
   }
 }
@@ -110,6 +177,17 @@ function formatFrontmatterValue(value: unknown): string {
   if (value === null || value === undefined) return "null"
   if (Array.isArray(value)) return `[${value.join(", ")}]`
   return String(value)
+}
+
+function renderFrontmatterLine(lines: string[], key: string, value: unknown): void {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    lines.push(`${key}:`)
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      lines.push(`  ${childKey}: ${formatFrontmatterValue(childValue)}`)
+    }
+    return
+  }
+  lines.push(`${key}: ${formatFrontmatterValue(value)}`)
 }
 
 export function renderHabitFile(frontmatter: Record<string, unknown>, body: string): string {
@@ -123,7 +201,7 @@ export function renderHabitFile(frontmatter: Record<string, unknown>, body: stri
   const lines: string[] = ["---"]
 
   for (const key of Object.keys(frontmatter)) {
-    lines.push(`${key}: ${formatFrontmatterValue(frontmatter[key])}`)
+    renderFrontmatterLine(lines, key, frontmatter[key])
   }
 
   lines.push("---")

@@ -44,8 +44,8 @@ describe("note search provenance display", () => {
     },
   }
 
-  it("includes provenance fields in search_notes result text when present", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+  it("includes provenance fields in search_facts result text when present", async () => {
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "prov-1",
       text: "alice prefers dark mode",
@@ -77,7 +77,7 @@ describe("note search provenance display", () => {
   })
 
   it("works normally when diary entry has no provenance (backwards compat)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "old-1",
       text: "bob likes tea",
@@ -103,7 +103,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders provenance with only tool field (no channel, friend, or trust)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "tool-only-1",
       text: "minimal provenance entry",
@@ -132,7 +132,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders [diary] prefix for entry with no provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "trust-self-1",
       text: "self authored note",
@@ -155,7 +155,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders [diary] prefix for entry with trusted (family) provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "trust-fam-1",
       text: "family member said hello",
@@ -185,7 +185,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders [diary/external] prefix for entry with external provenance", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "trust-ext-1",
       text: "stranger sent a link",
@@ -215,7 +215,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders [diary] prefix for self provenance (inner channel, no friend)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "trust-inner-1",
       text: "inner reflection note",
@@ -242,7 +242,7 @@ describe("note search provenance display", () => {
   })
 
   it("renders only defined provenance fields (partial: channel only)", async () => {
-    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_notes-prov-"))
+    const diaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "search_facts-prov-"))
     const fact: DiaryEntry = {
       id: "partial-1",
       text: "system preference noted",

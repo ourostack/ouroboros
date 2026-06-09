@@ -6,7 +6,8 @@
       "changes": [
         "Add Work Card visibility projection for Workbench.",
         "Document the AX-first Arc Flight Recorder plan, remove the disabled session archive shim, and demote stale inner-dialogue framing to private agent-facing turn language.",
-        "Capture the Arc/Desk/Habits orientation substrate scope, adopting record/diary/facts vocabulary instead of generic memory and removing journal-as-desk prompt framing."
+        "Capture the Arc/Desk/Habits orientation substrate scope, adopting record/diary/facts vocabulary instead of generic memory and removing journal-as-desk prompt framing.",
+        "Move the maintained diary and canonical notes into `desk/_record/`, delete Journal indexing/search/runtime surfaces, replace `search_notes` with `search_facts` plus explicit `consult_diary` and `consult_notes`, and add Arc flight-recorder resume plus habit run receipts."
       ]
     },
     {

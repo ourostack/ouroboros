@@ -35,14 +35,14 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-daemon.sock",
 }))
 
-// Mock agent-service for read-only tools like status/search_notes.
+// Mock agent-service for read-only tools like status/search_facts.
 vi.mock("../../../heart/daemon/agent-service", () => ({
   handleAgentStatus: vi.fn(async () => ({ ok: true, message: "Status" })),
   handleAgentAsk: vi.fn(async () => ({ ok: true, message: "Answer" })),
   handleAgentCatchup: vi.fn(async () => ({ ok: true, message: "Catchup" })),
   handleAgentDelegate: vi.fn(async () => ({ ok: true, message: "Delegated" })),
   handleAgentGetContext: vi.fn(async () => ({ ok: true, message: "Context" })),
-  handleAgentSearchNotes: vi.fn(async () => ({ ok: true, message: "Notes" })),
+  handleAgentSearchFacts: vi.fn(async () => ({ ok: true, message: "Notes" })),
   handleAgentGetTask: vi.fn(async () => ({ ok: true, message: "Tasks" })),
   handleAgentCheckScope: vi.fn(async () => ({ ok: true, message: "In scope" })),
   handleAgentRequestDecision: vi.fn(async () => ({ ok: true, message: "Decision" })),

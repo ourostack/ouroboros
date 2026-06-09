@@ -36,6 +36,9 @@ describe("ouro work card CLI", () => {
       agent: "slugger",
       format: "json",
     })
+    expect(parseOuroCommand(["work", "card"])).toEqual({ kind: "work.card" })
+    expect(() => parseOuroCommand(["work"])).toThrow(/Usage: ouro work card/)
+    expect(() => parseOuroCommand(["work", "card", "--format"])).toThrow(/Usage: ouro work card/)
     expect(() => parseOuroCommand(["work", "card", "--format", "yaml"])).toThrow(/format/)
   })
 

@@ -80,7 +80,7 @@ describe("readFirstBundleMetaVersion", () => {
 
   it("skips non-.ouro directories", () => {
     const bundlesRoot = createTempDir("version-detect-skip-")
-    fs.mkdirSync(path.join(bundlesRoot, "notes"), { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "scratch"), { recursive: true })
     const agentDir = path.join(bundlesRoot, "agent.ouro")
     fs.mkdirSync(agentDir, { recursive: true })
     fs.writeFileSync(

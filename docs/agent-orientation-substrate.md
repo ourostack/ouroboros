@@ -116,7 +116,7 @@ So the target is to remove:
 
 - `journalSection()` prompt rendering;
 - `journal-index.ts`;
-- journal search from `search_notes` and pre-turn kept-notes injection;
+- journal search from pre-turn retrieval and record lookup;
 - all prompts that teach the agent to journal as a normal durable move;
 - `journal/` from new bundle templates.
 
@@ -153,8 +153,8 @@ Tool names must use active verbs and concrete artifacts:
 
 If a tool name becomes misleading during implementation, replace it outright.
 Do not keep alias tools around as permanent compatibility debt. In particular,
-do not preserve a generic "memory" vocabulary, and do not let `search_notes`
-continue to mean "search every durable thing."
+do not preserve a generic "memory" vocabulary, and do not keep a generic
+all-record search name that claims to search every durable thing.
 
 ## Prompt-Time Retrieval
 
@@ -353,7 +353,7 @@ Completion criteria:
 
 - new bundles contain no top-level `journal/`, `diary/`, or `notes/`;
 - old bundles migrate valuable `diary/` and `notes/` content into Desk record;
-- old `journal/` content is either migrated or dropped, with a migration report;
+- old `journal/` content is either migrated or quarantined, with a migration report;
 - no prompt tells the agent that journal is its desk;
 - no prompt or tool description calls the record "memory";
 - prompt assembly loads Arc and current Desk orientation deterministically;

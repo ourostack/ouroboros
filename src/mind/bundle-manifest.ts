@@ -27,8 +27,10 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   { path: "arc/obligations", kind: "dir" },
   { path: "arc/cares", kind: "dir" },
   { path: "arc/intentions", kind: "dir" },
-  { path: "diary", kind: "dir" },
-  { path: "journal", kind: "dir" },
+  { path: "arc/flight-recorder", kind: "dir" },
+  { path: "arc/flight-recorder/events", kind: "dir" },
+  { path: "arc/flight-recorder/habit-receipts", kind: "dir" },
+  { path: "arc/claims", kind: "dir" },
   { path: "friends", kind: "dir" },
   { path: "state", kind: "dir" },
   { path: "tasks", kind: "dir" },
@@ -42,6 +44,10 @@ export const CANONICAL_BUNDLE_MANIFEST: readonly BundleManifestEntry[] = [
   // separate from the legacy `tasks/one-shots/` flat layout.
   { path: "plugins", kind: "dir" },
   { path: "desk", kind: "dir" },
+  { path: "desk/_record", kind: "dir" },
+  { path: "desk/_record/diary", kind: "dir" },
+  { path: "desk/_record/diary/daily", kind: "dir" },
+  { path: "desk/_record/notes", kind: "dir" },
 ]
 
 export function getChangelogPath(): string {
@@ -71,7 +77,7 @@ export function getPackageVersion(): string {
 export function createBundleMeta(): BundleMeta {
   return {
     runtimeVersion: getPackageVersion(),
-    bundleSchemaVersion: 1,
+    bundleSchemaVersion: 3,
     lastUpdated: new Date().toISOString(),
   }
 }

@@ -61,7 +61,7 @@ function writeCanonicalNote(
   frontmatter: { created_at: string; tags?: string[] },
   body: string,
 ): void {
-  const notesRoot = path.join(agentRoot, "notes")
+  const notesRoot = path.join(agentRoot, "desk", "_record", "notes")
   fs.mkdirSync(notesRoot, { recursive: true })
   const lines = ["---", `created_at: ${frontmatter.created_at}`]
   if (frontmatter.tags) {
@@ -1627,31 +1627,22 @@ describe("mailbox deep readers", () => {
       recentCanonicalNotes: CanonicalNoteItem[]
     }
 
-    it("reads diary facts and journal index", async () => {
+    it("reads Desk record diary facts", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
-      // Write diary facts
-      fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
+      const diaryRoot = path.join(agentRoot, "desk", "_record", "diary")
+      fs.mkdirSync(diaryRoot, { recursive: true })
       const facts = [
         { id: "f1", text: "User prefers concise answers.", source: "session", createdAt: "2026-03-30T10:00:00.000Z", embedding: [] },
         { id: "f2", text: "Deploy pipeline uses GitHub Actions.", source: "observation", createdAt: "2026-03-29T10:00:00.000Z", embedding: [] },
       ]
-      fs.writeFileSync(path.join(agentRoot, "diary", "facts.jsonl"), facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf-8")
-
-      // Write journal index
-      fs.mkdirSync(path.join(agentRoot, "journal"), { recursive: true })
-      writeJson(path.join(agentRoot, "journal", ".index.json"), [
-        { filename: "2026-03-30.md", preview: "Today I worked on Mailbox", mtime: 1711800000000, embedding: [] },
-        { filename: "2026-03-29.md", preview: "Daemon hosting design", mtime: 1711713600000, embedding: [] },
-      ])
+      fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), facts.map((f) => JSON.stringify(f)).join("\n") + "\n", "utf-8")
 
       const notes = readNotesView(agentRoot)
 
       expect(notes.diaryEntryCount).toBe(2)
       expect(notes.recentDiaryEntries[0]!.text).toBe("User prefers concise answers.")
-      expect(notes.journalEntryCount).toBe(2)
-      expect(notes.recentJournalEntries[0]!.filename).toBe("2026-03-30.md")
     })
 
     it("reads recent canonical markdown notes bounded to the notes view limit", async () => {
@@ -1691,7 +1682,7 @@ describe("mailbox deep readers", () => {
         tags: ["archive-removal"],
       }, "# Notes surface contract\n\nThe canonical notes surface belongs in the existing notes mailbox tab.")
       fs.writeFileSync(
-        path.join(agentRoot, "notes", "2026-05-15-quoted-tags.md"),
+        path.join(agentRoot, "desk", "_record", "notes", "2026-05-15-quoted-tags.md"),
         [
           "---",
           "created_at: 2026-05-15T17:42:13.000Z",
@@ -1725,7 +1716,7 @@ describe("mailbox deep readers", () => {
     it("falls back to file mtime for malformed canonical note timestamps and parses loose tag arrays", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
-      const notesRoot = path.join(agentRoot, "notes")
+      const notesRoot = path.join(agentRoot, "desk", "_record", "notes")
       fs.mkdirSync(notesRoot, { recursive: true })
       const notePath = path.join(notesRoot, "2026-05-14-malformed-timestamp.md")
       fs.writeFileSync(notePath, [
@@ -1752,7 +1743,7 @@ describe("mailbox deep readers", () => {
     it("parses scalar and sparse canonical note tags with safe title fallbacks", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
-      const notesRoot = path.join(agentRoot, "notes")
+      const notesRoot = path.join(agentRoot, "desk", "_record", "notes")
       fs.mkdirSync(notesRoot, { recursive: true })
       const scalarPath = path.join(notesRoot, "2026-05-16-.md")
       fs.writeFileSync(scalarPath, [
@@ -1797,7 +1788,7 @@ describe("mailbox deep readers", () => {
     it("keeps malformed frontmatter readable and stops tag lists at the next key", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
-      const notesRoot = path.join(agentRoot, "notes")
+      const notesRoot = path.join(agentRoot, "desk", "_record", "notes")
       fs.mkdirSync(notesRoot, { recursive: true })
       fs.writeFileSync(path.join(notesRoot, "2026-05-17-tags-before-date.md"), [
         "---",
@@ -1837,7 +1828,7 @@ describe("mailbox deep readers", () => {
     it("reads plain markdown notes, skips .md directories, and sorts timestamp ties by filename", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
-      const notesRoot = path.join(agentRoot, "notes")
+      const notesRoot = path.join(agentRoot, "desk", "_record", "notes")
       fs.mkdirSync(path.join(notesRoot, "2026-05-18-directory.md"), { recursive: true })
       fs.writeFileSync(path.join(notesRoot, "ignore-me.txt"), "Not a canonical note.", "utf-8")
       const tiedMtime = new Date("2026-05-18T18:00:00.000Z")
@@ -1863,16 +1854,13 @@ describe("mailbox deep readers", () => {
       })
     })
 
-    it("exposes canonical notes without removing diary or journal data", async () => {
+    it("exposes canonical notes alongside Desk record diary data", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
-      fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
-      fs.writeFileSync(path.join(agentRoot, "diary", "facts.jsonl"), `${JSON.stringify({ id: "f1", text: "Keep diary.", source: "session", createdAt: "2026-05-14T10:00:00.000Z" })}\n`, "utf-8")
-      fs.mkdirSync(path.join(agentRoot, "journal"), { recursive: true })
-      writeJson(path.join(agentRoot, "journal", ".index.json"), [
-        { filename: "2026-05-14.md", preview: "Keep journal.", mtime: 1778762400000 },
-      ])
+      const diaryRoot = path.join(agentRoot, "desk", "_record", "diary")
+      fs.mkdirSync(diaryRoot, { recursive: true })
+      fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), `${JSON.stringify({ id: "f1", text: "Keep diary.", source: "session", createdAt: "2026-05-14T10:00:00.000Z" })}\n`, "utf-8")
       writeCanonicalNote(agentRoot, "2026-05-14-keep-notes.md", {
         created_at: "2026-05-14T12:00:00.000Z",
         tags: ["mailbox"],
@@ -1882,21 +1870,18 @@ describe("mailbox deep readers", () => {
 
       expect(notes.diaryEntryCount).toBe(1)
       expect(notes.recentDiaryEntries).toHaveLength(1)
-      expect(notes.journalEntryCount).toBe(1)
-      expect(notes.recentJournalEntries).toHaveLength(1)
       expect(notes.canonicalNoteCount).toBe(1)
       expect(notes.recentCanonicalNotes).toHaveLength(1)
     })
 
-    it("handles missing diary and journal directories", async () => {
+    it("handles missing Desk record directories", async () => {
       const notes = readNotesView("/tmp/nonexistent-agent.ouro")
       expect(notes.diaryEntryCount).toBe(0)
-      expect(notes.journalEntryCount).toBe(0)
       expect((notes as NotesViewWithCanonicalNotes).canonicalNoteCount).toBe(0)
       expect((notes as NotesViewWithCanonicalNotes).recentCanonicalNotes).toEqual([])
     })
 
-    it("does NOT read from legacy psyche/notes path -- only diary/", async () => {
+    it("does NOT read from legacy psyche/notes path -- only Desk record diary", async () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
@@ -1906,7 +1891,6 @@ describe("mailbox deep readers", () => {
 
       const notes = readNotesView(agentRoot)
 
-      // Should NOT find entries in psyche/notes since we no longer fall back
       expect(notes.diaryEntryCount).toBe(0)
     })
 
@@ -1914,18 +1898,13 @@ describe("mailbox deep readers", () => {
       const tmpRoot = makeBundleRoot()
       const agentRoot = path.join(tmpRoot, "agent.ouro")
 
-      fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
-      fs.writeFileSync(path.join(agentRoot, "diary", "facts.jsonl"), [
+      const diaryRoot = path.join(agentRoot, "desk", "_record", "diary")
+      fs.mkdirSync(diaryRoot, { recursive: true })
+      fs.writeFileSync(path.join(diaryRoot, "facts.jsonl"), [
         JSON.stringify({ id: "f1", text: "Valid but sparse", source: 7, createdAt: false }),
         JSON.stringify({ id: "f2", text: "Fully valid", source: "session", createdAt: "2026-03-30T10:00:00.000Z" }),
         JSON.stringify({ id: 3, text: "Skip me" }),
       ].join("\n") + "\n", "utf-8")
-
-      fs.mkdirSync(path.join(agentRoot, "journal"), { recursive: true })
-      writeJson(path.join(agentRoot, "journal", ".index.json"), [
-        { filename: "2026-03-30.md", preview: 7, mtime: "later" },
-        { preview: "skip me", mtime: 1 },
-      ])
 
       const notes = readNotesView(agentRoot)
 
@@ -1935,12 +1914,6 @@ describe("mailbox deep readers", () => {
         text: "Valid but sparse",
         source: "",
         createdAt: "",
-      })
-      expect(notes.journalEntryCount).toBe(1)
-      expect(notes.recentJournalEntries[0]).toEqual({
-        filename: "2026-03-30.md",
-        preview: "",
-        mtime: 0,
       })
     })
   })

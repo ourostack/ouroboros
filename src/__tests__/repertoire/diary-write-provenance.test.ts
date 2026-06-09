@@ -53,7 +53,7 @@ function makeChannelCapabilities(channel: "cli" | "teams" | "bluebubbles" | "inn
 describe("diary_write handler provenance extraction", () => {
   beforeEach(() => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diary-write-prov-"))
-    fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
+    fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary"), { recursive: true })
   })
 
   async function getDiaryWriteHandler() {
@@ -75,7 +75,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry with full context" }, ctx as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance).toBeDefined()
@@ -104,7 +104,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry channel only" }, minimalCtx as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance).toBeDefined()
@@ -120,7 +120,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry no ctx" }, undefined as unknown as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance).toBeUndefined()
@@ -132,7 +132,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry empty ctx" }, ctx as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance).toBeUndefined()
@@ -146,7 +146,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry context no channel no friend" }, ctx as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance).toBeDefined()
@@ -169,7 +169,7 @@ describe("diary_write handler provenance extraction", () => {
 
     await handler({ entry: "test entry tool field" }, ctx as ToolContext)
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const line = fs.readFileSync(factsPath, "utf8").trim()
     const parsed = JSON.parse(line) as DiaryEntry
     expect(parsed.provenance!.tool).toBe("diary_write")

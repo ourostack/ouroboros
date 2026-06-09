@@ -21,6 +21,9 @@ function makeOptions(overrides: Partial<HabitTurnMessageOptions> = {}): HabitTur
     staleObligations: overrides.staleObligations ?? [],
     parseErrors: overrides.parseErrors ?? [],
     degradedComponents: overrides.degradedComponents ?? [],
+    arcResume: overrides.arcResume,
+    deskOrientation: overrides.deskOrientation,
+    surfacePolicy: overrides.surfacePolicy,
     now: overrides.now ?? (() => new Date("2026-03-26T12:00:00Z")),
   }
 }
@@ -51,10 +54,21 @@ describe("buildHabitTurnMessage", () => {
 
   it("normal turn: includes also-due line", () => {
     const result = buildHabitTurnMessage(makeOptions({
-      alsoDue: "also due: weekly-review, daily-journal",
+      alsoDue: "also due: weekly-review, daily-record",
     }))
 
-    expect(result).toContain("also due: weekly-review, daily-journal")
+    expect(result).toContain("also due: weekly-review, daily-record")
+  })
+
+  it("prepends Arc resume, Desk orientation, and surface policy when supplied", () => {
+    const result = buildHabitTurnMessage(makeOptions({
+      arcResume: "## Arc resume\nnext safe action: inspect workbench",
+      deskOrientation: "## Desk record\nfacts: 3",
+      surfacePolicy: "## habit surface policy\nfamily: allowed",
+    }))
+
+    expect(result.startsWith("## Arc resume\nnext safe action: inspect workbench")).toBe(true)
+    expect(result).toContain("\n\n## Desk record\nfacts: 3\n\n## habit surface policy\nfamily: allowed\n\n30 minutes have passed.")
   })
 
   it("normal turn: includes stale obligation alerts with timing and friend name", () => {

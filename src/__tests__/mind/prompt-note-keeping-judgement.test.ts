@@ -138,7 +138,7 @@ describe("note-keeping judgement heuristics — locked content", () => {
     // The tool contracts section should still have the tool descriptions
     expect(system).toContain("save_friend_note")
     expect(system).toContain("diary_write")
-    expect(system).toContain("written-record material")
+    expect(system).toContain("Desk record diary")
 
     // AND the note-keeping judgement heuristics should be present (either in the same
     // section or in a dedicated section)

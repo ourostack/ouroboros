@@ -30,10 +30,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T10:18:00Z",
       },
-      journalFiles: [
-        { name: "auth-migration.md", mtimeMs: now - 2 * 60 * 60 * 1000 },
-        { name: "trust-patterns.md", mtimeMs: now - 26 * 60 * 60 * 1000 },
-      ],
+      recordSummary: { diaryFactCount: 12, noteCount: 2 },
       heartbeat: {
         cadenceMs: 30 * 60 * 1000,
         lastCompletedAt: new Date("2026-03-26T10:18:00Z").getTime(),
@@ -46,8 +43,7 @@ describe("ouro inner status", () => {
     expect(result).toContain("last turn: 12 minutes ago (heartbeat)")
     expect(result).toContain("status: idle")
     expect(result).toContain("heartbeat: healthy")
-    expect(result).toContain("auth-migration.md")
-    expect(result).toContain("trust-patterns.md")
+    expect(result).toContain("Desk record: 12 diary facts, 2 notes")
     expect(result).toContain("attention: 0 held thoughts")
     expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.inner_status_read",
@@ -64,7 +60,7 @@ describe("ouro inner status", () => {
         reason: "instinct",
         startedAt: "2026-03-26T10:28:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 2,
       now,
@@ -79,7 +75,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "slugger",
       runtimeState: null,
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -90,41 +86,18 @@ describe("ouro inner status", () => {
     expect(result).toContain("status: unknown")
   })
 
-  it("handles missing journal directory (empty files)", () => {
+  it("shows empty Desk record counts", () => {
     const now = Date.now()
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
     })
 
-    expect(result).toContain("journal: (empty)")
-  })
-
-  it("shows journal files sorted by recency", () => {
-    const now = new Date("2026-03-26T10:30:00Z").getTime()
-    const result = buildInnerStatusOutput({
-      agentName: "test",
-      runtimeState: { status: "idle" },
-      journalFiles: [
-        { name: "old.md", mtimeMs: now - 3 * 24 * 60 * 60 * 1000 },
-        { name: "recent.md", mtimeMs: now - 5 * 60 * 1000 },
-        { name: "mid.md", mtimeMs: now - 2 * 60 * 60 * 1000 },
-      ],
-      heartbeat: null,
-      attentionCount: 0,
-      now,
-    })
-
-    // Most recent first
-    const recentIdx = result.indexOf("recent.md")
-    const midIdx = result.indexOf("mid.md")
-    const oldIdx = result.indexOf("old.md")
-    expect(recentIdx).toBeLessThan(midIdx)
-    expect(midIdx).toBeLessThan(oldIdx)
+    expect(result).toContain("Desk record: 0 diary facts, 0 notes")
   })
 
   it("computes heartbeat as healthy when elapsed < cadence * 1.5", () => {
@@ -132,7 +105,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: {
         cadenceMs: 30 * 60 * 1000,
         lastCompletedAt: now - 20 * 60 * 1000, // 20 min ago, cadence 30m
@@ -150,7 +123,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: {
         cadenceMs: 30 * 60 * 1000,
         lastCompletedAt: now - 50 * 60 * 1000, // 50 min ago, cadence 30m, threshold 45m
@@ -167,7 +140,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -181,7 +154,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: {
         cadenceMs: 30 * 60 * 1000,
         lastCompletedAt: null,
@@ -202,7 +175,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T10:25:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -220,7 +193,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T08:30:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -238,7 +211,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T10:29:45Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -256,7 +229,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T10:29:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -274,7 +247,7 @@ describe("ouro inner status", () => {
         reason: "heartbeat",
         lastCompletedAt: "2026-03-26T09:30:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,
@@ -288,7 +261,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 1,
       now,
@@ -304,7 +277,7 @@ describe("ouro inner status", () => {
     const result = buildInnerStatusOutput({
       agentName: "test",
       runtimeState: { status: "idle" },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: {
         cadenceMs: 2 * 60 * 60 * 1000,
         lastCompletedAt: now - 30 * 60 * 1000,
@@ -324,7 +297,7 @@ describe("ouro inner status", () => {
         status: "idle",
         lastCompletedAt: "2026-03-26T10:25:00Z",
       },
-      journalFiles: [],
+      recordSummary: { diaryFactCount: 0, noteCount: 0 },
       heartbeat: null,
       attentionCount: 0,
       now,

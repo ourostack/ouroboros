@@ -103,7 +103,7 @@ const TOOL_TO_COMMAND: Record<string, string> = {
   status: "agent.status",
   catchup: "agent.catchup",
   get_context: "agent.getContext",
-  search_notes: "agent.searchNotes",
+  search_facts: "agent.searchFacts",
   get_task: "agent.getTask",
 }
 
@@ -356,7 +356,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     status: "handleAgentStatus",
     catchup: "handleAgentCatchup",
     get_context: "handleAgentGetContext",
-    search_notes: "handleAgentSearchNotes",
+    search_facts: "handleAgentSearchFacts",
     get_task: "handleAgentGetTask",
   }
 
@@ -574,7 +574,7 @@ export function getToolSchemas(): McpToolSchema[] {
   return [
     {
       name: "ask",
-      description: "Ask the agent a question through a full conversation turn. This has the same identity, tools, and session continuity as send_message; use search_notes for read-only note lookup.",
+      description: "Ask the agent a question through a full conversation turn. This has the same identity, tools, and session continuity as send_message; use search_facts or consult_notes for read-only record lookup.",
       inputSchema: {
         type: "object",
         properties: {
@@ -585,7 +585,7 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "status",
-      description: "Get the agent's current status including active sessions, diary and journal state, and activity level.",
+      description: "Get the agent's current status including active sessions, Desk record state, and activity level.",
       inputSchema: {
         type: "object",
         properties: {},
@@ -613,19 +613,19 @@ export function getToolSchemas(): McpToolSchema[] {
     },
     {
       name: "get_context",
-      description: "Get the agent's current working context including note summary, active tasks, and relevant state.",
+      description: "Get the agent's current working context including Desk record summary, active tasks, and relevant state.",
       inputSchema: {
         type: "object",
         properties: {},
       },
     },
     {
-      name: "search_notes",
-      description: "Read-only note search. Returns matching diary lines without running an agent turn or treating missing matches as absence of agent belief.",
+      name: "search_facts",
+      description: "Read-only fact search. Returns matching Desk record diary lines without running an agent turn or treating missing matches as absence of agent belief.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search term to look for in agent notes" },
+          query: { type: "string", description: "Search term to look for in agent facts" },
         },
         required: ["query"],
       },

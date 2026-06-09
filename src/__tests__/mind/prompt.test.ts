@@ -3045,7 +3045,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my desk")
     expect(result).toContain("## my skills")
     expect(result).toContain("## tool contracts")
-    expect(result).toContain("search_notes")
+    expect(result).toContain("search_facts")
+    expect(result).toContain("consult_diary")
     expect(result).toContain("consult_notes")
   })
 
@@ -4022,7 +4023,8 @@ describe("active-work prompting", () => {
     const result = flattenSystemPrompt(await buildSystem("cli"))
 
     expect(result).toContain("## tool contracts")
-    expect(result).toContain("search_notes")
+    expect(result).toContain("search_facts")
+    expect(result).toContain("consult_diary")
     expect(result).toContain("consult_notes")
     expect(result).not.toMatch(/session search/i)
     expect(result).not.toMatch(/query_session search/i)
@@ -4827,8 +4829,9 @@ describe("toolContractsSection (Unit 1.5)", () => {
     expect(result).toContain("1. `save_friend_note` -- when I learn something about a person, I save it immediately")
     expect(result).toContain("2. `diary_write` -- when I learn something general about a project, system, or decision")
     expect(result).toContain("3. `get_friend_note` -- when I need context about someone not in this conversation")
-    expect(result).toContain("4. `search_notes` -- when I need older written-record material")
-    expect(result).toContain("5. `consult_notes` -- when I need semantic search across durable notes")
+    expect(result).toContain("4. `search_facts` -- when I need older written facts")
+    expect(result).toContain("5. `consult_diary` -- when I need recent diary facts or direct diary inspection")
+    expect(result).toContain("6. `consult_notes` -- when I need semantic search across durable reference notes")
   })
 
   it("contains tool behavior rules (tool_choice required, settle rules)", async () => {
@@ -5166,7 +5169,7 @@ describe("note-awareness lines in contextSection (Unit 1.8)", () => {
     resetPsycheCache()
 
     const result = flattenSystemPrompt(await buildSystem("teams", {}, makeOnboardingContext() as any))
-    expect(result).toContain("The pre-turn record check may surface relevant written-record or friend-note material")
+    expect(result).toContain("The pre-turn record check may surface relevant Desk record or friend-note material")
   })
 
   it("includes 'My psyche files are always loaded'", async () => {

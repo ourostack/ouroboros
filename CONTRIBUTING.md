@@ -51,7 +51,7 @@ Useful scopes in the current codebase include:
 - `arc` — continuity state (obligations, cares, episodes, intentions, presence)
 - `daemon` — daemon lifecycle, CLI, process management
 - `heart` — core engine, providers, identity, config
-- `mind` — prompt, sessions, diary, journal, phrases, friends
+- `mind` — prompt, sessions, Desk record diary/notes, phrases, friends
 - `repertoire` — tools, coding, tasks, skills, integration clients
 - `senses` — CLI, Teams, BlueBubbles, Mail, inner dialog (MCP is a bridge, not a sense — `src/heart/mcp/`)
 - `nerves` — events, logging, audit coverage
@@ -128,8 +128,7 @@ This points the MCP server at your local build so your agent uses your dev code,
 - Each agent has one credential vault. Provider credentials live in `providers/<provider>` vault items, runtime/sense/integration credentials live in the `runtime/config` vault item, and travel/tool credentials live as ordinary vault credential items.
 - Secrets do not belong in the repo, bundle files, app settings, or local JSON credential stores.
 - Agent durable continuity state (episodes, obligations, cares, intentions) lives under `~/AgentBundles/<agent>.ouro/arc/`.
-- Agent diary lives at `~/AgentBundles/<agent>.ouro/diary/`; older bundles were migrated from the previous psyche note store.
-- Agent journal (thinking-in-progress) lives at `~/AgentBundles/<agent>.ouro/journal/`.
+- Agent record diary and notes live under `~/AgentBundles/<agent>.ouro/desk/_record/`; old top-level diary, notes, and journal roots are migrated or quarantined there.
 - Agent habits (rhythms) live at `~/AgentBundles/<agent>.ouro/habits/`.
 - Machine-scoped temporary/test artifacts belong under `~/.agentstate/...`.
 

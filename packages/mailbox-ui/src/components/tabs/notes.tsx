@@ -3,7 +3,7 @@ import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime } from "../../api"
 import type { MailboxNoteDecisionView, MailboxNotesView } from "../../contracts"
 
-type NotesViewMode = "diary" | "journal" | "notes" | "decisions"
+type NotesViewMode = "diary" | "notes" | "decisions"
 
 export function NotesTab({ agentName, refreshGeneration }: { agentName: string; refreshGeneration: number }) {
   const [data, setData] = useState<MailboxNotesView | null>(null)
@@ -25,7 +25,6 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
   }
 
   const diaryEntries = data.recentDiaryEntries
-  const journalEntries = data.recentJournalEntries
   const canonicalNotes = data.recentCanonicalNotes
 
   return (
@@ -38,15 +37,6 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
           }`}
         >
           Diary ({data.diaryEntryCount})
-        </button>
-        <span className="text-ouro-shadow/30">|</span>
-        <button
-          onClick={() => setView("journal")}
-          className={`font-mono text-xs uppercase tracking-wider transition-colors ${
-            view === "journal" ? "text-ouro-glow" : "text-ouro-shadow hover:text-ouro-mist"
-          }`}
-        >
-          Journal ({data.journalEntryCount})
         </button>
         <span className="text-ouro-shadow/30">|</span>
         <button
@@ -86,23 +76,6 @@ export function NotesTab({ agentName, refreshGeneration }: { agentName: string; 
             </div>
           ) : (
             <p className="text-sm text-ouro-shadow italic">No diary entries yet. The agent hasn't written anything down.</p>
-          )}
-        </div>
-      )}
-
-      {view === "journal" && (
-        <div>
-          {journalEntries.length > 0 ? (
-            <div className="space-y-3">
-              {journalEntries.map((e) => (
-                <article key={e.filename} className="rounded-xl bg-ouro-void/40 px-4 py-3.5 ring-1 ring-ouro-moss/15">
-                  <p className="font-medium text-ouro-bone">{e.filename}</p>
-                  <p className="mt-1 text-sm leading-relaxed text-ouro-mist">{e.preview}</p>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-ouro-shadow italic">No journal entries yet.</p>
           )}
         </div>
       )}

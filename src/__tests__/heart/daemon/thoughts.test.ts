@@ -97,7 +97,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_facts", arguments: "{}" } },
             { id: "tc_2", type: "function", function: { name: "shell", arguments: "{}" } },
           ],
         },
@@ -109,7 +109,7 @@ describe("thoughts", () => {
       const turns = parseInnerDialogSession(sessionPath)
 
       expect(turns).toHaveLength(1)
-      expect(turns[0].tools).toEqual(["search_notes", "shell"])
+      expect(turns[0].tools).toEqual(["search_facts", "shell"])
       expect(turns[0].response).toBe("found something interesting.")
     })
 
@@ -149,7 +149,7 @@ describe("thoughts", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_facts", arguments: "{}" } },
           ],
         },
         { role: "tool", tool_call_id: "tc_1", content: "results" },
@@ -163,7 +163,7 @@ describe("thoughts", () => {
       ])
 
       const turns = parseInnerDialogSession(sessionPath)
-      expect(turns[0].tools).toEqual(["search_notes"])
+      expect(turns[0].tools).toEqual(["search_facts"])
       expect(turns[0].tools).not.toContain("settle")
     })
 
@@ -310,7 +310,7 @@ describe("thoughts", () => {
               id: "call-1",
               type: "function",
               function: {
-                name: "search_notes",
+                name: "search_facts",
                 arguments: "{}",
               },
             },
@@ -369,7 +369,7 @@ describe("thoughts", () => {
       expect(turns[0]).toMatchObject({
         type: "boot",
         response: "checked in. ready to work.",
-        tools: ["search_notes"],
+        tools: ["search_facts"],
       })
     })
 
@@ -509,13 +509,13 @@ describe("thoughts", () => {
     it("formats turns with type labels and responses", () => {
       const output = formatThoughtTurns([
         { type: "boot", prompt: "waking up.", response: "checking in.", tools: [] },
-        { type: "heartbeat", prompt: "anything?", response: "nothing new.", tools: ["search_notes"] },
+        { type: "heartbeat", prompt: "anything?", response: "nothing new.", tools: ["search_facts"] },
       ], 10)
 
       expect(output).toContain("--- boot ---")
       expect(output).toContain("checking in.")
       expect(output).toContain("--- heartbeat ---")
-      expect(output).toContain("tools: search_notes")
+      expect(output).toContain("tools: search_facts")
       expect(output).toContain("nothing new.")
     })
 

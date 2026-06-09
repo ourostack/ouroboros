@@ -19,7 +19,7 @@ import {
   handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
   handleAgentGetTask, handleAgentReportBlocker, handleAgentReportComplete,
-  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchNotes,
+  handleAgentReportProgress, handleAgentRequestDecision, handleAgentSearchFacts,
   handleAgentStatus,
 } from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
@@ -414,7 +414,7 @@ export type DaemonCommand =
   | { kind: "agent.catchup"; agent: string; friendId: string; [key: string]: unknown }
   | { kind: "agent.delegate"; agent: string; friendId: string; task?: string; context?: string; [key: string]: unknown }
   | { kind: "agent.getContext"; agent: string; friendId: string; [key: string]: unknown }
-  | { kind: "agent.searchNotes"; agent: string; friendId: string; query?: string; [key: string]: unknown }
+  | { kind: "agent.searchFacts"; agent: string; friendId: string; query?: string; [key: string]: unknown }
   | { kind: "agent.getTask"; agent: string; friendId: string; [key: string]: unknown }
   | { kind: "agent.checkScope"; agent: string; friendId: string; item?: string; [key: string]: unknown }
   | { kind: "agent.requestDecision"; agent: string; friendId: string; topic?: string; options?: string[]; [key: string]: unknown }
@@ -1421,8 +1421,8 @@ export class OuroDaemon {
         return handleAgentDelegate(command)
       case "agent.getContext":
         return handleAgentGetContext(command)
-      case "agent.searchNotes":
-        return handleAgentSearchNotes(command)
+      case "agent.searchFacts":
+        return handleAgentSearchFacts(command)
       case "agent.getTask":
         return handleAgentGetTask(command)
       case "agent.checkScope":
@@ -1514,7 +1514,7 @@ export class OuroDaemon {
         }
       }
       case "habit.poke": {
-        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName })
+        this.processManager.sendToAgent?.(command.agent, { type: "habit", habitName: command.habitName, trigger: "poke" })
         return {
           ok: true,
           message: `poked habit ${command.habitName} for ${command.agent}`,

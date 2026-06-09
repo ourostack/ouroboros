@@ -418,7 +418,7 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(await ui.findByText("older context not available; the agent's curated record is in diary/journal/notes")).toBeTruthy()
+    expect(await ui.findByText("older context not available; the agent's curated record is in Desk record")).toBeTruthy()
   })
 
   it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {
@@ -1116,7 +1116,7 @@ describe("Mailbox deep-tab live refresh", () => {
   it("re-fetches notes data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith("/notes")) return jsonResponse({ diaryEntryCount: 0, journalEntryCount: 0, canonicalNoteCount: 0, recentDiaryEntries: [], recentJournalEntries: [], recentCanonicalNotes: [] })
+      if (url.endsWith("/notes")) return jsonResponse({ diaryEntryCount: 0, canonicalNoteCount: 0, recentDiaryEntries: [], recentCanonicalNotes: [] })
       if (url.endsWith("/note-decisions")) return jsonResponse({ totalCount: 0, items: [] })
       throw new Error(`unexpected url: ${url}`)
     })
@@ -1129,19 +1129,15 @@ describe("Mailbox deep-tab live refresh", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
   })
 
-  it("renders canonical notes in the existing notes tab without removing diary, journal, or decisions", async () => {
+  it("renders canonical notes in the existing notes tab without removing diary or decisions", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith("/notes")) {
         return jsonResponse({
           diaryEntryCount: 1,
-          journalEntryCount: 1,
           canonicalNoteCount: 2,
           recentDiaryEntries: [
             { id: "fact-1", text: "Diary fact still renders.", source: "session", createdAt: "2026-05-14T10:00:00.000Z" },
-          ],
-          recentJournalEntries: [
-            { filename: "2026-05-14.md", preview: "Journal still renders.", mtime: 1778762400000 },
           ],
           recentCanonicalNotes: [
             {
@@ -1177,9 +1173,9 @@ describe("Mailbox deep-tab live refresh", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
     expect(ui.getByRole("button", { name: /Diary \(1\)/ })).toBeTruthy()
-    expect(ui.getByRole("button", { name: /Journal \(1\)/ })).toBeTruthy()
     expect(ui.getByRole("button", { name: /Notes \(2\)/ })).toBeTruthy()
     expect(ui.getByRole("button", { name: /Decisions \(1\)/ })).toBeTruthy()
+    expect(ui.queryByRole("button", { name: /Journal/i })).toBeNull()
 
     fireEvent.click(ui.getByRole("button", { name: /Notes \(2\)/ }))
 
@@ -1190,8 +1186,6 @@ describe("Mailbox deep-tab live refresh", () => {
 
     fireEvent.click(ui.getByRole("button", { name: /Diary \(1\)/ }))
     expect(ui.getByText("Diary fact still renders.")).toBeTruthy()
-    fireEvent.click(ui.getByRole("button", { name: /Journal \(1\)/ }))
-    expect(ui.getByText("Journal still renders.")).toBeTruthy()
     fireEvent.click(ui.getByRole("button", { name: /Decisions \(1\)/ }))
     expect(ui.getByText("Kept as canonical note.")).toBeTruthy()
   })
@@ -1202,10 +1196,8 @@ describe("Mailbox deep-tab live refresh", () => {
       if (url.endsWith("/notes")) {
         return jsonResponse({
           diaryEntryCount: 0,
-          journalEntryCount: 0,
           canonicalNoteCount: 0,
           recentDiaryEntries: [],
-          recentJournalEntries: [],
           recentCanonicalNotes: [],
         })
       }

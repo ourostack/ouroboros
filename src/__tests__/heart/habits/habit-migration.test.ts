@@ -305,7 +305,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     const oldHabitsDir = path.join(bundleRoot, "tasks", "habits")
     fs.mkdirSync(oldHabitsDir, { recursive: true })
 
-    for (const name of ["heartbeat", "journal", "check-inbox"]) {
+    for (const name of ["heartbeat", "daily-record", "check-inbox"]) {
       fs.writeFileSync(path.join(oldHabitsDir, `2026-03-08-1200-${name}.md`), [
         "---",
         `title: ${name}`,
@@ -322,7 +322,7 @@ describe("migrateHabitsFromTaskSystem", () => {
     const { migrateHabitsFromTaskSystem } = await import("../../../heart/habits/habit-migration")
     migrateHabitsFromTaskSystem(bundleRoot)
 
-    for (const name of ["heartbeat", "journal", "check-inbox"]) {
+    for (const name of ["heartbeat", "daily-record", "check-inbox"]) {
       expect(fs.existsSync(path.join(bundleRoot, "habits", `${name}.md`))).toBe(true)
     }
   })

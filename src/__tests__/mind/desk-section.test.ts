@@ -71,7 +71,7 @@ describe("deskSection", () => {
     expect(result).toContain("- ephemeral debugging that resolves in the same exchange")
     expect(result).toContain("live continuity, claims, and obligations")
     expect(result).toContain("habit definitions")
-    expect(result).toContain("target maintained record belongs under desk/_record")
+    expect(result).toContain("maintained record belongs under desk/_record")
   })
 
   it("returns empty-desk stub when no <bundle>/desk/ dir exists", () => {

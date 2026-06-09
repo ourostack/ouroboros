@@ -97,7 +97,7 @@ describe("bundleMetaHook", () => {
     expect(new Date(updated.lastUpdated).toISOString()).toBe(updated.lastUpdated)
   })
 
-  it("bumps bundleSchemaVersion from 1 to 2 on migration", async () => {
+  it("bumps bundleSchemaVersion from 1 to current schema on migration", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-schema-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(
@@ -118,17 +118,17 @@ describe("bundleMetaHook", () => {
     await bundleMetaHook(ctx)
 
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-    expect(updated.bundleSchemaVersion).toBe(2)
+    expect(updated.bundleSchemaVersion).toBe(3)
   })
 
-  it("preserves bundleSchemaVersion when already at 2 or higher", async () => {
+  it("preserves bundleSchemaVersion when already at 3 or higher", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-schema-preserve-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(
       metaPath,
       JSON.stringify({
         runtimeVersion: "0.0.1",
-        bundleSchemaVersion: 2,
+        bundleSchemaVersion: 3,
         lastUpdated: "2025-01-01T00:00:00Z",
       }),
     )
@@ -142,7 +142,7 @@ describe("bundleMetaHook", () => {
     await bundleMetaHook(ctx)
 
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-    expect(updated.bundleSchemaVersion).toBe(2)
+    expect(updated.bundleSchemaVersion).toBe(3)
   })
 
   it("handles first-boot case (no bundle-meta.json) -- creates fresh meta with no previousRuntimeVersion", async () => {
@@ -162,7 +162,7 @@ describe("bundleMetaHook", () => {
     const created = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
     expect(created.runtimeVersion).toBe("0.1.0")
     expect(created.previousRuntimeVersion).toBeUndefined()
-    expect(created.bundleSchemaVersion).toBe(2)
+    expect(created.bundleSchemaVersion).toBe(3)
   })
 
   it("handles malformed existing bundle-meta.json (overwrites with fresh)", async () => {
@@ -181,7 +181,7 @@ describe("bundleMetaHook", () => {
     expect(result.ok).toBe(true)
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
     expect(updated.runtimeVersion).toBe("0.1.0")
-    expect(updated.bundleSchemaVersion).toBe(2)
+    expect(updated.bundleSchemaVersion).toBe(3)
   })
 
   it("returns error result on write failure (does not throw)", async () => {
@@ -197,6 +197,21 @@ describe("bundleMetaHook", () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBeDefined()
     expect(typeof result.error).toBe("string")
+  })
+
+  it("returns error result when the final metadata write fails after migration succeeds", async () => {
+    const agentRoot = createTempDir("bundle-meta-hook-write-failure-")
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    fs.mkdirSync(metaPath)
+
+    const result = await bundleMetaHook({
+      agentRoot,
+      currentVersion: "0.1.0",
+      previousVersion: "0.0.1",
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toBeDefined()
   })
 
   it("migrates continuity data from state/ to arc/ when schema version < 2", async () => {
@@ -228,12 +243,12 @@ describe("bundleMetaHook", () => {
       expect(content.id).toBe(`${name}-1`)
     }
 
-    // Schema version bumped to 2
+    // Schema version bumped through the current schema.
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-    expect(updated.bundleSchemaVersion).toBe(2)
+    expect(updated.bundleSchemaVersion).toBe(3)
   })
 
-  it("migrates the old psyche note store to diary/ when schema version < 2", async () => {
+  it("migrates the old psyche note store into the Desk record diary when schema version < 3", async () => {
     const agentRoot = createTempDir("bundle-meta-hook-migrate-diary-")
     const metaPath = path.join(agentRoot, "bundle-meta.json")
     fs.writeFileSync(metaPath, JSON.stringify({
@@ -255,12 +270,13 @@ describe("bundleMetaHook", () => {
 
     expect(result.ok).toBe(true)
 
-    // Files should be in diary/
-    const diaryDir = path.join(agentRoot, "diary")
+    const diaryDir = path.join(agentRoot, "desk", "_record", "diary")
     expect(fs.existsSync(path.join(diaryDir, "facts.jsonl"))).toBe(true)
     expect(fs.existsSync(path.join(diaryDir, "entities.json"))).toBe(true)
     expect(fs.existsSync(path.join(diaryDir, "daily", "2026-03-25.md"))).toBe(true)
     expect(fs.existsSync(path.join(diaryDir, "archive", "old.jsonl"))).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, "diary"))).toBe(false)
+    expect(fs.existsSync(notesDir)).toBe(false)
   })
 
   it("migration is idempotent -- running twice is safe", async () => {
@@ -282,11 +298,11 @@ describe("bundleMetaHook", () => {
     // Reset version to 1 to simulate re-run
     fs.writeFileSync(metaPath, JSON.stringify({
       runtimeVersion: "0.1.0",
-      bundleSchemaVersion: 2,
+      bundleSchemaVersion: 3,
       lastUpdated: new Date().toISOString(),
     }))
 
-    // Second run should be a no-op (version already 2)
+    // Second run should be a no-op (version already 3)
     const result2 = await bundleMetaHook(ctx)
     expect(result2.ok).toBe(true)
 
@@ -309,7 +325,7 @@ describe("bundleMetaHook", () => {
 
     expect(result.ok).toBe(true)
     const updated = JSON.parse(fs.readFileSync(metaPath, "utf-8"))
-    expect(updated.bundleSchemaVersion).toBe(2)
+    expect(updated.bundleSchemaVersion).toBe(3)
   })
 
   it("migration keeps newer destination when destination is newer than source", async () => {

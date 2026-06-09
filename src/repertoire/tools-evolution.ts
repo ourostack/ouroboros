@@ -27,7 +27,7 @@ import type { ToolDefinition, ToolHandler } from "./tools-base"
 const EVOLUTION_ACTIONS: ReadonlySet<EvolutionActionClass> = new Set([
   "create_case",
   "add_evidence",
-  "write_journal",
+  "write_record",
   "write_desk",
   "write_diary",
   "spawn_coding",
@@ -66,7 +66,7 @@ const EVIDENCE_KINDS: ReadonlySet<EvolutionEvidenceKind> = new Set([
   "release",
   "installed_runtime",
   "diary_entry",
-  "journal_file",
+  "desk_record_note",
   "skill_file",
   "sense_artifact",
   "hosted_audit",
@@ -74,7 +74,7 @@ const EVIDENCE_KINDS: ReadonlySet<EvolutionEvidenceKind> = new Set([
   "external_doc",
 ])
 const REDACTIONS: ReadonlySet<EvolutionRedaction> = new Set(["none", "summary", "private_ref", "secret_ref"])
-const DECISIONS = new Set(["ignore", "defer", "journal", "ask", "delegate", "act", "abandon"])
+const DECISIONS = new Set(["ignore", "defer", "record", "ask", "delegate", "act", "abandon"])
 const VERIFICATION_STATUSES = new Set(["not-verified", "partial", "passed", "failed"])
 const RATIFICATION_DESTINATIONS = new Set([
   "code",
@@ -83,7 +83,7 @@ const RATIFICATION_DESTINATIONS = new Set([
   "desk_lesson",
   "desk_task",
   "diary",
-  "journal",
+  "desk_record",
   "habit",
   "policy",
   "agent_config",
@@ -345,7 +345,7 @@ const rawEvolutionToolDefinitions: ToolDefinition[] = [
         return json({ ok: false, blocked: true, caseId, action, code: gate.code, reason: gate.reason })
       }
       const item = recordEvolutionDecision(agentRoot, caseId, {
-        decision: decisionRaw as "ignore" | "defer" | "journal" | "ask" | "delegate" | "act" | "abandon",
+        decision: decisionRaw as "ignore" | "defer" | "record" | "ask" | "delegate" | "act" | "abandon",
         reason,
         authorityMode: gate.code,
       })

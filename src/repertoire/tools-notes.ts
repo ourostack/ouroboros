@@ -1,14 +1,10 @@
-import * as fs from "fs";
-import * as path from "path";
 import { spawnSync } from "child_process";
 import { listSkills, loadSkill } from "./skills";
 import { getIntegrationsConfig } from "../heart/config";
-import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { FriendRecord } from "../mind/friends/types";
 import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryProvenance } from "../mind/diary";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
-import { type JournalIndexEntry } from "../mind/note-search";
 import type { ToolDefinition } from "./tools-base";
 
 const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
@@ -140,9 +136,9 @@ export const notesToolDefinitions: ToolDefinition[] = [
     tool: {
       type: "function",
       function: {
-        name: "search_notes",
+        name: "search_facts",
         description:
-          "Search my diary and journal for facts, thoughts, and working notes matching a query. Uses semantic similarity -- phrasing matters. Try different angles if the first query doesn't find what you're looking for. Search written notes before asking the human something the notes may already answer.",
+          "Search my Desk record diary facts matching a query. Uses semantic similarity -- phrasing matters. Try different angles if the first query doesn't find what you're looking for. Search written facts before asking the human something the record may already answer.",
         parameters: {
           type: "object",
           properties: { query: { type: "string" } },
@@ -157,7 +153,6 @@ export const notesToolDefinitions: ToolDefinition[] = [
 
         const resultLines: string[] = [];
 
-        // Search diary entries
         const hits = await searchDiaryEntries(query, readDiaryEntries());
         for (const fact of hits) {
           let meta = `source=${fact.source}, createdAt=${fact.createdAt}`;
@@ -170,35 +165,50 @@ export const notesToolDefinitions: ToolDefinition[] = [
           resultLines.push(`[${tag}] ${fact.text} (${meta})`);
         }
 
-        // Search journal index
-        const agentRoot = getAgentRoot();
-        const journalIndexPath = path.join(agentRoot, "journal", ".index.json");
-        try {
-          const raw = fs.readFileSync(journalIndexPath, "utf8");
-          const journalEntries = JSON.parse(raw) as JournalIndexEntry[];
-          if (Array.isArray(journalEntries) && journalEntries.length > 0) {
-            // Substring match on preview and filename
-            const lowerQuery = query.toLowerCase();
-            for (const entry of journalEntries) {
-              /* v8 ignore next 4 -- both sides tested (filename-only match in search_notes-journal.test.ts); v8 misreports || short-circuit @preserve */
-              if (
-                entry.preview.toLowerCase().includes(lowerQuery) ||
-                entry.filename.toLowerCase().includes(lowerQuery)
-              ) {
-                resultLines.push(`[journal] ${entry.filename}: ${entry.preview}`);
-              }
-            }
-          }
-        } catch {
-          // No journal index or malformed — skip journal search
-        }
-
         return resultLines.join("\n");
       } catch (e) {
-        return `error: ${e instanceof Error ? e.message : String(e)}`;
+        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`;
       }
     },
     summaryKeys: ["query"],
+  },
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "consult_diary",
+        description:
+          "Inspect my Desk record diary facts. With a query, searches semantically. Without a query, returns the most recent facts. Use this for direct record inspection before asking someone to restate something already written down.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "string" },
+          },
+        },
+      },
+    },
+    handler: async (a) => {
+      try {
+        const limitRaw = a.limit ? Number.parseInt(String(a.limit), 10) : 10;
+        const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 10;
+        const query = typeof a.query === "string" ? a.query.trim() : "";
+        const facts = readDiaryEntries();
+        const matches = query ? await searchDiaryEntries(query, facts) : [...facts].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+        const items = matches.slice(0, limit).map((fact) => ({
+          id: fact.id,
+          text: fact.text,
+          source: fact.source,
+          createdAt: fact.createdAt,
+          ...(fact.about ? { about: fact.about } : {}),
+          ...(fact.provenance ? { provenance: fact.provenance } : {}),
+        }));
+        return JSON.stringify({ items });
+      } catch (e) {
+        return `error: ${e instanceof Error ? e.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(e)}`;
+      }
+    },
+    summaryKeys: ["query", "limit"],
   },
   {
     tool: {
@@ -244,7 +254,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       return `saved diary entry (added=${result.added}, skipped=${result.skipped})`;
     },
     summaryKeys: ["entry", "about"],
-    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes diary memory" },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes Desk record diary fact" },
   },
   {
     tool: {

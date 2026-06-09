@@ -34,7 +34,7 @@ import * as fs from "fs"
 
 const QUERY_SESSION_SEARCH_DEPRECATION_STUB = {
   kind: "deprecated",
-  message: "query_session mode=search is no longer available; use search_notes or consult_notes instead.",
+  message: "query_session mode=search is no longer available; use search_facts, consult_diary, or consult_notes instead.",
   removalCycle: "alpha.616",
 } as const
 
@@ -456,7 +456,7 @@ describe("query_session tool", () => {
     expect(result).toContain("hello")
   })
 
-  it("falls back to a missing-session message when shared search_notes throws unexpectedly", async () => {
+  it("falls back to a missing-session message when shared search_facts throws unexpectedly", async () => {
     const mockSummarizeSessionTail = vi.fn().mockRejectedValue(new Error("session tail failed"))
     vi.doMock("../../heart/session-transcript", () => ({
       summarizeSessionTail: mockSummarizeSessionTail,
@@ -712,7 +712,8 @@ describe("query_session tool", () => {
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "query_session")!
     const description = tool.tool.function.description.toLowerCase()
 
-    expect(description).toContain("search_notes")
+    expect(description).toContain("search_facts")
+    expect(description).toContain("consult_diary")
     expect(description).toContain("consult_notes")
     expect(description).toContain("transcript")
     expect(description).toContain("status")
@@ -731,10 +732,12 @@ describe("query_session tool", () => {
       enum: ["transcript", "status", "search"],
     })
     expect(modeProperty.description.toLowerCase()).toContain("deprecated")
-    expect(modeProperty.description).toContain("search_notes")
+    expect(modeProperty.description).toContain("search_facts")
+    expect(modeProperty.description).toContain("consult_diary")
     expect(modeProperty.description).toContain("consult_notes")
     expect(queryProperty.description.toLowerCase()).toContain("deprecated")
-    expect(queryProperty.description).toContain("search_notes")
+    expect(queryProperty.description).toContain("search_facts")
+    expect(queryProperty.description).toContain("consult_diary")
     expect(queryProperty.description).toContain("consult_notes")
   })
 

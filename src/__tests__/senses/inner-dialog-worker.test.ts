@@ -7,6 +7,8 @@ const mockGetAgentRoot = vi.fn(() => "/bundles/slugger.ouro")
 const mockGetInnerDialogPendingDir = vi.fn(() => "/mock/pending/self/inner/dialog")
 const mockHasPendingMessages = vi.fn(() => false)
 const mockRecordHabitRun = vi.fn()
+const mockCreateHabitRunId = vi.fn(() => "habit-run-id")
+const mockWriteHabitRunReceipt = vi.fn()
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -30,6 +32,11 @@ vi.mock("../../heart/habits/habit-runtime-state", () => ({
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
+vi.mock("../../arc/flight-recorder", () => ({
+  createHabitRunId: (...args: any[]) => mockCreateHabitRunId(...args),
+  writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
+}))
+
 import { createInnerDialogWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startInnerDialogWorker } from "../../senses/inner-dialog-worker"
 
 describe("inner-dialog-worker", () => {
@@ -39,6 +46,8 @@ describe("inner-dialog-worker", () => {
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
     mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
     mockRecordHabitRun.mockReset()
+    mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
+    mockWriteHabitRunReceipt.mockReset()
     mockEmitNervesEvent.mockReset()
   })
 
@@ -358,6 +367,89 @@ describe("inner-dialog-worker", () => {
 
       const lastRun = mockRecordHabitRun.mock.calls[0]?.[2] as string
       expect(new Date(lastRun).toISOString()).toBe(lastRun)
+    })
+
+    it("writes an Arc habit receipt with outcome and trigger", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          tool_calls: [
+            { id: "tc-1", type: "function", function: { name: "diary_write", arguments: "{}" } },
+          ],
+        }],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "daily-record", trigger: "poke" })
+
+      expect(mockCreateHabitRunId).toHaveBeenCalledWith("daily-record", new Date("2026-06-08T12:00:00.000Z"))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        schemaVersion: 1,
+        runId: "habit-run-id",
+        habitName: "daily-record",
+        trigger: "poke",
+        startedAt: "2026-06-08T12:00:00.000Z",
+        endedAt: "2026-06-08T12:00:00.000Z",
+        outcome: "wrote_record",
+        producedRefs: [{ kind: "desk_record", locator: "desk/_record" }],
+        surfaceAttempts: [],
+        errors: [],
+      }))
+    })
+
+    it("classifies habit turns that surface through conversation tools", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          tool_calls: [
+            { id: "tc-1", type: "function", function: { name: "send_message", arguments: "{}" } },
+          ],
+        }],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "surface-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "surfaced",
+        producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }],
+      }))
+    })
+
+    it("classifies habit turns that update Desk through MCP desk tools", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [{
+          role: "assistant",
+          tool_calls: [
+            { id: "tc-1", type: "function", function: { name: "mcp__desk__task_update", arguments: "{}" } },
+          ],
+        }],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "desk-check", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "updated_desk",
+        producedRefs: [{ kind: "desk_task", locator: "desk/" }],
+      }))
+    })
+
+    it("ignores malformed tool call shapes when classifying habit turns", async () => {
+      const runTurn = vi.fn().mockResolvedValue({
+        messages: [
+          { role: "assistant", tool_calls: "not an array" },
+          { role: "assistant", tool_calls: [{ id: "tc-1", type: "function", function: { name: 7 } }] },
+        ],
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "malformed-tools", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "no_change",
+        producedRefs: [],
+      }))
     })
 
     it("records lastRun AFTER the turn completes (not before)", async () => {

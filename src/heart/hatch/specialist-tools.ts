@@ -5,6 +5,7 @@ import { baseToolDefinitions, settleTool } from "../../repertoire/tools-base"
 import { storeHatchlingProviderCredentials, type HatchCredentialsInput } from "./hatch-flow"
 import { playHatchAnimation } from "./hatch-animation"
 import { createBundleMeta } from "../../mind/bundle-manifest"
+import { resolveDeskRecordPaths } from "../../mind/record-paths"
 import { resolveVaultConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createVaultAccount } from "../../repertoire/vault-setup"
@@ -90,9 +91,10 @@ function writeReadme(dir: string, purpose: string): void {
 }
 
 function scaffoldBundle(bundleRoot: string): void {
-  writeReadme(path.join(bundleRoot, "notes"), "Persistent notes store.")
-  writeReadme(path.join(bundleRoot, "notes", "daily"), "Daily note entries.")
-  writeReadme(path.join(bundleRoot, "notes", "archive"), "Archived notes.")
+  writeReadme(path.join(bundleRoot, "arc"), "Live continuity, claims, obligations, and resume state.")
+  writeReadme(path.join(bundleRoot, "arc", "flight-recorder"), "Flight recorder resume and event receipts.")
+  writeReadme(path.join(bundleRoot, "desk"), "Durable work and maintained record.")
+  writeReadme(path.join(bundleRoot, "desk", "_record"), "Desk record: diary facts and maintained reference notes.")
   writeReadme(path.join(bundleRoot, "friends"), "Known friend records.")
   writeReadme(path.join(bundleRoot, "tasks"), "Task files.")
   writeReadme(path.join(bundleRoot, "tasks", "one-shots"), "One-shot tasks.")
@@ -102,14 +104,16 @@ function scaffoldBundle(bundleRoot: string): void {
   writeReadme(path.join(bundleRoot, "senses"), "Sense-specific config.")
   writeReadme(path.join(bundleRoot, "senses", "teams"), "Teams sense config.")
 
-  // Notes scaffold files
-  const notesRoot = path.join(bundleRoot, "notes")
-  const factsPath = path.join(notesRoot, "facts.jsonl")
-  const entitiesPath = path.join(notesRoot, "entities.json")
+  const recordPaths = resolveDeskRecordPaths(bundleRoot)
+  fs.mkdirSync(recordPaths.diaryDailyDir, { recursive: true })
+  fs.mkdirSync(recordPaths.notesRoot, { recursive: true })
   /* v8 ignore next -- defensive: guard against re-scaffold on existing bundle @preserve */
-  if (!fs.existsSync(factsPath)) fs.writeFileSync(factsPath, "", "utf-8")
+  if (!fs.existsSync(recordPaths.factsPath)) fs.writeFileSync(recordPaths.factsPath, "", "utf-8")
   /* v8 ignore next -- defensive: guard against re-scaffold on existing bundle @preserve */
-  if (!fs.existsSync(entitiesPath)) fs.writeFileSync(entitiesPath, "{}\n", "utf-8")
+  if (!fs.existsSync(recordPaths.entitiesPath)) fs.writeFileSync(recordPaths.entitiesPath, "{}\n", "utf-8")
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "events"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "habit-receipts"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "claims"), { recursive: true })
 
   // bundle-meta.json
   const meta = createBundleMeta()

@@ -721,7 +721,7 @@ export interface MailboxDaemonHealthDeep {
 }
 
 // ---------------------------------------------------------------------------
-// Notes / journal inspection
+// Desk record inspection
 // ---------------------------------------------------------------------------
 
 export interface MailboxDiaryEntry {
@@ -729,12 +729,6 @@ export interface MailboxDiaryEntry {
   text: string
   source: string
   createdAt: string
-}
-
-export interface MailboxJournalEntry {
-  filename: string
-  preview: string
-  mtime: number
 }
 
 export interface MailboxCanonicalNoteEntry {
@@ -748,8 +742,6 @@ export interface MailboxCanonicalNoteEntry {
 export interface MailboxNotesView {
   diaryEntryCount: number
   recentDiaryEntries: MailboxDiaryEntry[]
-  journalEntryCount: number
-  recentJournalEntries: MailboxJournalEntry[]
   canonicalNoteCount: number
   recentCanonicalNotes: MailboxCanonicalNoteEntry[]
 }

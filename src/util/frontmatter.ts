@@ -14,6 +14,8 @@
 function parseScalar(raw: string): unknown {
   const value = raw.trim()
   if (value === "null") return null
+  if (value === "true") return true
+  if (value === "false") return false
   if (value === "[]") return []
   if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
     return value.slice(1, -1)
@@ -46,7 +48,21 @@ export function parseFrontmatter(raw: string): Record<string, unknown> {
       cursor += 1
     }
 
-    frontmatter[key] = items
+    if (items.length > 0) {
+      frontmatter[key] = items
+      idx = cursor - 1
+      continue
+    }
+
+    const nested: Record<string, unknown> = {}
+    cursor = idx + 1
+    while (cursor < lines.length && /^\s+[A-Za-z0-9_:-]+:\s*/.test(lines[cursor])) {
+      const child = /^\s+([A-Za-z0-9_:-]+):\s*(.*)$/.exec(lines[cursor]) as RegExpExecArray
+      nested[child[1]] = parseScalar(child[2])
+      cursor += 1
+    }
+
+    frontmatter[key] = Object.keys(nested).length > 0 ? nested : items
     idx = cursor - 1
   }
 

@@ -213,7 +213,7 @@ const TOOL_NAME_MIGRATIONS: Record<string, string> = {
   go_inward: "ponder",
   descend: "ponder",
   [`${LEGACY_WRITTEN_NOTE_PREFIX}_save`]: "diary_write",
-  [`${LEGACY_WRITTEN_NOTE_PREFIX}_search`]: "search_notes",
+  [`${LEGACY_WRITTEN_NOTE_PREFIX}_search`]: "search_facts",
 }
 
 function normalizeUsage(usage: unknown): SessionUsageData | null {

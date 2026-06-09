@@ -2,12 +2,13 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 import type { BundleMeta } from "../../../mind/bundle-manifest"
+import { migrateLegacyRecordStores } from "../../../mind/record-paths"
 import type { UpdateHookContext, UpdateHookResult } from "../../versioning/update-hooks"
 
 /**
  * Migrate bundle from schema 1 to schema 2:
  * - Move state/{episodes,obligations,cares,intentions}/* to arc/{name}/*
- * - Move the old psyche note store to diary/
+ * - Move legacy record stores into desk/_record/
  * Idempotent: skips missing sources; on collision, newer mtime wins.
  */
 function migrateToSchema2(agentRoot: string): void {
@@ -25,7 +26,7 @@ function migrateToSchema2(agentRoot: string): void {
     migrateDirectory(src, dest)
   }
 
-  // Migrate diary from the old pre-diary bundle layout.
+  // Stage legacy diary files for schema 3 to canonicalize into Desk record.
   const legacyDiarySrc = path.join(agentRoot, "psyche", "mem" + "ory")
   const diaryDest = path.join(agentRoot, "diary")
   migrateDirectory(legacyDiarySrc, diaryDest)
@@ -42,7 +43,7 @@ function migrateToSchema2(agentRoot: string): void {
 }
 
 /**
- * Ensure bundle .gitignore has state/ ignored and does NOT ignore arc/, diary/, journal/.
+ * Ensure bundle .gitignore has state/ ignored and does NOT ignore tracked record roots.
  */
 function updateBundleGitignore(agentRoot: string): void {
   const gitignorePath = path.join(agentRoot, ".gitignore")
@@ -56,8 +57,8 @@ function updateBundleGitignore(agentRoot: string): void {
     // If we can't read, start fresh
   }
 
-  // Remove arc/, diary/, journal/ from ignore (they should be tracked)
-  const toRemove = new Set(["arc/", "diary/", "journal/"])
+  // Remove tracked bundle roots from ignore.
+  const toRemove = new Set(["arc/", "desk/", "diary/", "journal/"])
   lines = lines.filter((line) => !toRemove.has(line.trim()))
 
   // Ensure state/ is in the ignore list
@@ -73,6 +74,11 @@ function updateBundleGitignore(agentRoot: string): void {
   } catch {
     // Non-blocking: if we can't write .gitignore, migration still succeeds
   }
+}
+
+function migrateToSchema3(agentRoot: string): void {
+  migrateLegacyRecordStores(agentRoot)
+  updateBundleGitignore(agentRoot)
 }
 
 /**
@@ -142,15 +148,29 @@ export async function bundleMetaHook(ctx: UpdateHookContext): Promise<UpdateHook
     existing = undefined
   }
 
-  // Run schema-2 migration if needed
+  // Run schema migrations if needed.
   const currentSchema = existing?.bundleSchemaVersion ?? 1
-  if (currentSchema < 2) {
-    migrateToSchema2(ctx.agentRoot)
+  try {
+    if (currentSchema < 2) {
+      migrateToSchema2(ctx.agentRoot)
+    }
+    if (currentSchema < 3) {
+      migrateToSchema3(ctx.agentRoot)
+    }
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(err)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.bundle_meta_hook_error",
+      message: "bundle-meta hook migration failed",
+      meta: { agentRoot: ctx.agentRoot, error: errorMessage },
+    })
+    return { ok: false, error: errorMessage }
   }
 
   const updated: BundleMeta = {
     runtimeVersion: ctx.currentVersion,
-    bundleSchemaVersion: currentSchema < 2 ? 2 : currentSchema,
+    bundleSchemaVersion: currentSchema < 3 ? 3 : currentSchema,
     lastUpdated: new Date().toISOString(),
   }
 

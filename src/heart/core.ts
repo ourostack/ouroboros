@@ -327,8 +327,8 @@ export interface RunAgentOptions {
   bundleMeta?: import("../mind/bundle-manifest").BundleMeta | null;
   /** Pre-read daemon health state. When provided, skips the health file read. */
   daemonHealth?: import("./daemon/daemon-health").DaemonHealthState | null;
-  /** Pre-read journal file entries. When provided, skips the journal dir read. */
-  journalFiles?: import("../mind/prompt").JournalFileEntry[];
+  /** Pre-read Arc flight-recorder resume. When provided, renders deterministic continuation state. */
+  flightRecorderResume?: import("../arc/flight-recorder").FlightRecorderResume;
 }
 
 /**

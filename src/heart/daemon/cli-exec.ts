@@ -8343,6 +8343,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const { parseCadenceToMs: parseCadenceMs, DEFAULT_CADENCE_MS } = await import("./cadence")
       const { parseFrontmatter } = await import("../../util/frontmatter")
       const { listActiveReturnObligations } = await import("../../arc/obligations")
+      const { resolveDeskRecordPaths } = await import("../../mind/record-paths")
 
       // Read runtime state
       const innerSessionPath = getInnerDialogSessionPath(agentRoot)
@@ -8353,18 +8354,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
         runtimeState = JSON.parse(raw)
       } catch { /* missing or corrupt — will show "unknown" */ }
 
-      // Read journal files
-      const journalDir = path.join(agentRoot, "journal")
-      let journalFiles: import("./inner-status").JournalFileEntry[] = []
+      // Read canonical Desk record summary
+      const recordPaths = resolveDeskRecordPaths(agentRoot)
+      const recordSummary: import("./inner-status").RecordSummary = { diaryFactCount: 0, noteCount: 0 }
       try {
-        const journalEntries = fs.readdirSync(journalDir, { withFileTypes: true })
-        journalFiles = journalEntries
-          .filter((e) => e.isFile() && !e.name.startsWith("."))
-          .map((e) => {
-            const stat = fs.statSync(path.join(journalDir, e.name))
-            return { name: e.name, mtimeMs: stat.mtimeMs }
-          })
-      } catch { /* missing dir — will show (empty) */ }
+        const rawFacts = fs.readFileSync(recordPaths.factsPath, "utf-8")
+        recordSummary.diaryFactCount = rawFacts.split(/\r?\n/).filter((line) => line.trim().length > 0).length
+      } catch { /* missing facts file — count stays zero */ }
+      try {
+        recordSummary.noteCount = fs.readdirSync(recordPaths.notesRoot, { withFileTypes: true })
+          .filter((e) => e.isFile() && !e.name.startsWith(".") && e.name.endsWith(".md"))
+          .length
+      } catch { /* missing notes dir — count stays zero */ }
 
       // Read heartbeat cadence
       let heartbeat: import("./inner-status").HeartbeatInfo | null = null
@@ -8399,7 +8400,7 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       const message = buildInnerStatusOutput({
         agentName: command.agent,
         runtimeState,
-        journalFiles,
+        recordSummary,
         heartbeat,
         attentionCount: activeObligations.length,
         now: Date.now(),

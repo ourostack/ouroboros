@@ -11,9 +11,10 @@ import {
 } from "../arc/obligations"
 import { listPonderPackets } from "../arc/packets"
 import type { TaskStatus } from "../arc/task-lifecycle"
+import { readFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
 
 export type WorkCardFreshness = "current" | "stale_risky" | "unknown" | "not_applicable"
-export type WorkCardSourceKind = "obligation" | "return_obligation" | "ponder_packet" | "evolution_case" | "claim_store"
+export type WorkCardSourceKind = "obligation" | "return_obligation" | "ponder_packet" | "evolution_case" | "claim_store" | "flight_recorder"
 export type WorkCardRedaction = "none" | "summary" | "private_ref" | "secret_ref"
 export type WorkCardHealthStatus = "ok" | "degraded"
 
@@ -70,8 +71,9 @@ export interface WorkCard {
   }
   currentAsk: {
     available: boolean
-    source: "not_tracked_yet"
-    confidence: "unknown"
+    value?: string
+    source: "not_tracked_yet" | "flight_recorder"
+    confidence: "unknown" | "current" | "stale_risky"
   }
   counts: {
     owed: number
@@ -115,8 +117,7 @@ const ACTIVE_PACKET_STATUSES: ReadonlySet<TaskStatus> = new Set([
   "blocked",
 ])
 
-function isoFromMs(ms: number | undefined): string | undefined {
-  if (typeof ms !== "number" || Number.isNaN(ms)) return undefined
+function isoFromMs(ms: number): string {
   return new Date(ms).toISOString()
 }
 
@@ -136,13 +137,14 @@ function evolutionLocator(id: string): string {
   return `arc/evolution/cases/${id}.json`
 }
 
+function flightRecorderLocator(): string {
+  return "arc/flight-recorder/latest.json"
+}
+
 export function validateWorkCardAgentName(agentName: string): string {
   const trimmed = agentName.trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed)) {
     throw new Error("work card requires a safe agent name (letters, numbers, dot, underscore, hyphen; no path separators)")
-  }
-  if (trimmed === "." || trimmed === "..") {
-    throw new Error("work card requires a safe agent name")
   }
   return trimmed
 }
@@ -166,7 +168,7 @@ function readJsonDiagnostic(filePath: string): { ok: true; parsed: unknown } | {
   } catch (error) {
     return {
       ok: false,
-      detail: error instanceof Error ? error.message : String(error),
+      detail: error instanceof Error ? error.message : /* v8 ignore next -- defensive: non-Error catch branch @preserve */ String(error),
     }
   }
 }
@@ -327,6 +329,7 @@ function chooseNextAction(input: {
   activeWork: WorkCardItem[]
   waiting: WorkCardItem[]
   claims: WorkCardClaimsSection
+  flightRecorderResume: FlightRecorderResume
 }): WorkCard["nextAction"] {
   if (input.waiting.length > 0) {
     return {
@@ -335,17 +338,28 @@ function chooseNextAction(input: {
       source: input.waiting[0].source,
     }
   }
-  if (input.claims.available && (input.claims.counts.unverified ?? 0) > 0 && input.claims.items[0]) {
+  if (input.flightRecorderResume.blockedBecause.length > 0) {
+    return {
+      actor: "unknown",
+      summary: `flight recorder blocked: ${input.flightRecorderResume.blockedBecause.join("; ")}`,
+      source: source("flight_recorder", flightRecorderLocator(), input.flightRecorderResume.recorderHealth.status === "ok" ? "current" : "unknown"),
+    }
+  }
+  if (
+    input.flightRecorderResume.recorderHealth.status === "ok"
+    && input.flightRecorderResume.canContinue
+    && input.flightRecorderResume.nextSafeAction.value
+  ) {
     return {
       actor: "agent",
-      summary: "verify or downgrade the oldest unverified claim",
-      source: input.claims.items[0].source,
+      summary: input.flightRecorderResume.nextSafeAction.value,
+      source: source("flight_recorder", flightRecorderLocator()),
     }
   }
   if (input.returnObligations[0]) {
     return {
       actor: "agent",
-      summary: input.returnObligations[0].nextAction ?? input.returnObligations[0].title,
+      summary: input.returnObligations[0].nextAction!,
       source: input.returnObligations[0].source,
     }
   }
@@ -359,7 +373,7 @@ function chooseNextAction(input: {
   if (input.activeWork[0]) {
     return {
       actor: "agent",
-      summary: input.activeWork[0].nextAction ?? input.activeWork[0].title,
+      summary: input.activeWork[0].nextAction!,
       source: input.activeWork[0].source,
     }
   }
@@ -381,6 +395,7 @@ export function buildWorkCard(agentName: string, agentRoot: string, options: Bui
   const evolutionCases = listOpenEvolutionCases(agentRoot).map(evolutionItem)
   const activeWork = [...activePackets, ...evolutionCases]
   const waiting = waitingOnHuman([...owed, ...returnObligations, ...activeWork])
+  const flightRecorderResume = readFlightRecorderResume(agentRoot)
   const claims: WorkCardClaimsSection = {
     available: false,
     unavailableReason: "WorkClaim store is not implemented yet; unverified claim counts are unknown, not zero.",
@@ -394,18 +409,27 @@ export function buildWorkCard(agentName: string, agentRoot: string, options: Bui
     },
     items: [],
   }
-  const claimsUnavailableReason = claims.unavailableReason ?? "WorkClaim store is unavailable."
-  const claimIssue = issue(
-    "claims_unavailable",
-    source("claim_store", "arc/claims", "unknown"),
-    claimsUnavailableReason,
-    "unavailable",
-  )
+  const recorderIssues = flightRecorderResume.recorderHealth.status === "ok"
+    ? []
+    : flightRecorderResume.recorderHealth.issues.map((recorderIssue) => issue(
+        "flight_recorder_degraded",
+        source("flight_recorder", flightRecorderLocator(), "unknown"),
+        recorderIssue,
+        flightRecorderResume.recorderHealth.status === "unavailable" ? "unavailable" : "degraded",
+      ))
   const providers = buildAgentProviderVisibility({ agentName: safeAgentName, agentRoot, homeDir: options.homeDir })
-  const nextAction = chooseNextAction({ owed, returnObligations, activeWork, waiting, claims })
+  const nextAction = chooseNextAction({
+    owed,
+    returnObligations,
+    activeWork,
+    waiting,
+    claims,
+    flightRecorderResume,
+  })
   const sources = [...owed, ...returnObligations, ...activeWork, ...claims.items].map((item) => item.source)
   sources.push(source("claim_store", "arc/claims", "unknown"))
-  const issues = [...sourceIssues, claimIssue]
+  sources.push(source("flight_recorder", flightRecorderLocator(), flightRecorderResume.recorderHealth.status === "ok" ? "current" : "unknown"))
+  const issues = [...sourceIssues, ...recorderIssues]
 
   const card: WorkCard = {
     schemaVersion: 1,
@@ -417,13 +441,14 @@ export function buildWorkCard(agentName: string, agentRoot: string, options: Bui
     agent: safeAgentName,
     generatedAt,
     degraded: {
-      status: issues.some((issue) => issue.severity === "degraded" || issue.severity === "unavailable") ? "degraded" : "ok",
+      status: issues.length > 0 ? "degraded" : "ok",
       issues,
     },
     currentAsk: {
-      available: false,
-      source: "not_tracked_yet",
-      confidence: "unknown",
+      available: Boolean(flightRecorderResume.currentAsk.value),
+      ...(flightRecorderResume.currentAsk.value ? { value: flightRecorderResume.currentAsk.value } : {}),
+      source: flightRecorderResume.currentAsk.value ? "flight_recorder" : "not_tracked_yet",
+      confidence: flightRecorderResume.currentAsk.confidence,
     },
     counts: {
       owed: owed.length,
@@ -480,9 +505,14 @@ export function formatWorkCardText(card: WorkCard): string {
   return [
     `Work Card — ${card.agent}`,
     `generated: ${card.generatedAt}`,
-    `health: ${card.degraded.status}${card.degraded.issues.length > 0 ? ` (${card.degraded.issues.length} issue${card.degraded.issues.length === 1 ? "" : "s"})` : ""}`,
+    `health: ${card.degraded.status} (${card.degraded.issues.length} issue${card.degraded.issues.length === 1 ? "" : "s"})`,
     "",
     `counts: owed=${card.counts.owed} return_obligations=${card.counts.returnObligations} active_packets=${card.counts.activePackets} evolution_cases=${card.counts.evolutionCases} waiting_on_human=${card.counts.waitingOnHuman} unverified_claims=${card.counts.unverifiedClaims ?? "unknown"} stale_risky_claims=${card.counts.staleRiskyClaims ?? "unknown"}`,
+    "",
+    "Current Ask",
+    card.currentAsk.available
+      ? `  ${card.currentAsk.value} (source: ${card.currentAsk.source}, confidence: ${card.currentAsk.confidence})`
+      : `  unavailable (${card.currentAsk.source})`,
     "",
     "Owed",
     ...formatItems(card.owed, "none found in arc/obligations"),
@@ -497,18 +527,14 @@ export function formatWorkCardText(card: WorkCard): string {
     ...formatItems(card.waitingOnOthers, "none detected from durable records"),
     "",
     "Claims",
-    card.claims.available
-      ? `  unverified=${card.claims.counts.unverified} partial=${card.claims.counts.partial} stale_risky=${card.claims.counts.staleRisky}`
-      : `  unavailable: ${card.claims.unavailableReason}`,
+    `  unavailable: ${card.claims.unavailableReason}`,
     "",
     "Source Issues",
-    ...(card.degraded.issues.length === 0
-      ? ["  none"]
-      : card.degraded.issues.map((item) => `  - [${item.severity}] ${item.code}: ${item.detail} (source: ${item.source.locator})`)),
+    ...card.degraded.issues.map((item) => `  - [${item.severity}] ${item.code}: ${item.detail} (source: ${item.source.locator})`),
     "",
     "Capability Health",
     card.capabilityHealth.available
-      ? `  provider lanes: ${card.capabilityHealth.providers?.lanes.map((lane) => `${lane.lane}:${lane.status}/${lane.readiness.status}`).join(", ") ?? "unknown"}`
+      ? `  provider lanes: ${card.capabilityHealth.providers!.lanes.map((lane) => `${lane.lane}:${lane.status}/${lane.readiness.status}`).join(", ")}`
       : `  unavailable: ${card.capabilityHealth.unavailableReason}`,
     "",
     "Next Action",

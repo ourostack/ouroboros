@@ -79,6 +79,33 @@ function trustedExternalContext(): ToolContext {
   } as unknown as ToolContext
 }
 
+function legacyTrustedExternalContext(): ToolContext {
+  return {
+    signin: async () => undefined,
+    context: {
+      channel: { channel: "bluebubbles" },
+      friend: {
+        id: "friend-legacy",
+        name: "Legacy Friend",
+      },
+    },
+  } as unknown as ToolContext
+}
+
+function untrustedExternalContext(): ToolContext {
+  return {
+    signin: async () => undefined,
+    context: {
+      channel: { channel: "bluebubbles" },
+      friend: {
+        id: "acquaintance-1",
+        name: "Distant Contact",
+        trustLevel: "acquaintance",
+      },
+    },
+  } as unknown as ToolContext
+}
+
 async function recordTools(): Promise<ToolDefinition[]> {
   const module = await import("../../repertoire/tools-record")
   return module.recordToolDefinitions
@@ -181,7 +208,7 @@ describe("record tools: note and consult_notes", () => {
 
     const savedPath = typeof result === "string" ? result : result.path
     expect(typeof result).toBe("string")
-    expect(savedPath).toBe(path.join(agentRoot, "notes", "2026-05-14-remember-the-mailbox-ui-should-show-enve.md"))
+    expect(savedPath).toBe(path.join(agentRoot, "desk", "_record", "notes", "2026-05-14-remember-the-mailbox-ui-should-show-enve.md"))
 
     const saved = parseNoteFile(fs.readFileSync(savedPath!, "utf8"))
     expect(Object.keys(saved.frontmatter).sort()).toEqual(["created_at", "tags"])
@@ -280,7 +307,7 @@ describe("record tools: note and consult_notes", () => {
     } as never, selfContext()) as NoteHandlerResult
     const savedPath = typeof result === "string" ? result : result.path
 
-    const indexPath = path.join(agentRoot, "notes", ".index.json")
+    const indexPath = path.join(agentRoot, "desk", "_record", "notes", ".index.json")
     const index = readJson(indexPath) as {
       version: number
       entries: Array<{ filename: string; path: string; preview: string; embedding: number[] }>
@@ -319,7 +346,8 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("note returns a friendly error when the write cannot complete", async () => {
-    fs.writeFileSync(path.join(agentRoot, "notes"), "not a directory", "utf8")
+    fs.mkdirSync(path.join(agentRoot, "desk", "_record"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "desk", "_record", "notes"), "not a directory", "utf8")
     const handler = await handlerFor("note")
 
     const result = await handler({ content: "This cannot be written." } as never, selfContext()) as NoteHandlerResult
@@ -459,6 +487,21 @@ describe("record tools: note and consult_notes", () => {
     expect(result).toEqual({ items: [] })
   })
 
+  it("consult_notes returns an empty page when canonical notes cannot be listed", async () => {
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
+    fs.mkdirSync(notesDir, { recursive: true })
+    fs.chmodSync(notesDir, 0o000)
+
+    try {
+      const consultHandler = await handlerFor("consult_notes")
+      const result = JSON.parse(await consultHandler({ query: "archive", limit: "3" } as never, selfContext())) as ConsultNotesResult
+
+      expect(result).toEqual({ items: [] })
+    } finally {
+      fs.chmodSync(notesDir, 0o700)
+    }
+  })
+
   it("consult_notes returns an empty page for a blank query", async () => {
     const consultHandler = await handlerFor("consult_notes")
     const result = JSON.parse(await consultHandler({ query: "   " } as never, selfContext())) as ConsultNotesResult
@@ -474,7 +517,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes returns a friendly error when embeddings are not configured", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     writeCanonicalNote(notesDir, "2026-05-14-provider-missing.md")
     embeddingsApiKey = ""
     const consultHandler = await handlerFor("consult_notes")
@@ -484,8 +527,8 @@ describe("record tools: note and consult_notes", () => {
     expect(result).toBe("error: consult_notes couldn't use notes because embeddings are not configured.")
   })
 
-  it("consult_notes handles indexes with empty note embeddings", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+  it("consult_notes rebuilds indexes with empty note embeddings", async () => {
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     const filePath = writeCanonicalNote(notesDir, "2026-05-14-empty-embedding.md")
     writeFreshIndex(notesDir, filePath, [])
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ embedding: [1, 0] }] }) })
@@ -493,11 +536,12 @@ describe("record tools: note and consult_notes", () => {
     const consultHandler = await handlerFor("consult_notes")
     const result = JSON.parse(await consultHandler({ query: "archive", minScore: "0" } as never, selfContext())) as ConsultNotesResult
 
-    expect(result).toEqual({ items: [] })
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0]!.excerpt).toContain("Archive searchable note.")
   })
 
   it("consult_notes rebuilds malformed and stale indexes from canonical markdown", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     fs.mkdirSync(notesDir, { recursive: true })
     const filePath = path.join(notesDir, "2026-05-14-archive-rebuild.md")
     fs.writeFileSync(filePath, [
@@ -522,7 +566,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes rebuilds invalid and stale index shapes", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     const filePath = writeCanonicalNote(notesDir, "2026-05-14-stale-index-shapes.md")
     const stat = fs.statSync(filePath)
     const validButWrongEntry = {
@@ -560,7 +604,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes rebuilds duplicate-entry indexes that omit canonical records", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     const noteAPath = writeCanonicalNote(notesDir, "2026-05-14-note-a.md", "Archive alpha note.")
     writeCanonicalNote(notesDir, "2026-05-14-note-b.md", "Archive beta note.")
     const noteAStat = fs.statSync(noteAPath)
@@ -596,7 +640,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes rebuilds notes without created_at and ignores malformed frontmatter lines", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     fs.mkdirSync(notesDir, { recursive: true })
     fs.writeFileSync(path.join(notesDir, "2026-05-14-no-created-at.md"), [
       "---",
@@ -620,7 +664,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes skips empty notes and tolerates sparse markdown frontmatter", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     fs.mkdirSync(notesDir, { recursive: true })
     fs.writeFileSync(path.join(notesDir, "2026-05-14-empty-body.md"), [
       "---",
@@ -664,7 +708,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes skips unreadable canonical markdown while rebuilding", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     fs.mkdirSync(notesDir, { recursive: true })
     const badPath = path.join(notesDir, "2026-05-14-unreadable.md")
     fs.writeFileSync(badPath, "Unreadable note.", "utf8")
@@ -681,7 +725,7 @@ describe("record tools: note and consult_notes", () => {
   })
 
   it("consult_notes rebuilds notes with malformed JSON tag frontmatter", async () => {
-    const notesDir = path.join(agentRoot, "notes")
+    const notesDir = path.join(agentRoot, "desk", "_record", "notes")
     fs.mkdirSync(notesDir, { recursive: true })
     fs.writeFileSync(path.join(notesDir, "2026-05-14-malformed-tags.md"), [
       "---",
@@ -742,11 +786,45 @@ describe("record tools: note and consult_notes", () => {
     expect(result).toEqual({ items: [] })
   })
 
-  it("consult_notes rejects callers without self trust", async () => {
-    const consultHandler = await handlerFor("consult_notes")
-    const result = await consultHandler({ query: "archive" } as never, trustedExternalContext())
+  it("consult_notes allows trusted external callers to perform read-only record lookup", async () => {
+    const noteHandler = await handlerFor("note")
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ embedding: [1, 0] }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ embedding: [1, 0] }] }) })
 
-    expect(result).toMatch(/self trust/i)
-    expect(result).toMatch(/consult_notes/i)
+    await noteHandler({ content: "Archive search is available to trusted callers." } as never, selfContext())
+
+    const consultHandler = await handlerFor("consult_notes")
+    const result = JSON.parse(await consultHandler({ query: "archive" } as never, trustedExternalContext())) as ConsultNotesResult
+
+    expect(result.items[0]?.excerpt).toContain("Archive search is available")
+  })
+
+  it("consult_notes preserves legacy trusted callers with a missing trust level", async () => {
+    const noteHandler = await handlerFor("note")
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ embedding: [1, 0] }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ embedding: [1, 0] }] }) })
+
+    await noteHandler({ content: "Legacy friend lookup stays available." } as never, selfContext())
+
+    const consultHandler = await handlerFor("consult_notes")
+    const result = JSON.parse(await consultHandler({ query: "legacy lookup" } as never, legacyTrustedExternalContext())) as ConsultNotesResult
+
+    expect(result.items[0]?.excerpt).toContain("Legacy friend lookup")
+  })
+
+  it("consult_notes rejects untrusted external callers", async () => {
+    const consultHandler = await handlerFor("consult_notes")
+    const result = await consultHandler({ query: "archive" } as never, untrustedExternalContext())
+
+    expect(result).toContain("trusted record-read access")
+  })
+
+  it("consult_notes rejects missing caller context", async () => {
+    const consultHandler = await handlerFor("consult_notes")
+
+    expect(await consultHandler({ query: "archive" } as never, undefined as unknown as ToolContext)).toContain("trusted record-read access")
+    expect(await consultHandler({ query: "archive" } as never, { signin: async () => undefined } as ToolContext)).toContain("trusted record-read access")
   })
 })
