@@ -21,7 +21,7 @@ function createMockDeps(overrides: Partial<OuroCliDeps> = {}): OuroCliDeps {
 }
 
 describe("ouro work card CLI", () => {
-  it("parses work card text and JSON formats", () => {
+  it("parses work card and gauntlet text and JSON formats", () => {
     expect(parseOuroCommand(["work", "card", "--agent", "slugger"])).toEqual({
       kind: "work.card",
       agent: "slugger",
@@ -37,8 +37,18 @@ describe("ouro work card CLI", () => {
       format: "json",
     })
     expect(parseOuroCommand(["work", "card"])).toEqual({ kind: "work.card" })
-    expect(() => parseOuroCommand(["work"])).toThrow(/Usage: ouro work card/)
+    expect(parseOuroCommand(["work", "gauntlet", "--agent", "slugger"])).toEqual({
+      kind: "work.gauntlet",
+      agent: "slugger",
+    })
+    expect(parseOuroCommand(["work", "gauntlet", "--agent", "slugger", "--json"])).toEqual({
+      kind: "work.gauntlet",
+      agent: "slugger",
+      format: "json",
+    })
+    expect(() => parseOuroCommand(["work"])).toThrow(/Usage: ouro work/)
     expect(() => parseOuroCommand(["work", "card", "--format"])).toThrow(/Usage: ouro work card/)
+    expect(() => parseOuroCommand(["work", "gauntlet", "--format"])).toThrow(/Usage: ouro work gauntlet/)
     expect(() => parseOuroCommand(["work", "card", "--format", "yaml"])).toThrow(/format/)
   })
 
@@ -56,6 +66,26 @@ describe("ouro work card CLI", () => {
       expect(parsed.projection.owner).toBe("arc/work-card")
       expect(parsed.claims.available).toBe(false)
       expect(parsed.counts.unverifiedClaims).toBeNull()
+      expect(deps.sendCommand).not.toHaveBeenCalled()
+      expect(writeStdout).toHaveBeenCalledWith(result)
+    } finally {
+      tmp.cleanup()
+    }
+  })
+
+  it("renders the context-loss gauntlet without routing through the daemon socket", async () => {
+    const tmp = createTmpBundle({ agentName: "slugger" })
+    try {
+      const writeStdout = vi.fn()
+      const deps = createMockDeps({ bundlesRoot: tmp.bundlesRoot, writeStdout })
+
+      const result = await runOuroCli(["work", "gauntlet", "--agent", "slugger", "--format", "json"], deps)
+      const parsed = JSON.parse(result)
+
+      expect(parsed.agent).toBe("slugger")
+      expect(parsed.schemaVersion).toBe(1)
+      expect(parsed.checks.map((check: { id: string }) => check.id)).toContain("stale_guard")
+      expect(parsed.workCard.projection.owner).toBe("arc/work-card")
       expect(deps.sendCommand).not.toHaveBeenCalled()
       expect(writeStdout).toHaveBeenCalledWith(result)
     } finally {

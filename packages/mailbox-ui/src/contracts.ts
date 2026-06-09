@@ -15,6 +15,8 @@ export type {
   MailboxCodingDeep,
   MailboxCodingDeepItem,
   MailboxContinuityView,
+  MailboxContextLossGauntletCheck,
+  MailboxContextLossGauntletView,
   MailboxDaemonHealthDeep,
   MailboxDegradedComponent,
   MailboxDeskPrefs,

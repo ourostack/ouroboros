@@ -6,6 +6,12 @@ import type { DaemonStatus } from "../../nerves/observation"
 import type { InnerJobStatus } from "../daemon/thoughts"
 import type { AgentProviderVisibility } from "../provider-visibility"
 import type { SessionEvent } from "../session-events"
+import type {
+  ContextLossGauntletCheck,
+  ContextLossGauntletReport,
+  ContextLossGauntletStatus,
+  ContextLossGauntletVerdict,
+} from "../context-loss-gauntlet"
 
 // Re-export domain types through the observation layer
 export type { UsageData } from "../../nerves/observation"
@@ -959,6 +965,15 @@ export interface MailboxSelfFixView {
   currentStep: string | null
   steps: MailboxSelfFixStep[]
 }
+
+// ---------------------------------------------------------------------------
+// Context-loss gauntlet
+// ---------------------------------------------------------------------------
+
+export type MailboxContextLossGauntletStatus = ContextLossGauntletStatus
+export type MailboxContextLossGauntletVerdict = ContextLossGauntletVerdict
+export type MailboxContextLossGauntletCheck = ContextLossGauntletCheck
+export type MailboxContextLossGauntletView = ContextLossGauntletReport
 
 // ---------------------------------------------------------------------------
 // Notes decisions — save/skip judgement log

@@ -4,6 +4,7 @@ import {
   readBridgeInventory,
   readChangesView,
   readCodingDeep,
+  readContextLossGauntletView,
   readDaemonHealthDeep,
   readDeskPrefs,
   readFriendView,
@@ -27,6 +28,7 @@ import type {
   MailboxChangesView,
   MailboxCodingDeep,
   MailboxContinuityView,
+  MailboxContextLossGauntletView,
   MailboxDaemonHealthDeep,
   MailboxDeskPrefs,
   MailboxFriendView,
@@ -60,6 +62,7 @@ export interface MailboxHttpReadHookOptions {
   readAgentObligations?: (agentName: string) => MailboxObligationDetailView
   readAgentChanges?: (agentName: string) => MailboxChangesView
   readAgentSelfFix?: (agentName: string) => MailboxSelfFixView
+  readAgentContextLossGauntlet?: (agentName: string) => MailboxContextLossGauntletView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
@@ -82,6 +85,7 @@ export interface MailboxHttpReadHooks {
   readAgentObligations(agentName: string): MailboxObligationDetailView
   readAgentChanges(agentName: string): MailboxChangesView
   readAgentSelfFix(agentName: string): MailboxSelfFixView
+  readAgentContextLossGauntlet(agentName: string): MailboxContextLossGauntletView
   readAgentNoteDecisions(agentName: string): MailboxNoteDecisionView
   readAgentHabits(agentName: string): MailboxHabitView
   readAgentMail(agentName: string): Promise<MailboxMailView> | MailboxMailView
@@ -111,6 +115,7 @@ export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions):
     readAgentObligations: options.readAgentObligations ?? ((agentName: string) => readObligationDetailView(agentRoot(agentName))),
     readAgentChanges: options.readAgentChanges ?? ((agentName: string) => readChangesView(agentRoot(agentName))),
     readAgentSelfFix: options.readAgentSelfFix ?? ((agentName: string) => readSelfFixView(agentRoot(agentName))),
+    readAgentContextLossGauntlet: options.readAgentContextLossGauntlet ?? ((agentName: string) => readContextLossGauntletView(agentRoot(agentName), agentName)),
     readAgentNoteDecisions: options.readAgentNoteDecisions ?? ((agentName: string) => readNoteDecisionView(agentRoot(agentName))),
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
     readAgentMail: options.readAgentMail ?? ((agentName: string) => readMailView(agentName)),

@@ -169,16 +169,23 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   work: {
     category: "Tasks",
-    description: "Show the agent's durable Work Card compiled from arc records.",
-    usage: "ouro work card [--agent <name>] [--format text|json|--json]",
-    example: "ouro work card --agent slugger --format json",
-    subcommands: ["card"],
+    description: "Show durable Arc work state or run the context-loss gauntlet.",
+    usage: "ouro work card|gauntlet [--agent <name>] [--format text|json|--json]",
+    example: "ouro work gauntlet --agent slugger --format json",
+    subcommands: ["card", "gauntlet"],
   },
   "work card": {
     category: "Tasks",
     description: "Show the agent's durable Work Card compiled from arc records.",
     usage: "ouro work card [--agent <name>] [--format text|json|--json]",
     example: "ouro work card --agent slugger --format json",
+    hidden: true,
+  },
+  "work gauntlet": {
+    category: "Tasks",
+    description: "Score whether durable Arc, flight recorder, and Desk state can recover after context loss.",
+    usage: "ouro work gauntlet [--agent <name>] [--format text|json|--json]",
+    example: "ouro work gauntlet --agent slugger --format json",
     hidden: true,
   },
   "migrate-to-desk": {

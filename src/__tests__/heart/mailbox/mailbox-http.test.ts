@@ -49,6 +49,7 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentObligations: vi.fn(() => ({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })),
     readAgentChanges: vi.fn(() => ({ changeCount: 0, items: [], snapshotAge: null, formatted: "" })),
     readAgentSelfFix: vi.fn(() => ({ active: false, currentStep: null, steps: [] })),
+    readAgentContextLossGauntlet: vi.fn(() => ({ schemaVersion: 1, agent: "slugger", generatedAt: "2026-06-08T12:00:00.000Z", verdict: "ready", summary: "ready", score: { earned: 1, possible: 1, percentage: 100 }, currentAsk: { available: true, value: "test", source: "flight_recorder", confidence: "current" }, nextAction: { actor: "agent", summary: "continue" }, counts: { owed: 0, returnObligations: 0, activePackets: 0, evolutionCases: 0, waitingOnHuman: 0, unverifiedClaims: null, staleRiskyClaims: null }, checks: [], workCard: {} })),
     readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
@@ -226,6 +227,7 @@ describe("mailbox http", () => {
     expect(defaultHooks.readAgentObligations("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentContextLossGauntlet("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
     await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
       status: "auth-required",
@@ -1102,6 +1104,39 @@ describe("mailbox http", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual(mockSelfFix)
+
+    await server.stop()
+  })
+
+  it("serves /api/agents/:agent/context-loss-gauntlet endpoint", async () => {
+    const { startMailboxHttpServer } = await import("../../../heart/mailbox/mailbox-http")
+
+    const mockGauntlet = {
+      schemaVersion: 1,
+      agent: "slugger",
+      generatedAt: "2026-06-08T12:00:00.000Z",
+      verdict: "watch",
+      summary: "recovery possible with warnings",
+      score: { earned: 75, possible: 85, percentage: 88 },
+      currentAsk: { available: true, value: "keep context", source: "flight_recorder", confidence: "current" },
+      nextAction: { actor: "agent", summary: "continue" },
+      counts: { owed: 0, returnObligations: 0, activePackets: 0, evolutionCases: 0, waitingOnHuman: 0, unverifiedClaims: null, staleRiskyClaims: null },
+      checks: [{ id: "desk_record_ready", label: "Desk record", status: "warn", score: 5, maxScore: 10, detail: "scaffold missing", evidence: [] }],
+      workCard: { schemaVersion: 1 },
+    }
+
+    const server = await startMailboxHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      readMachineState: () => ({ productName: "Ouro Mailbox", agentCount: 1 }) as any,
+      readAgentState: () => null,
+      readAgentContextLossGauntlet: () => mockGauntlet,
+    })
+
+    const res = await fetch(`${server.origin}/api/agents/slugger/context-loss-gauntlet`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual(mockGauntlet)
 
     await server.stop()
   })

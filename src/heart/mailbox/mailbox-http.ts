@@ -13,6 +13,7 @@ import type {
   MailboxCodingDeep,
   MailboxChangesView,
   MailboxContinuityView,
+  MailboxContextLossGauntletView,
   MailboxDaemonHealthDeep,
   MailboxNoteDecisionView,
   MailboxObligationDetailView,
@@ -52,6 +53,7 @@ export interface StartMailboxHttpServerOptions {
   readAgentObligations?: (agentName: string) => MailboxObligationDetailView
   readAgentChanges?: (agentName: string) => MailboxChangesView
   readAgentSelfFix?: (agentName: string) => MailboxSelfFixView
+  readAgentContextLossGauntlet?: (agentName: string) => MailboxContextLossGauntletView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
