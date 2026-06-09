@@ -106,6 +106,7 @@ export interface BuildWorkCardOptions {
   now?: () => Date
   nowMs?: () => number
   homeDir?: string
+  flightRecorderResume?: FlightRecorderResume
 }
 
 const ACTIVE_PACKET_STATUSES: ReadonlySet<TaskStatus> = new Set([
@@ -395,7 +396,7 @@ export function buildWorkCard(agentName: string, agentRoot: string, options: Bui
   const evolutionCases = listOpenEvolutionCases(agentRoot).map(evolutionItem)
   const activeWork = [...activePackets, ...evolutionCases]
   const waiting = waitingOnHuman([...owed, ...returnObligations, ...activeWork])
-  const flightRecorderResume = readFlightRecorderResume(agentRoot)
+  const flightRecorderResume = options.flightRecorderResume ?? readFlightRecorderResume(agentRoot)
   const claims: WorkCardClaimsSection = {
     available: false,
     unavailableReason: "WorkClaim store is not implemented yet; unverified claim counts are unknown, not zero.",

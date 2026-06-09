@@ -7,10 +7,12 @@ import { isOpenObligation, readObligations } from "../../../arc/obligations"
 import { readPeerPresence, readPresence } from "../../../arc/presence"
 import { detectActiveWorkChanges, formatActiveWorkChanges, type ActiveWorkSnapshot } from "../../active-work"
 import { listSessionActivity } from "../../session-activity"
+import { runContextLossGauntlet } from "../../context-loss-gauntlet"
 import { readObligationSummary } from "./agent-machine"
 import {
   type MailboxChangesView,
   type MailboxContinuityView,
+  type MailboxContextLossGauntletView,
   type MailboxNoteDecision,
   type MailboxNoteDecisionView,
   type MailboxObligationDetailItem,
@@ -272,6 +274,10 @@ export function readSelfFixView(_agentRoot: string): MailboxSelfFixView {
     meta: { taskCount: 0, active: false },
   })
   return { active: false, currentStep: null, steps: [] }
+}
+
+export function readContextLossGauntletView(agentRoot: string, agentName: string): MailboxContextLossGauntletView {
+  return runContextLossGauntlet(agentName, agentRoot)
 }
 
 export function readNoteDecisionView(agentRoot: string, limit = 50): MailboxNoteDecisionView {

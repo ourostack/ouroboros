@@ -99,6 +99,7 @@ import type {
   VersionsCliCommand,
   AttentionCliCommand,
   WorkCardCliCommand,
+  WorkGauntletCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -529,6 +530,7 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.show":
     case "attention.history":
     case "work.card":
+    case "work.gauntlet":
     case "inner.status":
     case "session.list":
       return "return-message"
@@ -1574,7 +1576,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -8330,6 +8332,18 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
     const card = buildWorkCard(command.agent, agentRoot)
     const message = command.format === "json" ? JSON.stringify(card, null, 2) : formatWorkCardText(card)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── context-loss gauntlet (local, no daemon socket needed) ──
+  if (command.kind === "work.gauntlet") {
+    const { runContextLossGauntlet, formatContextLossGauntletText } = await import("../context-loss-gauntlet")
+    if (!command.agent) throw new Error("work gauntlet requires --agent <name>")
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
+    const report = runContextLossGauntlet(command.agent, agentRoot, { homeDir: deps.homeDir })
+    const message = command.format === "json" ? JSON.stringify(report, null, 2) : formatContextLossGauntletText(report)
     deps.writeStdout(message)
     return message
   }

@@ -84,6 +84,7 @@ export type OuroCliCommand =
   | { kind: "attention.show"; id: string; agent?: string }
   | { kind: "attention.history"; agent?: string }
   | { kind: "work.card"; agent?: string; format?: "text" | "json" }
+  | { kind: "work.gauntlet"; agent?: string; format?: "text" | "json" }
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
@@ -240,6 +241,7 @@ export type RollbackCliCommand = Extract<OuroCliCommand, { kind: "rollback" }>
 export type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 export type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
 export type WorkCardCliCommand = Extract<OuroCliCommand, { kind: "work.card" }>
+export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gauntlet" }>
 export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>

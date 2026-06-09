@@ -29,6 +29,7 @@ export {
 
 export {
   readChangesView,
+  readContextLossGauntletView,
   readNoteDecisionView,
   readObligationDetailView,
   readOrientationView,

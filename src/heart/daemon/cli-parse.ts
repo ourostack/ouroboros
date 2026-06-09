@@ -125,7 +125,7 @@ export function usage(): string {
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
-    "  ouro work card [--agent <name>] [--format text|json|--json]",
+    "  ouro work card|gauntlet [--agent <name>] [--format text|json|--json]",
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -1042,7 +1042,9 @@ function parseAttentionCommand(args: string[]): OuroCliCommand {
 function parseWorkCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   const sub = cleaned[0]
-  if (sub !== "card") throw new Error("Usage: ouro work card [--agent <name>] [--format text|json|--json]")
+  if (sub !== "card" && sub !== "gauntlet") {
+    throw new Error("Usage: ouro work card|gauntlet [--agent <name>] [--format text|json|--json]")
+  }
 
   let format: "text" | "json" = "text"
   for (let i = 1; i < cleaned.length; i += 1) {
@@ -1058,10 +1060,10 @@ function parseWorkCommand(args: string[]): OuroCliCommand {
       format = value
       continue
     }
-    throw new Error("Usage: ouro work card [--agent <name>] [--format text|json|--json]")
+    throw new Error(`Usage: ouro work ${sub} [--agent <name>] [--format text|json|--json]`)
   }
 
-  return { kind: "work.card", ...(agent ? { agent } : {}), ...(format !== "text" ? { format } : {}) }
+  return { kind: sub === "card" ? "work.card" : "work.gauntlet", ...(agent ? { agent } : {}), ...(format !== "text" ? { format } : {}) }
 }
 
 function parseThoughtsCommand(args: string[]): OuroCliCommand {

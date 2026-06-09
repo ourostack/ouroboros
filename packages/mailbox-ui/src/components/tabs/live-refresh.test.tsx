@@ -111,6 +111,26 @@ function makeAgentView(overrides: AgentViewOverrides = {}): MailboxAgentView {
   }
 }
 
+function makeContextLossGauntlet(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    agent: "slugger",
+    generatedAt: "2026-06-08T12:00:00.000Z",
+    verdict: "watch",
+    summary: "recovery possible with warnings",
+    score: { earned: 75, possible: 85, percentage: 88 },
+    currentAsk: { available: true, value: "finish the visibility layer", source: "flight_recorder", confidence: "current" },
+    nextAction: { actor: "agent", summary: "run the gauntlet and inspect the score", source: { kind: "flight_recorder", locator: "arc/flight-recorder/latest.json", freshness: "current", redaction: "summary" } },
+    counts: { owed: 1, returnObligations: 0, activePackets: 0, evolutionCases: 0, waitingOnHuman: 0, unverifiedClaims: null, staleRiskyClaims: null },
+    checks: [
+      { id: "current_ask", label: "Current ask", status: "pass", score: 15, maxScore: 15, detail: "current ask is preserved", evidence: [{ kind: "flight_recorder", locator: "arc/flight-recorder/latest.json", freshness: "current", redaction: "summary" }] },
+      { id: "desk_record_ready", label: "Desk record", status: "warn", score: 5, maxScore: 10, detail: "canonical Desk record scaffold is missing", evidence: [] },
+    ],
+    workCard: { schemaVersion: 1 },
+    ...overrides,
+  }
+}
+
 function transcriptMessage(sequence: number, role: "user" | "assistant", content: string): MailboxTranscriptMessage {
   const recordedAt = `2026-04-09T17:${String(sequence).padStart(2, "0")}:00.000Z`
   return {
@@ -1030,6 +1050,7 @@ describe("Mailbox deep-tab live refresh", () => {
       if (url.endsWith("/coding")) return jsonResponse({ items: [] })
       if (url.endsWith("/obligations")) return jsonResponse({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })
       if (url.endsWith("/self-fix")) return jsonResponse({ active: false, currentStep: null, steps: [] })
+      if (url.endsWith("/context-loss-gauntlet")) return jsonResponse(makeContextLossGauntlet())
       throw new Error(`unexpected url: ${url}`)
     })
     vi.stubGlobal("fetch", fetchMock)
@@ -1042,7 +1063,10 @@ describe("Mailbox deep-tab live refresh", () => {
       </NavigationContext.Provider>
     )
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+    expect(ui.container.textContent).toContain("Context-loss gauntlet")
+    expect(ui.container.textContent).toContain("finish the visibility layer")
+    expect(ui.container.textContent).toContain("Desk record")
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -1050,7 +1074,42 @@ describe("Mailbox deep-tab live refresh", () => {
       </NavigationContext.Provider>
     )
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8))
+  })
+
+  it("clears stale context-loss gauntlet data and shows refresh failures", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.endsWith("/obligations")) return jsonResponse({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })
+      if (url.endsWith("/self-fix")) return jsonResponse({ active: false, currentStep: null, steps: [] })
+      if (url.includes("/context-loss-gauntlet")) {
+        if (url.includes("/slugger/")) return jsonResponse(makeContextLossGauntlet())
+        throw new Error("gauntlet offline")
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <WorkTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.container.textContent).toContain("finish the visibility layer"))
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <WorkTab agentName="cobra" view={view} refreshGeneration={1} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.container.textContent).toContain("gauntlet offline"))
+    expect(ui.container.textContent).toContain("unavailable")
+    expect(ui.container.textContent).not.toContain("finish the visibility layer")
   })
 
   it("re-fetches connections deep data when refreshGeneration advances", async () => {
