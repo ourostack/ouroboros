@@ -147,6 +147,10 @@ export class FriendResolver {
 
     const isFirstImprint = !hasAnyFriends
     const isA2AAgent = this.params.provider === "a2a-agent"
+    // The local friend that names the OS user running the daemon is the machine
+    // owner (family) — they own the agent + its bundle. Usually this friend already
+    // exists as a family/primary hatch imprint; this covers the un-imprinted boss
+    // path (e.g. a Workbench boss check-in on a bundle that skipped imprint).
     const isLocalMachineOwner = isLocalMachineOwnerIdentity(
       this.params.provider,
       this.params.externalId,

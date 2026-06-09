@@ -553,6 +553,21 @@ describe("machine-owner trust", () => {
     expect(ctx.friend.role).toBe("family")
   })
 
+  it("creates a user@host machine-owner friend at family trust", async () => {
+    _setMachineOwnerUsernameForTest("microsoft")
+    const store = createMockStore(undefined, true)
+    ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    const resolver = new FriendResolver(store, {
+      provider: "local",
+      externalId: "microsoft@macbook",
+      displayName: "microsoft",
+      channel: "cli",
+    })
+    const ctx = await resolver.resolve()
+    expect(ctx.friend.trustLevel).toBe("family")
+    expect(ctx.friend.role).toBe("family")
+  })
+
   it("still creates a non-owner local friend as a stranger", async () => {
     _setMachineOwnerUsernameForTest("microsoft")
     const store = createMockStore(undefined, true)
