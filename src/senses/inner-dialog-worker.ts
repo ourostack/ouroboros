@@ -4,6 +4,12 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getInnerDialogPendingDir, hasPendingMessages } from "../mind/pending"
 import { recordHabitRun } from "../heart/habits/habit-runtime-state"
+import {
+  createHabitRunId,
+  writeHabitRunReceipt,
+  type FlightRecorderProducedRef,
+  type HabitRunReceipt,
+} from "../arc/flight-recorder"
 
 export type InnerDialogWorkerReason = "boot" | "habit" | "instinct" | "await"
 
@@ -12,6 +18,7 @@ export interface InnerDialogWorkerMessage {
   taskId?: string
   habitName?: string
   awaitName?: string
+  trigger?: HabitRunReceipt["trigger"]
 }
 
 export interface InnerDialogWorkerRunOptions {
@@ -22,7 +29,7 @@ export interface InnerDialogWorkerRunOptions {
 }
 
 export interface InnerDialogWorkerController {
-  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void>
+  run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string, trigger?: HabitRunReceipt["trigger"]): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
 
@@ -31,6 +38,7 @@ interface QueueEntry {
   taskId?: string
   habitName?: string
   awaitName?: string
+  trigger?: HabitRunReceipt["trigger"]
 }
 
 /**
@@ -86,11 +94,56 @@ export function createInnerDialogWorker(
   const recentHabitFires: number[] = []
   let heartbeatOkRestedAt: number | null = null
 
-  function recordHabitCompletion(habitName: string): void {
+  function habitOutcomeForTurn(result: unknown, errors: string[]): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
+    if (errors.length > 0) return { outcome: "error", producedRefs: [] }
+    const toolNames = new Set<string>()
+    if (result && typeof result === "object" && Array.isArray((result as { messages?: unknown }).messages)) {
+      for (const message of (result as { messages: Array<Record<string, unknown>> }).messages) {
+        const toolCalls = message.tool_calls
+        if (!Array.isArray(toolCalls)) continue
+        for (const call of toolCalls) {
+          const functionName = (call as { function?: { name?: unknown } }).function?.name
+          if (typeof functionName === "string") toolNames.add(functionName)
+        }
+      }
+    }
+    if (toolNames.has("send_message") || toolNames.has("surface")) {
+      return { outcome: "surfaced", producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }] }
+    }
+    if (toolNames.has("diary_write") || toolNames.has("note")) {
+      return { outcome: "wrote_record", producedRefs: [{ kind: "desk_record", locator: "desk/_record" }] }
+    }
+    if ([...toolNames].some((name) => name.startsWith("mcp__desk__"))) {
+      return { outcome: "updated_desk", producedRefs: [{ kind: "desk_task", locator: "desk/" }] }
+    }
+    return { outcome: "no_change", producedRefs: [] }
+  }
+
+  function recordHabitCompletion(
+    habitName: string,
+    startedAt = new Date(nowSource()).toISOString(),
+    endedAt = startedAt,
+    trigger: HabitRunReceipt["trigger"] = "overdue",
+    result?: unknown,
+    errors: string[] = [],
+  ): void {
     try {
       const agentRoot = getAgentRoot()
-      recordHabitRun(agentRoot, habitName, new Date(nowSource()).toISOString(), {
+      recordHabitRun(agentRoot, habitName, endedAt, {
         definitionPath: path.join(agentRoot, "habits", `${habitName}.md`),
+      })
+      const { outcome, producedRefs } = habitOutcomeForTurn(result, errors)
+      writeHabitRunReceipt(agentRoot, {
+        schemaVersion: 1,
+        runId: createHabitRunId(habitName, new Date(startedAt)),
+        habitName,
+        trigger,
+        startedAt,
+        endedAt,
+        outcome,
+        producedRefs,
+        surfaceAttempts: [],
+        errors,
       })
     } catch {
       // Habit file/state may be unavailable during the turn — skip gracefully
@@ -112,7 +165,8 @@ export function createInnerDialogWorker(
   }
 
   function reuseHeartbeatOkRest(habitName: string): void {
-    recordHabitCompletion(habitName)
+    const nowIso = new Date(nowSource()).toISOString()
+    recordHabitCompletion(habitName, nowIso, nowIso, "overdue", { turnOutcome: "rested", restStatus: "HEARTBEAT_OK" })
     emitNervesEvent({
       level: "info",
       component: "senses",
@@ -166,9 +220,9 @@ export function createInnerDialogWorker(
     }
   }
 
-  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string): Promise<void> {
+  async function run(reason: InnerDialogWorkerReason, taskId?: string, habitName?: string, awaitName?: string, trigger?: HabitRunReceipt["trigger"]): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName })
+      queue.push({ reason, taskId, habitName, awaitName, trigger })
       return
     }
 
@@ -178,11 +232,15 @@ export function createInnerDialogWorker(
       let nextTaskId = taskId
       let nextHabitName = habitName
       let nextAwaitName = awaitName
+      let nextTrigger = trigger
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
 
       runLoop: do {
         const currentReason = nextReason
         const currentHabitName = nextHabitName
+        const currentTrigger = nextTrigger ?? "overdue"
+        const habitStartedAt = currentReason === "habit" && currentHabitName ? new Date(nowSource()).toISOString() : null
+        const turnErrors: string[] = []
         if (!(currentReason === "habit" && currentHabitName === "heartbeat")) {
           clearHeartbeatRestShield()
         }
@@ -191,6 +249,7 @@ export function createInnerDialogWorker(
           turnResult = await runTurn({ reason: nextReason, taskId: nextTaskId, habitName: nextHabitName, awaitName: nextAwaitName })
         } catch (error) {
           clearHeartbeatRestShield()
+          turnErrors.push(error instanceof Error ? error.message : String(error))
           emitNervesEvent({
             level: "error",
             component: "senses",
@@ -207,8 +266,15 @@ export function createInnerDialogWorker(
         }
 
         // Record lastRun after a habit turn without dirtying the tracked habit file.
-        if (nextReason === "habit" && nextHabitName) {
-          recordHabitCompletion(nextHabitName)
+        if (currentReason === "habit" && currentHabitName && habitStartedAt) {
+          recordHabitCompletion(
+            currentHabitName,
+            habitStartedAt,
+            new Date(nowSource()).toISOString(),
+            currentTrigger,
+            turnResult,
+            turnErrors,
+          )
         }
 
         // Drain queue first. Externally-queued work resets the instinct cap
@@ -226,6 +292,7 @@ export function createInnerDialogWorker(
           nextTaskId = next.taskId
           nextHabitName = next.habitName
           nextAwaitName = next.awaitName
+          nextTrigger = next.trigger
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
         }
@@ -255,6 +322,7 @@ export function createInnerDialogWorker(
           nextTaskId = undefined
           nextHabitName = undefined
           nextAwaitName = undefined
+          nextTrigger = undefined
           continue
         }
 
@@ -276,7 +344,7 @@ export function createInnerDialogWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName)
+      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue")
       return
     }
     if (maybeMessage.type === "await") {
@@ -294,7 +362,7 @@ export function createInnerDialogWorker(
         return
       }
       recordHabitFireForRecursion("heartbeat")
-      await run("habit", undefined, "heartbeat")
+      await run("habit", undefined, "heartbeat", undefined, "overdue")
       return
     }
     if (maybeMessage.type === "poke") {

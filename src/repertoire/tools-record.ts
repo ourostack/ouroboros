@@ -1,9 +1,10 @@
 import * as fs from "fs"
 import * as path from "path"
 import { capStructuredRecordString } from "../heart/session-events"
-import { getAgentRoot } from "../heart/identity"
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "../mind/embedding-provider"
 import { cosineSimilarity } from "../mind/note-search"
+import { resolveRecordNotesRoot } from "../mind/record-paths"
+import { isTrustedLevel } from "../mind/friends/types"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext, ToolDefinition } from "./tools-base"
 
@@ -46,6 +47,12 @@ function hasSelfTrust(ctx?: ToolContext): boolean {
   if (channel !== "inner") return false
   const friend = ctx?.context?.friend
   return !friend || friend.id === "self"
+}
+
+function hasRecordReadTrust(ctx?: ToolContext): boolean {
+  if (hasSelfTrust(ctx)) return true
+  const friend = ctx?.context?.friend
+  return Boolean(friend) && isTrustedLevel(friend?.trustLevel)
 }
 
 function normalizeTags(value: unknown): string[] | undefined {
@@ -222,7 +229,6 @@ function indexFreshForRecords(index: NotesIndex | null, records: NoteRecord[]): 
   const recordsByFilename = new Map(records.map((record) => [record.filename, record]))
   const seenFilenames = new Set<string>()
   for (const entry of index.entries) {
-    if (seenFilenames.has(entry.filename)) return false
     const record = recordsByFilename.get(entry.filename)
     if (!record || !entryMatchesRecord(entry, record)) return false
     seenFilenames.add(entry.filename)
@@ -342,7 +348,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       function: {
         name: "note",
         description:
-          "Write a durable self note as canonical markdown in my notes folder. Only available to my self/inner context, not external callers.",
+          "Write a durable self note as canonical markdown in my Desk record notes. Only available to my self/inner context, not external callers.",
         parameters: {
           type: "object",
           properties: {
@@ -370,10 +376,10 @@ export const recordToolDefinitions: ToolDefinition[] = [
       const createdAt = new Date().toISOString()
       const date = createdAt.slice(0, 10)
       const tags = normalizeTags(rawArgs.tags)
-      const notesDir = path.join(getAgentRoot(), "notes")
-      const indexPath = path.join(notesDir, ".index.json")
 
       try {
+        const notesDir = resolveRecordNotesRoot()
+        const indexPath = path.join(notesDir, ".index.json")
         fs.mkdirSync(notesDir, { recursive: true })
         const savedPath = ensureUniquePath(notesDir, date, slugForContent(content))
         fs.writeFileSync(savedPath, renderNote(createdAt, cappedContent, tags), "utf8")
@@ -397,7 +403,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       }
     },
     summaryKeys: ["content", "tags"],
-    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes canonical note memory" },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "writes canonical Desk record note" },
   },
   {
     tool: {
@@ -405,7 +411,7 @@ export const recordToolDefinitions: ToolDefinition[] = [
       function: {
         name: "consult_notes",
         description:
-          "Search my canonical markdown notes semantically using the notes-native index. Only available to my self/inner context, not external callers.",
+          "Search my canonical markdown Desk record notes semantically using the notes-native index. Read-only orientation lookup for trusted callers.",
         parameters: {
           type: "object",
           properties: {
@@ -419,13 +425,13 @@ export const recordToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (!hasSelfTrust(ctx)) return "error: consult_notes requires self trust and cannot be used from an external caller context."
+      if (!hasRecordReadTrust(ctx)) return "error: consult_notes requires trusted record-read access."
 
       const rawArgs = args as Record<string, unknown>
       const query = typeof rawArgs.query === "string" ? rawArgs.query.trim() : ""
       if (!query) return JSON.stringify({ items: [] })
 
-      const notesDir = path.join(getAgentRoot(), "notes")
+      const notesDir = resolveRecordNotesRoot()
       const indexPath = path.join(notesDir, ".index.json")
       const records = listCanonicalNotes(notesDir)
       if (records.length === 0) return JSON.stringify({ items: [] })

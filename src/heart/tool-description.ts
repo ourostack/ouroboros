@@ -56,10 +56,20 @@ const TOOL_DESCRIPTIONS: Record<string, DescriptionBuilder> = {
   },
 
   // Notes and knowledge
-  search_notes: (args) => {
+  search_facts: (args) => {
     const q = args.query
-    if (!q) return "searching notes..."
-    return `searching notes for '${truncate(q, 40)}'...`
+    if (!q) return "searching facts..."
+    return `searching facts for '${truncate(q, 40)}'...`
+  },
+  consult_diary: (args) => {
+    const q = args.query
+    if (!q) return "checking recent diary facts..."
+    return `consulting diary facts for '${truncate(q, 40)}'...`
+  },
+  consult_notes: (args) => {
+    const q = args.query
+    if (!q) return "checking Desk record notes..."
+    return `consulting Desk record notes for '${truncate(q, 40)}'...`
   },
   diary_write: (args) => {
     const about = args.about

@@ -125,6 +125,7 @@ export function usage(): string {
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
+    "  ouro work card [--agent <name>] [--format text|json|--json]",
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -1038,6 +1039,31 @@ function parseAttentionCommand(args: string[]): OuroCliCommand {
   return { kind: "attention.list", ...(agent ? { agent } : {}) }
 }
 
+function parseWorkCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const sub = cleaned[0]
+  if (sub !== "card") throw new Error("Usage: ouro work card [--agent <name>] [--format text|json|--json]")
+
+  let format: "text" | "json" = "text"
+  for (let i = 1; i < cleaned.length; i += 1) {
+    if (cleaned[i] === "--json") {
+      format = "json"
+      continue
+    }
+    if (cleaned[i] === "--format" && cleaned[i + 1]) {
+      const value = cleaned[++i]
+      if (value !== "text" && value !== "json") {
+        throw new Error("--format must be text or json")
+      }
+      format = value
+      continue
+    }
+    throw new Error("Usage: ouro work card [--agent <name>] [--format text|json|--json]")
+  }
+
+  return { kind: "work.card", ...(agent ? { agent } : {}), ...(format !== "text" ? { format } : {}) }
+}
+
 function parseThoughtsCommand(args: string[]): OuroCliCommand {
   const { agent, rest: cleaned } = extractAgentFlag(args)
   let last: number | undefined
@@ -1582,6 +1608,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   }
   if (head === "thoughts") return parseThoughtsCommand(args.slice(1))
   if (head === "attention") return parseAttentionCommand(args.slice(1))
+  if (head === "work") return parseWorkCommand(args.slice(1))
   if (head === "inner") {
     const { agent } = extractAgentFlag(args.slice(1))
     return { kind: "inner.status", ...(agent ? { agent } : {}) }

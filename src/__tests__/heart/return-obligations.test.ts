@@ -368,6 +368,34 @@ describe("listActiveReturnObligations", () => {
     expect(listActiveReturnObligations("testagent", { now: () => 100 })).toHaveLength(1)
   })
 
+  it("skips parsed files with invalid return-obligation shape", async () => {
+    const { listActiveReturnObligations } = await import("../../arc/obligations")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockReturnValue(["nullish.json", "missing-origin.json", "good.json"] as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((p: string) => {
+      if ((p as string).includes("nullish")) {
+        return "null"
+      }
+      if ((p as string).includes("missing-origin")) {
+        return JSON.stringify({
+          id: "missing-origin",
+          status: "queued",
+          createdAt: 1,
+          delegatedContent: "shape is incomplete",
+        })
+      }
+      return JSON.stringify({
+        id: "good",
+        status: "queued",
+        createdAt: 1,
+        origin: { friendId: "f", channel: "c", key: "k" },
+        delegatedContent: "x",
+      })
+    }) as any)
+
+    expect(listActiveReturnObligations("testagent", { now: () => 100 }).map((item) => item.id)).toEqual(["good"])
+  })
+
   it("returns empty array when readdirSync throws", async () => {
     const { listActiveReturnObligations } = await import("../../arc/obligations")
     vi.mocked(fs.existsSync).mockReturnValue(true)

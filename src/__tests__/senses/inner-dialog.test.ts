@@ -28,15 +28,12 @@ const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockAdvanceObligation = vi.fn()
 const mockListActiveObligations = vi.fn(() => [])
 const mockBuildHabitTurnMessage = vi.fn(() => "habit turn message")
-const mockIndexJournalFiles = vi.fn(async () => 0)
-const mockReadJournalFiles = vi.fn(() => [])
 const mockReadHealth = vi.fn(() => null)
 const mockGetDefaultHealthPath = vi.fn(() => "/tmp/fake-health-path/daemon-health.json")
 const mockGetToolsForChannel = vi.fn()
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
-  readJournalFiles: (...args: any[]) => mockReadJournalFiles(...args),
   flattenSystemPrompt: (sp: any) => [sp?.stable, sp?.volatile].filter(Boolean).join("\n\n"),
 }))
 
@@ -114,10 +111,6 @@ vi.mock("../../senses/habit-turn-message", () => ({
   buildHabitTurnMessage: (...args: any[]) => mockBuildHabitTurnMessage(...args),
 }))
 
-vi.mock("../../mind/journal-index", () => ({
-  indexJournalFiles: (...args: any[]) => mockIndexJournalFiles(...args),
-}))
-
 vi.mock("../../heart/daemon/daemon-health", () => ({
   readHealth: (...args: any[]) => mockReadHealth(...args),
   getDefaultHealthPath: (...args: any[]) => mockGetDefaultHealthPath(...args),
@@ -166,8 +159,8 @@ describe("inner dialog runtime", () => {
       callbacks?.onModelStreamStart?.()
       callbacks?.onTextChunk?.("inner-dialog text chunk")
       callbacks?.onReasoningChunk?.("inner-dialog reasoning chunk")
-      callbacks?.onToolStart?.("search_notes")
-      callbacks?.onToolEnd?.("search_notes", true)
+      callbacks?.onToolStart?.("search_facts")
+      callbacks?.onToolEnd?.("search_facts", true)
       callbacks?.onError?.(new Error("inner-dialog synthetic callback error"))
       return { usage: undefined }
     })
@@ -195,8 +188,6 @@ describe("inner dialog runtime", () => {
     mockAdvanceObligation.mockReset().mockReturnValue(null)
     mockListActiveObligations.mockReset().mockReturnValue([])
     mockBuildHabitTurnMessage.mockReset().mockReturnValue("habit turn message")
-    mockIndexJournalFiles.mockReset().mockResolvedValue(0)
-    mockReadJournalFiles.mockReset().mockReturnValue([])
     mockReadHealth.mockReset().mockReturnValue(null)
     mockGetDefaultHealthPath.mockReset().mockReturnValue("/tmp/fake-health-path/daemon-health.json")
     mockGetToolsForChannel.mockReset().mockReturnValue([
@@ -2573,8 +2564,8 @@ describe("inner dialog runtime", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "tc_1", type: "function", function: { name: "search_notes", arguments: "{}" } },
-            { id: "tc_2", type: "function", function: { name: "search_notes", arguments: "{}" } },
+            { id: "tc_1", type: "function", function: { name: "search_facts", arguments: "{}" } },
+            { id: "tc_2", type: "function", function: { name: "search_facts", arguments: "{}" } },
           ],
         },
       ],
@@ -2588,7 +2579,7 @@ describe("inner dialog runtime", () => {
     const nervesCall = mockEmitNervesEvent.mock.calls.find(
       (call: any[]) => call[0].event === "senses.inner_dialog_turn",
     )
-    expect(nervesCall![0].meta.toolCalls).toEqual(["search_notes"])
+    expect(nervesCall![0].meta.toolCalls).toEqual(["search_facts"])
   })
 
   // ── Exact-origin routing tests ──────────────────────────────────

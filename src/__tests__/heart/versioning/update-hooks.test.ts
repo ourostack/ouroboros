@@ -318,7 +318,7 @@ describe("applyPendingUpdates", () => {
 
   it("skips non-.ouro directories", async () => {
     const bundlesRoot = createTempDir("update-hooks-non-ouro-")
-    fs.mkdirSync(path.join(bundlesRoot, "notes"), { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "scratch"), { recursive: true })
     fs.mkdirSync(path.join(bundlesRoot, "test-agent.ouro"), { recursive: true })
     fs.writeFileSync(
       path.join(bundlesRoot, "test-agent.ouro", "bundle-meta.json"),

@@ -1464,7 +1464,9 @@ describe("provider CLI command execution", () => {
     const homeDir = makeTempDir("provider-cli-connect-workbench-missing-home")
     writeAgentConfig(bundlesRoot, "Slugger")
 
-    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot)))
+    await expect(runOuroCli(["connect", "workbench", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
+    })))
       .rejects.toThrow("Ouro Workbench is not installed for Slugger")
   })
 
@@ -1486,6 +1488,7 @@ describe("provider CLI command execution", () => {
     const prompts: string[] = []
 
     const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
       promptInput: async (question) => {
         prompts.push(question)
         return "cancel"
@@ -1497,6 +1500,54 @@ describe("provider CLI command execution", () => {
     expectConnectStatus(prompt, 9, "Ouro Workbench", "needs attention")
     expect(prompt).toContain("registered MCP command is missing:")
     expect(prompt).toContain("Workbench.app/Contents/MacOS/OuroWorkbenchMCP")
+    expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
+  })
+
+  it("shows installed Workbench as not attached before the sense is enabled", async () => {
+    emitTestEvent("provider cli connect menu workbench installed not attached")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-installed-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-installed-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const mcpPath = path.join(homeDir, "Applications", "Ouro Workbench.app", "Contents", "MacOS", "OuroWorkbenchMCP")
+    fs.mkdirSync(path.dirname(mcpPath), { recursive: true })
+    fs.writeFileSync(mcpPath, "#!/bin/sh\n", "utf-8")
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "not attached")
+    expect(prompt).toContain("senses.workbench.enabled is not enabled")
+    expect(prompt).toContain("mcpServers.ouro_workbench is not registered")
+    expect(prompt).toContain("OuroWorkbenchMCP found:")
+  })
+
+  it("shows Workbench as missing when the app is not installed or registered", async () => {
+    emitTestEvent("provider cli connect menu workbench missing")
+    const bundlesRoot = makeTempDir("provider-cli-connect-menu-workbench-missing-bundles")
+    const homeDir = makeTempDir("provider-cli-connect-menu-workbench-missing-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    const prompts: string[] = []
+
+    const result = await runOuroCli(["connect", "--agent", "Slugger"], makeCliDeps(homeDir, bundlesRoot, {
+      existsSync: () => false,
+      promptInput: async (question) => {
+        prompts.push(question)
+        return "cancel"
+      },
+    }))
+
+    const prompt = joinedPrompt(prompts)
+    expect(result).toBe("connect cancelled.")
+    expectConnectStatus(prompt, 9, "Ouro Workbench", "missing")
+    expect(prompt).toContain("senses.workbench.enabled is not enabled")
+    expect(prompt).toContain("mcpServers.ouro_workbench is not registered")
     expect(prompt).toContain("OuroWorkbenchMCP not found in ~/Applications or /Applications")
   })
 

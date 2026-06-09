@@ -1,12 +1,12 @@
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { getAgentRoot } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
 import { cosineSimilarity } from "./note-search";
 import { detectSuspiciousContent } from "./diary-integrity";
 import { type EmbeddingProvider, createDefaultEmbeddingProvider } from "./embedding-provider";
+import { resolveRecordDiaryRoot } from "./record-paths";
 
 export interface DiaryStorePaths {
   rootDir: string;
@@ -247,8 +247,7 @@ async function buildEmbedding(text: string, embeddingProvider?: EmbeddingProvide
 
 export function resolveDiaryRoot(explicitRoot?: string): string {
   if (explicitRoot) return explicitRoot;
-  const agentRoot = getAgentRoot();
-  return path.join(agentRoot, "diary");
+  return resolveRecordDiaryRoot();
 }
 
 export function readDiaryEntries(diaryRoot?: string): DiaryEntry[] {

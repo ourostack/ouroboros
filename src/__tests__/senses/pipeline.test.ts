@@ -300,7 +300,24 @@ function defaultTurnContext() {
     senseStatusLines: [] as string[],
     bundleMeta: null,
     daemonHealth: null,
-    journalFiles: [] as any[],
+    flightRecorderResume: {
+      schemaVersion: 1 as const,
+      hasCompleteState: false,
+      canContinue: false,
+      missing: ["currentAsk", "nextSafeAction"],
+      gaps: [],
+      currentAsk: { value: null, confidence: "unknown" as const, sourceEventIds: [] },
+      nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+      blockedBecause: [],
+      activeObligationIds: [],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: null, sessionRef: null, recordedAt: null, sourceEventIds: [] },
+      recorderHealth: { status: "degraded" as const, issues: ["latest.json missing"] },
+    },
   }
 }
 
@@ -847,6 +864,149 @@ describe("handleInboundTurn", () => {
       await handleInboundTurn(input)
 
       expect(callOrder).toEqual(["runAgent", "postTurn"])
+    })
+
+    it("records a post-turn flight recorder checkpoint for normal persisted turns", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-flight-recorder-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      try {
+        const { createReturnObligation } = await import("../../arc/obligations")
+        createReturnObligation("slugger", {
+          id: "return-1",
+          origin: { friendId: "friend-1", channel: "cli", key: "arc-test" },
+          status: "running",
+          delegatedContent: "finish the private check",
+          createdAt: Date.now(),
+        })
+        const input = makeInput({
+          messages: [{ role: "user", content: "finish the harness visibility layer" }],
+          continuityIngressTexts: ["finish the harness visibility layer"],
+          sessionKey: "arc-test",
+          sessionLoader: {
+            loadOrCreate: vi.fn().mockResolvedValue({
+              messages: [{ role: "system", content: "You are helpful." }],
+              sessionPath: path.join(agentRoot, "state", "sessions", "friend-1", "cli", "arc-test.json"),
+              state: { mustResolveBeforeHandoff: true },
+            }),
+          },
+          runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "observed" }),
+        })
+
+        await handleInboundTurn(input)
+
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(agentRoot)
+        expect(resume.canContinue).toBe(true)
+        expect(resume.currentAsk.value).toBe("finish the harness visibility layer")
+        expect(resume.nextSafeAction.value).toContain("continue the current held work")
+        expect(resume.lastSafeCheckpoint.sessionRef).toBe("friend-1/cli/arc-test")
+        expect(resume.activeReturnObligationIds).toEqual(["return-1"])
+      } finally {
+        agentRootSpy.mockRestore()
+        agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
+    it("records post-turn Arc work created during the agent run", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-flight-recorder-post-turn-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const created = {
+        obligationId: "",
+        returnObligationId: "return-post-turn",
+        packetId: "",
+        evolutionCaseId: "",
+      }
+      try {
+        const input = makeInput({
+          messages: [{ role: "user", content: "keep durable track of new work" }],
+          continuityIngressTexts: ["keep durable track of new work"],
+          runAgent: vi.fn().mockImplementation(async () => {
+            const { createObligation, createReturnObligation } = await import("../../arc/obligations")
+            const { createPonderPacket } = await import("../../arc/packets")
+            const { createEvolutionCase } = await import("../../arc/evolution")
+            const { recordFlightRecorderEvent } = await import("../../arc/flight-recorder")
+            const obligation = createObligation(agentRoot, {
+              origin: { friendId: "friend-1", channel: "cli", key: "session" },
+              content: "new durable obligation from this turn",
+            })
+            createReturnObligation("slugger", {
+              id: created.returnObligationId,
+              origin: { friendId: "friend-1", channel: "cli", key: "session" },
+              status: "queued",
+              delegatedContent: "return the new private result",
+              createdAt: Date.now(),
+            })
+            const packet = createPonderPacket(agentRoot, {
+              kind: "reflection",
+              objective: "preserve new post-turn packet",
+              summary: "packet created during the runAgent phase",
+              successCriteria: ["post-turn recorder names this packet"],
+              payload: {},
+            })
+            const evolutionCase = createEvolutionCase(agentRoot, {
+              title: "Preserve post-turn evolution case",
+              problemStatement: "An evolution case created during tools must survive context loss.",
+              desiredBehavior: "The flight recorder latest state lists the new case.",
+              origin: { kind: "runtime", label: "test", locator: "test://post-turn" },
+            })
+            recordFlightRecorderEvent(agentRoot, {
+              kind: "claim_recorded",
+              summary: "claim created during the runAgent phase",
+              recentClaimIds: ["claim-post-turn"],
+              unverifiedClaimIds: ["claim-post-turn"],
+            })
+            created.obligationId = obligation.id
+            created.packetId = packet.id
+            created.evolutionCaseId = evolutionCase.id
+            return { usage: usageData, outcome: "observed" }
+          }),
+        })
+
+        await handleInboundTurn(input)
+
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(agentRoot)
+        expect(resume.activeObligationIds).toContain(created.obligationId)
+        expect(resume.activeReturnObligationIds).toContain(created.returnObligationId)
+        expect(resume.activePacketIds).toContain(created.packetId)
+        expect(resume.openEvolutionCaseIds).toContain(created.evolutionCaseId)
+        expect(resume.recentClaimIds).toContain("claim-post-turn")
+        expect(resume.unverifiedClaimIds).toContain("claim-post-turn")
+      } finally {
+        agentRootSpy.mockRestore()
+        agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
+    it.each([
+      ["blocked" as const, "agent reported a blocker in this turn"],
+      ["aborted" as const, "turn aborted before a safe continuation was reached"],
+    ])("records %s outcomes as blocked flight-recorder checkpoints", async (outcome, expectedBlocker) => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), `pipeline-flight-recorder-${outcome}-`))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      try {
+        const input = makeInput({
+          messages: [{ role: "user", content: "try the risky continuation" }],
+          continuityIngressTexts: ["try the risky continuation"],
+          runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome }),
+        })
+
+        await handleInboundTurn(input)
+
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(agentRoot)
+        expect(resume.canContinue).toBe(false)
+        expect(resume.blockedBecause).toContain(expectedBlocker)
+      } finally {
+        agentRootSpy.mockRestore()
+        agentNameSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
     })
   })
 
@@ -1739,6 +1899,62 @@ describe("handleInboundTurn", () => {
       mockRefreshOpenAICodexProviderCredentials.mockReset()
     })
 
+    async function recordErroredFailoverResume(options: {
+      messages: ChatCompletionMessageParam[]
+      continuityIngressTexts?: string[]
+      turnContext?: Partial<ReturnType<typeof defaultTurnContext>>
+    }) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-current-ask-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+        version: 1,
+        enabled: true,
+        humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        phrases: { thinking: [], tool: [], followup: [] },
+      } as any)
+      mockRunMachineProviderFailoverInventory.mockResolvedValue({
+        ready: [{
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_anthropic",
+          source: "auth-flow",
+          result: { ok: true },
+        }],
+        unavailable: [],
+        unconfigured: [],
+      })
+      mockBuildTurnContext.mockResolvedValue({
+        ...defaultTurnContext(),
+        ...options.turnContext,
+      })
+
+      try {
+        await handleInboundTurn(makeInput({
+          messages: options.messages,
+          continuityIngressTexts: options.continuityIngressTexts,
+          failoverState: { pending: null },
+          runAgent: vi.fn().mockResolvedValue({
+            usage: usageData,
+            outcome: "errored",
+            error: new Error("usage limit exceeded"),
+            errorClassification: "usage-limit",
+          }),
+        }))
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        return readFlightRecorderResume(agentRoot)
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        loadConfigSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
+    }
+
     it("returns failoverMessage when runAgent returns errored outcome", async () => {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-"))
       const agentRoot = path.join(tmp, "slugger.ouro")
@@ -1764,7 +1980,25 @@ describe("handleInboundTurn", () => {
         unavailable: [],
         unconfigured: [],
       })
+      const { createObligation, createReturnObligation } = await import("../../arc/obligations")
+      const failoverObligation = createObligation(agentRoot, {
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        content: "recover from provider failure",
+      })
+      const failoverReturnObligation = {
+        id: "return-failover",
+        origin: { friendId: "friend-1", channel: "cli", key: "session" },
+        status: "running" as const,
+        delegatedContent: "surface provider recovery",
+        createdAt: Date.now(),
+      }
+      createReturnObligation("slugger", failoverReturnObligation)
       const failoverState = { pending: null }
+      mockBuildTurnContext.mockResolvedValue({
+        ...defaultTurnContext(),
+        pendingObligations: [failoverObligation],
+        returnObligations: [failoverReturnObligation],
+      })
       const input = makeInput({
         failoverState,
         runAgent: vi.fn().mockResolvedValue({
@@ -1783,12 +2017,57 @@ describe("handleInboundTurn", () => {
         expect(result.failoverMessage).toContain("switch to anthropic")
         expect(mockRunMachineProviderFailoverInventory).toHaveBeenCalledWith("slugger", "openai-codex")
         expect(failoverState.pending).not.toBeNull()
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(agentRoot)
+        expect(resume.canContinue).toBe(false)
+        expect(resume.blockedBecause).toContain("turn errored before a safe continuation was reached")
+        expect(resume.activeObligationIds).toEqual([failoverObligation.id])
+        expect(resume.activeReturnObligationIds).toEqual(["return-failover"])
+        expect(resume.nextSafeAction.value).toContain("switch to anthropic")
       } finally {
         agentNameSpy.mockRestore()
         agentRootSpy.mockRestore()
         loadConfigSpy.mockRestore()
         fs.rmSync(tmp, { recursive: true, force: true })
       }
+    })
+
+    it.each([
+      {
+        label: "primary obligation when no ingress text exists",
+        messages: [] as ChatCompletionMessageParam[],
+        turnContext: {
+          pendingObligations: [{
+            id: "ob-primary-failover",
+            origin: { friendId: "friend-1", channel: "cli", key: "session" },
+            content: "recover the autonomous run",
+            status: "pending",
+            currentArtifact: "arc-flight-recorder.md",
+            createdAt: "2026-06-08T12:00:00.000Z",
+          }],
+        },
+        expectedCurrentAsk: "recover the autonomous run",
+      },
+      {
+        label: "latest user message when no obligation exists",
+        messages: [{ role: "user", content: "rescue this provider failure" }] as ChatCompletionMessageParam[],
+        expectedCurrentAsk: "rescue this provider failure",
+      },
+      {
+        label: "null when failover has no recoverable ask signal",
+        messages: [] as ChatCompletionMessageParam[],
+        expectedCurrentAsk: null,
+      },
+    ])("records failover current ask from $label", async ({ messages, turnContext, expectedCurrentAsk }) => {
+      const resume = await recordErroredFailoverResume({
+        messages,
+        continuityIngressTexts: undefined,
+        turnContext,
+      })
+
+      expect(resume.currentAsk.value).toBe(expectedCurrentAsk)
+      expect(resume.nextSafeAction.value).toContain("switch to anthropic")
+      expect(resume.blockedBecause).toContain("turn errored before a safe continuation was reached")
     })
 
     it.each([

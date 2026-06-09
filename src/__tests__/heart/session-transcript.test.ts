@@ -333,7 +333,7 @@ describe("session transcript", () => {
     }
   })
 
-  it("uses trust-aware summarization instructions for non-self search_notes", async () => {
+  it("uses trust-aware summarization instructions for non-self search_facts", async () => {
     const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,
@@ -363,7 +363,7 @@ describe("session transcript", () => {
     )
   })
 
-  it("uses fully transparent summarization instructions for self/inner search_notes", async () => {
+  it("uses fully transparent summarization instructions for self/inner search_facts", async () => {
     const { summarizeSessionTail } = await import("../../heart/session-transcript")
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
       version: 1,

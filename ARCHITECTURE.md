@@ -57,8 +57,8 @@ Canonical paths:
 - `psyche/LORE.md`
 - `psyche/TACIT.md`
 - `psyche/ASPIRATIONS.md`
-- `diary/` — durable facts and conclusions the agent chose to keep
-- `journal/` — thinking-in-progress, working notes, drafts (the agent's desk)
+- `desk/_record/diary/` — durable facts and conclusions the agent chose to keep
+- `desk/_record/notes/` — canonical markdown reference notes
 - `habits/` — autonomous rhythms: heartbeat, reflections, check-ins (extracted from `tasks/habits/`)
 - `friends/`
 - `state/`
@@ -135,10 +135,10 @@ MCP is **not** a sense — it's a bridge for developer tools (Claude Code, Codex
 The MCP bridge is how agents talk to developer tools like Claude Code and Codex. It works like this:
 
 - `ouro mcp-serve --agent <name>` starts a JSON-RPC 2.0 server on stdin/stdout. The dev tool launches this as a subprocess.
-- The MCP server exposes tools (e.g., `send_message`, `ask`, `check_response`, `status`, `search_notes`, `delegate`) that map to daemon commands.
-- Conversation-shaped tools (`send_message`, `ask`, `delegate`, `check_guidance`, `request_decision`, `report_progress`, `report_blocker`, `report_complete`) run full agent turns via `runSenseTurn()` — the agent gets their complete system prompt, diary, tools, everything. They are not thin read-only proxies; they are real conversation turns.
+- The MCP server exposes tools (e.g., `send_message`, `ask`, `check_response`, `status`, `search_facts`, `delegate`) that map to daemon commands.
+- Conversation-shaped tools (`send_message`, `ask`, `delegate`, `check_guidance`, `request_decision`, `report_progress`, `report_blocker`, `report_complete`) run full agent turns via `runSenseTurn()` — the agent gets their complete system prompt, Desk record, tools, everything. They are not thin read-only proxies; they are real conversation turns.
 - Sessions are keyed by the dev tool's session ID (e.g., Claude Code's session ID). This means each Claude Code session gets its own conversation thread with the agent.
-- Read-only tools like `status` and `search_notes` work even without the daemon running because they read the filesystem directly. `search_notes` is lookup only; missing hits are not evidence that the agent has no belief or preference. Conversation tools require the daemon.
+- Read-only tools like `status` and `search_facts` work even without the daemon running because they read the filesystem directly. `search_facts` is lookup only; missing hits are not evidence that the agent has no belief or preference. Conversation tools require the daemon.
 
 The `ouro setup --tool <tool> --agent <name>` command handles registration automatically, including lifecycle hooks.
 
@@ -169,7 +169,7 @@ Threads are treated as routing/context metadata, not as separate long-lived worl
   - `heart/providers/` — provider runtime adapters
   - `heart/bridges/` — bridge state management
 - `src/mind/`
-  Prompt assembly, sessions, bundle manifest, diary, note search, journal indexing, embedding providers, phrases, formatting, obligation steering, and friend identity.
+  Prompt assembly, sessions, bundle manifest, Desk record diary, note search, record path migration, embedding providers, phrases, formatting, obligation steering, and friend identity.
 - `src/repertoire/`
   Tool registry (split into category modules: tools-files, tools-shell, tools-notes, tools-bridge, tools-session, tools-continuity, tools-flow, tools-surface, tools-config, tools-bluebubbles, tools-teams, tools-github), coding orchestration, task tooling, skills, shared API client, and integration clients (Graph, ADO, GitHub).
 - `src/senses/`
@@ -192,8 +192,10 @@ The metacognitive tool vocabulary:
 - **rest** — "I'm putting this down" (inner dialog only, ends the turn)
 - **surface** — share a thought outward from inner dialog
 - **observe** — stay quiet in group chats
-- **diary_write** — record something to the diary for later use
-- **search_notes** — search both diary and journal for relevant facts and notes
+- **diary_write** — record something to the Desk record diary for later use
+- **search_facts** — search written Desk record facts
+- **consult_diary** — inspect recent or matching Desk record diary entries
+- **consult_notes** — search canonical Desk record notes
 
 Other important tools include coding session orchestration, bridge management, and BlueBubbles reply-target selection.
 
@@ -235,12 +237,12 @@ The inner dialog session is continuous — different habits and delegations are 
 
 **Cross-session awareness:** When activity happens on any other channel (CLI, Teams, BlueBubbles, MCP), the pipeline notifies the inner dialog. The next time the inner dialog wakes — whether from a habit, a ponder, or a delegation — its checkpoint includes awareness of those other active sessions. This means the agent's private thinking space knows about MCP conversations happening in Claude Code, messages arriving on Teams, and CLI chats in progress. The agent sees their whole world, not just the channel they're currently on.
 
-## Diary And Journal
+## Desk Record
 
-- **Diary** (`diary/`): The agent's permanent written record. `diary_write` saves entries with embeddings for note search. `search_notes` searches both diary and journal.
-- **Journal** (`journal/`): The agent's desk. Freeform files the agent writes with `write_file`. The heartbeat shows a journal index (recent files, previews) so the agent sees where they left off.
+- **Diary** (`desk/_record/diary/`): The agent's permanent written fact/reflection record. `diary_write` saves entries with embeddings for `search_facts` and direct `consult_diary` lookup.
+- **Notes** (`desk/_record/notes/`): Canonical markdown reference notes maintained by the agent and searched with `consult_notes`.
 
-Both are searchable. The diary is the shelf; the journal is the desk.
+Arc owns live continuity and run receipts. Desk owns active work and the maintained record. Scratch thinking can stay in session context and disappear.
 
 ## Daemon Resilience
 

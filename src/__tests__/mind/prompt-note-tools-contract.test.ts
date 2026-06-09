@@ -103,11 +103,14 @@ describe("prompt note/friend contracts", () => {
     expect(system).toContain("get_friend_note")
     expect(system).toContain("not in this conversation")
 
-    expect(system).toContain("search_notes")
-    expect(system).toContain("when I need older diary or journal material")
+    expect(system).toContain("search_facts")
+    expect(system).toContain("when I need older written facts")
+
+    expect(system).toContain("consult_diary")
+    expect(system).toContain("direct diary inspection")
 
     expect(system).toContain("consult_notes")
-    expect(system).toContain("durable")
+    expect(system).toContain("durable reference notes")
 
     expect(system).not.toMatch(/session search/i)
     expect(system).not.toMatch(/query_session search/i)
@@ -118,13 +121,14 @@ describe("prompt note/friend contracts", () => {
     expect(system).not.toContain(".archive.ndjson")
 
     expect(toolContracts).toMatchInlineSnapshot(`
-      "## tool contracts
-      1. \`save_friend_note\` -- when I learn something about a person, I save it immediately.
-      2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately.
-      3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.
-      4. \`search_notes\` -- when I need older diary or journal material, I search the written records.
-      5. \`consult_notes\` -- when I need semantic search across durable notes, I consult the note index."
-    `)
+	      "## tool contracts
+	      1. \`save_friend_note\` -- when I learn something about a person, I save it immediately.
+	      2. \`diary_write\` -- when I learn something general about a project, system, or decision, I save it immediately to my Desk record diary.
+	      3. \`get_friend_note\` -- when I need context about someone not in this conversation, I retrieve their note first.
+	      4. \`search_facts\` -- when I need older written facts, I search the Desk record diary.
+	      5. \`consult_diary\` -- when I need recent diary facts or direct diary inspection, I consult the Desk record diary.
+	      6. \`consult_notes\` -- when I need semantic search across durable reference notes, I consult the Desk record note index."
+	    `)
   })
 
   it("includes [diary/external] trust framing guidance in tool contracts", async () => {
@@ -166,7 +170,7 @@ describe("prompt note/friend contracts", () => {
     const system = flattenSystemPrompt(await buildSystem("teams", {}, context as any)
 )
     expect(system).toContain("My active friend's notes are auto-loaded")
-    expect(system).toContain("The pre-turn kept-notes check may surface relevant diary, journal, or friend-note material")
+    expect(system).toContain("The pre-turn record check may surface relevant Desk record or friend-note material")
     expect(system).toContain("My psyche files")
     expect(system).toContain("My desk")
   })

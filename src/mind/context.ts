@@ -1,7 +1,6 @@
 import type OpenAI from "openai"
 import { getContextConfig } from "../heart/config"
 import {
-  appendEvictedToArchive,
   appendSyntheticAssistantEvent,
   buildCanonicalSessionEnvelope,
   getIngressTime,
@@ -437,7 +436,7 @@ export function postTurnPersist(
 ): SessionEvent[] {
   const existing = loadSessionEnvelopeFile(sessPath)
   const previousMessages = existing ? projectProviderMessages(existing) : []
-  const { envelope, evictedEvents } = buildCanonicalSessionEnvelope({
+  const { envelope } = buildCanonicalSessionEnvelope({
     existing,
     previousMessages,
     currentMessages: prepared.currentMessages,
@@ -452,7 +451,6 @@ export function postTurnPersist(
       inputTokens: usage?.input_tokens ?? null,
     },
   })
-  appendEvictedToArchive(sessPath, evictedEvents)
   writeSessionEnvelope(sessPath, envelope)
   return envelope.events
 }

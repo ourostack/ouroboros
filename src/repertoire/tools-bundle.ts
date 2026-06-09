@@ -1019,7 +1019,7 @@ export const bundleToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "bundle_first_push_review",
-        description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, diary, journal, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push on first push. Required before the first push to any new remote.",
+        description: "Review my bundle for PII exposure before the first push to a new remote. Enumerates PII-bearing directories (friends, Desk record, Arc, etc.) with per-directory counts, probes the remote URL for GitHub public/private visibility, and returns a first-person warning text I must show the human plus a confirmationToken I must pass to bundle_push on first push. Required before the first push to any new remote.",
         parameters: { type: "object", properties: {} },
       },
     },

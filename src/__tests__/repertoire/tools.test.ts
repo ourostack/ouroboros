@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import * as path from "path"
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -7,6 +8,7 @@ vi.mock("fs", () => ({
   readdirSync: vi.fn(),
   mkdirSync: vi.fn(),
   rmSync: vi.fn(),
+  rmdirSync: vi.fn(),
 }))
 
 // Hard-mock the daemon socket client. The runtime guard in socket-client.ts
@@ -728,9 +730,9 @@ describe("execTool", () => {
     vi.unstubAllGlobals()
   })
 
-  // ── search_notes ──
-  it("search_notes returns relevant diary entries for a query", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  // ── search_facts ──
+  it("search_facts returns relevant diary entries for a query", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith(path.join("desk", "_record", "diary", "facts.jsonl")))
     vi.mocked(fs.readFileSync).mockReturnValue(
       [
         JSON.stringify({
@@ -750,39 +752,39 @@ describe("execTool", () => {
       ].join("\n"),
     )
 
-    const result = await execTool("search_notes", { query: "pizza" })
+    const result = await execTool("search_facts", { query: "pizza" })
     expect(result).toContain("Ari likes mushroom pizza")
     expect(result).not.toContain("strict TypeScript")
   })
 
-  it("search_notes returns a query-required error when query is empty", async () => {
-    const result = await execTool("search_notes", { query: "   " })
+  it("search_facts returns a query-required error when query is empty", async () => {
+    const result = await execTool("search_facts", { query: "   " })
     expect(result).toContain("query is required")
   })
 
-  it("search_notes returns a query-required error when query is omitted", async () => {
-    const result = await execTool("search_notes", {})
+  it("search_facts returns a query-required error when query is omitted", async () => {
+    const result = await execTool("search_facts", {})
     expect(result).toContain("query is required")
   })
 
-  it("search_notes returns error text when reading diary entries fails", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  it("search_facts returns error text when reading diary entries fails", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith(path.join("desk", "_record", "diary", "facts.jsonl")))
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("disk read failed")
     })
 
-    const result = await execTool("search_notes", { query: "pizza" })
+    const result = await execTool("search_facts", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk read failed")
   })
 
-  it("search_notes stringifies non-Error read failures", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+  it("search_facts stringifies non-Error read failures", async () => {
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith(path.join("desk", "_record", "diary", "facts.jsonl")))
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw "disk failed as string"
     })
 
-    const result = await execTool("search_notes", { query: "pizza" })
+    const result = await execTool("search_facts", { query: "pizza" })
     expect(result).toContain("error:")
     expect(result).toContain("disk failed as string")
   })
@@ -918,13 +920,13 @@ describe("summarizeArgs", () => {
     expect(summarizeArgs("web_search", {})).toBe("")
   })
 
-  it("returns truncated query for search_notes", () => {
+  it("returns truncated query for search_facts", () => {
     const query = "a".repeat(70)
-    expect(summarizeArgs("search_notes", { query })).toBe("query=" + "a".repeat(60) + "...")
+    expect(summarizeArgs("search_facts", { query })).toBe("query=" + "a".repeat(60) + "...")
   })
 
-  it("returns empty string for search_notes with no query", () => {
-    expect(summarizeArgs("search_notes", {})).toBe("")
+  it("returns empty string for search_facts with no query", () => {
+    expect(summarizeArgs("search_facts", {})).toBe("")
   })
 
   it("returns entry/about for diary_write summaries", () => {

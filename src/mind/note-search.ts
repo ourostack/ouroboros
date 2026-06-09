@@ -27,23 +27,9 @@ export interface NoteSearchOptions {
   topK?: number
 }
 
-export interface JournalIndexEntry {
-  filename: string
-  embedding: number[]
-  mtime: number
-  preview: string
-}
-
-export interface JournalSearchHit {
-  filename: string
-  preview: string
-  score: number
-}
-
 export interface InjectNoteSearchContextOptions extends NoteSearchOptions {
   provider?: EmbeddingProvider
   diaryRoot?: string
-  journalDir?: string
 }
 
 const DEFAULT_MIN_SCORE = 0.5
@@ -122,45 +108,6 @@ export async function searchDiaryFactsForQuery(
     .slice(0, topK)
 }
 
-function readJournalIndex(journalDir: string): JournalIndexEntry[] {
-  const indexPath = path.join(journalDir, ".index.json")
-  try {
-    const raw = fs.readFileSync(indexPath, "utf8")
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed as JournalIndexEntry[]
-  } catch {
-    return []
-  }
-}
-
-export function searchJournalIndex(
-  queryEmbedding: number[],
-  entries: JournalIndexEntry[],
-  options?: { minScore?: number; topK?: number },
-): JournalSearchHit[] {
-  const minScore = options?.minScore ?? DEFAULT_MIN_SCORE
-  const topK = options?.topK ?? DEFAULT_TOP_K
-
-  return entries
-    .filter((entry) => Array.isArray(entry.embedding) && entry.embedding.length > 0)
-    .map((entry) => ({
-      filename: entry.filename,
-      preview: entry.preview,
-      score: cosineSimilarity(queryEmbedding, entry.embedding),
-    }))
-    .filter((entry) => entry.score >= minScore)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, topK)
-}
-
-function resolveJournalDir(diaryRoot: string, explicitJournalDir?: string): string {
-  if (explicitJournalDir) return explicitJournalDir
-  // journal/ is a sibling of diary/ at the agent root level
-  const agentRoot = path.dirname(diaryRoot)
-  return path.join(agentRoot, "journal")
-}
-
 export async function injectNoteSearchContext(
   messages: OpenAI.ChatCompletionMessageParam[],
   options?: InjectNoteSearchContextOptions,
@@ -172,86 +119,50 @@ export async function injectNoteSearchContext(
 
     const diaryRoot = options?.diaryRoot ?? resolveDiaryRoot()
     const facts = readFacts(diaryRoot)
-    const journalDir = resolveJournalDir(diaryRoot, options?.journalDir)
-    const journalEntries = readJournalIndex(journalDir)
 
-    if (facts.length === 0 && journalEntries.length === 0) return
+    if (facts.length === 0) return
 
-    // Build combined result lines tagged by source
     const resultLines: Array<{ text: string; score: number }> = []
-    let queryEmbedding: number[] | undefined
 
-    // Search diary entries
-    if (facts.length > 0) {
-      let found: DiarySearchHit[]
-      try {
-        const provider = options?.provider ?? createDefaultProvider()
-        found = await searchDiaryFactsForQuery(query, facts, provider, options)
-
-        // Compute query embedding for journal search while provider is available
-        if (journalEntries.length > 0) {
-          const [qe] = await provider.embed([query.trim()])
-          queryEmbedding = qe
-        }
-      } catch {
-        // Embeddings unavailable — fall back to substring matching
-        const lowerQuery = query.toLowerCase()
-        const topK = options?.topK ?? DEFAULT_TOP_K
-        found = facts
-          .filter((fact) => fact.text.toLowerCase().includes(lowerQuery))
-          .slice(0, topK)
-          .map((fact) => ({ ...fact, score: 1 }))
-        if (found.length > 0) {
-          emitNervesEvent({
-            level: "warn",
-            component: "mind",
-            event: "mind.note_search_fallback",
-            message: "embeddings unavailable, used substring fallback",
-            meta: { matchCount: found.length },
-          })
-        }
-      }
-
-      for (const fact of found) {
-        let meta = `score=${fact.score.toFixed(3)} source=${fact.source}`
-        if (fact.provenance) {
-          if (fact.provenance.channel) meta += ` channel=${fact.provenance.channel}`
-          if (fact.provenance.friendName) meta += ` friend=${fact.provenance.friendName}`
-          if (fact.provenance.trust) meta += ` trust=${fact.provenance.trust}`
-        }
-        const tag = classifyProvenanceTrust(fact.provenance) === "external" ? "diary/external" : "diary"
-        resultLines.push({
-          text: `[${tag}] ${fact.text} [${meta}]`,
-          score: fact.score,
+    let found: DiarySearchHit[]
+    try {
+      const provider = options?.provider ?? createDefaultProvider()
+      found = await searchDiaryFactsForQuery(query, facts, provider, options)
+    } catch {
+      // Embeddings unavailable — fall back to substring matching
+      const lowerQuery = query.toLowerCase()
+      const topK = options?.topK ?? DEFAULT_TOP_K
+      found = facts
+        .filter((fact) => fact.text.toLowerCase().includes(lowerQuery))
+        .slice(0, topK)
+        .map((fact) => ({ ...fact, score: 1 }))
+      if (found.length > 0) {
+        emitNervesEvent({
+          level: "warn",
+          component: "mind",
+          event: "mind.note_search_fallback",
+          message: "embeddings unavailable, used substring fallback",
+          meta: { matchCount: found.length },
         })
       }
     }
 
-    // Search journal entries (works whether diary had results or not)
-    if (journalEntries.length > 0) {
-      try {
-        if (!queryEmbedding) {
-          const provider = options?.provider ?? createDefaultProvider()
-          const [qe] = await provider.embed([query.trim()])
-          queryEmbedding = qe
-        }
-        if (queryEmbedding) {
-          const journalResults = searchJournalIndex(queryEmbedding, journalEntries, options)
-          for (const entry of journalResults) {
-            resultLines.push({
-              text: `[journal] ${entry.filename}: ${entry.preview} [score=${entry.score.toFixed(3)}]`,
-              score: entry.score,
-            })
-          }
-        }
-      } catch {
-        // Embeddings unavailable — no journal fallback
+    for (const fact of found) {
+      let meta = `score=${fact.score.toFixed(3)} source=${fact.source}`
+      if (fact.provenance) {
+        if (fact.provenance.channel) meta += ` channel=${fact.provenance.channel}`
+        if (fact.provenance.friendName) meta += ` friend=${fact.provenance.friendName}`
+        if (fact.provenance.trust) meta += ` trust=${fact.provenance.trust}`
       }
+      const tag = classifyProvenanceTrust(fact.provenance) === "external" ? "diary/external" : "diary"
+      resultLines.push({
+        text: `[${tag}] ${fact.text} [${meta}]`,
+        score: fact.score,
+      })
     }
 
     if (resultLines.length === 0) return
 
-    // Sort all results by score descending
     resultLines.sort((left, right) => right.score - left.score)
 
     const noteSection = resultLines
@@ -259,7 +170,7 @@ export async function injectNoteSearchContext(
       .join("\n")
     messages[0] = {
       role: "system",
-      content: `${messages[0].content}\n\n## from my diary and journal\n${noteSection}`,
+      content: `${messages[0].content}\n\n## retrieved from my Desk record diary\n${noteSection}`,
     }
 
     emitNervesEvent({

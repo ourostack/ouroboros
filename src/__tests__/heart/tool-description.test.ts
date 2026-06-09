@@ -83,15 +83,39 @@ describe("humanReadableToolDescription", () => {
     })
   })
 
-  describe("search_notes", () => {
+  describe("search_facts", () => {
     it("extracts args.query", () => {
-      expect(humanReadableToolDescription("search_notes", { query: "MCP" }))
-        .toBe("searching notes for 'MCP'...")
+      expect(humanReadableToolDescription("search_facts", { query: "MCP" }))
+        .toBe("searching facts for 'MCP'...")
     })
 
     it("falls back to generic when no query arg", () => {
-      expect(humanReadableToolDescription("search_notes", {}))
-        .toBe("searching notes...")
+      expect(humanReadableToolDescription("search_facts", {}))
+        .toBe("searching facts...")
+    })
+  })
+
+  describe("consult_diary", () => {
+    it("extracts args.query", () => {
+      expect(humanReadableToolDescription("consult_diary", { query: "handoff" }))
+        .toBe("consulting diary facts for 'handoff'...")
+    })
+
+    it("falls back to generic when no query arg", () => {
+      expect(humanReadableToolDescription("consult_diary", {}))
+        .toBe("checking recent diary facts...")
+    })
+  })
+
+  describe("consult_notes", () => {
+    it("extracts args.query", () => {
+      expect(humanReadableToolDescription("consult_notes", { query: "Arc resume" }))
+        .toBe("consulting Desk record notes for 'Arc resume'...")
+    })
+
+    it("falls back to generic when no query arg", () => {
+      expect(humanReadableToolDescription("consult_notes", {}))
+        .toBe("checking Desk record notes...")
     })
   })
 

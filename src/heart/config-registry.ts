@@ -131,10 +131,10 @@ const registryData: ConfigRegistryEntry[] = [
   {
     path: "agentFacing.provider",
     tier: "self",
-    description: "Provider for agent-facing interactions (inner dialog, delegation).",
+    description: "Provider for agent-facing interactions (inner lane, delegation).",
     default: "anthropic",
-    effects: "Changes the LLM provider used for inner dialog and agent-to-agent communication.",
-    topics: ["model", "provider", "llm", "agent", "inner-dialog"],
+    effects: "Changes the LLM provider used for private agent-facing turns and agent-to-agent communication.",
+    topics: ["model", "provider", "llm", "agent", "inner-lane"],
     validate: validateStringEnum(KNOWN_PROVIDERS),
   },
   {
@@ -142,8 +142,8 @@ const registryData: ConfigRegistryEntry[] = [
     tier: "self",
     description: "Model name for agent-facing interactions.",
     default: "claude-opus-4-6",
-    effects: "Changes the specific model used for inner dialog and agent-to-agent communication.",
-    topics: ["model", "provider", "llm", "agent", "inner-dialog"],
+    effects: "Changes the specific model used for private agent-facing turns and agent-to-agent communication.",
+    topics: ["model", "provider", "llm", "agent", "inner-lane"],
     validate: validateString,
   },
   {

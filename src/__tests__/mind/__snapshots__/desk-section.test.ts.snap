@@ -18,7 +18,10 @@ i have a desk. it lives at \`desk/\` — a quiet room of my work, persistent acr
 **what doesn't:**
 - a single-turn answer — it'll be done before the page turns
 - ephemeral debugging that resolves in the same exchange
-- work that has its own room. trips live in a travel folder; habits keep their own ledger; attention items, diary entries, journal entries — each has a separate home. the desk *links* to them when relevant; it doesn't absorb them.
+- live continuity, claims, and obligations — those belong in Arc
+- habit definitions — those stay in habits/
+- scratch thinking that is not worth recording — it can disappear with the session
+- stale top-level rooms. the maintained record belongs under desk/_record, not in a separate scratch workspace.
 
 **shape.** tracks group related work — drawers in the cabinet, or sections of a shelf if you prefer the library framing. tasks live in tracks. each task has iterations: one per work session, with \`planning.md\` and \`doing.md\` laid side-by-side on the page.
 

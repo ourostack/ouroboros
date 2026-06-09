@@ -2260,186 +2260,22 @@ describe("session events", () => {
     })
   })
 
-  describe("appendEvictedToArchive", () => {
-    const mkEvent = (id: string, sequence: number, content: string) => ({
-      id,
-      sequence,
-      role: "user" as const,
-      content,
-      name: null,
-      toolCallId: null,
-      toolCalls: [],
-      attachments: [],
-      time: {
-        authoredAt: null,
-        authoredAtSource: "unknown" as const,
-        observedAt: "2026-04-13T10:00:00.000Z",
-        observedAtSource: "ingest" as const,
-        recordedAt: "2026-04-13T10:00:00.000Z",
-        recordedAtSource: "save" as const,
-      },
-      relations: {
-        replyToEventId: null,
-        threadRootEventId: null,
-        references: [] as string[],
-        toolCallId: null,
-        supersedesEventId: null,
-        redactsEventId: null,
-      },
-      provenance: { captureKind: "live" as const, legacyVersion: null, sourceMessageIndex: null },
-    })
-
-    it("does not create or modify an archive file for evicted events", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-      const sessionContent = "{\"version\":2}\n"
-      fs.writeFileSync(sessPath, sessionContent)
-
-      const result = appendEvictedToArchive(sessPath, [
-        mkEvent("evt-000001", 1, "hello"),
-        mkEvent("evt-000002", 2, "hi"),
-      ])
-
-      expect(result).toBeUndefined()
-      expect(fs.existsSync(archivePath)).toBe(false)
-      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
-
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    })
-
-    it("is idempotent across different evictions and preserves the session file", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-      const sessionContent = JSON.stringify({ version: 2, events: [] })
-      fs.writeFileSync(sessPath, sessionContent)
-
-      appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
-      appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
-
-      expect(fs.existsSync(archivePath)).toBe(false)
-      expect(fs.readFileSync(sessPath, "utf-8")).toBe(sessionContent)
-
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    })
-
-    it("does not write when evictedEvents is empty", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { appendEvictedToArchive } = await import("../../heart/session-events")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-
-      appendEvictedToArchive(sessPath, [])
-
-      expect(fs.existsSync(archivePath)).toBe(false)
-
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    })
-
-    it("emits the archive-disabled nerves event exactly once per process", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const emitNervesEvent = vi.fn()
-
-      vi.resetModules()
-      vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
-      try {
-        const { appendEvictedToArchive } = await import("../../heart/session-events")
-        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-        const sessPath = path.join(tmpDir, "AgentBundles", "slugger.ouro", "state", "sessions", "dialog.json")
-        fs.mkdirSync(path.dirname(sessPath), { recursive: true })
-
-        appendEvictedToArchive(sessPath, [mkEvent("evt-000001", 1, "first")])
-        appendEvictedToArchive(sessPath, [mkEvent("evt-000002", 2, "second")])
-
-        expect(emitNervesEvent).toHaveBeenCalledTimes(1)
-        expect(emitNervesEvent).toHaveBeenCalledWith({
-          component: "heart",
-          event: "heart.session_archive_disabled",
-          message: "session archive append disabled",
-          meta: {
-            type: "session_archive_disabled",
-            agent: "slugger",
-            sessionPath: sessPath,
-            evictedCount: 1,
-            ts: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
-          },
-        })
-
-        fs.rmSync(tmpDir, { recursive: true, force: true })
-      } finally {
-        vi.doUnmock("../../nerves/runtime")
-        vi.resetModules()
-      }
-    })
-
-    it("lets postTurnPersist complete without producing an archive sidecar", async () => {
-      const fs = await import("fs")
-      const os = await import("os")
-      const path = await import("path")
-      const { postTurnPersist } = await import("../../mind/context")
-
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sess-test-"))
-      const sessPath = path.join(tmpDir, "dialog.json")
-      const archivePath = sessPath.replace(/\.json$/, ".archive.ndjson")
-      const currentMessages: OpenAI.ChatCompletionMessageParam[] = [
-        { role: "system", content: "sys" },
-        { role: "user", content: "old question" },
-        { role: "assistant", content: "old answer" },
-        { role: "user", content: "latest question" },
-      ]
-      const trimmedMessages: OpenAI.ChatCompletionMessageParam[] = [
-        { role: "system", content: "sys" },
-        { role: "user", content: "latest question" },
-      ]
-
-      expect(() => postTurnPersist(sessPath, {
-        currentMessages,
-        trimmedMessages,
-        currentIngressTimes: currentMessages.map(() => null),
-        maxTokens: 1024,
-        contextMargin: 128,
-      })).not.toThrow()
-
-      expect(fs.existsSync(sessPath)).toBe(true)
-      expect(fs.existsSync(archivePath)).toBe(false)
-
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    })
-  })
-
   describe("module surface", () => {
     it("does not export the removed full-history loader", async () => {
       const moduleExports = await import("../../heart/session-events") as Record<string, unknown>
 
       expect(moduleExports).not.toHaveProperty(`load${"Full"}EventHistory`)
+      expect(moduleExports).not.toHaveProperty("appendEvictedToArchive")
     })
   })
 
-  describe("integration: full session lifecycle with pruning and disabled archive", () => {
+  describe("integration: full session lifecycle with pruning", () => {
     it("builds envelope, changes system prompt, prunes, and replays the envelope projection only", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
       const {
         buildCanonicalSessionEnvelope,
-        appendEvictedToArchive,
         projectProviderMessages,
       } = await import("../../heart/session-events")
 
@@ -2500,8 +2336,7 @@ describe("session events", () => {
       expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
       expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
 
-      // Phase 3: Archive append is now disabled but remains callable from the persist path.
-      appendEvictedToArchive(sessPath, result2.evictedEvents)
+      // Phase 3: The session envelope remains a bounded projection only.
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
       expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 

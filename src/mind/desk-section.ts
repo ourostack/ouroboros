@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { getAgentRoot } from "../heart/identity";
 import { emitNervesEvent } from "../nerves/runtime";
+import { resolveDeskRecordPaths } from "./record-paths";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Static body — the agent's daily-read description of its desk.
@@ -31,7 +32,10 @@ i have a desk. it lives at \`desk/\` — a quiet room of my work, persistent acr
 **what doesn't:**
 - a single-turn answer — it'll be done before the page turns
 - ephemeral debugging that resolves in the same exchange
-- work that has its own room. trips live in a travel folder; habits keep their own ledger; attention items, diary entries, journal entries — each has a separate home. the desk *links* to them when relevant; it doesn't absorb them.
+- live continuity, claims, and obligations — those belong in Arc
+- habit definitions — those stay in habits/
+- scratch thinking that is not worth recording — it can disappear with the session
+- stale top-level rooms. the maintained record belongs under desk/_record, not in a separate scratch workspace.
 
 **shape.** tracks group related work — drawers in the cabinet, or sections of a shelf if you prefer the library framing. tasks live in tracks. each task has iterations: one per work session, with \`planning.md\` and \`doing.md\` laid side-by-side on the page.
 
@@ -276,6 +280,52 @@ function renderCurrently(deskRoot: string, now: Date = new Date()): string {
   const nonTerminalCount = tracks.reduce((sum, t) => sum + nonTerminalTasks(t).length, 0);
   lines.push(`tasks still open: ${nonTerminalCount}`);
 
+  return lines.join("\n");
+}
+
+function countDiaryFacts(agentRoot: string): number {
+  const paths = resolveDeskRecordPaths(agentRoot);
+  try {
+    return fs.readFileSync(paths.factsPath, "utf-8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .length;
+  } catch {
+    return 0;
+  }
+}
+
+function countRecordNotes(agentRoot: string): number {
+  const paths = resolveDeskRecordPaths(agentRoot);
+  try {
+    return fs.readdirSync(paths.notesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name.endsWith(".md"))
+      .length;
+  } catch {
+    return 0;
+  }
+}
+
+export function deskRecordOrientationSection(agentRoot = getAgentRoot(), now: Date = new Date()): string {
+  const deskRoot = path.join(agentRoot, "desk");
+  const tracks = (() => {
+    try {
+      return listSubdirs(deskRoot)
+        .map((slug) => readTrack(deskRoot, slug))
+        .filter((track): track is TrackRecord => Boolean(track));
+    } catch {
+      return [];
+    }
+  })();
+  const activeTracks = tracks.filter((track) => !TERMINAL_TRACK_STATUSES.has(track.status));
+  const openTaskCount = tracks.reduce((sum, track) => sum + nonTerminalTasks(track).length, 0);
+  const lines = ["## Desk orientation"];
+  lines.push(`active tracks: ${activeTracks.length}`);
+  lines.push(`open tasks: ${openTaskCount}`);
+  lines.push(`diary facts: ${countDiaryFacts(agentRoot)}`);
+  lines.push(`record notes: ${countRecordNotes(agentRoot)}`);
+  const currently = fs.existsSync(deskRoot) ? renderCurrently(deskRoot, now) : "";
+  if (currently) lines.push(currently);
   return lines.join("\n");
 }
 

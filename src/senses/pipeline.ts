@@ -22,7 +22,9 @@ import { readAgentConfigForAgent } from "../heart/auth/auth-flow"
 import { requestInnerWake } from "../heart/daemon/socket-client"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
-import { readPendingObligations } from "../arc/obligations"
+import { listActiveReturnObligationsForRoot, readPendingObligations } from "../arc/obligations"
+import { listPonderPackets } from "../arc/packets"
+import { listOpenEvolutionCases } from "../arc/evolution"
 import {
   buildFailoverContext,
   formatCredentialProvenanceLabel,
@@ -48,12 +50,21 @@ import { buildTurnContext } from "../heart/turn-context"
 import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-visibility"
 import { buildOrientationFrame } from "../heart/orientation-frame"
 import type { StructuredOutput } from "../heart/structured-output"
+import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
 
 export interface FailoverState {
   pending: FailoverContext | null
 }
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+const ACTIVE_FLIGHT_RECORDER_PACKET_STATUSES = new Set([
+  "drafting",
+  "processing",
+  "validating",
+  "collaborating",
+  "paused",
+  "blocked",
+])
 
 function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
   /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
@@ -197,6 +208,94 @@ function latestUserAuthoredText(messages: ChatCompletionMessageParam[], continui
     .map((message) => typeof message.content === "string" ? message.content.trim() : "")
     .filter(Boolean)
   return userMessages[userMessages.length - 1]
+}
+
+function sessionRefForFlightRecorder(session: { friendId: string; channel: Channel; key: string }): string {
+  return `${session.friendId}/${session.channel}/${session.key}`
+}
+
+function isTerminalWithoutContinuation(outcome: RunAgentOutcome, hasActiveContinuation: boolean): boolean {
+  return !hasActiveContinuation && (
+    outcome === "settled"
+    || outcome === "observed"
+    || outcome === "rested"
+    || outcome === "superseded"
+  )
+}
+
+interface FlightRecorderArcSnapshot {
+  activeObligationIds: string[]
+  activeReturnObligationIds: string[]
+  activePacketIds: string[]
+  openEvolutionCaseIds: string[]
+  recentClaimIds: string[]
+  unverifiedClaimIds: string[]
+}
+
+function readPostTurnFlightRecorderArcSnapshot(agentRoot: string): FlightRecorderArcSnapshot {
+  const latest = readFlightRecorderResume(agentRoot)
+  return {
+    activeObligationIds: readPendingObligations(agentRoot).map((obligation) => obligation.id),
+    activeReturnObligationIds: listActiveReturnObligationsForRoot(agentRoot).map((obligation) => obligation.id),
+    activePacketIds: listPonderPackets(agentRoot)
+      .filter((packet) => ACTIVE_FLIGHT_RECORDER_PACKET_STATUSES.has(packet.status))
+      .map((packet) => packet.id),
+    openEvolutionCaseIds: listOpenEvolutionCases(agentRoot).map((evolutionCase) => evolutionCase.id),
+    recentClaimIds: latest.recentClaimIds,
+    unverifiedClaimIds: latest.unverifiedClaimIds,
+  }
+}
+
+function recordPostTurnFlightRecorderCheckpoint(input: {
+  agentRoot: string
+  currentSession: { friendId: string; channel: Channel; key: string; sessionPath: string }
+  currentAsk: string | null
+  nextSafeAction: string | null
+  outcome: RunAgentOutcome
+  mustResolveBeforeHandoff: boolean
+  activeObligationIds: string[]
+  activeReturnObligationIds: string[]
+  activePacketIds: string[]
+  openEvolutionCaseIds: string[]
+  recentClaimIds: string[]
+  unverifiedClaimIds: string[]
+}): void {
+  const hasActiveContinuation = input.mustResolveBeforeHandoff
+    || input.activeObligationIds.length > 0
+    || input.activeReturnObligationIds.length > 0
+    || input.activePacketIds.length > 0
+    || input.openEvolutionCaseIds.length > 0
+  const blockedBecause = [
+    ...(input.outcome === "blocked" ? ["agent reported a blocker in this turn"] : []),
+    ...(input.outcome === "errored" ? ["turn errored before a safe continuation was reached"] : []),
+    ...(input.outcome === "aborted" ? ["turn aborted before a safe continuation was reached"] : []),
+    ...(isTerminalWithoutContinuation(input.outcome, hasActiveContinuation) ? [`turn outcome ${input.outcome}; wait for new input before acting`] : []),
+  ]
+  const nextSafeAction = input.nextSafeAction
+    ?? (blockedBecause.length > 0
+      ? "inspect the latest session and wait for new input before acting"
+      : "continue the current held work and update Arc/Desk with the next checkpoint")
+
+  recordFlightRecorderEvent(input.agentRoot, {
+    kind: "post_turn_persisted",
+    sessionRef: sessionRefForFlightRecorder(input.currentSession),
+    summary: `persisted ${input.currentSession.channel}/${input.currentSession.key} turn with outcome ${input.outcome}`,
+    currentAsk: input.currentAsk,
+    nextSafeAction,
+    blockedBecause,
+    stopBefore: blockedBecause.length > 0 ? ["acting on stale context"] : [],
+    activeObligationIds: input.activeObligationIds,
+    activeReturnObligationIds: input.activeReturnObligationIds,
+    activePacketIds: input.activePacketIds,
+    openEvolutionCaseIds: input.openEvolutionCaseIds,
+    recentClaimIds: input.recentClaimIds,
+    unverifiedClaimIds: input.unverifiedClaimIds,
+    meta: {
+      outcome: input.outcome,
+      mustResolveBeforeHandoff: input.mustResolveBeforeHandoff,
+      sessionPath: input.currentSession.sessionPath,
+    },
+  })
 }
 
 function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
@@ -782,6 +881,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         all: activeWorkFrame.pendingObligations,
       },
       currentSessionTiming,
+      flightRecorderResume: ctx.flightRecorderResume,
     })
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {
@@ -847,7 +947,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     senseStatusLines: ctx.senseStatusLines,
     bundleMeta: ctx.bundleMeta,
     daemonHealth: ctx.daemonHealth,
-    journalFiles: ctx.journalFiles,
+    flightRecorderResume: ctx.flightRecorderResume,
     ...(ctx.providerVisibility ? { providerVisibility: ctx.providerVisibility } : {}),
     toolContext: {
       /* v8 ignore next -- default no-op signin satisfies interface; real signin injected by sense adapter @preserve */
@@ -893,6 +993,35 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       )
       input.failoverState.pending = failoverContext
       input.postTurn(sessionMessages, session.sessionPath, result.usage)
+      try {
+        const postTurnArc = readPostTurnFlightRecorderArcSnapshot(getAgentRoot())
+        recordPostTurnFlightRecorderCheckpoint({
+          agentRoot: getAgentRoot(),
+          currentSession,
+          currentAsk: currentObligation
+            ?? activeWorkFrame.primaryObligation?.content?.trim()
+            ?? currentUserMessage
+            ?? null,
+          nextSafeAction: failoverContext.userMessage,
+          outcome: "errored",
+          mustResolveBeforeHandoff,
+          activeObligationIds: postTurnArc.activeObligationIds,
+          activeReturnObligationIds: postTurnArc.activeReturnObligationIds,
+          activePacketIds: postTurnArc.activePacketIds,
+          openEvolutionCaseIds: postTurnArc.openEvolutionCaseIds,
+          recentClaimIds: postTurnArc.recentClaimIds,
+          unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
+        })
+      } catch (checkpointError) {
+        /* v8 ignore next -- best-effort recorder write must not hide provider-failover guidance @preserve */
+        emitNervesEvent({
+          level: "warn",
+          component: "senses",
+          event: "senses.flight_recorder_checkpoint_error",
+          message: "failed to record provider-failover flight recorder checkpoint",
+          meta: { error: checkpointError instanceof Error ? checkpointError.message : String(checkpointError) },
+        })
+      }
       return {
         resolvedContext,
         gateResult,
@@ -936,6 +1065,39 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       : undefined)
     : (Object.keys(continuingState).length > 0 ? continuingState : undefined)
   input.postTurn(sessionMessages, session.sessionPath, result.usage, undefined, nextState)
+
+  try {
+    const agentRoot = getAgentRoot()
+    const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
+    recordPostTurnFlightRecorderCheckpoint({
+      agentRoot,
+      currentSession,
+      currentAsk: currentObligation
+        ?? activeWorkFrame.primaryObligation?.content?.trim()
+        ?? currentUserMessage
+        ?? null,
+      nextSafeAction: activeWorkFrame.resumeHandle?.nextAction
+        ?? activeWorkFrame.primaryObligation?.nextAction?.trim()
+        ?? null,
+      outcome: result.outcome ?? "observed",
+      mustResolveBeforeHandoff,
+      activeObligationIds: postTurnArc.activeObligationIds,
+      activeReturnObligationIds: postTurnArc.activeReturnObligationIds,
+      activePacketIds: postTurnArc.activePacketIds,
+      openEvolutionCaseIds: postTurnArc.openEvolutionCaseIds,
+      recentClaimIds: postTurnArc.recentClaimIds,
+      unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
+    })
+  } catch (error) {
+    /* v8 ignore next -- defensive recorder failures are non-fatal to already-persisted user turns @preserve */
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.flight_recorder_checkpoint_error",
+      message: "failed to record post-turn flight recorder checkpoint",
+      meta: { error: error instanceof Error ? error.message : String(error) },
+    })
+  }
 
   // Step 7: Token accumulation
   await input.accumulateFriendTokens(input.friendStore, resolvedContext.friend.id, result.usage)

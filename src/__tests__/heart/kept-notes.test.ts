@@ -6,14 +6,11 @@ import * as path from "path"
 describe("kept notes", () => {
   let tmpDir: string
   let diaryRoot: string
-  let journalDir: string
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kept-notes-"))
     diaryRoot = path.join(tmpDir, "diary")
-    journalDir = path.join(tmpDir, "journal")
     fs.mkdirSync(diaryRoot, { recursive: true })
-    fs.mkdirSync(journalDir, { recursive: true })
   })
 
   afterEach(() => {
@@ -31,29 +28,12 @@ describe("kept notes", () => {
     fs.appendFileSync(path.join(diaryRoot, "facts.jsonl"), JSON.stringify(fact) + "\n", "utf8")
   }
 
-  function writeJournalIndex(): void {
-    fs.writeFileSync(
-      path.join(journalDir, ".index.json"),
-      JSON.stringify([
-        {
-          filename: "auth-notes.md",
-          preview: "I kept a note that auth uses device code login",
-          embedding: [1, 0, 0],
-          mtime: Date.now(),
-        },
-      ]),
-      "utf8",
-    )
-  }
-
   it("injects a found diary note with source-specific first-person phrasing", async () => {
     writeFact("auth uses OAuth device code login")
-    writeJournalIndex()
     const { injectKeptNotes } = await import("../../heart/kept-notes")
     const judge = vi.fn(async (input) => {
       expect(input.query).toBe("how does auth work?")
       expect(input.candidates.some((candidate) => candidate.source.kind === "diary")).toBe(true)
-      expect(input.candidates.some((candidate) => candidate.source.kind === "journal")).toBe(true)
       expect(input.candidates.some((candidate) => candidate.source.kind === "friend-note")).toBe(true)
       return { status: "found" as const, note: "auth uses OAuth device code login", sourceIndexes: [0] }
     })
@@ -64,7 +44,6 @@ describe("kept notes", () => {
 
     const outcome = await injectKeptNotes(messages, {
       diaryRoot,
-      journalDir,
       friend: {
         id: "ari",
         name: "Ari",
@@ -83,7 +62,7 @@ describe("kept notes", () => {
     })
 
     expect(outcome.status).toBe("found")
-    expect(messages[0].content).toContain("## from my diary")
+    expect(messages[0].content).toContain("## from my Desk record diary")
     expect(messages[0].content).toContain("This may matter now:")
     expect(messages[0].content).toContain("I kept this:")
     expect(messages[0].content).toContain("auth uses OAuth device code login")
@@ -100,14 +79,12 @@ describe("kept notes", () => {
     const noneMessages = structuredClone(baseMessages)
     const noneOutcome = await injectKeptNotes(noneMessages, {
       diaryRoot,
-      journalDir,
       judge: async () => ({ status: "none" as const, pressure: ["not relevant"] }),
     })
 
     const timeoutMessages = structuredClone(baseMessages)
     const timeoutOutcome = await injectKeptNotes(timeoutMessages, {
       diaryRoot,
-      journalDir,
       timeoutMs: 1,
       judge: async () => new Promise(() => {}),
     })
@@ -115,7 +92,6 @@ describe("kept notes", () => {
     const errorMessages = structuredClone(baseMessages)
     const errorOutcome = await injectKeptNotes(errorMessages, {
       diaryRoot,
-      journalDir,
       judge: async () => {
         throw new Error("judge failed")
       },
@@ -131,13 +107,11 @@ describe("kept notes", () => {
 
   it("handles boundary cases without surfacing brittle notes", async () => {
     writeFact("auth notes should remain available")
-    fs.writeFileSync(path.join(journalDir, ".index.json"), JSON.stringify({ malformed: true }), "utf8")
     const { gatherKeptNotesCandidates, injectKeptNotes, renderKeptNotesOutcome } = await import("../../heart/kept-notes")
 
-    expect(gatherKeptNotesCandidates("a", { diaryRoot, journalDir })).toEqual([])
+    expect(gatherKeptNotesCandidates("a", { diaryRoot })).toEqual([])
     expect(gatherKeptNotesCandidates("auth", {
       diaryRoot,
-      journalDir,
       friend: {
         id: "ari",
         name: "Ari",
@@ -156,12 +130,6 @@ describe("kept notes", () => {
     expect(renderKeptNotesOutcome({ status: "timeout", elapsedMs: 1 })).toBeNull()
     expect(renderKeptNotesOutcome({
       status: "found",
-      note: "journal auth note",
-      sources: [{ kind: "journal", label: "journal", ref: "auth.md" }],
-      elapsedMs: 1,
-    })).toContain("## from my journal")
-    expect(renderKeptNotesOutcome({
-      status: "found",
       note: "friend auth note",
       sources: [{ kind: "friend-note", label: "friend note: Ari", ref: "auth" }],
       elapsedMs: 1,
@@ -171,20 +139,10 @@ describe("kept notes", () => {
       note: "paired auth note",
       sources: [
         { kind: "diary", label: "diary", ref: "fact-1" },
-        { kind: "journal", label: "journal", ref: "auth.md" },
-      ],
-      elapsedMs: 1,
-    })).toContain("## from my diary and my journal")
-    expect(renderKeptNotesOutcome({
-      status: "found",
-      note: "cross-source auth note",
-      sources: [
-        { kind: "diary", label: "diary", ref: "fact-1" },
-        { kind: "journal", label: "journal", ref: "auth.md" },
         { kind: "friend-note", label: "friend note: Ari", ref: "auth" },
       ],
       elapsedMs: 1,
-    })).toContain("## from my diary, my journal, and my friend notes")
+    })).toContain("## from my Desk record diary and my friend notes")
     expect(renderKeptNotesOutcome({
       status: "fuzzy",
       hint: "I might have kept the auth trail",
@@ -198,7 +156,6 @@ describe("kept notes", () => {
     ]
     const emptySourceOutcome = await injectKeptNotes(emptySourceMessages, {
       diaryRoot,
-      journalDir,
       judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [] }),
     })
 
@@ -208,7 +165,6 @@ describe("kept notes", () => {
     ]
     const invalidSourceOutcome = await injectKeptNotes(invalidSourceMessages, {
       diaryRoot,
-      journalDir,
       judge: async () => ({ status: "found" as const, note: "I kept the auth path", sourceIndexes: [0.5, 99] } as any),
     })
 
@@ -218,7 +174,6 @@ describe("kept notes", () => {
     ]
     const stringErrorOutcome = await injectKeptNotes(stringErrorMessages, {
       diaryRoot,
-      journalDir,
       judge: async () => {
         throw "string failure" // eslint-disable-line no-throw-literal
       },
@@ -229,7 +184,6 @@ describe("kept notes", () => {
       { role: "user", content: "   " },
     ] as any[], {
       diaryRoot,
-      journalDir,
       judge: async () => ({ status: "found" as const, note: "I kept a thing" }),
     })
 
@@ -251,12 +205,11 @@ describe("kept notes", () => {
 
     const outcome = await injectKeptNotes(messages, {
       diaryRoot,
-      journalDir,
       judge: async () => ({ status: "fuzzy" as const, hint: "device code flow might matter", sourceIndexes: [0] }),
     })
 
     expect(outcome.status).toBe("fuzzy")
-    expect(messages[0].content).toContain("## from my diary")
+    expect(messages[0].content).toContain("## from my Desk record diary")
     expect(messages[0].content).toContain("This is only a possible match; I should verify it before relying on it:")
     expect(messages[0].content).toContain("I may have kept something related: device code flow might matter")
   })
@@ -267,8 +220,8 @@ describe("kept notes", () => {
     const noSystem: any[] = [{ role: "user", content: "hello" }]
     const noUser: any[] = [{ role: "system", content: "system prompt" }]
 
-    const noSystemOutcome = await injectKeptNotes(noSystem, { diaryRoot, journalDir, judge })
-    const noUserOutcome = await injectKeptNotes(noUser, { diaryRoot, journalDir, judge })
+    const noSystemOutcome = await injectKeptNotes(noSystem, { diaryRoot, judge })
+    const noUserOutcome = await injectKeptNotes(noUser, { diaryRoot, judge })
 
     expect(noSystemOutcome.status).toBe("none")
     expect(noUserOutcome.status).toBe("none")

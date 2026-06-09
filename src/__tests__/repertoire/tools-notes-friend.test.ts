@@ -72,7 +72,7 @@ function makeFriend(overrides: Partial<FriendRecord> = {}): FriendRecord {
 describe("notes/friend tools", () => {
   beforeEach(() => {
     agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tools-notes-friend-"))
-    fs.mkdirSync(path.join(agentRoot, "diary"), { recursive: true })
+    fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary"), { recursive: true })
     fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
 
     mockTaskModule.getBoard.mockReset().mockReturnValue({
@@ -107,7 +107,7 @@ describe("notes/friend tools", () => {
 
     expect(result.toLowerCase()).toContain("saved")
 
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const raw = fs.readFileSync(factsPath, "utf8").trim()
     expect(raw.length).toBeGreaterThan(0)
     const saved = JSON.parse(raw.split("\n")[0]) as {
@@ -142,11 +142,51 @@ describe("notes/friend tools", () => {
     const { execTool } = await import("../../repertoire/tools")
 
     await execTool("diary_write", { entry: "Persist without about", about: { bad: "value" } as unknown as string })
-    const factsPath = path.join(agentRoot, "diary", "facts.jsonl")
+    const factsPath = path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl")
     const saved = JSON.parse(fs.readFileSync(factsPath, "utf8").trim().split("\n")[0]) as {
       about?: string
     }
     expect(saved.about).toBeUndefined()
+  })
+
+  it("consult_diary returns recent diary facts when no query is provided", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    fs.writeFileSync(path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl"), [
+      JSON.stringify({ id: "older", text: "Older fact", source: "test", about: "record", createdAt: "2026-06-08T10:00:00.000Z", embedding: [] }),
+      JSON.stringify({ id: "newer", text: "Newer fact", source: "test", about: "record", createdAt: "2026-06-08T11:00:00.000Z", embedding: [] }),
+    ].join("\n"), "utf8")
+
+    const result = JSON.parse(await execTool("consult_diary", { limit: "not-a-number" })) as { items: Array<{ text: string; about?: string }> }
+
+    expect(result.items).toHaveLength(2)
+    expect(result.items[0].text).toBe("Newer fact")
+    expect(result.items[0].about).toBe("record")
+
+    const defaultLimitResult = JSON.parse(await execTool("consult_diary", {})) as { items: Array<{ text: string }> }
+    expect(defaultLimitResult.items).toHaveLength(2)
+  })
+
+  it("consult_diary searches diary facts when a query is provided", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    fs.writeFileSync(path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl"), [
+      JSON.stringify({ id: "pizza", text: "Ari likes mushroom pizza", source: "test", createdAt: "2026-06-08T10:00:00.000Z", embedding: [], provenance: { tool: "diary_write", channel: "cli" } }),
+      JSON.stringify({ id: "typescript", text: "Ari prefers strict TypeScript checks", source: "test", createdAt: "2026-06-08T11:00:00.000Z", embedding: [] }),
+    ].join("\n"), "utf8")
+
+    const result = JSON.parse(await execTool("consult_diary", { query: "pizza", limit: "100" })) as { items: Array<{ text: string; provenance?: unknown }> }
+
+    expect(result.items.map((item) => item.text)).toContain("Ari likes mushroom pizza")
+    expect(result.items.map((item) => item.text)).not.toContain("Ari prefers strict TypeScript checks")
+    expect(result.items[0].provenance).toEqual({ tool: "diary_write", channel: "cli" })
+  })
+
+  it("consult_diary returns an error string when diary facts cannot be read", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl"), { recursive: true })
+
+    const result = await execTool("consult_diary", { limit: "1" })
+
+    expect(result).toContain("error:")
   })
 
   it("get_friend_note returns a specific friend record via friendStore", async () => {

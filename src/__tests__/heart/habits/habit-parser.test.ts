@@ -30,6 +30,9 @@ describe("parseHabitFile", () => {
       status: "active",
       lastRun: "2026-03-27T10:00:00.000Z",
       created: "2026-03-27",
+      tools: undefined,
+      origin: null,
+      surface: { family: true, originator: true, extra: [] },
       body: "Check in on my responsibilities and reflect.",
     })
   })
@@ -201,7 +204,86 @@ describe("parseHabitFile", () => {
 
     const result: HabitFile = parseHabitFile(content, "/bundles/agent.ouro/habits/shape-test.md")
     const keys = Object.keys(result).sort()
-    expect(keys).toEqual(["body", "cadence", "created", "lastRun", "name", "status", "title", "tools"])
+    expect(keys).toEqual(["body", "cadence", "created", "lastRun", "name", "origin", "status", "surface", "title", "tools"])
+  })
+
+  it("parses habit origin and surface policy from nested frontmatter", () => {
+    const content = [
+      "---",
+      "title: Check on Ari",
+      "cadence: 1h",
+      "origin:",
+      "  friendId: ari",
+      "  channel: cli",
+      "  key: main",
+      "surface:",
+      "  family: true",
+      "  originator: false",
+      "  extra: [teammate, auditor]",
+      "---",
+      "",
+      "Ask whether Ari needs anything.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/check-ari.md")
+
+    expect(result.origin).toEqual({ friendId: "ari", channel: "cli", key: "main" })
+    expect(result.surface).toEqual({ family: true, originator: false, extra: ["teammate", "auditor"] })
+  })
+
+  it("parses quoted boolean surface fields and defaults non-array extras", () => {
+    const content = [
+      "---",
+      "title: String booleans",
+      "surface:",
+      "  family: \"true\"",
+      "  originator: 'false'",
+      "  extra: teammate",
+      "---",
+      "",
+      "Check routing.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/string-booleans.md")
+
+    expect(result.surface).toEqual({ family: true, originator: false, extra: [] })
+  })
+
+  it("falls back when surface booleans are invalid strings", () => {
+    const content = [
+      "---",
+      "title: Invalid surface",
+      "surface:",
+      "  family: maybe",
+      "  originator: 7",
+      "---",
+      "",
+      "Check routing.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/invalid-surface.md")
+
+    expect(result.surface).toEqual({ family: true, originator: true, extra: [] })
+  })
+
+  it("ignores incomplete origins and parses empty quoted surface extras", () => {
+    const content = [
+      "---",
+      "title: Incomplete origin",
+      "origin:",
+      "  friendId: \"\"",
+      "  channel: cli",
+      "surface:",
+      "  extra: \"[]\"",
+      "---",
+      "",
+      "Check routing.",
+    ].join("\n")
+
+    const result = parseHabitFile(content, "/bundles/agent.ouro/habits/incomplete-origin.md")
+
+    expect(result.origin).toBeNull()
+    expect(result.surface.extra).toEqual([])
   })
 
   it("exports HabitStatus type correctly", () => {
@@ -393,6 +475,20 @@ describe("parseHabitFile — tools field", () => {
 
     const result = parseHabitFile(content, "/bundles/agent.ouro/habits/mixed-tools.md")
     expect(result.tools).toEqual(["read_file", "web_fetch"])
+  })
+})
+
+describe("renderHabitFile", () => {
+  it("renders nested habit origin and surface frontmatter", () => {
+    const rendered = renderHabitFile({
+      title: "Check on Ari",
+      origin: { friendId: "ari", channel: "cli", key: "main" },
+      surface: { family: true, originator: false, extra: ["teammate"] },
+    }, "Ask whether Ari needs anything.")
+
+    expect(rendered).toContain("origin:\n  friendId: ari\n  channel: cli\n  key: main")
+    expect(rendered).toContain("surface:\n  family: true\n  originator: false\n  extra: [teammate]")
+    expect(rendered).toContain("Ask whether Ari needs anything.")
   })
 })
 

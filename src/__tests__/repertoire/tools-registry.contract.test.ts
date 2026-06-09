@@ -115,8 +115,9 @@ describe("tool registry contract", () => {
     expect(names).toContain("query_session");
     expect(names).toContain("web_search");
     expect(names).toContain("diary_write");
-    expect(names).toContain("search_notes");
+    expect(names).toContain("search_facts");
     expect(names).toContain("note");
+    expect(names).toContain("consult_diary");
     expect(names).toContain("consult_notes");
     expect(names).toContain("save_friend_note");
     expect(names).toContain("get_friend_note");
@@ -244,7 +245,7 @@ describe("tool registry contract", () => {
     expect(names).toContain("commerce_receipt_get");
     expect(names).toContain("commerce_access_log");
 
-    // Exact count: 107 tools
-    expect(names).toHaveLength(107);
+    // Exact count: 108 tools
+    expect(names).toHaveLength(108);
   });
 });

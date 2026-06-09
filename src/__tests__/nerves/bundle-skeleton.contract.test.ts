@@ -37,12 +37,11 @@ function resolveAvailableBundleRoots(): {
 /** Paths that must exist on disk for existing bundles.
  *  - `state` is runtime-only (created on first run)
  *  - `arc` is created on first write or migration
- *  - `diary` is new (migrated from psyche/notes on first write)
- *  - `journal` is new (created on first journal write)
+ *  - `desk/_record` is created on first Desk record write or migration
  */
 function requiredPaths(root: string): string[] {
   return CANONICAL_BUNDLE_MANIFEST
-    .filter((entry) => entry.path !== "state" && entry.path !== "diary" && entry.path !== "journal" && !entry.path.startsWith("arc"))
+    .filter((entry) => entry.path !== "state" && !entry.path.startsWith("arc") && !entry.path.startsWith("desk/_record"))
     .map((entry) => join(root, entry.path))
 }
 

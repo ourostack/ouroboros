@@ -68,10 +68,10 @@ describe("Phase 2: tool description enrichment", () => {
   })
 
   describe("Unit 2.3 - note tool descriptions", () => {
-    it("search_notes description contains semantic similarity guidance", () => {
-      const desc = getBaseDescription("search_notes")
+    it("search_facts description contains semantic similarity guidance", () => {
+      const desc = getBaseDescription("search_facts")
       expect(desc).toContain("Uses semantic similarity -- phrasing matters")
-      expect(desc).toContain("Search written notes before asking the human something the notes may already answer")
+      expect(desc).toContain("Search written facts before asking the human something the record may already answer")
     })
 
     it("diary_write description contains behavioral guidance", () => {

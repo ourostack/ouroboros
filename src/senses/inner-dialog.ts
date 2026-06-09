@@ -36,11 +36,12 @@ import { buildHabitTurnMessage } from "./habit-turn-message"
 import { buildAwaitTurnMessage } from "./await-turn-message"
 import { parseAwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
-import { indexJournalFiles } from "../mind/journal-index"
-import { parseHabitFile } from "../heart/habits/habit-parser"
+import { parseHabitFile, type HabitOrigin, type HabitSurface } from "../heart/habits/habit-parser"
 import { applyHabitRuntimeState } from "../heart/habits/habit-runtime-state"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
+import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
+import { deskRecordOrientationSection } from "../mind/desk-section"
 
 export interface InnerDialogInstinct {
   id: string
@@ -684,6 +685,17 @@ function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () =
   return `also due: ${alsoDue.join(", ")}`
 }
 
+function buildHabitSurfacePolicy(origin: HabitOrigin | null, surface: HabitSurface): string {
+  const lines = ["## habit surface policy"]
+  lines.push("this habit runs privately, but it may message outward when it needs input, has a useful answer, is blocked, or should report status.")
+  if (surface.family) lines.push("- family recipients are allowed by default.")
+  if (surface.originator && origin) lines.push(`- the originator is allowed: ${origin.friendId} via ${origin.channel}/${origin.key}.`)
+  if (surface.originator && !origin) lines.push("- originator messaging is enabled, but this habit has no origin metadata.")
+  if (surface.extra.length > 0) lines.push(`- extra allowed recipients: ${surface.extra.join(", ")}.`)
+  lines.push("- use send_message for intentional contact; use surface only for a held return tied to an existing return obligation.")
+  return lines.join("\n")
+}
+
 export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): Promise<InnerDialogTurnResult> {
   const now = options?.now ?? (() => new Date())
   const reason = options?.reason ?? "instinct"
@@ -742,6 +754,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
       let habitBody: string | undefined
       let habitTitle: string = habitName
       let habitLastRun: string | null = null
+      let habitOrigin: HabitOrigin | null = null
+      let habitSurface: HabitSurface = { family: true, originator: true, extra: [] }
       try {
         const habitContent = fs.readFileSync(habitFilePath, "utf-8")
         const parsed = applyHabitRuntimeState(agentRoot, parseHabitFile(habitContent, habitFilePath))
@@ -749,6 +763,8 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         habitTitle = parsed.title || habitName
         habitLastRun = parsed.lastRun
         habitTools = parsed.tools
+        habitOrigin = parsed.origin
+        habitSurface = parsed.surface
       } catch {
         // Habit file missing or unreadable
       }
@@ -768,6 +784,9 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         }))
 
         const alsoDue = buildAlsoDueLine(agentRoot, habitName, now)
+        const arcResume = formatFlightRecorderResume(readFlightRecorderResume(agentRoot))
+        const deskOrientation = deskRecordOrientationSection(agentRoot, now())
+        const surfacePolicy = buildHabitSurfacePolicy(habitOrigin, habitSurface)
 
         // Degraded state (best-effort: never crash)
         let degradedComponents: { component: string; reason: string }[] = []
@@ -790,18 +809,11 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
           staleObligations,
           parseErrors: options?.parseErrors ?? [],
           degradedComponents,
+          arcResume,
+          deskOrientation,
+          surfacePolicy,
           now,
         })
-
-        // Piggyback journal embedding indexing (best-effort, fire-and-forget)
-        const journalDir = path.join(agentRoot, "journal")
-        /* v8 ignore start -- journal indexing piggyback: embedding provider may not be available; tested via journal-index unit tests @preserve */
-        void indexJournalFiles(journalDir, path.join(journalDir, ".index.json"), {
-          embed: async () => [],
-        }).catch(() => {
-          // swallowed: indexing failure must never block habit turn
-        })
-        /* v8 ignore stop */
       }
     } else if (reason === "await" && options?.awaitName) {
       const agentRoot = getAgentRoot()
@@ -892,7 +904,10 @@ export async function runInnerDialogTurn(options?: RunInnerDialogTurnOptions): P
         }
       }
       // Fresh session: build system prompt
-      const systemPrompt = await buildSystem("inner", { toolChoiceRequired: true })
+      const systemPrompt = await buildSystem("inner", {
+        toolChoiceRequired: true,
+        flightRecorderResume: readFlightRecorderResume(getAgentRoot()),
+      })
       return {
         messages: [{ role: "system" as const, content: flattenSystemPrompt(systemPrompt) }],
         sessionPath: sessionFilePath,

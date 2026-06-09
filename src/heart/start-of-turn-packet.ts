@@ -8,12 +8,14 @@ import { type EpisodeRecord } from "../arc/episodes"
 import { type Obligation } from "../arc/obligations"
 import { type CareRecord } from "../arc/cares"
 import { type AgentPresence } from "../arc/presence"
+import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
 
 export interface StartOfTurnPacket {
   plotLine: string
   obligations: string
   cares: string
   presence: string
+  arcResume?: string
   resumeHint: string
   currentSessionTiming?: string
   tempo: TempoMode
@@ -194,6 +196,7 @@ export function buildStartOfTurnPacket(
   opts?: {
     canonicalObligations?: { primary: Obligation | null; all: Obligation[] }
     currentSessionTiming?: string
+    flightRecorderResume?: FlightRecorderResume
   },
 ): StartOfTurnPacket {
   const tempo = view.tempo
@@ -205,6 +208,7 @@ export function buildStartOfTurnPacket(
     obligations: buildObligationsSection(effectiveObligations),
     cares: buildCaresSection(view.activeCares),
     presence: buildPresenceSection(view.peerPresence),
+    arcResume: opts?.flightRecorderResume ? formatFlightRecorderResume(opts.flightRecorderResume) : undefined,
     resumeHint: buildResumeHint(view, opts?.canonicalObligations ? effectiveObligations : undefined),
     currentSessionTiming: opts?.currentSessionTiming,
     tempo,
@@ -249,6 +253,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     { label: "provider", content: packet.providerSelection ?? "", priority: 8 },
     { label: "bundleState", content: renderBundleStateHint(packet.bundleState ?? []), priority: 7 },
     { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
+    { label: "arc", content: packet.arcResume ?? "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
     { label: "sessionTiming", content: packet.currentSessionTiming ?? "", priority: 5 },
     { label: "obligations", content: packet.obligations, priority: 5 },
@@ -277,8 +282,8 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
 
   for (const section of sortedByPriority) {
     if (tokens <= budget.max) break
-    // Skip resumeHint — it's PROTECTED
-    if (section.label === "resume") continue
+    // Skip continuity sections — they are protected.
+    if (section.label === "resume" || section.label === "arc") continue
 
     // Remove this section entirely
     const idx = sections.findIndex((s) => s.label === section.label)
@@ -310,6 +315,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
     switch (section.label) {
       case "resume":
         parts.push(`**Next:** ${section.content}`)
+        break
+      case "arc":
+        parts.push(`**Arc:**\n${section.content}`)
         break
       case "obligations":
         parts.push(`**Owed:**\n${section.content}`)

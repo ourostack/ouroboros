@@ -7274,7 +7274,7 @@ describe("ouro inner CLI execution", () => {
 
     fs.mkdirSync(path.join(tempBundle, "state", "sessions", "self", "inner"), { recursive: true })
     fs.mkdirSync(path.join(tempBundle, "habits"), { recursive: true })
-    fs.mkdirSync(path.join(tempBundle, "journal"), { recursive: true })
+    fs.mkdirSync(path.join(tempBundle, "desk", "_record", "notes"), { recursive: true })
     fs.writeFileSync(
       path.join(tempBundle, "state", "sessions", "self", "inner", "runtime.json"),
       JSON.stringify({

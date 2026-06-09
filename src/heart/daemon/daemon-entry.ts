@@ -357,7 +357,7 @@ void daemon.start().then(() => {
         habitsDir,
         osCronManager,
         onHabitFire: (habitName) => {
-          processManager.sendToAgent(agent, { type: "habit", habitName })
+          processManager.sendToAgent(agent, { type: "habit", habitName, trigger: "overdue" })
         },
         deps: {
           readdir: (dir) => fs.readdirSync(dir),

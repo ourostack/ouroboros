@@ -433,7 +433,8 @@ export async function createHermeticRuntimeHarness(
   fs.mkdirSync(path.join(agentRoot, "state"), { recursive: true })
   fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
   fs.mkdirSync(path.join(agentRoot, "inbox"), { recursive: true })
-  fs.mkdirSync(path.join(agentRoot, "journal"), { recursive: true })
+  fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary", "daily"), { recursive: true })
+  fs.mkdirSync(path.join(agentRoot, "desk", "_record", "notes"), { recursive: true })
   fs.mkdirSync(path.join(agentRoot, "tasks"), { recursive: true })
   fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify(createAgentJson(), null, 2)}\n`, "utf8")
 
