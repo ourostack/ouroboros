@@ -825,6 +825,38 @@ describe("context-loss Sentinel core", () => {
     ]))
   })
 
+  it("does not record blocker events for blocked receipts that lose the latest race", async () => {
+    const agentRoot = makeAgentRoot()
+
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:25:00.000Z"),
+      createReceiptId: () => "sentinel-latest-ready-winner",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const staleBlocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "provider_failover",
+      now: () => new Date("2026-06-08T20:24:00.000Z"),
+      createReceiptId: () => "sentinel-stale-blocked-loser",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:24:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(staleBlocked.verdict).toBe("blocked")
+    expect(readContextLossSentinelView(agentRoot).latest?.id).toBe("sentinel-latest-ready-winner")
+    const eventsPath = path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl")
+    expect(fs.existsSync(eventsPath)).toBe(false)
+    expect(readFlightRecorderResume(agentRoot).canContinue).toBe(true)
+  })
+
   it("reports warn-level sense probes and singular dirty git entries", async () => {
     const agentRoot = makeAgentRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {

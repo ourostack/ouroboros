@@ -766,6 +766,7 @@ async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelRec
     appendHistory(paths, receipt)
     if (shouldReplaceReceipt(existingLatest, receipt)) {
       atomicWriteJson(paths.latest, receipt)
+      recordBlockedReceiptEvent(agentRoot, receipt)
     } else if (existingLatest && receipt.verdict === "ready") {
       atomicWriteJson(paths.latest, syncLatestReadyLocator(existingLatest, true))
     }
@@ -786,7 +787,6 @@ export async function refreshContextLossSentinel(
     await sleep(options.delayBeforeWriteMs)
   }
   await persistReceipt(agentRoot, receipt, options.lockTimeoutMs ?? 5_000)
-  recordBlockedReceiptEvent(agentRoot, receipt)
   emitNervesEvent({
     component: "engine",
     event: "engine.context_loss_sentinel_refreshed",
