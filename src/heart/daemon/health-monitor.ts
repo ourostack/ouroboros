@@ -21,6 +21,7 @@ export interface HealthMonitorOptions {
   }
   alertSink?: (message: string) => Promise<void> | void
   diskUsagePercent?: () => number
+  sentinelChecker?: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   onCriticalAgent?: (agentName: string) => void
   onCriticalSense?: (managedName: string, probeName: string) => void
   senseProbes?: SenseProbe[]
@@ -32,6 +33,7 @@ export class HealthMonitor {
   private readonly scheduler: HealthMonitorOptions["scheduler"]
   private readonly alertSink: (message: string) => Promise<void> | void
   private readonly diskUsagePercent: () => number
+  private readonly sentinelChecker: (resultsSoFar: DaemonHealthResult[]) => Promise<DaemonHealthResult[]> | DaemonHealthResult[]
   private readonly onCriticalAgent: (agentName: string) => void
   private readonly onCriticalSense: (managedName: string, probeName: string) => void
   private readonly senseProbes: SenseProbe[]
@@ -44,6 +46,7 @@ export class HealthMonitor {
     this.scheduler = options.scheduler
     this.alertSink = options.alertSink ?? (() => undefined)
     this.diskUsagePercent = options.diskUsagePercent ?? (() => 0)
+    this.sentinelChecker = options.sentinelChecker ?? (() => [])
     this.onCriticalAgent = options.onCriticalAgent ?? (() => undefined)
     this.onCriticalSense = options.onCriticalSense ?? (() => undefined)
     this.senseProbes = options.senseProbes ?? []
@@ -201,6 +204,8 @@ export class HealthMonitor {
         })
       }
     }
+
+    results.push(...await this.sentinelChecker(results.map((result) => ({ ...result }))))
 
     this.lastResults = results.map((result) => ({ ...result }))
 
