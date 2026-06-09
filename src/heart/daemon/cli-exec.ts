@@ -6554,14 +6554,30 @@ function resolveClonePath(
 }
 /* v8 ignore stop */
 
+const HOOK_SENTINEL_LOCK_TIMEOUT_MS = 500
+
 async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): Promise<void> {
   if (command.event !== "session-start") return
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
   const bundleRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
   try {
-    await refreshContextLossSentinel(command.agent, bundleRoot, { trigger: "session_start" })
-  } catch {
-    // Hooks are best-effort and must not block the dev tool lifecycle.
+    await refreshContextLossSentinel(command.agent, bundleRoot, {
+      trigger: "session_start",
+      lockTimeoutMs: HOOK_SENTINEL_LOCK_TIMEOUT_MS,
+    })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.hook_sentinel_refresh_error",
+      message: "claude code hook Sentinel refresh failed",
+      meta: {
+        agent: command.agent,
+        eventType: command.event,
+        lockTimeoutMs: HOOK_SENTINEL_LOCK_TIMEOUT_MS,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
   }
 }
 
@@ -6617,6 +6633,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     throw new Error(resolvedCommand.message)
   }
   let command: ResolvedOuroCliCommand = resolvedCommand.command
+
+  if (command.kind === "hook") {
+    await refreshHookSentinel(command, deps)
+  }
 
   if (args.length === 0) {
     const discovered = await Promise.resolve(
@@ -7546,8 +7566,6 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     } else {
       content = `[Claude Code hook: ${eventType} in session ${sessionId}]`
     }
-
-    await refreshHookSentinel(command, deps)
 
     // Send to the specific agent configured for this hook. Short-circuit
     // when the daemon socket file doesn't exist — otherwise every

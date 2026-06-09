@@ -60,7 +60,7 @@ describe("daemon CLI hook execution", () => {
       expect(contextLossSentinelMock.refreshContextLossSentinel).toHaveBeenCalledWith(
         "slugger",
         agentRoot,
-        { trigger: "session_start" },
+        { trigger: "session_start", lockTimeoutMs: 500 },
       )
       expect(deps.sendCommand).not.toHaveBeenCalled()
       expect(nervesRuntimeMock.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
@@ -101,6 +101,17 @@ describe("daemon CLI hook execution", () => {
       )
 
       expect(contextLossSentinelMock.refreshContextLossSentinel).toHaveBeenCalledTimes(1)
+      expect(nervesRuntimeMock.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.hook_sentinel_refresh_error",
+        meta: expect.objectContaining({
+          agent: "slugger",
+          eventType: "session-start",
+          error: "sentinel unavailable",
+          lockTimeoutMs: 500,
+        }),
+      }))
       expect(deps.sendCommand).not.toHaveBeenCalled()
       expect(deps.writeStdout).toHaveBeenCalledWith(JSON.stringify({ continue: true }))
     } finally {
@@ -133,7 +144,7 @@ describe("daemon CLI hook execution", () => {
       expect(contextLossSentinelMock.refreshContextLossSentinel).toHaveBeenCalledWith(
         "slugger",
         agentRoot,
-        { trigger: "session_start" },
+        { trigger: "session_start", lockTimeoutMs: 500 },
       )
     } finally {
       if (originalHome === undefined) {
