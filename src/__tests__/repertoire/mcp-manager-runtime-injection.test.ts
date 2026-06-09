@@ -116,6 +116,51 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("runtime server overrides a colliding PLUGIN server and surfaces un-namespaced", async () => {
+    vi.resetModules()
+    const connects: string[] = []
+    const McpClientMock = class {
+      connect: () => Promise<void>
+      listTools = async () => []
+      callTool = vi.fn()
+      shutdown = vi.fn()
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {
+        this.connect = async () => { connects.push(this.config.command) }
+      }
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({}),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    // A plugin declares an `ouro_workbench` server — the runtime override must win
+    // and the surfaced tool must NOT be plugin-namespaced (pluginId cleared).
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => [
+        { pluginId: "someplugin", serverName: "ouro_workbench", command: "plugin-wb", args: [] },
+      ],
+      pluginMcpServerToConfig: (s: any) => ({ command: s.command, args: s.args }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    expect(manager).not.toBeNull()
+    // Runtime command wins over the plugin's command.
+    expect(connects).toEqual(["/Apps/OuroWorkbenchMCP"])
+    const entry = manager!.listAllTools().find((e) => e.server === "ouro_workbench")
+    expect(entry).toBeTruthy()
+    // pluginId cleared → surfaces as a builtin-style (un-namespaced) tool.
+    expect((entry as { pluginId?: string }).pluginId).toBeUndefined()
+
+    mod.resetSharedMcpManager()
+  })
+
   // ── THE load-bearing isolation / no-leak test ──
   it("does NOT leak ouro_workbench into a subsequent turn that omits runtimeServers", async () => {
     vi.resetModules()
