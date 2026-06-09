@@ -255,6 +255,46 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("reconcile swallows a non-Error throw on a later turn (String(error) branch)", async () => {
+    vi.resetModules()
+    const McpClientMock = class {
+      connect = async () => {}
+      listTools = async () => []
+      callTool = vi.fn()
+      shutdown = vi.fn()
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {}
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({ mcpServers: { calc: { command: "builtin-calc", args: [] } } }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    let calls = 0
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => {
+        calls += 1
+        // Throw a NON-Error value on reconcile to exercise the String(error) branch.
+        if (calls > 1) throw "plugin scan failed (string)"
+        return []
+      },
+      pluginMcpServerToConfig: (s: any) => ({ command: s.command }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    expect(manager).not.toBeNull()
+    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBe(manager)
+    expect(manager!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+
+    mod.resetSharedMcpManager()
+  })
+
   it("repeated turns that both carry runtimeServers keep ouro_workbench stable (no churn)", async () => {
     vi.resetModules()
     const { connects, shutdowns } = mockManagerDeps()

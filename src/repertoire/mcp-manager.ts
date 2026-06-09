@@ -219,6 +219,7 @@ export class McpManager {
             meta: { server: name },
           })
           const entry = this.servers.get(name)
+          /* v8 ignore next -- defensive: name comes from this.servers.keys() this same tick, so entry is always present; the guard only protects against an awaited connectServer crash-handler racing a delete @preserve */
           if (entry) entry.client.shutdown()
           this.servers.delete(name)
         }
