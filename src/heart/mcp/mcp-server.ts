@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { sendDaemonCommand } from "../daemon/socket-client"
 import type { DaemonCommand, DaemonResponse } from "../daemon/daemon"
+import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import * as agentService from "../daemon/agent-service"
 import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -113,6 +114,14 @@ export interface McpServerOptions {
   socketPath: string
   stdin: Readable
   stdout: Writable
+  /**
+   * Optional per-turn runtime MCP override (e.g. Workbench's `ouro_workbench`),
+   * already resolved to a concrete command/args by the caller. When present, the
+   * bridge stamps it onto every `agent.senseTurn` it emits so the daemon merges
+   * it into the agent's toolset for that turn. The bridge never runs the turn
+   * itself — it only forwards the override on the wire.
+   */
+  runtimeMcp?: RuntimeMcpServers
 }
 
 interface JsonRpcRequest {
@@ -184,6 +193,7 @@ function canonicalizeMcpFriendId(agent: string, rawFriendId: string): string {
 export function createMcpServer(options: McpServerOptions): McpServer {
   const { agent, socketPath, stdin, stdout } = options
   const rawFriendId = options.friendId
+  const runtimeMcp = options.runtimeMcp
   const friendId = canonicalizeMcpFriendId(agent, rawFriendId)
   let buffer = ""
   let running = false
@@ -407,6 +417,9 @@ export function createMcpServer(options: McpServerOptions): McpServer {
         channel: "mcp",
         sessionKey: sessionId,
         message,
+        // Forward the resolved runtime MCP override (if any) so the daemon merges
+        // it into this agent's toolset for the turn. Per-turn parameter data only.
+        ...(runtimeMcp ? { runtimeMcp } : {}),
       })
       /* v8 ignore next -- branch: ?? fallback for empty daemon response @preserve */
       const text = response.message ?? "(empty response)"

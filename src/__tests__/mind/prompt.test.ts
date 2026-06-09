@@ -854,6 +854,43 @@ describe("buildSystem", () => {
     expect(result).toContain("Workbench: ready")
   })
 
+  it("describes runtime injection in the workbench setup truth and does not claim the agent.json entry is required", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: {
+        cli: { enabled: true },
+        teams: { enabled: false },
+        bluebubbles: { enabled: false },
+        mail: { enabled: false },
+        voice: { enabled: false },
+        workbench: { enabled: false },
+      },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+
+    const result = flattenSystemPrompt(await buildSystem("cli"))
+
+    // The agent must understand it receives ouro_workbench via runtime injection.
+    expect(result).toContain("injects the `ouro_workbench` MCP into my turn at runtime")
+    expect(result).toContain("without any `agent.json` `mcpServers.ouro_workbench` entry")
+    // It must be told NOT to misread a disabled sense row as blocked.
+    expect(result).toContain("I do NOT treat that as blocked or as a trust-level problem")
+    // The disabled sense-table row carries the runtime-injection annotation.
+    expect(result).toContain("Workbench: disabled (runtime-injected when launched by Workbench app)")
+    // It must NOT still claim enabling REQUIRES the agent.json entry.
+    expect(result).not.toContain("Enabling it means `agent.json` has")
+  })
+
   it("uses cached machine runtime credentials for BlueBubbles sense status when local config is stale", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

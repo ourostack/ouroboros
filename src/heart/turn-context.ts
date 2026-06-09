@@ -277,7 +277,15 @@ function readSenseStatusLines(): string[] {
     },
     {
       label: "Workbench",
-      status: !senses.workbench.enabled ? "disabled" : configured.workbench ? "ready" : "needs_config",
+      // Workbench can be injected at runtime (the Workbench app spawns
+      // `ouro mcp-serve --workbench-mcp` for its boss) with NO agent.json entry.
+      // A disabled/needs_config row here does NOT mean the tools are absent —
+      // the authoritative signal is whether `workbench_*` tools are in the
+      // toolset this turn. The annotation prevents the agent from misreading the
+      // row as "blocked".
+      status: !senses.workbench.enabled
+        ? "disabled (runtime-injected when launched by Workbench app)"
+        : configured.workbench ? "ready" : "needs_config",
     },
   ]
 

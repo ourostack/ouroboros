@@ -1342,13 +1342,30 @@ export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketO
   let agent: string | undefined
   let friendId: string | undefined
   let socketOverride: string | undefined
+  // Optional runtime Workbench MCP injection. The path is OPTIONAL: when a
+  // concrete path follows the flag it is carried verbatim; when the flag stands
+  // alone (or is immediately followed by another `--flag`) it is a boolean
+  // opt-in and the daemon self-discovers the installed OuroWorkbenchMCP binary.
+  let workbenchMcp: string | true | undefined
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--agent" && args[i + 1]) { agent = args[++i]; continue }
     if (args[i] === "--friend" && args[i + 1]) { friendId = args[++i]; continue }
     if (args[i] === "--socket" && args[i + 1]) { socketOverride = args[++i]; continue }
+    if (args[i] === "--workbench-mcp") {
+      const next = args[i + 1]
+      if (next && !next.startsWith("--")) { workbenchMcp = args[++i] }
+      else { workbenchMcp = true }
+      continue
+    }
   }
   if (!agent) throw new Error("mcp-serve requires --agent <name>")
-  return { kind: "mcp-serve", agent, ...(friendId ? { friendId } : {}), ...(socketOverride ? { socketOverride } : {}) }
+  return {
+    kind: "mcp-serve",
+    agent,
+    ...(friendId ? { friendId } : {}),
+    ...(socketOverride ? { socketOverride } : {}),
+    ...(workbenchMcp !== undefined ? { workbenchMcp } : {}),
+  }
 }
 
 function parseSetupCommand(args: string[]): OuroCliCommand {

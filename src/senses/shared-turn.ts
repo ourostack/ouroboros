@@ -27,6 +27,7 @@ import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
 import type { Channel } from "../mind/friends/types"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
+import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 
@@ -182,6 +183,14 @@ export interface RunSenseTurnOptions {
   deliverySink?: OutwardSenseDeliverySink
   /** Optional transport-specific controls surfaced to tools during this turn. */
   toolContext?: Partial<ToolContext>
+  /**
+   * Per-turn, per-agent runtime MCP server overrides (e.g. Workbench's
+   * `ouro_workbench`). Merged into the agent's toolset with highest precedence
+   * for THIS turn only. Threaded as parameter data from the `agent.senseTurn`
+   * command — never stored as module state, so it cannot leak into a concurrent
+   * turn for a different agent.
+   */
+  runtimeMcpServers?: RuntimeMcpServers
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -264,8 +273,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   }
   const resolver = new FriendResolver(friendStore, resolverParams)
 
-  // Initialize MCP manager so MCP tools appear as first-class tools in the agent's tool list
-  const mcpManager = await getSharedMcpManager() ?? undefined
+  // Initialize MCP manager so MCP tools appear as first-class tools in the agent's tool list.
+  // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
+  const mcpManager = await getSharedMcpManager(
+    options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
+  ) ?? undefined
 
   // Session path and loading
   const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)

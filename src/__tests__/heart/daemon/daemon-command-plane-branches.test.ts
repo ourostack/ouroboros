@@ -1134,6 +1134,52 @@ describe("daemon command plane branches", () => {
     expect(result.data).toEqual({ ponderDeferred: false })
   })
 
+  it("handleAgentSenseTurn forwards command.runtimeMcp into runSenseTurn as runtimeMcpServers", async () => {
+    const runSenseTurn = vi.fn().mockResolvedValue({
+      response: "ok",
+      ponderDeferred: false,
+    })
+    vi.doMock("../../../senses/shared-turn", () => ({ runSenseTurn }))
+
+    const runtimeMcp = {
+      ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+    }
+    const result = await handleAgentSenseTurn({
+      kind: "agent.senseTurn",
+      agent: "boss",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+      runtimeMcp,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(runSenseTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeMcpServers: runtimeMcp }),
+    )
+  })
+
+  it("handleAgentSenseTurn omits runtimeMcpServers when the command has no runtimeMcp", async () => {
+    const runSenseTurn = vi.fn().mockResolvedValue({
+      response: "ok",
+      ponderDeferred: false,
+    })
+    vi.doMock("../../../senses/shared-turn", () => ({ runSenseTurn }))
+
+    await handleAgentSenseTurn({
+      kind: "agent.senseTurn",
+      agent: "boss",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-abc",
+      message: "hello",
+    })
+
+    const passed = runSenseTurn.mock.calls[0]?.[0] ?? {}
+    expect("runtimeMcpServers" in passed).toBe(false)
+  })
+
   it("handleAgentSenseTurn returns error on failure", async () => {
     vi.doMock("../../../senses/shared-turn", () => ({
       runSenseTurn: vi.fn().mockRejectedValue(new Error("provider down")),

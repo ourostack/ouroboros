@@ -508,7 +508,15 @@ function localSenseStatusLines(): string[] {
     },
     {
       label: "Workbench",
-      status: !senses.workbench.enabled ? "disabled" : configured.workbench ? "ready" : "needs_config",
+      // Workbench can be injected at runtime (the Workbench app spawns
+      // `ouro mcp-serve --workbench-mcp` for its boss) with NO agent.json entry.
+      // A disabled/needs_config row here does NOT mean the tools are absent —
+      // the authoritative signal is whether `workbench_*` tools are in the
+      // toolset this turn. The annotation prevents the agent from misreading the
+      // row as "blocked".
+      status: !senses.workbench.enabled
+        ? "disabled (runtime-injected when launched by Workbench app)"
+        : configured.workbench ? "ready" : "needs_config",
     },
   ]
 
@@ -530,7 +538,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   lines.push("a2a setup truth: run `ouro connect a2a --agent <agent>` to enable the A2A sense, `ouro a2a card --agent <agent> --base-url <public-url>` to publish an agent card, and `ouro a2a onboard --agent <agent> --card-url <peer-card-url>` to add a peer as an agent friend. A2A uses the existing friend trust model, not a separate trust registry.")
-  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. Enabling it means `agent.json` has `senses.workbench.enabled=true` and an `mcpServers.ouro_workbench` entry pointing at the installed `OuroWorkbenchMCP` executable. The boss observes and queues auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use.")
+  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. When the Workbench app launches me as its boss it injects the `ouro_workbench` MCP into my turn at runtime (it spawns `ouro mcp-serve --agent <me> --workbench-mcp`), so I receive the tools for the served session without any `agent.json` `mcpServers.ouro_workbench` entry — nothing is written to the bundle, so this stays path-free and cross-machine clean. The authoritative signal that Workbench is active is simply that the `workbench_*` tools are present in my toolset this turn; the sense table or `agent.json` may still read as disabled/needs_config because no bundle entry exists, and that is expected under runtime injection — I do NOT treat that as blocked or as a trust-level problem. I observe and queue auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use. The explicit `ouro connect workbench --agent <me>` command still writes a persistent bundle entry as an opt-in escape hatch, but the boss does not need it.")
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")
