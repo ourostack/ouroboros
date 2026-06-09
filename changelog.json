@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.659",
+      "changes": [
+        "Add `ouro mcp-serve --workbench-mcp [<path>]` so Ouro Workbench injects its `ouro_workbench` MCP into the boss agent's turn at runtime — merged per-turn and per-agent in the daemon with no cross-agent leak — instead of writing a machine-specific entry into the git-synced agent bundle.",
+        "Drop the Workbench MCP bundle-write from the boss path (the explicit `ouro connect workbench` opt-in escape hatch is unchanged) and update the agent self-model copy so the boss understands it receives `ouro_workbench` via runtime injection rather than treating the missing bundle entry as a blocked or trust-level state."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.658",
       "changes": [
         "Add Work Card visibility projection for Workbench.",
