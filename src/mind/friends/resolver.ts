@@ -3,6 +3,7 @@
 // Replaces the old ContextResolver: no authority checker, no separate note resolution.
 
 import { randomUUID } from "crypto"
+import { userInfo } from "os"
 import type { FriendStore } from "./store"
 import type { IdentityProvider, FriendRecord, ResolvedContext, ExternalId } from "./types"
 import { getChannelCapabilities } from "./channel"
@@ -17,6 +18,41 @@ export interface FriendResolverParams {
 }
 
 const CURRENT_SCHEMA_VERSION = 1
+
+// Test seam: when set (including to null), overrides OS detection of the
+// machine-owner username so resolver tests are deterministic.
+let machineOwnerOverride: string | null | undefined
+export function _setMachineOwnerUsernameForTest(value: string | null | undefined): void {
+  machineOwnerOverride = value
+}
+
+/**
+ * The OS username that owns this daemon process, or null if undetectable. The
+ * person running the daemon owns this agent + its bundle, so the local friend
+ * that names them is the machine owner (family), not a stranger.
+ */
+export function machineOwnerUsername(): string | null {
+  if (machineOwnerOverride !== undefined) return machineOwnerOverride
+  try {
+    return userInfo().username
+  } catch {
+    /* v8 ignore next -- defensive: userInfo() only throws when the running user has no passwd entry @preserve */
+    return null
+  }
+}
+
+/**
+ * True when (provider, externalId) names the local machine owner — the OS user
+ * running the daemon. Matches the bare username or a `user@host` external id.
+ */
+export function isLocalMachineOwnerIdentity(
+  provider: string,
+  externalId: string,
+  ownerUsername: string | null,
+): boolean {
+  if (provider !== "local" || !ownerUsername) return false
+  return externalId === ownerUsername || externalId.startsWith(`${ownerUsername}@`)
+}
 
 export class FriendResolver {
   private readonly store: FriendStore
@@ -111,6 +147,15 @@ export class FriendResolver {
 
     const isFirstImprint = !hasAnyFriends
     const isA2AAgent = this.params.provider === "a2a-agent"
+    // The local friend that names the OS user running the daemon is the machine
+    // owner (family) — they own the agent + its bundle. Usually this friend already
+    // exists as a family/primary hatch imprint; this covers the un-imprinted boss
+    // path (e.g. a Workbench boss check-in on a bundle that skipped imprint).
+    const isLocalMachineOwner = isLocalMachineOwnerIdentity(
+      this.params.provider,
+      this.params.externalId,
+      machineOwnerUsername(),
+    )
 
     // BlueBubbles group chats route through here as `imessage-handle` with an
     // externalId of the form `group:any;+;<chatHash>`. When the harness auto-
@@ -132,8 +177,8 @@ export class FriendResolver {
     const friend: FriendRecord = {
       id: randomUUID(),
       name: this.params.displayName,
-      role: isA2AAgent ? "agent-peer" : isFirstImprint ? "primary" : "stranger",
-      trustLevel: isA2AAgent ? "stranger" : isFirstImprint ? "family" : "stranger",
+      role: isA2AAgent ? "agent-peer" : isFirstImprint ? "primary" : isLocalMachineOwner ? "family" : "stranger",
+      trustLevel: isA2AAgent ? "stranger" : (isFirstImprint || isLocalMachineOwner) ? "family" : "stranger",
       connections: [],
       externalIds: [externalId],
       tenantMemberships,

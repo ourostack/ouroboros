@@ -1,5 +1,10 @@
-import { describe, it, expect, vi } from "vitest"
-import { FriendResolver } from "../../../mind/friends/resolver"
+import { describe, it, expect, vi, afterEach } from "vitest"
+import {
+  FriendResolver,
+  isLocalMachineOwnerIdentity,
+  machineOwnerUsername,
+  _setMachineOwnerUsernameForTest,
+} from "../../../mind/friends/resolver"
 import type { FriendStore } from "../../../mind/friends/store"
 import type { FriendRecord } from "../../../mind/friends/types"
 import { emitNervesEvent } from "../../../nerves/runtime"
@@ -493,5 +498,88 @@ describe("FriendResolver", () => {
       expect(persisted.trustLevel).toBe("family")
       expect(persisted.notes?.autoCreatedGroup).toBeUndefined()
     })
+  })
+})
+
+describe("machine-owner trust", () => {
+  afterEach(() => _setMachineOwnerUsernameForTest(undefined))
+
+  describe("isLocalMachineOwnerIdentity", () => {
+    it("matches the bare owner username on the local provider", () => {
+      expect(isLocalMachineOwnerIdentity("local", "microsoft", "microsoft")).toBe(true)
+    })
+    it("matches a user@host external id for the owner", () => {
+      expect(isLocalMachineOwnerIdentity("local", "microsoft@macbook", "microsoft")).toBe(true)
+    })
+    it("does not match a different local user", () => {
+      expect(isLocalMachineOwnerIdentity("local", "guest", "microsoft")).toBe(false)
+    })
+    it("only applies to the local provider", () => {
+      expect(isLocalMachineOwnerIdentity("aad", "microsoft", "microsoft")).toBe(false)
+    })
+    it("is false when the owner is undetectable", () => {
+      expect(isLocalMachineOwnerIdentity("local", "microsoft", null)).toBe(false)
+    })
+  })
+
+  describe("machineOwnerUsername", () => {
+    it("returns the test override when set", () => {
+      _setMachineOwnerUsernameForTest("operator")
+      expect(machineOwnerUsername()).toBe("operator")
+    })
+    it("returns null when the override is null", () => {
+      _setMachineOwnerUsernameForTest(null)
+      expect(machineOwnerUsername()).toBeNull()
+    })
+    it("falls back to the OS user when no override is set", () => {
+      _setMachineOwnerUsernameForTest(undefined)
+      const result = machineOwnerUsername()
+      expect(result === null || typeof result === "string").toBe(true)
+    })
+  })
+
+  it("creates a new local-machine-owner friend at family trust, not stranger", async () => {
+    _setMachineOwnerUsernameForTest("microsoft")
+    const store = createMockStore(undefined, true) // hasAnyFriends → NOT first imprint
+    ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    const resolver = new FriendResolver(store, {
+      provider: "local",
+      externalId: "microsoft",
+      displayName: "microsoft",
+      channel: "mcp",
+    })
+    const ctx = await resolver.resolve()
+    expect(ctx.friend.trustLevel).toBe("family")
+    expect(ctx.friend.role).toBe("family")
+  })
+
+  it("creates a user@host machine-owner friend at family trust", async () => {
+    _setMachineOwnerUsernameForTest("microsoft")
+    const store = createMockStore(undefined, true)
+    ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    const resolver = new FriendResolver(store, {
+      provider: "local",
+      externalId: "microsoft@macbook",
+      displayName: "microsoft",
+      channel: "cli",
+    })
+    const ctx = await resolver.resolve()
+    expect(ctx.friend.trustLevel).toBe("family")
+    expect(ctx.friend.role).toBe("family")
+  })
+
+  it("still creates a non-owner local friend as a stranger", async () => {
+    _setMachineOwnerUsernameForTest("microsoft")
+    const store = createMockStore(undefined, true)
+    ;(store.findByExternalId as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+    const resolver = new FriendResolver(store, {
+      provider: "local",
+      externalId: "someone-else",
+      displayName: "someone-else",
+      channel: "mcp",
+    })
+    const ctx = await resolver.resolve()
+    expect(ctx.friend.trustLevel).toBe("stranger")
+    expect(ctx.friend.role).toBe("stranger")
   })
 })
