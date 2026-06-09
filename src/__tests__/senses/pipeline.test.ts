@@ -2074,6 +2074,12 @@ describe("handleInboundTurn", () => {
         pendingObligations: [failoverObligation],
         returnObligations: [failoverReturnObligation],
       })
+      mockRefreshContextLossSentinel.mockImplementation(async (_agentName: string, root: string) => {
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        const resume = readFlightRecorderResume(root)
+        expect(resume.blockedBecause).toContain("turn errored before a safe continuation was reached")
+        expect(resume.nextSafeAction.value).toContain("switch to anthropic")
+      })
       const input = makeInput({
         failoverState,
         runAgent: vi.fn().mockResolvedValue({
@@ -2099,6 +2105,9 @@ describe("handleInboundTurn", () => {
         expect(resume.activeObligationIds).toEqual([failoverObligation.id])
         expect(resume.activeReturnObligationIds).toEqual(["return-failover"])
         expect(resume.nextSafeAction.value).toContain("switch to anthropic")
+        expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
+          trigger: "provider_failover",
+        }))
       } finally {
         agentNameSpy.mockRestore()
         agentRootSpy.mockRestore()
