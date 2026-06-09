@@ -20,9 +20,21 @@ import { handleInboundTurn } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
 
+const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 const mockFindBridgesForSession = vi.fn()
 const mockListTargetSessionCandidates = vi.fn()
 const mockListCodingSessions = vi.fn()
+
+vi.mock("../../nerves/runtime", async () => {
+  const actual = await vi.importActual<typeof import("../../nerves/runtime")>("../../nerves/runtime")
+  return {
+    ...actual,
+    emitNervesEvent: (event: Parameters<typeof actual.emitNervesEvent>[0]) => {
+      mockEmitNervesEvent(event)
+      return actual.emitNervesEvent(event)
+    },
+  }
+})
 
 vi.mock("../../heart/daemon/socket-client", () => ({
   requestInnerWake: vi.fn(async () => null),
@@ -369,6 +381,7 @@ describe("handleInboundTurn", () => {
     mockResetSessionModifiedFiles.mockReset()
     mockRefreshOpenAICodexProviderCredentials.mockReset()
     mockRefreshContextLossSentinel.mockReset()
+    mockEmitNervesEvent.mockReset()
     mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
   })
 
@@ -919,11 +932,14 @@ describe("handleInboundTurn", () => {
       const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-sentinel-post-turn-"))
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
       const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      let sentinelObservedResume: { currentAsk: string | null; sessionRef: string | null } | null = null
       mockRefreshContextLossSentinel.mockImplementation(async (_agentName: string, root: string) => {
         const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
         const resume = readFlightRecorderResume(root)
-        expect(resume.currentAsk.value).toBe("refresh Sentinel after checkpoint")
-        expect(resume.lastSafeCheckpoint.sessionRef).toBe("friend-1/cli/sentinel-test")
+        sentinelObservedResume = {
+          currentAsk: resume.currentAsk.value,
+          sessionRef: resume.lastSafeCheckpoint.sessionRef,
+        }
       })
       try {
         const input = makeInput({
@@ -944,6 +960,10 @@ describe("handleInboundTurn", () => {
         expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
           trigger: "post_turn",
         }))
+        expect(sentinelObservedResume).toEqual({
+          currentAsk: "refresh Sentinel after checkpoint",
+          sessionRef: "friend-1/cli/sentinel-test",
+        })
       } finally {
         agentNameSpy.mockRestore()
         agentRootSpy.mockRestore()
@@ -975,6 +995,19 @@ describe("handleInboundTurn", () => {
         expect(result.turnOutcome).toBe("settled")
         expect(input.postTurn).toHaveBeenCalledTimes(1)
         expect(input.accumulateFriendTokens).toHaveBeenCalledWith(input.friendStore, "friend-1", usageData)
+        expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
+          trigger: "post_turn",
+        }))
+        expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+          level: "warn",
+          component: "senses",
+          event: "senses.context_loss_sentinel_refresh_error",
+          meta: expect.objectContaining({
+            agentName: "slugger",
+            trigger: "post_turn",
+            error: "sentinel unavailable",
+          }),
+        }))
         const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
         expect(readFlightRecorderResume(agentRoot).currentAsk.value).toBe("persist before sentinel failure")
       } finally {
@@ -2074,11 +2107,14 @@ describe("handleInboundTurn", () => {
         pendingObligations: [failoverObligation],
         returnObligations: [failoverReturnObligation],
       })
+      let sentinelObservedResume: { blockedBecause: string[]; nextSafeAction: string | null } | null = null
       mockRefreshContextLossSentinel.mockImplementation(async (_agentName: string, root: string) => {
         const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
         const resume = readFlightRecorderResume(root)
-        expect(resume.blockedBecause).toContain("turn errored before a safe continuation was reached")
-        expect(resume.nextSafeAction.value).toContain("switch to anthropic")
+        sentinelObservedResume = {
+          blockedBecause: resume.blockedBecause,
+          nextSafeAction: resume.nextSafeAction.value,
+        }
       })
       const input = makeInput({
         failoverState,
@@ -2108,6 +2144,75 @@ describe("handleInboundTurn", () => {
         expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
           trigger: "provider_failover",
         }))
+        expect(sentinelObservedResume?.blockedBecause).toContain("turn errored before a safe continuation was reached")
+        expect(sentinelObservedResume?.nextSafeAction).toContain("switch to anthropic")
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        loadConfigSpy.mockRestore()
+        fs.rmSync(tmp, { recursive: true, force: true })
+      }
+    })
+
+    it("preserves provider-failover guidance when context-loss Sentinel refresh throws", async () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-pipeline-failover-sentinel-error-"))
+      const agentRoot = path.join(tmp, "slugger.ouro")
+      fs.mkdirSync(agentRoot, { recursive: true })
+      writeAgentProviderSelectionFixture(agentRoot, agentProviderSelection())
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const loadConfigSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+        version: 1,
+        enabled: true,
+        humanFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        agentFacing: { provider: "openai-codex", model: "codex-mini-latest" },
+        phrases: { thinking: [], tool: [], followup: [] },
+      } as any)
+      mockRunMachineProviderFailoverInventory.mockResolvedValue({
+        ready: [{
+          provider: "anthropic",
+          model: "claude-opus-4-6",
+          credentialRevision: "cred_anthropic",
+          source: "auth-flow",
+          result: { ok: true },
+        }],
+        unavailable: [],
+        unconfigured: [],
+      })
+      mockRefreshContextLossSentinel.mockRejectedValue("sentinel unavailable during failover")
+      const failoverState = { pending: null }
+      const input = makeInput({
+        failoverState,
+        messages: [{ role: "user", content: "recover despite sentinel failure" }],
+        continuityIngressTexts: ["recover despite sentinel failure"],
+        runAgent: vi.fn().mockResolvedValue({
+          usage: usageData,
+          outcome: "errored",
+          error: new Error("usage limit exceeded"),
+          errorClassification: "usage-limit",
+        }),
+      })
+
+      try {
+        const result = await handleInboundTurn(input)
+
+        expect(result.failoverMessage).toContain("switch to anthropic")
+        expect(failoverState.pending).not.toBeNull()
+        expect(mockRefreshContextLossSentinel).toHaveBeenCalledWith("slugger", agentRoot, expect.objectContaining({
+          trigger: "provider_failover",
+        }))
+        expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+          level: "warn",
+          component: "senses",
+          event: "senses.context_loss_sentinel_refresh_error",
+          meta: expect.objectContaining({
+            agentName: "slugger",
+            trigger: "provider_failover",
+            error: "sentinel unavailable during failover",
+          }),
+        }))
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        expect(readFlightRecorderResume(agentRoot).currentAsk.value).toBe("recover despite sentinel failure")
       } finally {
         agentNameSpy.mockRestore()
         agentRootSpy.mockRestore()

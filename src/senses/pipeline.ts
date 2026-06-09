@@ -299,6 +299,28 @@ function recordPostTurnFlightRecorderCheckpoint(input: {
   })
 }
 
+async function refreshContextLossSentinelNonFatal(input: {
+  agentName: string
+  agentRoot: string
+  trigger: "post_turn" | "provider_failover"
+}): Promise<void> {
+  try {
+    await refreshContextLossSentinel(input.agentName, input.agentRoot, { trigger: input.trigger })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.context_loss_sentinel_refresh_error",
+      message: `failed to refresh context-loss Sentinel for ${input.trigger}`,
+      meta: {
+        agentName: input.agentName,
+        trigger: input.trigger,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
 function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
   const agentRoot = getAgentRoot()
   const { config: agentConfig } = readAgentConfigForAgent(agentName, path.dirname(agentRoot))
@@ -995,9 +1017,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       input.failoverState.pending = failoverContext
       input.postTurn(sessionMessages, session.sessionPath, result.usage)
       try {
-        const postTurnArc = readPostTurnFlightRecorderArcSnapshot(getAgentRoot())
+        const agentRoot = getAgentRoot()
+        const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
         recordPostTurnFlightRecorderCheckpoint({
-          agentRoot: getAgentRoot(),
+          agentRoot,
           currentSession,
           currentAsk: currentObligation
             ?? activeWorkFrame.primaryObligation?.content?.trim()
@@ -1013,6 +1036,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           recentClaimIds: postTurnArc.recentClaimIds,
           unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
         })
+        await refreshContextLossSentinelNonFatal({ agentName, agentRoot, trigger: "provider_failover" })
       } catch (checkpointError) {
         /* v8 ignore next -- best-effort recorder write must not hide provider-failover guidance @preserve */
         emitNervesEvent({
@@ -1089,7 +1113,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       recentClaimIds: postTurnArc.recentClaimIds,
       unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
     })
-    await refreshContextLossSentinel(getAgentName(), agentRoot, { trigger: "post_turn" })
+    await refreshContextLossSentinelNonFatal({ agentName: getAgentName(), agentRoot, trigger: "post_turn" })
   } catch (error) {
     /* v8 ignore next -- defensive recorder failures are non-fatal to already-persisted user turns @preserve */
     emitNervesEvent({
