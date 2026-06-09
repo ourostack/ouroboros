@@ -197,6 +197,11 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
     return
   }
 
+  if (surface === "context-loss-gauntlet") {
+    writeJson(response, 200, options.hooks.readAgentContextLossGauntlet(agent))
+    return
+  }
+
   if (surface === "note-decisions") {
     writeJson(response, 200, options.hooks.readAgentNoteDecisions(agent))
     return

@@ -6,6 +6,8 @@ import type {
   MailboxAgentView,
   MailboxCodingDeep,
   MailboxCodingDeepItem,
+  MailboxContextLossGauntletCheck,
+  MailboxContextLossGauntletView,
   MailboxObligationDetailItem,
   MailboxObligationDetailView,
   MailboxObligationItem,
@@ -17,14 +19,33 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGenera
   const [coding, setCoding] = useState<MailboxCodingDeep | null>(null)
   const [obligationDetail, setObligationDetail] = useState<MailboxObligationDetailView | null>(null)
   const [selfFix, setSelfFix] = useState<MailboxSelfFixView | null>(null)
+  const [contextLossGauntlet, setContextLossGauntlet] = useState<MailboxContextLossGauntletView | null>(null)
+  const [contextLossGauntletError, setContextLossGauntletError] = useState<string | null>(null)
   const work = view.work
   const obligations = work.obligations
   const tasks = work.tasks
 
   useEffect(() => {
+    let cancelled = false
+    setContextLossGauntlet(null)
+    setContextLossGauntletError(null)
     fetchJson<MailboxCodingDeep>(`/agents/${encodeURIComponent(agentName)}/coding`).then(setCoding)
     fetchJson<MailboxObligationDetailView>(`/agents/${encodeURIComponent(agentName)}/obligations`).then(setObligationDetail).catch(() => {})
     fetchJson<MailboxSelfFixView>(`/agents/${encodeURIComponent(agentName)}/self-fix`).then(setSelfFix).catch(() => {})
+    fetchJson<MailboxContextLossGauntletView>(`/agents/${encodeURIComponent(agentName)}/context-loss-gauntlet`)
+      .then((report) => {
+        if (cancelled) return
+        setContextLossGauntlet(report)
+        setContextLossGauntletError(null)
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setContextLossGauntlet(null)
+        setContextLossGauntletError(error instanceof Error ? error.message : "context-loss gauntlet unavailable")
+      })
+    return () => {
+      cancelled = true
+    }
   }, [agentName, refreshGeneration])
 
   // Use enriched obligations when available, fall back to summary
@@ -49,6 +70,14 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGenera
 
   return (
     <div className="space-y-8">
+      {/* Context-loss gauntlet */}
+      {(contextLossGauntlet || contextLossGauntletError) && (
+        <section>
+          <SH label="Context-loss gauntlet" />
+          <GauntletPanel report={contextLossGauntlet} error={contextLossGauntletError} />
+        </section>
+      )}
+
       {/* Obligations — with full chain tracing */}
       <section>
         <SH label={`Obligations (${displayOpenCount} open)`} />
@@ -245,6 +274,83 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGenera
 
 function SH({ label }: { label: string }) {
   return <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ouro-glow">{label}</p>
+}
+
+function GauntletPanel({ report, error }: { report: MailboxContextLossGauntletView | null; error: string | null }) {
+  return (
+    <div className="mt-3 rounded-lg bg-ouro-void/40 px-3 py-3 ring-1 ring-ouro-moss/15">
+      {error && !report ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge color="red">unavailable</Badge>
+          <span className="min-w-0 flex-1 break-words text-sm text-ouro-mist">{error}</span>
+        </div>
+      ) : report ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge color={gauntletVerdictColor(report.verdict)}>{report.verdict}</Badge>
+            <span className="font-mono text-xs text-ouro-bone">score {report.score.percentage}%</span>
+            <span className="text-xs text-ouro-shadow">
+              points {report.score.earned}/{report.score.possible}
+            </span>
+            <span className="text-xs text-ouro-shadow">updated {relTime(report.generatedAt)}</span>
+            <span className="min-w-[12rem] flex-1 break-words text-sm text-ouro-mist">{report.summary}</span>
+          </div>
+
+          <div className="mt-3 grid gap-3 border-t border-ouro-moss/10 pt-3 md:grid-cols-2">
+            <div className="min-w-0">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Current ask</p>
+              <p className="mt-1 break-words text-sm text-ouro-bone">
+                {report.currentAsk.available ? truncate(report.currentAsk.value ?? "", 120) : "unavailable"}
+              </p>
+              <p className="mt-1 text-xs text-ouro-shadow">confidence: {report.currentAsk.confidence}</p>
+            </div>
+            <div className="min-w-0">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Next safe action</p>
+              <p className="mt-1 break-words text-sm text-ouro-bone">{truncate(report.nextAction.summary, 120)}</p>
+              <p className="mt-1 text-xs text-ouro-shadow">actor: {report.nextAction.actor}</p>
+            </div>
+          </div>
+
+          <div className="mt-3 border-t border-ouro-moss/10 pt-2">
+            {report.checks.map((check) => (
+              <GauntletCheckRow key={check.id} check={check} />
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
+function gauntletVerdictColor(verdict: MailboxContextLossGauntletView["verdict"]) {
+  return verdict === "ready" ? "lime" : verdict === "watch" ? "yellow" : "red"
+}
+
+function gauntletCheckColor(status: MailboxContextLossGauntletCheck["status"]) {
+  return status === "pass" ? "lime" : status === "warn" ? "yellow" : status === "fail" ? "red" : "zinc"
+}
+
+function gauntletStatusLabel(status: MailboxContextLossGauntletCheck["status"]) {
+  return status === "not_applicable" ? "n/a" : status
+}
+
+function GauntletCheckRow({ check }: { check: MailboxContextLossGauntletCheck }) {
+  const firstEvidence = check.evidence[0]?.locator ?? null
+  return (
+    <div className="grid gap-2 border-b border-ouro-moss/10 py-2 last:border-b-0 md:grid-cols-[150px_1fr_auto] md:items-start">
+      <div className="flex items-center gap-2">
+        <Badge color={gauntletCheckColor(check.status)}>{gauntletStatusLabel(check.status)}</Badge>
+        <span className="text-xs text-ouro-mist">{check.label}</span>
+      </div>
+      <div className="min-w-0">
+        <p className="break-words text-xs text-ouro-shadow">{check.detail}</p>
+        {firstEvidence && <p className="mt-1 truncate font-mono text-[10px] text-ouro-moss">{firstEvidence}</p>}
+      </div>
+      <span className="font-mono text-xs text-ouro-shadow md:text-right">
+        {check.maxScore > 0 ? `${check.score}/${check.maxScore}` : "n/a"}
+      </span>
+    </div>
+  )
 }
 
 function isDetailedObligation(
