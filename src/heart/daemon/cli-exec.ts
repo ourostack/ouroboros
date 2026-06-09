@@ -26,6 +26,7 @@ import { bundleMetaHook } from "./hooks/bundle-meta"
 import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getChangelogPath, getPackageVersion } from "../../mind/bundle-manifest"
 import { getCredentialStore, probeCredentialVaultAccess, resetCredentialStore } from "../../repertoire/credential-access"
+import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { createVaultAccount } from "../../repertoire/vault-setup"
 import { getVaultUnlockStatus, promptConfirmedVaultUnlockSecret, storeVaultUnlockSecret, vaultUnlockReplaceRecoverFix, type VaultUnlockStoreKind } from "../../repertoire/vault-unlock"
 import { parseInnerDialogSession, formatThoughtTurns, getInnerDialogSessionPath, followThoughts } from "./thoughts"
@@ -3144,6 +3145,30 @@ function findInstalledWorkbenchMcp(deps: OuroCliDeps, preferred?: string | null)
     ...defaultWorkbenchMcpCandidates(deps),
   ]
   return candidates.find((candidate) => cliPathExists(deps, candidate)) ?? null
+}
+
+/**
+ * Resolve the `--workbench-mcp [<path>]` flag into a per-turn runtime MCP
+ * override for the `ouro mcp-serve` bridge, or null when the flag is absent /
+ * unresolvable.
+ *
+ * - `undefined` (flag not passed) → null (no runtime injection).
+ * - `true` (bare opt-in) → self-discover the installed OuroWorkbenchMCP.
+ * - a string path → use it if it exists, otherwise fall back to discovery
+ *   (treating the string as the preferred candidate).
+ *
+ * Returns `{ ouro_workbench: { command, args: [] } }` so the daemon merges it
+ * into the boss agent's toolset for the turn without writing to agent.json.
+ */
+export function resolveWorkbenchRuntimeMcp(
+  flag: string | true | undefined,
+  deps: OuroCliDeps,
+): RuntimeMcpServers | null {
+  if (flag === undefined) return null
+  const preferred = typeof flag === "string" ? flag : null
+  const command = findInstalledWorkbenchMcp(deps, preferred)
+  if (!command) return null
+  return { ouro_workbench: { command, args: [] } }
 }
 
 function writeWorkbenchMcpRegistration(agent: string, executablePath: string, deps: OuroCliDeps): void {
@@ -7681,19 +7706,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const { createMcpServer } = await import("../mcp/mcp-server")
     const friendId = command.friendId ?? `local-${os.userInfo().username}`
     const mcpSocketPath = (command as { socketOverride?: string }).socketOverride ?? deps.socketPath
+    // Resolve the optional --workbench-mcp flag into a concrete runtime MCP
+    // override. A string is taken as the explicit binary path (falling back to
+    // discovery if it does not exist); a boolean opt-in (true) self-discovers
+    // the installed OuroWorkbenchMCP. The resolved override is forwarded by the
+    // bridge on every senseTurn and merged per-turn in the daemon — nothing is
+    // written to agent.json.
+    const workbenchMcpFlag = (command as { workbenchMcp?: string | true }).workbenchMcp
+    const runtimeMcp = resolveWorkbenchRuntimeMcp(workbenchMcpFlag, deps)
     const server = createMcpServer({
       agent: command.agent,
       friendId,
       socketPath: mcpSocketPath,
       stdin: process.stdin,
       stdout: process.stdout,
+      ...(runtimeMcp ? { runtimeMcp } : {}),
     })
     server.start()
     emitNervesEvent({
       component: "daemon",
       event: "daemon.mcp_serve_started",
       message: "MCP server started via CLI",
-      meta: { agent: command.agent, friendId },
+      meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcp },
     })
     // Keep process alive until stdin closes
     await new Promise<void>((resolve) => {
