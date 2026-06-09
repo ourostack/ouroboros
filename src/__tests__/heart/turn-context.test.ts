@@ -512,7 +512,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 
@@ -553,7 +553,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 
@@ -583,7 +583,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: disabled",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 
@@ -613,7 +613,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 
@@ -631,7 +631,7 @@ describe("buildTurnContext", () => {
       "- Mail: needs_config",
       "- Voice: needs_config",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 
@@ -646,7 +646,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
-      "- Workbench: disabled",
+      "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
 

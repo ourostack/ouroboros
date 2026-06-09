@@ -3402,6 +3402,14 @@ async function buildConnectMenu(
     installedWorkbenchMcp
       ? `OuroWorkbenchMCP found: ${installedWorkbenchMcp}`
       : "OuroWorkbenchMCP not found in ~/Applications or /Applications",
+    // Runtime injection is the boss's normal path: the Workbench app launches
+    // its boss with `ouro mcp-serve --workbench-mcp`, which injects the
+    // ouro_workbench MCP per-turn without any agent.json entry. A blank/“not
+    // registered” bundle state above is expected for a runtime-only boss; this
+    // `connect workbench` command only writes a persistent entry as an opt-in.
+    installedWorkbenchMcp
+      ? "boss runtime injection: when the Workbench app launches this agent it injects ouro_workbench per-turn; an agent.json entry is not required (this command writes one as an opt-in escape hatch)."
+      : "boss runtime injection: install Ouro Workbench.app so the app can inject ouro_workbench per-turn when it launches this agent as boss (no agent.json entry required).",
   ]
 
   const entries: ConnectMenuEntry[] = [
