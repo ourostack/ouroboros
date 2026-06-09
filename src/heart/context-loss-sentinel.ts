@@ -3,6 +3,7 @@ import * as path from "path"
 import { execFileSync } from "child_process"
 import { randomUUID } from "crypto"
 import {
+  isFlightRecorderResume,
   readFlightRecorderResume,
   type FlightRecorderEvent,
   type FlightRecorderResume,
@@ -276,18 +277,7 @@ function isGauntletSummary(value: unknown): value is ContextLossSentinelGauntlet
 }
 
 function isResumeSnapshot(value: unknown): value is FlightRecorderResume {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const record = value as Record<string, unknown>
-  return record.schemaVersion === 1
-    && typeof record.hasCompleteState === "boolean"
-    && typeof record.canContinue === "boolean"
-    && isStringArray(record.blockedBecause)
-    && typeof record.currentAsk === "object"
-    && record.currentAsk !== null
-    && typeof record.nextSafeAction === "object"
-    && record.nextSafeAction !== null
-    && typeof record.recorderHealth === "object"
-    && record.recorderHealth !== null
+  return isFlightRecorderResume(value)
 }
 
 function isReceipt(value: unknown): value is ContextLossSentinelReceipt {

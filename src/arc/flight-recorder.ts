@@ -200,7 +200,7 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string"
 }
 
-function isResumeCandidate(value: unknown): value is FlightRecorderResume {
+export function isFlightRecorderResume(value: unknown): value is FlightRecorderResume {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   const currentAsk = record.currentAsk as Record<string, unknown> | undefined
@@ -337,7 +337,7 @@ export function readFlightRecorderResume(agentRoot: string): FlightRecorderResum
   const latestPath = flightRecorderLatestPath(agentRoot)
   try {
     const parsed = JSON.parse(fs.readFileSync(latestPath, "utf-8")) as unknown
-    if (!isResumeCandidate(parsed)) {
+    if (!isFlightRecorderResume(parsed)) {
       throw new Error("latest.json has invalid flight-recorder resume shape")
     }
     const resume = normalizeResumeInvariants(parsed)

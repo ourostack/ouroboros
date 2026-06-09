@@ -1185,4 +1185,51 @@ describe("context-loss Sentinel core", () => {
       expect(view.degraded.issues.join("\n"), label).toContain("latest.json malformed")
     }
   })
+
+  it("does not trust malformed latest-ready resume snapshots during self-poison recovery", async () => {
+    const agentRoot = makeAgentRoot()
+    const paths = contextLossSentinelPaths(agentRoot)
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:55:00.000Z"),
+      createReceiptId: () => "sentinel-valid-latest-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const latestReady = JSON.parse(fs.readFileSync(paths.latestReady, "utf-8")) as Record<string, unknown>
+    latestReady.resumeSnapshot = {
+      ...(latestReady.resumeSnapshot as Record<string, unknown>),
+      currentAsk: {},
+    }
+    fs.writeFileSync(paths.latestReady, `${JSON.stringify(latestReady, null, 2)}\n`, "utf-8")
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-sentinel-blocker-with-corrupt-latest-ready",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:56:00.000Z",
+      summary: "Context-loss Sentinel blocked recovery",
+      blockedBecause: ["context-loss Sentinel blocked: provider:outward failed"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-blocked.json",
+      }],
+      meta: {
+        source: "context-loss-sentinel",
+        receiptId: "sentinel-blocked",
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:57:00.000Z"),
+      createReceiptId: () => "sentinel-corrupt-latest-ready-fallback",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.verdict).toBe("blocked")
+    expect(receipt.recoveryAnchor.kind).toBe("flight-recorder")
+    expect(readContextLossSentinelView(agentRoot).latestReady).toBeNull()
+  })
 })

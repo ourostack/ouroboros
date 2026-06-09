@@ -238,6 +238,26 @@ describe("Arc flight recorder", () => {
     expect(rendered).toContain("packets: packet-1")
     expect(rendered).toContain("unverified claims: claim-1")
     expect(rendered).toContain("recorder health: degraded")
+
+    const emptyObligations = formatFlightRecorderResume({
+      schemaVersion: 1,
+      hasCompleteState: true,
+      canContinue: true,
+      missing: [],
+      gaps: [],
+      currentAsk: { value: "keep moving", confidence: "current", sourceEventIds: ["fr-ready"] },
+      nextSafeAction: { value: "run checks", stopBefore: [], sourceEventIds: ["fr-ready"] },
+      blockedBecause: [],
+      activeObligationIds: [],
+      activeReturnObligationIds: [],
+      activePacketIds: [],
+      openEvolutionCaseIds: [],
+      recentClaimIds: [],
+      unverifiedClaimIds: [],
+      lastSafeCheckpoint: { turnId: "turn-ready", sessionRef: "friend/cli/main", recordedAt: "2026-06-08T12:00:00.000Z", sourceEventIds: ["fr-ready"] },
+      recorderHealth: { status: "ok", issues: [] },
+    })
+    expect(emptyObligations).not.toContain("obligations:")
   })
 
   it("falls back to a generic slug when creating habit run ids from punctuation", async () => {
