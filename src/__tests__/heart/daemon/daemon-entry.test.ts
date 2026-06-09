@@ -480,6 +480,101 @@ describe("daemon entrypoint", () => {
     argvSpy.mockRestore()
   })
 
+  it("refreshes Sentinel on daemon startup and wires daemon-health Sentinel checks", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger", "ouroboros"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const healthMonitorCtor = vi.fn()
+    const refreshContextLossSentinel = vi.fn(async () => ({
+      verdict: "ready",
+      summary: "Sentinel ready",
+    }))
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      start = start
+      stop = stop
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+        sendToAgent = vi.fn()
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/health-monitor", () => ({
+      HealthMonitor: class MockHealthMonitor {
+        constructor(options: unknown) {
+          healthMonitorCtor(options)
+        }
+        runChecks = vi.fn(async () => [])
+        startPeriodicChecks = vi.fn()
+        stopPeriodicChecks = vi.fn()
+      },
+    }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel,
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const bundlesRoot = path.join(testHomeRoot, "AgentBundles")
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "slugger",
+      path.join(bundlesRoot, "slugger.ouro"),
+      expect.objectContaining({ trigger: "daemon_startup" }),
+    )
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "ouroboros",
+      path.join(bundlesRoot, "ouroboros.ouro"),
+      expect.objectContaining({ trigger: "daemon_startup" }),
+    )
+
+    const healthOptions = healthMonitorCtor.mock.calls[0]?.[0] as {
+      sentinelChecker?: () => Promise<unknown[]>
+    }
+    expect(typeof healthOptions.sentinelChecker).toBe("function")
+
+    refreshContextLossSentinel.mockClear()
+    await healthOptions.sentinelChecker?.()
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "slugger",
+      path.join(bundlesRoot, "slugger.ouro"),
+      expect.objectContaining({ trigger: "daemon_health" }),
+    )
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "ouroboros",
+      path.join(bundlesRoot, "ouroboros.ouro"),
+      expect.objectContaining({ trigger: "daemon_health" }),
+    )
+
+    argvSpy.mockRestore()
+  })
+
   it("emits error and exits when daemon start fails", async () => {
     vi.resetModules()
 
