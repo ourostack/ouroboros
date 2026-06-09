@@ -145,6 +145,55 @@ vi.mock("../../arc/flight-recorder", () => ({
   readFlightRecorderResume: (...args: any[]) => mockReadFlightRecorderResume(...args),
 }))
 
+const sentinelReceipt = {
+  schemaVersion: 1,
+  id: "sentinel-blocked",
+  agent: "test-agent",
+  trigger: "daemon_health",
+  generatedAt: "2026-06-09T17:00:00.000Z",
+  verdict: "blocked",
+  summary: "blocked: provider:outward live check failed",
+  receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-blocked.json",
+  latestReadyLocator: "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+  recoveryAnchor: {
+    kind: "latest-ready",
+    currentAsk: "continue Arc Sentinel implementation",
+    nextSafeAction: "resume from latest-ready and rerun checks",
+    flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+  },
+  gauntlet: {
+    verdict: "blocked",
+    scorePercentage: 70,
+    failedChecks: ["provider:outward"],
+    warnedChecks: [],
+    sourceLocator: "arc/flight-recorder/latest.json",
+  },
+  signals: [],
+  sourceLocators: [
+    "arc/flight-recorder/context-loss-sentinel/latest.json",
+    "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+  ],
+  resumeSnapshot: baseFlightRecorderResume,
+} as const
+const sentinelView = {
+  schemaVersion: 1,
+  latest: sentinelReceipt,
+  latestReady: {
+    ...sentinelReceipt,
+    id: "sentinel-ready",
+    verdict: "ready",
+    summary: "ready: deterministic recovery state is current",
+    receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-ready.json",
+    recoveryAnchor: { ...sentinelReceipt.recoveryAnchor, kind: "latest-ready" },
+  },
+  history: [sentinelReceipt],
+  degraded: { issues: [] },
+} as const
+const mockReadContextLossSentinelView = vi.fn().mockReturnValue(sentinelView)
+vi.mock("../../heart/context-loss-sentinel", () => ({
+  readContextLossSentinelView: (...args: any[]) => mockReadContextLossSentinelView(...args),
+}))
+
 const mockListVisibleBackgroundOperations = vi.fn().mockReturnValue([])
 vi.mock("../../heart/mail-import-discovery", () => ({
   listVisibleBackgroundOperations: (...args: any[]) => mockListVisibleBackgroundOperations(...args),
@@ -217,6 +266,7 @@ describe("buildTurnContext", () => {
     })
     mockReadHealth.mockReturnValue(null)
     mockReadFlightRecorderResume.mockReturnValue(baseFlightRecorderResume)
+    mockReadContextLossSentinelView.mockReturnValue(sentinelView)
     mockListVisibleBackgroundOperations.mockReturnValue([])
     mockReadInnerDialogRawData.mockReturnValue({
       pendingMessages: [],
@@ -446,6 +496,13 @@ describe("buildTurnContext", () => {
     expect(ctx.flightRecorderResume).toEqual(resume)
   })
 
+  it("reads Recovery Sentinel latest and latest-ready for prompt pre-reads", async () => {
+    const ctx = await buildTurnContext(makeInput())
+
+    expect(mockReadContextLossSentinelView).toHaveBeenCalledWith("/mock/agent-root", { limit: 5 })
+    expect((ctx as any).recoverySentinel).toEqual(sentinelView)
+  })
+
   it("handles daemon health read failure gracefully", async () => {
     mockReadHealth.mockImplementation(() => { throw new Error("health fail") })
 
@@ -459,6 +516,15 @@ describe("buildTurnContext", () => {
     const ctx = await buildTurnContext(makeInput())
     expect(ctx.flightRecorderResume.recorderHealth.status).toBe("degraded")
     expect(ctx.flightRecorderResume.recorderHealth.issues[0]).toContain("flight recorder fail")
+  })
+
+  it("handles Recovery Sentinel read failure gracefully", async () => {
+    mockReadContextLossSentinelView.mockImplementation(() => { throw new Error("sentinel fail") })
+
+    const ctx = await buildTurnContext(makeInput())
+    expect((ctx as any).recoverySentinel.latest).toBeNull()
+    expect((ctx as any).recoverySentinel.latestReady).toBeNull()
+    expect((ctx as any).recoverySentinel.degraded.issues[0]).toContain("sentinel fail")
   })
 
   it("handles inner work state read failure gracefully", async () => {

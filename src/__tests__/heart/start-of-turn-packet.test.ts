@@ -75,6 +75,84 @@ function makeIntention(overrides: Partial<IntentionRecord> = {}): IntentionRecor
   }
 }
 
+function makeFlightRecorderResume(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    hasCompleteState: true,
+    canContinue: true,
+    missing: [],
+    gaps: [],
+    currentAsk: { value: "finish Arc Sentinel prompt surface", confidence: "current", sourceEventIds: ["fr-1"] },
+    nextSafeAction: { value: "run prompt tests", stopBefore: ["merge"], sourceEventIds: ["fr-1"] },
+    blockedBecause: [],
+    activeObligationIds: [],
+    activeReturnObligationIds: [],
+    activePacketIds: [],
+    openEvolutionCaseIds: [],
+    recentClaimIds: [],
+    unverifiedClaimIds: [],
+    lastSafeCheckpoint: { turnId: "turn-1", sessionRef: "cli/session", recordedAt: "2026-06-09T17:00:00.000Z", sourceEventIds: ["fr-1"] },
+    recorderHealth: { status: "ok", issues: [] },
+    ...overrides,
+  }
+}
+
+function makeSentinelView() {
+  const latest = {
+    schemaVersion: 1,
+    id: "sentinel-blocked",
+    agent: "slugger",
+    trigger: "daemon_health",
+    generatedAt: "2026-06-09T17:00:00.000Z",
+    verdict: "blocked",
+    summary: "blocked: provider:outward live check failed",
+    receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-blocked.json",
+    latestReadyLocator: "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+    recoveryAnchor: {
+      kind: "latest-ready",
+      currentAsk: "continue Arc Sentinel implementation",
+      nextSafeAction: "resume from latest-ready and rerun checks",
+      flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+    },
+    gauntlet: {
+      verdict: "blocked",
+      scorePercentage: 70,
+      failedChecks: ["provider:outward"],
+      warnedChecks: [],
+      sourceLocator: "arc/flight-recorder/latest.json",
+    },
+    signals: [
+      {
+        id: "provider:outward",
+        kind: "provider_lane",
+        status: "fail",
+        severity: "critical",
+        verdictImpact: "blocked",
+        summary: "outward provider live check failed",
+        source: { kind: "provider-visibility", locator: "agent.json:providerLanes.outward" },
+      },
+    ],
+    sourceLocators: [
+      "arc/flight-recorder/context-loss-sentinel/latest.json",
+      "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+    ],
+    resumeSnapshot: makeFlightRecorderResume(),
+  }
+  return {
+    schemaVersion: 1,
+    latest,
+    latestReady: {
+      ...latest,
+      id: "sentinel-ready",
+      verdict: "ready",
+      summary: "ready: deterministic recovery state is current",
+      receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-ready.json",
+    },
+    history: [latest],
+    degraded: { issues: [] },
+  }
+}
+
 function makeView(overrides: Partial<TemporalView> = {}): TemporalView {
   return {
     recentEpisodes: [],
@@ -269,6 +347,47 @@ describe("start-of-turn packet", () => {
       expect(rendered).toContain("outward: minimax / MiniMax-M2.5")
       expect(rendered).toContain("inner: openai-codex / gpt-5.4")
       expect(rendered.indexOf("**Provider:**")).toBeLessThan(rendered.indexOf("**Owed:**"))
+    })
+
+    it("renders Recovery Sentinel latest and latest-ready fallback as protected prompt context", () => {
+      const view = makeView({
+        activeObligations: [makeObligation({ content: "ship Recovery Sentinel prompt context" })],
+      })
+      const sentinelView = makeSentinelView()
+      const packet = buildStartOfTurnPacket(view, { recoverySentinel: sentinelView } as any)
+
+      expect((packet as any).recoverySentinel).toEqual(sentinelView)
+
+      const rendered = renderStartOfTurnPacket(packet)
+      expect(rendered).toContain("**Recovery Sentinel:**")
+      expect(rendered).toContain("verdict: blocked")
+      expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+      expect(rendered).toContain("current ask: continue Arc Sentinel implementation")
+      expect(rendered).toContain("next action: resume from latest-ready and rerun checks")
+    })
+
+    it("keeps Recovery Sentinel and Arc resume under truncation pressure", () => {
+      const view = makeView({
+        tempo: "brief",
+        recentEpisodes: Array.from({ length: 40 }, (_, i) =>
+          makeEpisode({ id: `ep-${i}`, summary: `oversized episode ${i} with a lot of detail that should lose priority` }),
+        ),
+        activeObligations: Array.from({ length: 25 }, (_, i) =>
+          makeObligation({ id: `ob-${i}`, content: `oversized obligation ${i} with a lot of detail that should lose priority` }),
+        ),
+        activeCares: Array.from({ length: 25 }, (_, i) =>
+          makeCare({ id: `care-${i}`, label: `oversized care ${i} with a lot of detail that should lose priority` }),
+        ),
+      })
+      const packet = buildStartOfTurnPacket(view, {
+        flightRecorderResume: makeFlightRecorderResume(),
+        recoverySentinel: makeSentinelView(),
+      } as any)
+
+      const rendered = renderStartOfTurnPacket(packet)
+      expect(rendered).toContain("**Arc:**")
+      expect(rendered).toContain("**Recovery Sentinel:**")
+      expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
     })
   })
 
