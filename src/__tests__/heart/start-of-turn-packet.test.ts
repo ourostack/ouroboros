@@ -632,7 +632,7 @@ describe("start-of-turn packet", () => {
 
     beforeEach(() => {
       vi.resetModules()
-      vi.mock("fs", async (importOriginal) => {
+      vi.doMock("fs", async (importOriginal) => {
         const actual = await importOriginal<typeof import("fs")>()
         return {
           ...actual,
@@ -644,6 +644,7 @@ describe("start-of-turn packet", () => {
 
     afterEach(() => {
       vi.restoreAllMocks()
+      vi.doUnmock("fs")
     })
 
     async function setup(bundleMeta?: Record<string, unknown>, changelog?: unknown[]) {

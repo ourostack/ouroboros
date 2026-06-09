@@ -2,7 +2,11 @@ import * as fs from "fs"
 import * as path from "path"
 import { execFileSync } from "child_process"
 import { randomUUID } from "crypto"
-import { readFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
+import {
+  readFlightRecorderResume,
+  type FlightRecorderEvent,
+  type FlightRecorderResume,
+} from "../arc/flight-recorder"
 import { emitNervesEvent } from "../nerves/runtime"
 import { runContextLossGauntlet, type ContextLossGauntletReport } from "./context-loss-gauntlet"
 import type { DaemonHealthResult } from "./daemon/daemon"
@@ -21,7 +25,7 @@ export type ContextLossSentinelTrigger =
   | "manual_cli"
 
 export type ContextLossSentinelVerdict = "ready" | "watch" | "blocked"
-export type ContextLossSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "bundle" | "receipt"
+export type ContextLossSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "bundle"
 export type ContextLossSentinelSignalStatus = "pass" | "warn" | "fail"
 export type ContextLossSentinelSignalSeverity = "info" | "warn" | "critical"
 export type ContextLossSentinelVerdictImpact = "none" | "watch" | "blocked"
@@ -116,6 +120,7 @@ export interface RefreshContextLossSentinelOptions {
   daemonHealthResults?: DaemonHealthResult[]
   gitStatus?: () => ContextLossSentinelGitStatus
   delayBeforeWriteMs?: number
+  lockTimeoutMs?: number
   homeDir?: string
 }
 
@@ -142,7 +147,7 @@ function receiptLocator(receiptId: string): string {
 }
 
 function historyDay(generatedAt: string): string {
-  return generatedAt.slice(0, 10) || "unknown"
+  return generatedAt.slice(0, 10)
 }
 
 function historyLocator(generatedAt: string): string {
@@ -172,32 +177,25 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+async function withFileLock<T>(lockPath: string, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true })
   const startedAt = Date.now()
   while (true) {
-    let fd: number | null = null
     try {
-      fd = fs.openSync(lockPath, "wx")
-      fs.writeFileSync(fd, `${process.pid}\n`, "utf-8")
+      const fd = fs.openSync(lockPath, "wx")
       try {
+        fs.writeFileSync(fd, `${process.pid}\n`, "utf-8")
         return await fn()
       } finally {
         fs.closeSync(fd)
         fs.rmSync(lockPath, { force: true })
       }
     } catch (error) {
-      if (fd !== null) {
-        fs.closeSync(fd)
-      }
-      const code = typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code: unknown }).code)
-        : ""
+      const code = String((error as { code?: unknown }).code)
       if (code !== "EEXIST") {
         throw error
       }
-      if (Date.now() - startedAt > 5_000) {
-        fs.rmSync(lockPath, { force: true })
+      if (Date.now() - startedAt > timeoutMs) {
         throw new Error(`context-loss Sentinel lock timed out: ${lockPath}`)
       }
       await sleep(5)
@@ -220,7 +218,7 @@ function readJson(filePath: string): { ok: true; value: unknown } | { ok: false;
   try {
     return { ok: true, value: JSON.parse(fs.readFileSync(filePath, "utf-8")) as unknown }
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    return { ok: false, reason: String(error) }
   }
 }
 
@@ -247,7 +245,7 @@ function isSignal(value: unknown): value is ContextLossSentinelSignal {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   return typeof record.id === "string"
-    && (record.kind === "gauntlet" || record.kind === "provider_lane" || record.kind === "sense" || record.kind === "bundle" || record.kind === "receipt")
+    && (record.kind === "gauntlet" || record.kind === "provider_lane" || record.kind === "sense" || record.kind === "bundle")
     && (record.status === "pass" || record.status === "warn" || record.status === "fail")
     && (record.severity === "info" || record.severity === "warn" || record.severity === "critical")
     && (record.verdictImpact === "none" || record.verdictImpact === "watch" || record.verdictImpact === "blocked")
@@ -357,7 +355,7 @@ function repair(
     actor,
     kind,
     detail,
-    ...(command ? { command } : {}),
+    command,
   }
 }
 
@@ -549,7 +547,7 @@ function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
     })
     return { ok: true, porcelain }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, error: String(error) }
   }
 }
 
@@ -624,14 +622,43 @@ function anchorFromResume(kind: ContextLossSentinelRecoveryAnchor["kind"], resum
   }
 }
 
-function hasSentinelAuthoredBlocker(resume: FlightRecorderResume): boolean {
-  return resume.blockedBecause.some((reason) => reason.toLowerCase().includes("context-loss sentinel"))
+function readFlightRecorderEventsByIds(agentRoot: string, eventIds: string[]): FlightRecorderEvent[] {
+  if (eventIds.length === 0) return []
+  const wanted = new Set(eventIds)
+  const eventsRoot = path.join(agentRoot, "arc", "flight-recorder", "events")
+  if (!fs.existsSync(eventsRoot)) return []
+  return fs.readdirSync(eventsRoot)
+    .filter((entry) => entry.endsWith(".jsonl"))
+    .flatMap((entry) => fs.readFileSync(path.join(eventsRoot, entry), "utf-8").split(/\r?\n/))
+    .filter((line) => line.trim().length > 0)
+    .flatMap((line): FlightRecorderEvent[] => {
+      try {
+        const parsed = JSON.parse(line) as FlightRecorderEvent
+        return wanted.has(parsed.id) ? [parsed] : []
+      } catch {
+        return []
+      }
+    })
+}
+
+function isSentinelAuthoredBlockerEvent(event: FlightRecorderEvent): boolean {
+  return event.kind === "blocker_detected"
+    && (
+      event.meta?.source === "context-loss-sentinel"
+      || Boolean(event.producedRefs?.some((ref) => ref.kind === "arc" && ref.locator.startsWith(relativeSentinelRoot())))
+    )
+}
+
+function hasSentinelAuthoredBlocker(agentRoot: string, resume: FlightRecorderResume): boolean {
+  if (resume.blockedBecause.length === 0) return false
+  return readFlightRecorderEventsByIds(agentRoot, resume.lastSafeCheckpoint.sourceEventIds)
+    .some(isSentinelAuthoredBlockerEvent)
 }
 
 function selectGauntletResume(agentRoot: string): { resume: FlightRecorderResume; anchorKind: ContextLossSentinelRecoveryAnchor["kind"] } {
   const resume = readFlightRecorderResume(agentRoot)
   const latestReady = readLatestReady(agentRoot)
-  if (hasSentinelAuthoredBlocker(resume) && latestReady) {
+  if (hasSentinelAuthoredBlocker(agentRoot, resume) && latestReady) {
     return { resume: latestReady.resumeSnapshot, anchorKind: "latest-ready" }
   }
   return { resume, anchorKind: "flight-recorder" }
@@ -702,16 +729,28 @@ function appendHistory(paths: ContextLossSentinelPaths, receipt: ContextLossSent
   fs.appendFileSync(path.join(paths.historyDir, `${historyDay(receipt.generatedAt)}.jsonl`), `${JSON.stringify(receipt)}\n`, "utf-8")
 }
 
-async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelReceipt): Promise<void> {
+function syncLatestReadyLocator(receipt: ContextLossSentinelReceipt, hasLatestReady: boolean): ContextLossSentinelReceipt {
+  receipt.latestReadyLocator = hasLatestReady ? latestReadyLocator() : null
+  const locator = latestReadyLocator()
+  receipt.sourceLocators = hasLatestReady
+    ? Array.from(new Set([...receipt.sourceLocators, locator]))
+    : receipt.sourceLocators.filter((entry) => entry !== locator)
+  return receipt
+}
+
+async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelReceipt, lockTimeoutMs: number): Promise<void> {
   const paths = contextLossSentinelPaths(agentRoot)
-  await withFileLock(paths.lock, async () => {
+  await withFileLock(paths.lock, lockTimeoutMs, async () => {
     ensureSentinelDirs(paths)
-    atomicWriteJson(path.join(paths.receiptsDir, `${receipt.id}.json`), receipt)
-    appendHistory(paths, receipt)
     const existingLatest = readReceiptFile(paths.latest, "latest.json", [])
     const existingReady = readReceiptFile(paths.latestReady, "latest-ready.json", [])
+    syncLatestReadyLocator(receipt, receipt.verdict === "ready" || existingReady !== null)
+    atomicWriteJson(path.join(paths.receiptsDir, `${receipt.id}.json`), receipt)
+    appendHistory(paths, receipt)
     if (shouldReplaceReceipt(existingLatest, receipt)) {
       atomicWriteJson(paths.latest, receipt)
+    } else if (existingLatest && receipt.verdict === "ready") {
+      atomicWriteJson(paths.latest, syncLatestReadyLocator(existingLatest, true))
     }
     if (receipt.verdict === "ready" && shouldReplaceReceipt(existingReady, receipt)) {
       atomicWriteJson(paths.latestReady, receipt)
@@ -729,7 +768,7 @@ export async function refreshContextLossSentinel(
   if (options.delayBeforeWriteMs && options.delayBeforeWriteMs > 0) {
     await sleep(options.delayBeforeWriteMs)
   }
-  await persistReceipt(agentRoot, receipt)
+  await persistReceipt(agentRoot, receipt, options.lockTimeoutMs ?? 5_000)
   emitNervesEvent({
     component: "engine",
     event: "engine.context_loss_sentinel_refreshed",
@@ -765,8 +804,7 @@ function readHistory(paths: ContextLossSentinelPaths, limit: number, issues: str
           issues.push(`history/${fileName} line ${index + 1} malformed`)
         }
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        issues.push(`history/${fileName} line ${index + 1} unreadable: ${reason}`)
+        issues.push(`history/${fileName} line ${index + 1} unreadable: ${String(error)}`)
       }
     })
   }

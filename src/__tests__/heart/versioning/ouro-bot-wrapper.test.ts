@@ -6,7 +6,7 @@ describe("ouro.bot wrapper", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
-    vi.unmock("@ouro.bot/cli/runOuroCli")
+    vi.doUnmock("@ouro.bot/cli/runOuroCli")
   })
 
   it("delegates args to canonical @ouro.bot/cli runner when available", async () => {

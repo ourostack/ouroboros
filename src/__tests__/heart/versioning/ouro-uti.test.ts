@@ -9,7 +9,7 @@ describe(".ouro UTI registration", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.resetModules()
-    vi.unmock("child_process")
+    vi.doUnmock("child_process")
   })
 
   it("skips registration outside macOS", () => {

@@ -278,6 +278,8 @@ describe("context-loss Sentinel core", () => {
     expect(rendered).toContain("verdict: ready")
     expect(rendered).toContain("latest-ready: arc/flight-recorder/context-loss-sentinel/latest-ready.json")
     expect(rendered).toContain("provider:outward")
+    expect(formatContextLossSentinelText({ ...view, degraded: { issues: ["latest-ready.json stale"] } }))
+      .toContain("degraded: latest-ready.json stale")
 
     const json = formatContextLossSentinelJson(view)
     expect(JSON.parse(json)).toMatchObject({
@@ -323,6 +325,7 @@ describe("context-loss Sentinel core", () => {
 
     expect(blocked.verdict).toBe("blocked")
     expect(blocked.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+    expect(formatContextLossSentinelText(blocked)).toContain("repair: ouro provider check --agent slugger --lane outward")
     expect(signal(blocked.signals, "provider:outward")).toMatchObject({
       kind: "provider_lane",
       status: "fail",
@@ -520,6 +523,45 @@ describe("context-loss Sentinel core", () => {
     expect(signal(missingSignals, "provider:inner").summary).toBe("inner provider visibility missing from deterministic provider report")
   })
 
+  it("does not invent optional provider readiness metadata", () => {
+    const failed = signal(deriveContextLossSentinelProviderSignals(providerVisibility([
+      configuredLane("outward", { readiness: { status: "failed" } }),
+      configuredLane("inner"),
+    ])), "provider:outward")
+    expect(failed.summary).toBe("outward live check failed for minimax")
+    expect(failed.meta).toMatchObject({
+      checkedAt: null,
+      attempts: null,
+    })
+
+    const stale = signal(deriveContextLossSentinelProviderSignals(providerVisibility([
+      configuredLane("outward", { readiness: { status: "stale", checkedAt: "2026-06-08T19:00:00.000Z" } }),
+      configuredLane("inner"),
+    ])), "provider:outward")
+    expect(stale.summary).toBe("outward readiness stale for minimax")
+    expect(stale.meta).toMatchObject({
+      checkedAt: "2026-06-08T19:00:00.000Z",
+    })
+
+    const staleReasonOnly = signal(deriveContextLossSentinelProviderSignals(providerVisibility([
+      configuredLane("outward", { readiness: { status: "stale", reason: "persisted readiness expired" } }),
+      configuredLane("inner"),
+    ])), "provider:outward")
+    expect(staleReasonOnly.summary).toBe("outward readiness stale for minimax: persisted readiness expired")
+    expect(staleReasonOnly.meta).toMatchObject({
+      checkedAt: null,
+    })
+
+    const ready = signal(deriveContextLossSentinelProviderSignals(providerVisibility([
+      configuredLane("outward", { readiness: { status: "ready" } }),
+      configuredLane("inner"),
+    ])), "provider:outward")
+    expect(ready.summary).toBe("outward provider ready: minimax / minimax-text-01")
+    expect(ready.meta).toMatchObject({
+      checkedAt: null,
+    })
+  })
+
   it("constructs provider visibility during refresh when no injected provider report is supplied", async () => {
     const agentRoot = makeNamedBundleRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
@@ -629,6 +671,201 @@ describe("context-loss Sentinel core", () => {
     })
   })
 
+  it("reads empty Sentinel state and formats null/unavailable views without creating files", () => {
+    const agentRoot = makeAgentRoot()
+    const paths = contextLossSentinelPaths(agentRoot)
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+
+    expect(view).toEqual({
+      schemaVersion: 1,
+      latest: null,
+      latestReady: null,
+      history: [],
+      degraded: { issues: [] },
+    })
+    expect(formatContextLossSentinelText(null)).toBe("Recovery Sentinel - unavailable")
+    expect(formatContextLossSentinelText(view)).toBe("Recovery Sentinel - unavailable")
+    expect(formatContextLossSentinelText({ ...view, degraded: { issues: ["latest.json unreadable"] } }))
+      .toContain("degraded: latest.json unreadable")
+    expect(JSON.parse(formatContextLossSentinelJson(null))).toBeNull()
+    expect(fs.existsSync(paths.rootDir)).toBe(false)
+  })
+
+  it("covers default refresh dependencies, generated ids, session/manual triggers, and unavailable latest-ready formatting", async () => {
+    const agentRoot = makeNamedBundleRoot()
+
+    const sessionReceipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "session_start",
+      lockTimeoutMs: 1_000,
+      homeDir: agentRoot,
+    })
+
+    expect(sessionReceipt.id).toMatch(/^sentinel-/)
+    expect(new Date(sessionReceipt.generatedAt).toString()).not.toBe("Invalid Date")
+    expect(sessionReceipt.verdict).toBe("watch")
+    expect(signal(sessionReceipt.signals, "provider:outward").summary).toBe("outward credentials not loaded for minimax")
+    expect(signal(sessionReceipt.signals, "provider:inner").summary).toBe("inner credentials not loaded for anthropic")
+    expect(signal(sessionReceipt.signals, "bundle:git").summary).toContain("bundle git status unavailable")
+    expect(readContextLossSentinelView(agentRoot, { limit: 1 }).latest?.trigger).toBe("session_start")
+
+    const manualReceipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "manual_cli",
+      now: () => new Date("2026-06-09T20:17:00.000Z"),
+      createReceiptId: () => "sentinel-manual-ready",
+      providerVisibility: providerVisibility(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(manualReceipt.verdict).toBe("ready")
+    expect(readContextLossSentinelView(agentRoot, { limit: 2 }).latest?.trigger).toBe("manual_cli")
+    expect(formatContextLossSentinelText(manualReceipt)).toContain("trigger: manual_cli")
+  })
+
+  it("tracks gauntlet watch and first blocked receipts without a latest-ready fallback", async () => {
+    const watchRoot = makeAgentRoot()
+    writeReadyResume(watchRoot, {
+      currentAsk: {
+        value: "recover stale work",
+        confidence: "stale_risky",
+        sourceEventIds: ["fr-stale"],
+      },
+    })
+
+    const watchReceipt = await refreshContextLossSentinel("slugger", watchRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:18:00.000Z"),
+      createReceiptId: () => "sentinel-gauntlet-watch",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(watchReceipt.verdict).toBe("watch")
+    expect(signal(watchReceipt.signals, "gauntlet:context-loss")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+    })
+
+    const blockedRoot = makeAgentRoot()
+    writeFlightRecorderResume(blockedRoot, {
+      ...readyResume(),
+      hasCompleteState: false,
+      canContinue: false,
+      missing: ["currentAsk"],
+      currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+      nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+    })
+
+    const blockedReceipt = await refreshContextLossSentinel("slugger", blockedRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:19:00.000Z"),
+      createReceiptId: () => "sentinel-first-blocked",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(blockedReceipt.verdict).toBe("blocked")
+    expect(blockedReceipt.latestReadyLocator).toBeNull()
+    expect(signal(blockedReceipt.signals, "gauntlet:context-loss")).toMatchObject({
+      status: "fail",
+      verdictImpact: "blocked",
+    })
+    expect(formatContextLossSentinelText(blockedReceipt)).toContain("latest-ready: unavailable")
+  })
+
+  it("reports warn-level sense probes and singular dirty git entries", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:19:30.000Z"),
+      createReceiptId: () => "sentinel-warn-sense",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: [
+        ...okHealth(),
+        {
+          name: "sense-probe:mail",
+          status: "warn",
+          message: "mail backlog is stale",
+        },
+        {
+          name: "sense-probe:voice",
+          status: "ok",
+          message: "voice healthy",
+        },
+      ],
+      gitStatus: () => ({ ok: true, porcelain: " M agent.json\n" }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "sense:sense-probe:mail")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+    })
+    expect(signal(receipt.signals, "sense:sense-probe:voice")).toMatchObject({
+      status: "pass",
+      severity: "info",
+      verdictImpact: "none",
+    })
+    expect(signal(receipt.signals, "bundle:git").summary).toContain("1 uncommitted git status entry")
+  })
+
+  it("uses deterministic id tie-breaking and fails active locks without deleting someone else's lock", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:20:30.000Z"),
+      createReceiptId: () => "sentinel-z",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:20:30.000Z"),
+      createReceiptId: () => "sentinel-a",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    expect(readContextLossSentinelView(agentRoot).latest?.id).toBe("sentinel-z")
+
+    const lockedRoot = makeAgentRoot()
+    const paths = contextLossSentinelPaths(lockedRoot)
+    fs.mkdirSync(paths.rootDir, { recursive: true })
+    fs.writeFileSync(paths.lock, "stale-owner\n", "utf-8")
+
+    await expect(refreshContextLossSentinel("slugger", lockedRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:20:45.000Z"),
+      createReceiptId: () => "sentinel-lock-timeout",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+      lockTimeoutMs: 1,
+    })).rejects.toThrow("context-loss Sentinel lock timed out")
+    expect(fs.existsSync(paths.lock)).toBe(true)
+
+    const errorRoot = makeAgentRoot()
+    const errorPaths = contextLossSentinelPaths(errorRoot)
+    fs.mkdirSync(errorPaths.rootDir, { recursive: true })
+    fs.chmodSync(errorPaths.rootDir, 0o500)
+    try {
+      await expect(refreshContextLossSentinel("slugger", errorRoot, {
+        trigger: "daemon_health",
+        now: () => new Date("2026-06-08T20:20:55.000Z"),
+        createReceiptId: () => "sentinel-lock-error",
+        providerVisibility: providerVisibility(),
+        daemonHealthResults: okHealth(),
+        gitStatus: () => ({ ok: true, porcelain: "" }),
+      })).rejects.toThrow()
+    } finally {
+      fs.chmodSync(errorPaths.rootDir, 0o700)
+    }
+  })
+
   it("protects latest and latest-ready from out-of-order concurrent refresh writes", async () => {
     const agentRoot = makeAgentRoot()
 
@@ -692,6 +929,8 @@ describe("context-loss Sentinel core", () => {
     const view = readContextLossSentinelView(agentRoot, { limit: 10 })
     expect(view.latest?.id).toBe("sentinel-blocked-fast")
     expect(view.latestReady?.id).toBe("sentinel-ready-slow")
+    expect(view.latest?.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+    expect(formatContextLossSentinelText(view)).toContain("history: 2 receipts")
 
     await Promise.all([
       refreshContextLossSentinel("slugger", agentRoot, {
@@ -780,6 +1019,11 @@ describe("context-loss Sentinel core", () => {
         receiptId: "sentinel-blocked",
       },
     })
+    fs.appendFileSync(
+      path.join(agentRoot, "arc", "flight-recorder", "events", "2026-06-08.jsonl"),
+      "not-json\n",
+      "utf-8",
+    )
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_health",
@@ -797,6 +1041,86 @@ describe("context-loss Sentinel core", () => {
       currentAsk: "keep the Arc updated even if the transcript disappears",
       nextSafeAction: "refresh Sentinel and continue from the latest-ready anchor",
     })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      hasCompleteState: false,
+      canContinue: false,
+      missing: ["currentAsk"],
+      currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+      nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+      blockedBecause: ["context-loss Sentinel blocked without source event ids"],
+      lastSafeCheckpoint: {
+        ...readyResume().lastSafeCheckpoint,
+        sourceEventIds: [],
+      },
+    })
+
+    const noEventIds = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:42:30.000Z"),
+      createReceiptId: () => "sentinel-after-empty-event-ids",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(noEventIds.verdict).toBe("blocked")
+    expect(noEventIds.recoveryAnchor.kind).toBe("flight-recorder")
+
+    recordFlightRecorderEvent(agentRoot, {
+      id: "fr-human-blocker-mentioning-sentinel",
+      kind: "blocker_detected",
+      recordedAt: "2026-06-08T20:43:00.000Z",
+      summary: "Human blocker mentioning context-loss Sentinel",
+      blockedBecause: ["human asked to stop until context-loss Sentinel plan is reviewed"],
+      producedRefs: [{
+        kind: "arc",
+        locator: "arc/notes/human-blocker.json",
+      }],
+      meta: {
+        source: "human",
+      },
+    })
+
+    const humanBlocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:44:00.000Z"),
+      createReceiptId: () => "sentinel-after-human-blocker",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(humanBlocked.verdict).toBe("blocked")
+    expect(humanBlocked.gauntlet.failedChecks).toContain("stale_guard")
+    expect(humanBlocked.recoveryAnchor.kind).toBe("flight-recorder")
+
+    const missingEventsRoot = makeAgentRoot()
+    fs.rmSync(path.join(missingEventsRoot, "arc", "flight-recorder", "events"), { recursive: true, force: true })
+    writeFlightRecorderResume(missingEventsRoot, {
+      ...readyResume(),
+      hasCompleteState: false,
+      canContinue: false,
+      missing: ["nextSafeAction"],
+      nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+      blockedBecause: ["context-loss Sentinel text appears in a human-authored stale checkpoint"],
+      lastSafeCheckpoint: {
+        ...readyResume().lastSafeCheckpoint,
+        sourceEventIds: ["fr-missing-event-file"],
+      },
+    })
+
+    const missingEvents = await refreshContextLossSentinel("slugger", missingEventsRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:45:00.000Z"),
+      createReceiptId: () => "sentinel-after-missing-events-root",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(missingEvents.verdict).toBe("blocked")
+    expect(missingEvents.recoveryAnchor.kind).toBe("flight-recorder")
   })
 
   it("reports malformed receipts as degraded read state instead of mutating them", () => {
@@ -818,5 +1142,47 @@ describe("context-loss Sentinel core", () => {
     expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 1 malformed")
     expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 2 unreadable")
     expect(fs.statSync(paths.latest).mtimeMs).toBe(latestMtime)
+  })
+
+  it("degrades malformed nested receipt shapes instead of accepting partial disk state", async () => {
+    const agentRoot = makeAgentRoot()
+    const paths = contextLossSentinelPaths(agentRoot)
+    const base = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:50:00.000Z"),
+      createReceiptId: () => "sentinel-schema-base",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const cases: Array<[string, unknown]> = [
+      ["not an object", null],
+      ["bad signal", { ...base, signals: [null] }],
+      ["bad signal source", { ...base, signals: [{ ...base.signals[0], source: null }] }],
+      ["bad signal repair", { ...base, signals: [{ ...base.signals[0], repair: null }] }],
+      ["bad signal repair actor", {
+        ...base,
+        signals: [{
+          ...base.signals[0],
+          repair: {
+            actor: "somebody-else",
+            kind: "provider-live-check",
+            detail: "bad actor",
+          },
+        }],
+      }],
+      ["bad recovery anchor", { ...base, recoveryAnchor: null }],
+      ["bad gauntlet", { ...base, gauntlet: null }],
+      ["bad resume", { ...base, resumeSnapshot: null }],
+    ]
+
+    for (const [label, candidate] of cases) {
+      fs.writeFileSync(paths.latest, `${JSON.stringify(candidate)}\n`, "utf-8")
+      const view = readContextLossSentinelView(agentRoot)
+
+      expect(view.latest, label).toBeNull()
+      expect(view.degraded.issues.join("\n"), label).toContain("latest.json malformed")
+    }
   })
 })
