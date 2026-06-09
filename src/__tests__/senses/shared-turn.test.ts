@@ -469,6 +469,36 @@ describe("runSenseTurn", () => {
     expect(input.runAgentOptions.toolContext.voiceCall).toBe(voiceCall)
   })
 
+  it("passes runtimeMcpServers to getSharedMcpManager as per-turn runtimeServers", async () => {
+    const runtimeMcpServers = {
+      ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+    }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      runtimeMcpServers,
+    })
+
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ runtimeServers: runtimeMcpServers })
+  })
+
+  it("calls getSharedMcpManager with undefined when no runtimeMcpServers are supplied", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+  })
+
   it("uses the explicit agentName for session storage instead of process argv", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({

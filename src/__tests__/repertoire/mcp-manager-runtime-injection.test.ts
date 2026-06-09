@@ -207,6 +207,54 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("reconcile swallows a buildMergedServerConfig failure on a later turn without throwing", async () => {
+    vi.resetModules()
+    const connects: string[] = []
+    const McpClientMock = class {
+      connect: () => Promise<void>
+      listTools = async () => []
+      callTool = vi.fn()
+      shutdown = vi.fn()
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {
+        this.connect = async () => { connects.push(this.config.command) }
+      }
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({ mcpServers: { calc: { command: "builtin-calc", args: [] } } }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    // First merge (initial start) succeeds; the second (reconcile) throws, so the
+    // reconcile catch block must absorb it and leave the manager intact.
+    let calls = 0
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => {
+        calls += 1
+        if (calls > 1) throw new Error("plugin scan blew up during reconcile")
+        return []
+      },
+      pluginMcpServerToConfig: (s: any) => ({ command: s.command }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    expect(manager).not.toBeNull()
+    expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
+
+    // Second call hits reconcile → buildMergedServerConfig throws → caught, no throw.
+    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBe(manager)
+    // Prior servers untouched (reconcile bailed before any teardown).
+    expect(manager!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+
+    mod.resetSharedMcpManager()
+  })
+
   it("repeated turns that both carry runtimeServers keep ouro_workbench stable (no churn)", async () => {
     vi.resetModules()
     const { connects, shutdowns } = mockManagerDeps()
