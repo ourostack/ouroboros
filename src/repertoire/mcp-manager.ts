@@ -27,6 +27,18 @@ const MAX_RESTART_RETRIES = 5
 const RESTART_DELAY_MS = 1000
 
 /**
+ * Per-turn, per-agent runtime MCP server overrides.
+ *
+ * Threaded as parameter data from the `agent.senseTurn` daemon command through
+ * `runSenseTurn` into the MCP manager for a SINGLE turn of a SINGLE agent. It is
+ * NEVER stored as module-global state — the daemon is one process for all agents
+ * on the machine, so a global override would leak into a concurrent turn for a
+ * different agent. Used by the Workbench runtime-injection path so the boss agent
+ * receives `ouro_workbench` without writing it to `agent.json`.
+ */
+export type RuntimeMcpServers = Record<string, McpServerConfig>
+
+/**
  * Merge builtin (agent.json mcpServers) + plugin-declared (.mcp.json) servers.
  *
  * Builtin wins on name collision. Returns the merged config map plus a
@@ -36,8 +48,17 @@ const RESTART_DELAY_MS = 1000
  * (re-read on each turn). Both code paths MUST use the same merge logic — if
  * reconcile reads only builtin, plugin servers get classified as "removed"
  * on the second turn and torn down. See alpha.635 fix.
+ *
+ * `runtimeServers` are per-turn, per-agent overrides (e.g. Workbench's
+ * `ouro_workbench`) supplied as PARAMETER data for the current turn — never read
+ * from module state. They merge with the HIGHEST precedence (after builtin), so
+ * a stale `agent.json` entry loses to the live runtime path. Because they are a
+ * parameter, a turn that omits them produces a merged set WITHOUT them, and
+ * `reconcile()` then tears the runtime server down — this is the no-leak
+ * invariant that keeps the runtime MCP from bleeding into a different agent's
+ * concurrent turn on the shared daemon.
  */
-function buildMergedServerConfig(): {
+function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
   mergedServers: Record<string, McpServerConfig>
   pluginOrigins: Record<string, string>
 } {
@@ -53,6 +74,15 @@ function buildMergedServerConfig(): {
   }
   for (const [name, cfg] of Object.entries(builtinServers)) {
     mergedServers[name] = cfg
+  }
+  // Runtime overrides win over both plugin and builtin (highest precedence).
+  // They are NOT recorded in pluginOrigins, so they surface as builtin-style
+  // (un-namespaced) tools — matching how an agent.json mcpServers entry would.
+  if (runtimeServers) {
+    for (const [name, cfg] of Object.entries(runtimeServers)) {
+      mergedServers[name] = cfg
+      delete pluginOrigins[name]
+    }
   }
   return { mergedServers, pluginOrigins }
 }
@@ -150,14 +180,19 @@ export class McpManager {
     return results
   }
 
-  /* v8 ignore start — reconcile: dynamic MCP server management, tested via integration @preserve */
   /** Re-read agent config AND enabled-plugin .mcp.json files, then connect new
    *  servers / disconnect removed ones. Must include plugin-declared servers
    *  in the desired set — otherwise plugin servers (e.g. mcp__desk__*) are
-   *  treated as "removed" on every call and get torn down between turns. */
-  async reconcile(): Promise<void> {
+   *  treated as "removed" on every call and get torn down between turns.
+   *
+   *  `runtimeServers` are the current turn's per-agent overrides. They MUST be
+   *  passed on every reconcile for the agent that owns them, otherwise the
+   *  runtime server (e.g. ouro_workbench) is classified as "removed" and torn
+   *  down — which is exactly the desired no-leak behavior for a turn that omits
+   *  them. */
+  async reconcile(runtimeServers?: RuntimeMcpServers): Promise<void> {
     try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig()
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
       const currentNames = new Set(this.servers.keys())
       const desiredNames = new Set(Object.keys(mergedServers))
 
@@ -198,7 +233,6 @@ export class McpManager {
       })
     }
   }
-  /* v8 ignore stop */
 
   shutdown(): void {
     this.shuttingDown = true
@@ -396,15 +430,25 @@ let _sharedManagerPromise: Promise<McpManager | null> | null = null
  * Get or create a shared McpManager instance from the agent's config.
  * Returns null if no mcpServers are configured.
  * Safe to call from multiple senses — will only create one instance.
+ *
+ * `options.runtimeServers` are the current turn's per-agent MCP overrides (e.g.
+ * Workbench's `ouro_workbench`). They are PARAMETER data for this call only —
+ * passed into the merge for both the initial `start()` and every subsequent
+ * `reconcile()`, and never persisted as module state. A call that omits them
+ * reconciles to a set WITHOUT them, tearing any prior runtime server down — the
+ * no-leak invariant for the shared multi-agent daemon.
  */
-export async function getSharedMcpManager(): Promise<McpManager | null> {
+export async function getSharedMcpManager(
+  options?: { runtimeServers?: RuntimeMcpServers },
+): Promise<McpManager | null> {
+  const runtimeServers = options?.runtimeServers
   // If manager exists, reconcile to pick up config changes (new/removed servers)
-  /* v8 ignore start — reconcile on existing manager @preserve */
+  // AND this turn's runtime overrides. Passing runtimeServers per-call is what
+  // scopes the runtime MCP to the active agent's turn.
   if (_sharedManager) {
-    await _sharedManager.reconcile()
+    await _sharedManager.reconcile(runtimeServers)
     return _sharedManager
   }
-  /* v8 ignore stop */
   /* v8 ignore next -- race guard: deduplicates concurrent initialization calls @preserve */
   if (_sharedManagerPromise) return _sharedManagerPromise
 
@@ -412,7 +456,7 @@ export async function getSharedMcpManager(): Promise<McpManager | null> {
 
   _sharedManagerPromise = (async () => {
     try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig()
+      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
       if (Object.keys(mergedServers).length === 0) return null
 
       const manager = new McpManager()

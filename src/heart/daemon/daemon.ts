@@ -24,6 +24,7 @@ import {
 } from "./agent-service"
 import { getAlwaysOnSenseNames } from "../../mind/friends/channel"
 import { getSharedMcpManager, shutdownSharedMcpManager } from "../../repertoire/mcp-manager"
+import type { RuntimeMcpServers } from "../../repertoire/mcp-manager"
 import { startMailboxHttpServer, type MailboxHttpServerHandle } from "../mailbox/mailbox-http"
 import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
 import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
@@ -434,7 +435,7 @@ export type DaemonCommand =
   | { kind: "mcp.list"; agent?: string }
   | { kind: "mcp.call"; agent?: string; server: string; tool: string; args?: string }
   | { kind: "hatch.start" }
-  | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string }
+  | { kind: "agent.senseTurn"; agent: string; friendId: string; channel: string; sessionKey: string; message: string; runtimeMcp?: RuntimeMcpServers }
 
 export interface DaemonResponse {
   ok: boolean
@@ -649,6 +650,10 @@ export async function handleAgentSenseTurn(
       friendId: command.friendId,
       userMessage: command.message,
       ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
+      // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
+      // Scoped to THIS turn only — never stored as module state, so a concurrent
+      // turn for a different agent cannot inherit these servers.
+      ...(command.runtimeMcp ? { runtimeMcpServers: command.runtimeMcp } : {}),
     })
     return {
       ok: true,
