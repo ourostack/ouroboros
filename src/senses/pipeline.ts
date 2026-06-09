@@ -51,6 +51,7 @@ import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-v
 import { buildOrientationFrame } from "../heart/orientation-frame"
 import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
+import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -1088,6 +1089,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       recentClaimIds: postTurnArc.recentClaimIds,
       unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
     })
+    await refreshContextLossSentinel(getAgentName(), agentRoot, { trigger: "post_turn" })
   } catch (error) {
     /* v8 ignore next -- defensive recorder failures are non-fatal to already-persisted user turns @preserve */
     emitNervesEvent({

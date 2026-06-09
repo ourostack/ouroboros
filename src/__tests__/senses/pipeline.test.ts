@@ -951,6 +951,39 @@ describe("handleInboundTurn", () => {
       }
     })
 
+    it("keeps persisted post-turn state when context-loss Sentinel refresh throws", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-sentinel-post-turn-error-"))
+      const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+      mockRefreshContextLossSentinel.mockRejectedValue(new Error("sentinel unavailable"))
+      try {
+        const input = makeInput({
+          messages: [{ role: "user", content: "persist before sentinel failure" }],
+          continuityIngressTexts: ["persist before sentinel failure"],
+          sessionKey: "sentinel-error-test",
+          sessionLoader: {
+            loadOrCreate: vi.fn().mockResolvedValue({
+              messages: [{ role: "system", content: "You are helpful." }],
+              sessionPath: path.join(agentRoot, "state", "sessions", "friend-1", "cli", "sentinel-error-test.json"),
+            }),
+          },
+          runAgent: vi.fn().mockResolvedValue({ usage: usageData, outcome: "settled" }),
+        })
+
+        const result = await handleInboundTurn(input)
+
+        expect(result.turnOutcome).toBe("settled")
+        expect(input.postTurn).toHaveBeenCalledTimes(1)
+        expect(input.accumulateFriendTokens).toHaveBeenCalledWith(input.friendStore, "friend-1", usageData)
+        const { readFlightRecorderResume } = await import("../../arc/flight-recorder")
+        expect(readFlightRecorderResume(agentRoot).currentAsk.value).toBe("persist before sentinel failure")
+      } finally {
+        agentNameSpy.mockRestore()
+        agentRootSpy.mockRestore()
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
     it("records post-turn Arc work created during the agent run", async () => {
       const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pipeline-flight-recorder-post-turn-"))
       const agentRootSpy = vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
