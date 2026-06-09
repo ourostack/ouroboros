@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.661",
       "changes": [
-        "Default the local machine owner (the OS user running the daemon) to family trust when first encountered as a friend, instead of stranger. The Workbench boss check-in resolves the machine owner as a `local` friend; because MCP tool calls are trust-gated, a stranger-level owner caused the boss's own runtime-injected `ouro_workbench` machine-introspection tools to be rejected with the trust guardrail (\"i'd need a closer friend to vouch for you\"). The person running the daemon owns the agent and its bundle, so they are family, not a stranger."
+        "Default the local machine owner (the OS user running the daemon) to family trust when first encountered as a friend, instead of stranger. The Workbench boss check-in resolves the machine owner as a `local` friend; because MCP tool calls are trust-gated, a stranger-level owner caused the boss's own runtime-injected `ouro_workbench` machine-introspection tools to be rejected with the trust guardrail (\"i'd need a closer friend to vouch for you\"). The person running the daemon owns the agent and its bundle, so they are family, not a stranger.",
+        "Adds the pure `isLocalMachineOwnerIdentity` predicate and an injectable `machineOwnerUsername()` detection seam so the owner default is deterministically testable; resolver friend-creation is fully covered."
       ]
     },
     {
