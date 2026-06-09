@@ -29,6 +29,24 @@ const tempDirs: string[] = []
 function makeAgentRoot(prefix = "context-loss-sentinel-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
+  writeAgentJson(dir)
+  scaffoldDeskRecord(dir)
+  writeReadyResume(dir)
+  return dir
+}
+
+function makeNamedBundleRoot(agentName = "slugger"): string {
+  const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "context-loss-sentinel-bundles-"))
+  tempDirs.push(bundlesRoot)
+  const agentRoot = path.join(bundlesRoot, `${agentName}.ouro`)
+  fs.mkdirSync(agentRoot, { recursive: true })
+  writeAgentJson(agentRoot)
+  scaffoldDeskRecord(agentRoot)
+  writeReadyResume(agentRoot)
+  return agentRoot
+}
+
+function writeAgentJson(dir: string): void {
   fs.writeFileSync(
     path.join(dir, "agent.json"),
     `${JSON.stringify({
@@ -44,9 +62,6 @@ function makeAgentRoot(prefix = "context-loss-sentinel-"): string {
     }, null, 2)}\n`,
     "utf-8",
   )
-  scaffoldDeskRecord(dir)
-  writeReadyResume(dir)
-  return dir
 }
 
 function scaffoldDeskRecord(agentRoot: string): void {
@@ -506,7 +521,7 @@ describe("context-loss Sentinel core", () => {
   })
 
   it("constructs provider visibility during refresh when no injected provider report is supplied", async () => {
-    const agentRoot = makeAgentRoot()
+    const agentRoot = makeNamedBundleRoot()
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "daemon_startup",
       now: () => new Date("2026-06-08T20:13:00.000Z"),
@@ -520,13 +535,31 @@ describe("context-loss Sentinel core", () => {
       "provider:outward",
       "provider:inner",
     ]))
-    expect(signal(receipt.signals, "provider:outward").source).toMatchObject({
-      kind: "provider-visibility",
-      locator: "agent.json#providers.outward",
+    expect(signal(receipt.signals, "provider:outward")).toMatchObject({
+      summary: "outward credentials not loaded for minimax",
+      kind: "provider_lane",
+      repair: {
+        actor: "agent-runnable",
+        kind: "provider-credential-cache",
+        command: "ouro provider refresh --agent slugger",
+      },
+      source: {
+        kind: "provider-visibility",
+        locator: "agent.json#providers.outward",
+      },
     })
-    expect(signal(receipt.signals, "provider:inner").source).toMatchObject({
-      kind: "provider-visibility",
-      locator: "agent.json#providers.inner",
+    expect(signal(receipt.signals, "provider:inner")).toMatchObject({
+      summary: "inner credentials not loaded for anthropic",
+      kind: "provider_lane",
+      repair: {
+        actor: "agent-runnable",
+        kind: "provider-credential-cache",
+        command: "ouro provider refresh --agent slugger",
+      },
+      source: {
+        kind: "provider-visibility",
+        locator: "agent.json#providers.inner",
+      },
     })
   })
 
@@ -698,62 +731,7 @@ describe("context-loss Sentinel core", () => {
 
   it("keeps independent child-process refreshes monotonic through file-backed sequence protection", async () => {
     const agentRoot = makeAgentRoot()
-    const helperPath = path.join(agentRoot, "sentinel-child-process.test.ts")
-    fs.writeFileSync(helperPath, `
-import { describe, expect, it } from "vitest"
-import { refreshContextLossSentinel } from ${JSON.stringify(path.join(process.cwd(), "src", "heart", "context-loss-sentinel.ts"))}
-import { readContextLossSentinelView } from ${JSON.stringify(path.join(process.cwd(), "src", "heart", "context-loss-sentinel.ts"))}
-
-const agentRoot = process.env.SENTINEL_AGENT_ROOT!
-const receiptId = process.env.SENTINEL_RECEIPT_ID!
-const generatedAt = process.env.SENTINEL_GENERATED_AT!
-const delayBeforeWriteMs = Number(process.env.SENTINEL_DELAY_MS ?? "0")
-
-function providerVisibility() {
-  return {
-    agentName: "slugger",
-    lanes: [
-      {
-        lane: "outward",
-        status: "configured",
-        provider: "minimax",
-        model: "minimax-text-01",
-        source: "agent.json",
-        readiness: { status: "ready", checkedAt: generatedAt },
-        credential: { status: "present", source: "vault:slugger:providers/outward" },
-        warnings: [],
-      },
-      {
-        lane: "inner",
-        status: "configured",
-        provider: "anthropic",
-        model: "claude-opus-4",
-        source: "agent.json",
-        readiness: { status: "ready", checkedAt: generatedAt },
-        credential: { status: "present", source: "vault:slugger:providers/inner" },
-        warnings: [],
-      },
-    ],
-  }
-}
-
-describe("child Sentinel refresh", () => {
-  it("writes one receipt from a separate process", async () => {
-    await refreshContextLossSentinel("slugger", agentRoot, {
-      trigger: process.env.SENTINEL_TRIGGER as any,
-      now: () => new Date(generatedAt),
-      createReceiptId: () => receiptId,
-      providerVisibility: providerVisibility() as any,
-      daemonHealthResults: [
-        { name: "agent-processes", status: "ok", message: "all managed agents running" },
-      ],
-      gitStatus: () => ({ ok: true, porcelain: "" }),
-      delayBeforeWriteMs,
-    })
-    expect(readContextLossSentinelView(agentRoot, { limit: 10 }).history.map((entry) => entry.id)).toContain(receiptId)
-  })
-})
-`, "utf-8")
+    const helperPath = path.join(process.cwd(), "src", "__tests__", "heart", "context-loss-sentinel-child-process.test.ts")
 
     await Promise.all([
       runChildVitest(helperPath, {
