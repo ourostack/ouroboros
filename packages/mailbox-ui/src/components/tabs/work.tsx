@@ -6,42 +6,59 @@ import type {
   MailboxAgentView,
   MailboxCodingDeep,
   MailboxCodingDeepItem,
-  MailboxContextLossGauntletCheck,
-  MailboxContextLossGauntletView,
   MailboxObligationDetailItem,
   MailboxObligationDetailView,
   MailboxObligationItem,
   MailboxSelfFixView,
+  MailboxSentinelReceipt,
+  MailboxSentinelView,
 } from "../../contracts"
+
+type MailboxSentinelSignal = MailboxSentinelReceipt["signals"][number]
 
 export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGeneration }: { agentName: string; view: MailboxAgentView; focus?: string; onFocusConsumed?: () => void; refreshGeneration: number }) {
   const nav = useNavigate()
   const [coding, setCoding] = useState<MailboxCodingDeep | null>(null)
   const [obligationDetail, setObligationDetail] = useState<MailboxObligationDetailView | null>(null)
   const [selfFix, setSelfFix] = useState<MailboxSelfFixView | null>(null)
-  const [contextLossGauntlet, setContextLossGauntlet] = useState<MailboxContextLossGauntletView | null>(null)
-  const [contextLossGauntletError, setContextLossGauntletError] = useState<string | null>(null)
+  const [sentinel, setSentinel] = useState<MailboxSentinelView | null>(null)
+  const [sentinelError, setSentinelError] = useState<string | null>(null)
   const work = view.work
   const obligations = work.obligations
   const tasks = work.tasks
 
   useEffect(() => {
     let cancelled = false
-    setContextLossGauntlet(null)
-    setContextLossGauntletError(null)
-    fetchJson<MailboxCodingDeep>(`/agents/${encodeURIComponent(agentName)}/coding`).then(setCoding)
-    fetchJson<MailboxObligationDetailView>(`/agents/${encodeURIComponent(agentName)}/obligations`).then(setObligationDetail).catch(() => {})
-    fetchJson<MailboxSelfFixView>(`/agents/${encodeURIComponent(agentName)}/self-fix`).then(setSelfFix).catch(() => {})
-    fetchJson<MailboxContextLossGauntletView>(`/agents/${encodeURIComponent(agentName)}/context-loss-gauntlet`)
-      .then((report) => {
+    setCoding(null)
+    setObligationDetail(null)
+    setSelfFix(null)
+    setSentinel(null)
+    setSentinelError(null)
+    fetchJson<MailboxCodingDeep>(`/agents/${encodeURIComponent(agentName)}/coding`)
+      .then((view) => {
+        if (!cancelled) setCoding(view)
+      })
+      .catch(() => {})
+    fetchJson<MailboxObligationDetailView>(`/agents/${encodeURIComponent(agentName)}/obligations`)
+      .then((view) => {
+        if (!cancelled) setObligationDetail(view)
+      })
+      .catch(() => {})
+    fetchJson<MailboxSelfFixView>(`/agents/${encodeURIComponent(agentName)}/self-fix`)
+      .then((view) => {
+        if (!cancelled) setSelfFix(view)
+      })
+      .catch(() => {})
+    fetchJson<MailboxSentinelView>(`/agents/${encodeURIComponent(agentName)}/sentinel`)
+      .then((view) => {
         if (cancelled) return
-        setContextLossGauntlet(report)
-        setContextLossGauntletError(null)
+        setSentinel(view)
+        setSentinelError(null)
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        setContextLossGauntlet(null)
-        setContextLossGauntletError(error instanceof Error ? error.message : "context-loss gauntlet unavailable")
+        setSentinel(null)
+        setSentinelError(error instanceof Error ? error.message : "sentinel unavailable")
       })
     return () => {
       cancelled = true
@@ -70,11 +87,11 @@ export function WorkTab({ agentName, view, focus, onFocusConsumed, refreshGenera
 
   return (
     <div className="space-y-8">
-      {/* Context-loss gauntlet */}
-      {(contextLossGauntlet || contextLossGauntletError) && (
+      {/* Recovery Sentinel */}
+      {(sentinel || sentinelError) && (
         <section>
-          <SH label="Context-loss gauntlet" />
-          <GauntletPanel report={contextLossGauntlet} error={contextLossGauntletError} />
+          <SH label="Recovery Sentinel" />
+          <SentinelPanel view={sentinel} error={sentinelError} />
         </section>
       )}
 
@@ -276,81 +293,179 @@ function SH({ label }: { label: string }) {
   return <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ouro-glow">{label}</p>
 }
 
-function GauntletPanel({ report, error }: { report: MailboxContextLossGauntletView | null; error: string | null }) {
+function SentinelPanel({ view, error }: { view: MailboxSentinelView | null; error: string | null }) {
+  const latest = view?.latest ?? null
+  const latestReady = view?.latestReady ?? null
+  const promotedReceiptKeys = new Set(
+    [latest, latestReady]
+      .filter((receipt): receipt is MailboxSentinelReceipt => Boolean(receipt))
+      .map(sentinelReceiptKey),
+  )
+  const history = (view?.history ?? []).filter((receipt) => !promotedReceiptKeys.has(sentinelReceiptKey(receipt)))
+
   return (
     <div className="mt-3 rounded-lg bg-ouro-void/40 px-3 py-3 ring-1 ring-ouro-moss/15">
-      {error && !report ? (
+      {error && !view ? (
         <div className="flex flex-wrap items-center gap-2">
           <Badge color="red">unavailable</Badge>
           <span className="min-w-0 flex-1 break-words text-sm text-ouro-mist">{error}</span>
         </div>
-      ) : report ? (
+      ) : view ? (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge color={gauntletVerdictColor(report.verdict)}>{report.verdict}</Badge>
-            <span className="font-mono text-xs text-ouro-bone">score {report.score.percentage}%</span>
-            <span className="text-xs text-ouro-shadow">
-              points {report.score.earned}/{report.score.possible}
-            </span>
-            <span className="text-xs text-ouro-shadow">updated {relTime(report.generatedAt)}</span>
-            <span className="min-w-[12rem] flex-1 break-words text-sm text-ouro-mist">{report.summary}</span>
-          </div>
-
-          <div className="mt-3 grid gap-3 border-t border-ouro-moss/10 pt-3 md:grid-cols-2">
-            <div className="min-w-0">
-              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Current ask</p>
-              <p className="mt-1 break-words text-sm text-ouro-bone">
-                {report.currentAsk.available ? truncate(report.currentAsk.value ?? "", 120) : "unavailable"}
-              </p>
-              <p className="mt-1 text-xs text-ouro-shadow">confidence: {report.currentAsk.confidence}</p>
+          {error && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-ouro-moss/10 pb-2">
+              <Badge color="red">unavailable</Badge>
+              <span className="min-w-0 flex-1 break-words text-xs text-ouro-mist">{error}</span>
             </div>
-            <div className="min-w-0">
-              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Next safe action</p>
-              <p className="mt-1 break-words text-sm text-ouro-bone">{truncate(report.nextAction.summary, 120)}</p>
-              <p className="mt-1 text-xs text-ouro-shadow">actor: {report.nextAction.actor}</p>
-            </div>
-          </div>
+          )}
 
-          <div className="mt-3 border-t border-ouro-moss/10 pt-2">
-            {report.checks.map((check) => (
-              <GauntletCheckRow key={check.id} check={check} />
-            ))}
-          </div>
+          {latest ? (
+            <SentinelReceiptBlock label="Latest" receipt={latest} prominent />
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge>missing</Badge>
+              <span className="text-sm text-ouro-shadow">Latest</span>
+            </div>
+          )}
+
+          {latestReady && (
+            <div className="mt-3 border-t border-ouro-moss/10 pt-3">
+              <SentinelReceiptBlock label="Latest ready" receipt={latestReady} />
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <div className="mt-3 border-t border-ouro-moss/10 pt-3">
+              <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">History</p>
+              <div className="mt-2 divide-y divide-ouro-moss/10">
+                {history.map((receipt) => (
+                  <SentinelHistoryRow key={sentinelReceiptKey(receipt)} receipt={receipt} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {view.degraded.issues.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-ouro-moss/10 pt-3">
+              <Badge color="yellow">degraded</Badge>
+              {view.degraded.issues.map((issue) => (
+                <span key={issue} className="break-words text-xs text-ouro-shadow">{issue}</span>
+              ))}
+            </div>
+          )}
         </>
       ) : null}
     </div>
   )
 }
 
-function gauntletVerdictColor(verdict: MailboxContextLossGauntletView["verdict"]) {
+function SentinelReceiptBlock({ label, receipt, prominent = false }: { label: string; receipt: MailboxSentinelReceipt; prominent?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">{label}</span>
+        <Badge color={sentinelVerdictColor(receipt.verdict)}>{receipt.verdict}</Badge>
+        <span className="font-mono text-xs text-ouro-bone">{triggerLabel(receipt.trigger)}</span>
+        <span className="text-xs text-ouro-shadow">updated {relTime(receipt.generatedAt)}</span>
+      </div>
+      <p className={`${prominent ? "mt-2 text-sm font-medium text-ouro-bone" : "mt-1.5 text-sm text-ouro-mist"} break-words`}>
+        {receipt.summary}
+      </p>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <SentinelAnchor label="Current ask" value={receipt.recoveryAnchor.currentAsk} />
+        <SentinelAnchor label="Next safe action" value={receipt.recoveryAnchor.nextSafeAction} />
+      </div>
+
+      {receipt.signals.length > 0 && (
+        <div className="mt-3 divide-y divide-ouro-moss/10 border-t border-ouro-moss/10 pt-1">
+          {receipt.signals.map((signal) => (
+            <SentinelSignalRow key={signal.id} signal={signal} />
+          ))}
+        </div>
+      )}
+
+      {uniqueStrings(receipt.sourceLocators).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Sources</span>
+          {uniqueStrings(receipt.sourceLocators).map((locator) => (
+            <span key={locator} className="max-w-full truncate font-mono text-[10px] text-ouro-moss">{locator}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SentinelAnchor({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="min-w-0">
+      <p className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">{label}</p>
+      <p className="mt-1 break-words text-sm text-ouro-bone">{value ? truncate(value, 140) : "unknown"}</p>
+    </div>
+  )
+}
+
+function SentinelSignalRow({ signal }: { signal: MailboxSentinelSignal }) {
+  return (
+    <div className="grid gap-2 py-2 md:grid-cols-[150px_1fr] md:items-start">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge color={sentinelSignalColor(signal)}>{signal.status}</Badge>
+        <span className="font-mono text-[10px] text-ouro-shadow">{signal.kind.replace(/_/g, " ")}</span>
+      </div>
+      <div className="min-w-0">
+        <p className="break-words text-xs text-ouro-mist">{signal.summary}</p>
+        <p className="mt-1 truncate font-mono text-[10px] text-ouro-moss">{signal.source.locator}</p>
+        {signal.repair && (
+          <p className="mt-1 break-words text-xs text-ouro-shadow">
+            {signal.repair.actor}: {signal.repair.command ?? signal.repair.detail}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SentinelHistoryRow({ receipt }: { receipt: MailboxSentinelReceipt }) {
+  const firstSignal = receipt.signals[0]?.summary ?? null
+  return (
+    <div className="grid gap-2 py-2 md:grid-cols-[120px_110px_1fr] md:items-start">
+      <div className="flex items-center gap-2">
+        <Badge color={sentinelVerdictColor(receipt.verdict)}>{receipt.verdict}</Badge>
+      </div>
+      <div className="min-w-0">
+        <p className="font-mono text-xs text-ouro-bone">{triggerLabel(receipt.trigger)}</p>
+        <p className="text-[10px] text-ouro-shadow">{relTime(receipt.generatedAt)}</p>
+      </div>
+      <div className="min-w-0">
+        <p className="break-words text-xs text-ouro-mist">{receipt.summary}</p>
+        {firstSignal && <p className="mt-1 break-words text-xs text-ouro-shadow">{firstSignal}</p>}
+        <p className="mt-1 truncate font-mono text-[10px] text-ouro-moss">{receipt.receiptLocator}</p>
+      </div>
+    </div>
+  )
+}
+
+function sentinelVerdictColor(verdict: MailboxSentinelReceipt["verdict"]) {
   return verdict === "ready" ? "lime" : verdict === "watch" ? "yellow" : "red"
 }
 
-function gauntletCheckColor(status: MailboxContextLossGauntletCheck["status"]) {
-  return status === "pass" ? "lime" : status === "warn" ? "yellow" : status === "fail" ? "red" : "zinc"
+function sentinelSignalColor(signal: MailboxSentinelSignal) {
+  if (signal.status === "fail" || signal.severity === "critical") return "red"
+  if (signal.status === "warn" || signal.severity === "warn") return "yellow"
+  return "lime"
 }
 
-function gauntletStatusLabel(status: MailboxContextLossGauntletCheck["status"]) {
-  return status === "not_applicable" ? "n/a" : status
+function sentinelReceiptKey(receipt: MailboxSentinelReceipt) {
+  return receipt.receiptLocator || receipt.id
 }
 
-function GauntletCheckRow({ check }: { check: MailboxContextLossGauntletCheck }) {
-  const firstEvidence = check.evidence[0]?.locator ?? null
-  return (
-    <div className="grid gap-2 border-b border-ouro-moss/10 py-2 last:border-b-0 md:grid-cols-[150px_1fr_auto] md:items-start">
-      <div className="flex items-center gap-2">
-        <Badge color={gauntletCheckColor(check.status)}>{gauntletStatusLabel(check.status)}</Badge>
-        <span className="text-xs text-ouro-mist">{check.label}</span>
-      </div>
-      <div className="min-w-0">
-        <p className="break-words text-xs text-ouro-shadow">{check.detail}</p>
-        {firstEvidence && <p className="mt-1 truncate font-mono text-[10px] text-ouro-moss">{firstEvidence}</p>}
-      </div>
-      <span className="font-mono text-xs text-ouro-shadow md:text-right">
-        {check.maxScore > 0 ? `${check.score}/${check.maxScore}` : "n/a"}
-      </span>
-    </div>
-  )
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
+}
+
+function triggerLabel(trigger: MailboxSentinelReceipt["trigger"]) {
+  return trigger.replace(/_/g, " ")
 }
 
 function isDetailedObligation(

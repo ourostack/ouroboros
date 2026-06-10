@@ -51,6 +51,7 @@ import { formatAgentProviderVisibilityForStartOfTurn } from "../heart/provider-v
 import { buildOrientationFrame } from "../heart/orientation-frame"
 import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
+import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -296,6 +297,28 @@ function recordPostTurnFlightRecorderCheckpoint(input: {
       sessionPath: input.currentSession.sessionPath,
     },
   })
+}
+
+async function refreshContextLossSentinelNonFatal(input: {
+  agentName: string
+  agentRoot: string
+  trigger: "post_turn" | "provider_failover"
+}): Promise<void> {
+  try {
+    await refreshContextLossSentinel(input.agentName, input.agentRoot, { trigger: input.trigger })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.context_loss_sentinel_refresh_error",
+      message: `failed to refresh context-loss Sentinel for ${input.trigger}`,
+      meta: {
+        agentName: input.agentName,
+        trigger: input.trigger,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
 }
 
 function resolveCurrentFailoverBinding(agentName: string, lane: ProviderLane): { provider: import("../heart/identity").AgentProvider; model: string } {
@@ -882,6 +905,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       },
       currentSessionTiming,
       flightRecorderResume: ctx.flightRecorderResume,
+      recoverySentinel: ctx.recoverySentinel,
     })
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {
@@ -994,9 +1018,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       input.failoverState.pending = failoverContext
       input.postTurn(sessionMessages, session.sessionPath, result.usage)
       try {
-        const postTurnArc = readPostTurnFlightRecorderArcSnapshot(getAgentRoot())
+        const agentRoot = getAgentRoot()
+        const postTurnArc = readPostTurnFlightRecorderArcSnapshot(agentRoot)
         recordPostTurnFlightRecorderCheckpoint({
-          agentRoot: getAgentRoot(),
+          agentRoot,
           currentSession,
           currentAsk: currentObligation
             ?? activeWorkFrame.primaryObligation?.content?.trim()
@@ -1012,6 +1037,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
           recentClaimIds: postTurnArc.recentClaimIds,
           unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
         })
+        await refreshContextLossSentinelNonFatal({ agentName, agentRoot, trigger: "provider_failover" })
       } catch (checkpointError) {
         /* v8 ignore next -- best-effort recorder write must not hide provider-failover guidance @preserve */
         emitNervesEvent({
@@ -1088,6 +1114,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       recentClaimIds: postTurnArc.recentClaimIds,
       unverifiedClaimIds: postTurnArc.unverifiedClaimIds,
     })
+    await refreshContextLossSentinelNonFatal({ agentName: getAgentName(), agentRoot, trigger: "post_turn" })
   } catch (error) {
     /* v8 ignore next -- defensive recorder failures are non-fatal to already-persisted user turns @preserve */
     emitNervesEvent({

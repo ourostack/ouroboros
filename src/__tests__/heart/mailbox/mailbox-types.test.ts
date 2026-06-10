@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
+import type { MailboxSentinelView } from "../../../heart/mailbox/mailbox-types"
+import type { MailboxSentinelView as WorkbenchMailboxSentinelView } from "../../../../packages/mailbox-ui/src/contracts"
 
 vi.mock("../../../nerves/runtime", () => ({
   emitNervesEvent: vi.fn(),
@@ -52,5 +54,18 @@ describe("mailbox types", () => {
     expect(mod.getMailboxTranscriptTimestamp(stringMessage)).toBe("2026-04-09T10:00:00.000Z")
     expect(mod.getMailboxTranscriptTimestamp(structuredMessage)).toBe("2026-04-09T11:01:00.000Z")
     expect(mod.getMailboxTranscriptTimestamp(emptyMessage)).toBe("2026-04-09T12:02:00.000Z")
+  })
+
+  it("exports the Sentinel contract through backend and Workbench-facing contract barrels", () => {
+    const view: MailboxSentinelView = {
+      schemaVersion: 1,
+      latest: null,
+      latestReady: null,
+      history: [],
+      degraded: { issues: [] },
+    }
+    const workbenchView: WorkbenchMailboxSentinelView = view
+
+    expect(workbenchView.schemaVersion).toBe(1)
   })
 })

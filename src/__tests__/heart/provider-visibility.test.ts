@@ -3,6 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ProviderCredentialPoolReadResult } from "../../heart/provider-credentials"
+import { clearProviderReadinessCache, recordProviderLaneReadiness } from "../../heart/provider-readiness-cache"
 
 const mockProviderCredentials = vi.hoisted(() => ({
   readProviderCredentialPool: vi.fn(),
@@ -73,6 +74,7 @@ function credentialPool(): ProviderCredentialPoolReadResult {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  clearProviderReadinessCache()
   mockProviderCredentials.readProviderCredentialPool.mockReturnValue(credentialPool())
 })
 
@@ -182,6 +184,39 @@ describe("provider visibility", () => {
       readiness: "unknown",
       credential: "checked previously",
     })
+  })
+
+  it("renders failed durable readiness errors from provider visibility", async () => {
+    const agentRoot = path.join(makeTempDir("provider-visibility-failed-readiness"), "slugger.ouro")
+    writeAgentConfig(agentRoot)
+    recordProviderLaneReadiness({
+      agentRoot,
+      agentName: "slugger",
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax_1",
+      status: "failed",
+      checkedAt: "2026-04-13T12:00:00.000Z",
+      error: "provider down",
+      attempts: 2,
+    })
+
+    const { buildAgentProviderVisibility, formatAgentProviderVisibilityForPrompt, providerVisibilityStatusRows } = await import("../../heart/provider-visibility")
+    const visibility = buildAgentProviderVisibility({ agentName: "slugger", agentRoot })
+    const rendered = formatAgentProviderVisibilityForPrompt(visibility)
+    const rows = providerVisibilityStatusRows(visibility)
+
+    expect(visibility.lanes[0]).toMatchObject({
+      readiness: {
+        status: "failed",
+        checkedAt: "2026-04-13T12:00:00.000Z",
+        error: "provider down",
+        attempts: 2,
+      },
+    })
+    expect(rendered).toContain("failed: provider down")
+    expect(rows[0]).toMatchObject({ readiness: "failed", detail: "provider down" })
   })
 
   it("formats readiness and credential edge states without exposing credentials", async () => {

@@ -50,6 +50,10 @@ Planned paths:
 ```text
 ~/AgentBundles/<agent>.ouro/arc/flight-recorder/events/YYYY-MM-DD.jsonl
 ~/AgentBundles/<agent>.ouro/arc/flight-recorder/latest.json
+~/AgentBundles/<agent>.ouro/arc/flight-recorder/context-loss-sentinel/latest.json
+~/AgentBundles/<agent>.ouro/arc/flight-recorder/context-loss-sentinel/latest-ready.json
+~/AgentBundles/<agent>.ouro/arc/flight-recorder/context-loss-sentinel/history/YYYY-MM-DD.jsonl
+~/AgentBundles/<agent>.ouro/arc/flight-recorder/context-loss-sentinel/receipts/<receiptId>.json
 ~/AgentBundles/<agent>.ouro/arc/claims/*.json
 ~/AgentBundles/<agent>.ouro/state/flight-recorder/artifacts/<turnId>/*
 ```
@@ -60,6 +64,11 @@ referenced by redacted locators in `state/flight-recorder/artifacts`.
 
 `latest.json` is an atomically written re-entry checkpoint derived from the log
 and existing Arc sources.
+
+`context-loss-sentinel/` is the deterministic recovery receipt layer over the
+recorder. It does not replace `latest.json`; it audits whether `latest.json`,
+provider lanes, daemon/sense health, and bundle cleanliness are enough for a
+fresh agent to continue after context loss.
 
 ## Re-Entry Schema
 
@@ -160,6 +169,40 @@ pushed or failed.
 
 Do not record every read-only tool call. The recorder is an instrument panel,
 not a transcript.
+
+## Recovery Sentinel
+
+The context-loss Sentinel is deterministic code, not an LLM habit and not a
+Workbench read side effect. A refresh writes a receipt under
+`arc/flight-recorder/context-loss-sentinel/` with:
+
+- the latest context-loss gauntlet verdict over Flight Recorder and Desk state;
+- outward and inner provider-lane readiness;
+- daemon and sense health when supplied by the caller;
+- bundle dirty-state or git-unavailable signals;
+- source locators for the evidence it used.
+
+`latest.json` in the Sentinel directory is the most recent receipt, even when it
+is blocked. It must be allowed to say continuation is unsafe.
+
+`latest-ready.json` is the last semantically safe receipt. Blocked or watch
+receipts cannot overwrite it. A receipt is trusted as latest-ready only when the
+receipt verdict is `ready`, the gauntlet verdict is `ready`, every signal has no
+verdict impact, and the embedded resume snapshot can continue with complete
+state, an `ok` recorder, no blockers, and non-empty current ask and next safe
+action.
+
+When a provider is down, missing credentials, unknown after a process reset, or
+stale only because durable evidence says so, the newest receipt should surface
+that current failure while still pointing at `latest-ready.json` as the recovery
+anchor. If the current Flight Recorder itself is broken, Sentinel must not hide
+that gauntlet blocker behind an older latest-ready anchor.
+
+Workbench and Mailbox read Sentinel receipts as projections only. Their read
+paths must not refresh Sentinel, write receipts, or become a second readiness
+authority. Mutating refreshes happen through explicit lifecycle triggers:
+post-turn checkpointing, provider failover, daemon startup/health, session-start
+hooks, and `ouro work sentinel refresh`.
 
 ## Agent API
 

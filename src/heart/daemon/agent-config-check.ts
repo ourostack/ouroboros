@@ -399,6 +399,8 @@ export async function checkAgentConfigWithProviderHealth(
   const selectionResult = readProviderSelectionForCheck(agentName, bundlesRoot)
   if (!selectionResult.ok) return selectionResult.result
   if (selectionResult.disabled) return { ok: true }
+  const agentRoot = agentRootFor(agentName, bundlesRoot)
+  const shouldRecordReadiness = deps.recordReadiness !== false
 
   deps.onProgress?.(selectedProviderPlan(agentName, selectionResult.bindings))
 
@@ -471,32 +473,38 @@ export async function checkAgentConfigWithProviderHealth(
   for (const { group, result } of pingResults) {
     if (!result.ok) {
       for (const lane of group.lanes) {
-        recordProviderLaneReadiness({
-          agentName,
-          lane,
-          provider: group.provider,
-          model: group.model,
-          credentialRevision: group.record.revision,
-          status: "failed",
-          checkedAt: new Date().toISOString(),
-          error: result.message,
-          attempts: pingAttemptCount(result),
-        })
+        if (shouldRecordReadiness) {
+          recordProviderLaneReadiness({
+            agentRoot,
+            agentName,
+            lane,
+            provider: group.provider,
+            model: group.model,
+            credentialRevision: group.record.revision,
+            status: "failed",
+            checkedAt: new Date().toISOString(),
+            error: result.message,
+            attempts: pingAttemptCount(result),
+          })
+        }
       }
       firstFailure ??= failedPingResult(agentName, group.lanes[0], group.provider, group.model, result)
       continue
     }
     for (const lane of group.lanes) {
-      recordProviderLaneReadiness({
-        agentName,
-        lane,
-        provider: group.provider,
-        model: group.model,
-        credentialRevision: group.record.revision,
-        status: "ready",
-        checkedAt: new Date().toISOString(),
-        attempts: pingAttemptCount(result),
-      })
+      if (shouldRecordReadiness) {
+        recordProviderLaneReadiness({
+          agentRoot,
+          agentName,
+          lane,
+          provider: group.provider,
+          model: group.model,
+          credentialRevision: group.record.revision,
+          status: "ready",
+          checkedAt: new Date().toISOString(),
+          attempts: pingAttemptCount(result),
+        })
+      }
     }
   }
 

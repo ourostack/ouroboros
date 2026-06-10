@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.663",
+      "changes": [
+        "Add deterministic Arc Sentinel recovery receipts, lifecycle refreshes, and Workbench Sentinel history.",
+        "Harden Sentinel recovery receipts with canonical POSIX Arc locators, invalid timestamp rejection, inherited blocker provenance, and exact latest-ready recovery after Sentinel-authored blockers.",
+        "Make Sentinel's printed `ouro provider check --agent <agent> --lane <lane>` repair command executable, persist non-secret provider readiness under the agent bundle for cross-process recovery, and prefer the freshest exact-matching readiness without mutating orientation-only probes.",
+        "Include non-OK generic daemon health results in Sentinel receipts so failures such as crashed managed agents, cron delays, or disk pressure appear in Workbench and start-of-turn recovery context alongside sense health."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.662",
       "changes": [
         "Parse `--github-token` and `--base-url` in `ouro hatch` so the GitHub Copilot provider can be connected headlessly at cold-start. The credential type, per-provider validation, and storage split already supported github-copilot (githubToken -> vault credential, baseUrl -> config); only the argv parsing was missing, which left the provider selectable but unconnectable from a non-interactive hatch — the exact path Ouro Workbench's provider-config form uses for the work agent.",

@@ -3,6 +3,16 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import {
+  writeFlightRecorderResume,
+  type FlightRecorderResume,
+} from "../../../arc/flight-recorder"
+import {
+  contextLossSentinelPaths,
+  refreshContextLossSentinel,
+} from "../../../heart/context-loss-sentinel"
+import type { AgentProviderVisibility } from "../../../heart/provider-visibility"
+import type { MailboxSentinelView } from "../../../heart/mailbox/mailbox-types"
+import {
   readAttentionView,
   readBridgeInventory,
   readCodingDeep,
@@ -91,6 +101,92 @@ function writeAgentConfig(agentRoot: string, overrides: Record<string, unknown> 
     },
     ...overrides,
   })
+}
+
+function scaffoldDeskRecord(agentRoot: string): void {
+  fs.mkdirSync(path.join(agentRoot, "desk", "_record", "diary", "daily"), { recursive: true })
+  fs.mkdirSync(path.join(agentRoot, "desk", "_record", "notes"), { recursive: true })
+  fs.writeFileSync(path.join(agentRoot, "desk", "_record", "diary", "facts.jsonl"), "", "utf-8")
+  fs.writeFileSync(path.join(agentRoot, "desk", "_record", "diary", "entities.json"), "{}\n", "utf-8")
+}
+
+function readyResume(): FlightRecorderResume {
+  return {
+    schemaVersion: 1,
+    hasCompleteState: true,
+    canContinue: true,
+    missing: [],
+    gaps: [],
+    currentAsk: {
+      value: "keep the Arc updated even if the transcript disappears",
+      confidence: "current",
+      sourceEventIds: ["fr-ready"],
+    },
+    nextSafeAction: {
+      value: "serve Sentinel history to Workbench without refreshing it",
+      stopBefore: ["merge"],
+      sourceEventIds: ["fr-ready"],
+    },
+    blockedBecause: [],
+    activeObligationIds: [],
+    activeReturnObligationIds: [],
+    activePacketIds: [],
+    openEvolutionCaseIds: [],
+    recentClaimIds: [],
+    unverifiedClaimIds: [],
+    lastSafeCheckpoint: {
+      turnId: "turn-ready",
+      sessionRef: "codex/session",
+      recordedAt: "2026-06-09T20:00:00.000Z",
+      sourceEventIds: ["fr-ready"],
+    },
+    recorderHealth: { status: "ok", issues: [] },
+  }
+}
+
+function readyProviderVisibility(agentName: string): AgentProviderVisibility {
+  return {
+    agentName,
+    lanes: [
+      {
+        lane: "outward",
+        status: "configured",
+        provider: "minimax",
+        model: "minimax-text-01",
+        source: "agent.json",
+        readiness: { status: "ready", checkedAt: "2026-06-09T20:00:00.000Z" },
+        credential: { status: "present", source: "vault", revision: "rev-outward" },
+        warnings: [],
+      },
+      {
+        lane: "inner",
+        status: "configured",
+        provider: "anthropic",
+        model: "claude-opus-4-1",
+        source: "agent.json",
+        readiness: { status: "ready", checkedAt: "2026-06-09T20:00:00.000Z" },
+        credential: { status: "present", source: "vault", revision: "rev-inner" },
+        warnings: [],
+      },
+    ],
+  }
+}
+
+function fileStats(rootDir: string): Record<string, { mtimeMs: number; size: number }> {
+  const stats: Record<string, { mtimeMs: number; size: number }> = {}
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        visit(absolute)
+        continue
+      }
+      const stat = fs.statSync(absolute)
+      stats[path.relative(rootDir, absolute)] = { mtimeMs: stat.mtimeMs, size: stat.size }
+    }
+  }
+  visit(rootDir)
+  return stats
 }
 
 function sessionEvent(sequence: number, role: "user" | "assistant", content: string): Record<string, unknown> {
@@ -456,6 +552,76 @@ describe("mailbox direct reads", () => {
       id: "coding-001",
       status: "waiting_input",
     })
+  })
+
+  it("reads Sentinel latest, latest-ready, and bounded history without mutating receipt files", async () => {
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+    writeAgentConfig(agentRoot)
+    scaffoldDeskRecord(agentRoot)
+    writeFlightRecorderResume(agentRoot, readyResume())
+    try {
+      for (let index = 1; index <= 22; index += 1) {
+        await refreshContextLossSentinel("slugger", agentRoot, {
+          trigger: "daemon_health",
+          now: () => new Date(`2026-06-09T20:${String(index).padStart(2, "0")}:00.000Z`),
+          createReceiptId: () => `sentinel-mailbox-${String(index).padStart(2, "0")}`,
+          providerVisibility: readyProviderVisibility("slugger"),
+          daemonHealthResults: [],
+          gitStatus: () => ({ ok: true, porcelain: "" }),
+        })
+      }
+      const paths = contextLossSentinelPaths(agentRoot)
+      const pinnedMtime = new Date("2026-06-09T20:11:00.000Z")
+      const pinFileTimes = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const absolute = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            pinFileTimes(absolute)
+            continue
+          }
+          fs.utimesSync(absolute, pinnedMtime, pinnedMtime)
+        }
+      }
+      pinFileTimes(paths.rootDir)
+      const before = fileStats(paths.rootDir)
+      const { readSentinelView } = await import("../../../heart/mailbox/readers/continuity-readers")
+
+      const view: MailboxSentinelView = readSentinelView(agentRoot)
+
+      expect(view.schemaVersion).toBe(1)
+      expect(view.latest?.id).toBe("sentinel-mailbox-22")
+      expect(view.latestReady?.id).toBe("sentinel-mailbox-22")
+      expect(view.history.map((receipt) => receipt.id)).toEqual(
+        Array.from({ length: 20 }, (_, index) => `sentinel-mailbox-${String(index + 3).padStart(2, "0")}`),
+      )
+      expect(fileStats(paths.rootDir)).toEqual(before)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("reads missing Sentinel state without creating Sentinel files", async () => {
+    const bundlesRoot = makeBundleRoot()
+    const agentRoot = path.join(bundlesRoot, "slugger.ouro")
+    writeAgentConfig(agentRoot)
+    try {
+      const paths = contextLossSentinelPaths(agentRoot)
+      const { readSentinelView } = await import("../../../heart/mailbox/readers/continuity-readers")
+
+      const view: MailboxSentinelView = readSentinelView(agentRoot)
+
+      expect(view).toEqual({
+        schemaVersion: 1,
+        latest: null,
+        latestReady: null,
+        history: [],
+        degraded: { issues: [] },
+      })
+      expect(fs.existsSync(paths.rootDir)).toBe(false)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
   })
 
   it("re-reads request-time truth instead of holding hidden dashboard state", async () => {

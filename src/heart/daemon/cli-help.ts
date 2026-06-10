@@ -169,10 +169,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   work: {
     category: "Tasks",
-    description: "Show durable Arc work state or run the context-loss gauntlet.",
-    usage: "ouro work card|gauntlet [--agent <name>] [--format text|json|--json]",
-    example: "ouro work gauntlet --agent slugger --format json",
-    subcommands: ["card", "gauntlet"],
+    description: "Show durable Arc work state, recovery Sentinel state, or run the context-loss gauntlet.",
+    usage: "ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
+    example: "ouro work sentinel --agent slugger --format json",
+    subcommands: ["card", "gauntlet", "sentinel"],
   },
   "work card": {
     category: "Tasks",
@@ -186,6 +186,13 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     description: "Score whether durable Arc, flight recorder, and Desk state can recover after context loss.",
     usage: "ouro work gauntlet [--agent <name>] [--format text|json|--json]",
     example: "ouro work gauntlet --agent slugger --format json",
+    hidden: true,
+  },
+  "work sentinel": {
+    category: "Tasks",
+    description: "Show read-only Arc Sentinel recovery state, or explicitly refresh it.",
+    usage: "ouro work sentinel [refresh] [--agent <name>] [--format text|json|--json]",
+    example: "ouro work sentinel refresh --agent slugger --format json",
     hidden: true,
   },
   "migrate-to-desk": {

@@ -117,6 +117,7 @@ import { resolveMailImportFilePath } from "../../../heart/daemon/cli-exec"
 import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
 import * as sessionActivity from "../../../heart/session-activity"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
+import { buildAgentProviderVisibility } from "../../../heart/provider-visibility"
 import type {
   ProviderCredentialPool,
   ProviderCredentialPoolReadResult,
@@ -129,6 +130,7 @@ import {
 } from "../../helpers/agent-provider-selection"
 import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
+import { clearProviderReadinessCache, readProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
 
 const NOW = "2026-04-12T20:10:00.000Z"
@@ -650,6 +652,7 @@ afterEach(() => {
   mockVaultDeps.rawSecrets.clear()
   mockVaultDeps.storedItems.clear()
   resetRuntimeCredentialConfigCache()
+  clearProviderReadinessCache()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue
@@ -778,6 +781,11 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["check", "--lane", "inner"])).toEqual({
       kind: "provider.check",
       lane: "inner",
+    })
+    expect(parseOuroCommand(["provider", "check", "--agent", "Slugger", "--lane", "outward"])).toEqual({
+      kind: "provider.check",
+      agent: "Slugger",
+      lane: "outward",
     })
   })
 
@@ -5160,6 +5168,59 @@ describe("provider CLI command execution", () => {
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
+  })
+
+  it("ouro provider check records readiness for Sentinel repair commands", async () => {
+    emitTestEvent("provider cli check records sentinel readiness")
+    const bundlesRoot = makeTempDir("provider-cli-check-readiness-bundles")
+    const homeDir = makeTempDir("provider-cli-check-readiness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1, 2] })
+
+    const exactRepairCommand = ["provider", "check", "--agent", "Slugger", "--lane", "outward"]
+    expect(parseOuroCommand(exactRepairCommand)).toEqual({
+      kind: "provider.check",
+      agent: "Slugger",
+      lane: "outward",
+    })
+
+    const result = await runOuroCli(exactRepairCommand, makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Slugger outward anthropic / claude-opus-4-6: ready")
+    expect(readProviderLaneReadiness({
+      agentName: "Slugger",
+      lane: "outward",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      credentialRevision: "cred_anthropic_1",
+    })).toMatchObject({
+      status: "ready",
+      checkedAt: expect.any(String),
+      attempts: 2,
+    })
+    clearProviderReadinessCache()
+    expect(readProviderLaneReadiness({
+      agentName: "Slugger",
+      lane: "outward",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      credentialRevision: "cred_anthropic_1",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+    })).toMatchObject({
+      status: "ready",
+      checkedAt: expect.any(String),
+      attempts: 2,
+    })
+    const visibility = buildAgentProviderVisibility({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      homeDir,
+    })
+    expect(visibility.lanes.find((lane) => lane.lane === "outward")).toMatchObject({
+      readiness: { status: "ready", attempts: 2 },
+    })
   })
 
   it("ouro use --force records the broken binding without durable readiness state", async () => {

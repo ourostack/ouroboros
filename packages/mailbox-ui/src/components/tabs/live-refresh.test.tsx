@@ -11,7 +11,7 @@ import { InnerTab } from "./inner"
 import { MailboxTab } from "./mailbox"
 import { NotesTab } from "./notes"
 import { RuntimeTab } from "./runtime"
-import type { MailboxAgentView, MailboxTranscriptMessage } from "../../contracts"
+import type { MailboxAgentView, MailboxSentinelReceipt, MailboxSentinelView, MailboxTranscriptMessage } from "../../contracts"
 
 const BOTTOM_STICKINESS_PX = 48
 
@@ -111,22 +111,116 @@ function makeAgentView(overrides: AgentViewOverrides = {}): MailboxAgentView {
   }
 }
 
-function makeContextLossGauntlet(overrides: Record<string, unknown> = {}) {
+function makeSentinelReceipt(overrides: Partial<MailboxSentinelReceipt> = {}): MailboxSentinelReceipt {
+  const id = overrides.id ?? "sentinel-ready-1"
+  const trigger = overrides.trigger ?? "post_turn"
+  const verdict = overrides.verdict ?? "ready"
   return {
     schemaVersion: 1,
-    agent: "slugger",
-    generatedAt: "2026-06-08T12:00:00.000Z",
+    id,
+    agent: overrides.agent ?? "slugger",
+    trigger,
+    generatedAt: overrides.generatedAt ?? "2026-06-08T12:00:00.000Z",
+    verdict,
+    summary: overrides.summary ?? "latest-ready recovery anchor is usable",
+    receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/context-loss-sentinel/receipts/${id}.json`,
+    latestReadyLocator: overrides.latestReadyLocator ?? "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+    recoveryAnchor: overrides.recoveryAnchor ?? {
+      kind: "latest-ready",
+      currentAsk: "finish the visibility layer",
+      nextSafeAction: "continue Unit 4 from the doing doc",
+      flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+      sourceEventIds: ["evt_user_full_moon"],
+      recordedAt: "2026-06-08T11:55:00.000Z",
+    },
+    gauntlet: overrides.gauntlet ?? {
+      verdict,
+      scorePercentage: verdict === "ready" ? 100 : verdict === "watch" ? 86 : 58,
+      failedChecks: verdict === "blocked" ? ["provider:outward"] : [],
+      warnedChecks: verdict === "watch" ? ["sense:mail"] : [],
+      sourceLocator: "arc/flight-recorder/latest.json",
+    },
+    signals: overrides.signals ?? [{
+      id: "gauntlet:ready",
+      kind: "gauntlet",
+      status: "pass",
+      severity: "info",
+      verdictImpact: "none",
+      summary: "context recovery gauntlet passed",
+      source: { kind: "context-loss-gauntlet", locator: "arc/flight-recorder/latest.json" },
+    }],
+    sourceLocators: overrides.sourceLocators ?? ["arc/flight-recorder/latest.json"],
+    resumeSnapshot: overrides.resumeSnapshot ?? {},
+  }
+}
+
+function makeSentinelView(overrides: Partial<MailboxSentinelView> = {}): MailboxSentinelView {
+  const latestReady = makeSentinelReceipt({
+    id: "sentinel-ready-1",
+    trigger: "post_turn",
+    verdict: "ready",
+    summary: "latest-ready recovery anchor is usable",
+  })
+  const watch = makeSentinelReceipt({
+    id: "sentinel-watch-1",
+    trigger: "daemon_startup",
+    generatedAt: "2026-06-08T12:04:00.000Z",
     verdict: "watch",
-    summary: "recovery possible with warnings",
-    score: { earned: 75, possible: 85, percentage: 88 },
-    currentAsk: { available: true, value: "finish the visibility layer", source: "flight_recorder", confidence: "current" },
-    nextAction: { actor: "agent", summary: "run the gauntlet and inspect the score", source: { kind: "flight_recorder", locator: "arc/flight-recorder/latest.json", freshness: "current", redaction: "summary" } },
-    counts: { owed: 1, returnObligations: 0, activePackets: 0, evolutionCases: 0, waitingOnHuman: 0, unverifiedClaims: null, staleRiskyClaims: null },
-    checks: [
-      { id: "current_ask", label: "Current ask", status: "pass", score: 15, maxScore: 15, detail: "current ask is preserved", evidence: [{ kind: "flight_recorder", locator: "arc/flight-recorder/latest.json", freshness: "current", redaction: "summary" }] },
-      { id: "desk_record_ready", label: "Desk record", status: "warn", score: 5, maxScore: 10, detail: "canonical Desk record scaffold is missing", evidence: [] },
-    ],
-    workCard: { schemaVersion: 1 },
+    summary: "mail sense is lagging but recovery is possible",
+    signals: [{
+      id: "sense:mail",
+      kind: "sense",
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "mail sense has not refreshed recently",
+      source: { kind: "mail-sense", locator: "state/mail/latest.json" },
+    }],
+  })
+  const latest = makeSentinelReceipt({
+    id: "sentinel-blocked-1",
+    trigger: "session_start",
+    generatedAt: "2026-06-08T12:08:00.000Z",
+    verdict: "blocked",
+    summary: "outward provider lane is unavailable",
+    recoveryAnchor: {
+      kind: "latest-ready",
+      currentAsk: "finish the visibility layer",
+      nextSafeAction: "run ouro provider refresh --agent slugger",
+      flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+      sourceEventIds: ["evt_user_full_moon"],
+      recordedAt: "2026-06-08T12:06:00.000Z",
+    },
+    gauntlet: {
+      verdict: "ready",
+      scorePercentage: 100,
+      failedChecks: [],
+      warnedChecks: [],
+      sourceLocator: "arc/flight-recorder/latest.json",
+    },
+    signals: [{
+      id: "provider:outward",
+      kind: "provider_lane",
+      status: "fail",
+      severity: "critical",
+      verdictImpact: "blocked",
+      summary: "outward provider down",
+      source: { kind: "provider-visibility", locator: "agent.json#providers.outward" },
+      repair: {
+        actor: "agent-runnable",
+        kind: "provider-credential-cache",
+        command: "ouro provider refresh --agent slugger",
+        detail: "Refresh the provider credential cache.",
+      },
+    }],
+  })
+
+  return {
+    schemaVersion: 1,
+    latest,
+    latestReady,
+    history: [latest, watch, latestReady],
+    degraded: { issues: [] },
     ...overrides,
   }
 }
@@ -1044,13 +1138,13 @@ describe("Mailbox deep-tab live refresh", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
   })
 
-  it("re-fetches work deep data when refreshGeneration advances", async () => {
+  it("re-fetches recovery sentinel history when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith("/coding")) return jsonResponse({ items: [] })
       if (url.endsWith("/obligations")) return jsonResponse({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })
       if (url.endsWith("/self-fix")) return jsonResponse({ active: false, currentStep: null, steps: [] })
-      if (url.endsWith("/context-loss-gauntlet")) return jsonResponse(makeContextLossGauntlet())
+      if (url.endsWith("/sentinel")) return jsonResponse(makeSentinelView())
       throw new Error(`unexpected url: ${url}`)
     })
     vi.stubGlobal("fetch", fetchMock)
@@ -1064,9 +1158,23 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
-    expect(ui.container.textContent).toContain("Context-loss gauntlet")
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.endsWith("/agents/slugger/sentinel"))).toBe(true)
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.includes("/context-loss-gauntlet"))).toBe(false)
+    expect(ui.container.textContent).toContain("Recovery Sentinel")
+    expect(ui.container.textContent).toContain("Latest")
+    expect(ui.container.textContent).toContain("Latest ready")
+    expect(ui.container.textContent).toContain("History")
+    expect(ui.container.textContent).toContain("outward provider lane is unavailable")
+    expect(ui.container.textContent).toContain("outward provider down")
+    expect(ui.container.textContent).toContain("latest-ready recovery anchor is usable")
+    expect(ui.container.textContent).toContain("mail sense is lagging")
+    expect(ui.container.textContent).toContain("session start")
     expect(ui.container.textContent).toContain("finish the visibility layer")
-    expect(ui.container.textContent).toContain("Desk record")
+    expect(ui.container.textContent).not.toContain("Context-loss gauntlet")
+    expect(ui.container.textContent).not.toContain("score")
+    expect(ui.container.textContent).not.toContain("100%")
+    expect((ui.container.textContent?.match(/outward provider lane is unavailable/g) ?? []).length).toBe(1)
+    expect((ui.container.textContent?.match(/latest-ready recovery anchor is usable/g) ?? []).length).toBe(1)
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -1075,17 +1183,29 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8))
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.includes("/context-loss-gauntlet"))).toBe(false)
   })
 
-  it("clears stale context-loss gauntlet data and shows refresh failures", async () => {
+  it("clears stale recovery sentinel data on agent switch and shows refresh failures", async () => {
+    let rejectCobraSentinel: ((reason?: unknown) => void) | null = null
+    let resolveSluggerCoding: ((response: Response) => void) | null = null
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.includes("/slugger/coding")) {
+        return new Promise<Response>((resolve) => {
+          resolveSluggerCoding = resolve
+        })
+      }
+      if (url.includes("/cobra/coding")) return jsonResponse({ items: [] })
       if (url.endsWith("/obligations")) return jsonResponse({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })
       if (url.endsWith("/self-fix")) return jsonResponse({ active: false, currentStep: null, steps: [] })
-      if (url.includes("/context-loss-gauntlet")) {
-        if (url.includes("/slugger/")) return jsonResponse(makeContextLossGauntlet())
-        throw new Error("gauntlet offline")
+      if (url.includes("/sentinel")) {
+        if (url.includes("/slugger/")) return jsonResponse(makeSentinelView())
+        if (url.includes("/cobra/")) {
+          return new Promise<Response>((_, reject) => {
+            rejectCobraSentinel = reject
+          })
+        }
       }
       throw new Error(`unexpected url: ${url}`)
     })
@@ -1099,7 +1219,7 @@ describe("Mailbox deep-tab live refresh", () => {
       </NavigationContext.Provider>
     )
 
-    await waitFor(() => expect(ui.container.textContent).toContain("finish the visibility layer"))
+    await waitFor(() => expect(ui.container.textContent).toContain("outward provider lane is unavailable"))
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -1107,9 +1227,46 @@ describe("Mailbox deep-tab live refresh", () => {
       </NavigationContext.Provider>
     )
 
-    await waitFor(() => expect(ui.container.textContent).toContain("gauntlet offline"))
+    await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.endsWith("/agents/cobra/sentinel"))).toBe(true))
+    expect(ui.container.textContent).not.toContain("outward provider lane is unavailable")
+
+    await act(async () => {
+      resolveSluggerCoding?.(jsonResponse({
+        items: [{
+          id: "stale-coding",
+          runner: "stale-runner",
+          status: "running",
+          checkpoint: "old agent work",
+          taskRef: null,
+          workdir: "/tmp/stale-slugger",
+          originSession: null,
+          obligationId: null,
+          scopeFile: null,
+          stateFile: null,
+          artifactPath: null,
+          pid: 31337,
+          startedAt: "2026-06-08T11:00:00.000Z",
+          lastActivityAt: "2026-06-08T11:30:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          stdoutTail: "",
+          stderrTail: "",
+          failure: null,
+        }],
+      }))
+    })
+    await flushRefresh()
+    expect(ui.container.textContent).not.toContain("stale-runner")
+
+    await act(async () => {
+      rejectCobraSentinel?.(new Error("sentinel offline"))
+    })
+
+    await waitFor(() => expect(ui.container.textContent).toContain("sentinel offline"))
     expect(ui.container.textContent).toContain("unavailable")
-    expect(ui.container.textContent).not.toContain("finish the visibility layer")
+    expect(ui.container.textContent).not.toContain("outward provider lane is unavailable")
   })
 
   it("re-fetches connections deep data when refreshGeneration advances", async () => {

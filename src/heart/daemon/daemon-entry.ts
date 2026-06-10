@@ -2,7 +2,7 @@
 import * as fs from "fs"
 import * as path from "path"
 import { DaemonProcessManager } from "./process-manager"
-import { OuroDaemon } from "./daemon"
+import { OuroDaemon, type DaemonHealthResult } from "./daemon"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { registerGlobalLogSink } from "../../nerves/index"
 import { FileMessageRouter } from "./message-router"
@@ -33,6 +33,7 @@ import { flushPulse } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
+import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -69,6 +70,34 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
+
+function sentinelHealthStatus(receipt: Pick<ContextLossSentinelReceipt, "verdict">): DaemonHealthResult["status"] {
+  if (receipt.verdict === "ready") return "ok"
+  if (receipt.verdict === "watch") return "warn"
+  return "critical"
+}
+
+async function refreshDaemonSentinel(
+  agent: string,
+  trigger: Extract<ContextLossSentinelTrigger, "daemon_startup" | "daemon_health">,
+  daemonHealthResults: DaemonHealthResult[] = [],
+): Promise<DaemonHealthResult> {
+  const bundleRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+  try {
+    const receipt = await refreshContextLossSentinel(agent, bundleRoot, { trigger, daemonHealthResults })
+    return {
+      name: `context-loss-sentinel:${agent}`,
+      status: sentinelHealthStatus(receipt),
+      message: `Sentinel ${receipt.verdict}: ${receipt.summary}`,
+    }
+  } catch (error) {
+    return {
+      name: `context-loss-sentinel:${agent}`,
+      status: "critical",
+      message: `Sentinel refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
 
 const processManager = new DaemonProcessManager({
   agents: managedAgents.map((agent) => ({
@@ -115,6 +144,7 @@ const senseManager = new DaemonSenseManager({
 const healthMonitor = new HealthMonitor({
   processManager,
   scheduler,
+  sentinelChecker: (resultsSoFar) => Promise.all(managedAgents.map((agent) => refreshDaemonSentinel(agent, "daemon_health", resultsSoFar))),
   senseProbeProvider: () => [
     ...senseManager.listHealthProbes(),
     ...managedAgents.map((agent) => createMcpStatusCanaryProbe({
@@ -337,12 +367,13 @@ function writeStopCommandHealthState(): void {
 }
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void daemon.start().then(() => {
+void daemon.start().then(async () => {
   const bundlesRoot = getAgentBundlesRoot()
   const ouroPath = resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
+    await refreshDaemonSentinel(agent, "daemon_startup")
     const bundleRoot = path.join(bundlesRoot, `${agent}.ouro`)
     const habitsDir = path.join(bundleRoot, "habits")
     const degradedComponent = `habits:${agent}`

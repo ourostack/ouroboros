@@ -165,6 +165,19 @@ describe("getCommandHelp()", () => {
     expect(result).toContain("ouro outlook [--json]")
   })
 
+  it("includes Sentinel read and refresh help under work commands", () => {
+    const workHelp = getCommandHelp("work")!
+    const sentinelHelp = getCommandHelp("work sentinel")!
+    expect(workHelp).toContain("card|gauntlet|sentinel")
+    expect(workHelp).toContain("sentinel")
+    expect(sentinelHelp).toContain("ouro work sentinel [refresh]")
+    expect(sentinelHelp).toContain("--agent <name>")
+    expect(sentinelHelp).toContain("--format text|json")
+    expect(sentinelHelp).toContain("--json")
+    expect(sentinelHelp).toContain("read-only")
+    expect(sentinelHelp).toContain("explicitly refresh")
+  })
+
   it("describes `up` in plain language instead of leaning on house metaphor", () => {
     expect(COMMAND_REGISTRY["up"].description).toContain("Start and check Ouro")
   })

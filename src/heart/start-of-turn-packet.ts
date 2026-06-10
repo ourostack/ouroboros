@@ -9,6 +9,7 @@ import { type Obligation } from "../arc/obligations"
 import { type CareRecord } from "../arc/cares"
 import { type AgentPresence } from "../arc/presence"
 import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
+import { formatContextLossSentinelText, type ContextLossSentinelView } from "./context-loss-sentinel"
 
 export interface StartOfTurnPacket {
   plotLine: string
@@ -16,6 +17,7 @@ export interface StartOfTurnPacket {
   cares: string
   presence: string
   arcResume?: string
+  recoverySentinel?: ContextLossSentinelView
   resumeHint: string
   currentSessionTiming?: string
   tempo: TempoMode
@@ -197,6 +199,7 @@ export function buildStartOfTurnPacket(
     canonicalObligations?: { primary: Obligation | null; all: Obligation[] }
     currentSessionTiming?: string
     flightRecorderResume?: FlightRecorderResume
+    recoverySentinel?: ContextLossSentinelView
   },
 ): StartOfTurnPacket {
   const tempo = view.tempo
@@ -209,6 +212,7 @@ export function buildStartOfTurnPacket(
     cares: buildCaresSection(view.activeCares),
     presence: buildPresenceSection(view.peerPresence),
     arcResume: opts?.flightRecorderResume ? formatFlightRecorderResume(opts.flightRecorderResume) : undefined,
+    recoverySentinel: opts?.recoverySentinel,
     resumeHint: buildResumeHint(view, opts?.canonicalObligations ? effectiveObligations : undefined),
     currentSessionTiming: opts?.currentSessionTiming,
     tempo,
@@ -254,6 +258,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
     { label: "bundleState", content: renderBundleStateHint(packet.bundleState ?? []), priority: 7 },
     { label: "syncFailure", content: packet.syncFailure ?? "", priority: 7 },
     { label: "arc", content: packet.arcResume ?? "", priority: 7 },
+    { label: "recoverySentinel", content: packet.recoverySentinel ? formatContextLossSentinelText(packet.recoverySentinel) : "", priority: 7 },
     { label: "resume", content: packet.resumeHint, priority: 6 },
     { label: "sessionTiming", content: packet.currentSessionTiming ?? "", priority: 5 },
     { label: "obligations", content: packet.obligations, priority: 5 },
@@ -283,7 +288,7 @@ export function renderStartOfTurnPacket(packet: StartOfTurnPacket): string {
   for (const section of sortedByPriority) {
     if (tokens <= budget.max) break
     // Skip continuity sections — they are protected.
-    if (section.label === "resume" || section.label === "arc") continue
+    if (section.label === "resume" || section.label === "arc" || section.label === "recoverySentinel") continue
 
     // Remove this section entirely
     const idx = sections.findIndex((s) => s.label === section.label)
@@ -318,6 +323,9 @@ function formatSections(sections: Array<{ label: string; content: string }>): st
         break
       case "arc":
         parts.push(`**Arc:**\n${section.content}`)
+        break
+      case "recoverySentinel":
+        parts.push(`**Recovery Sentinel:**\n${section.content}`)
         break
       case "obligations":
         parts.push(`**Owed:**\n${section.content}`)

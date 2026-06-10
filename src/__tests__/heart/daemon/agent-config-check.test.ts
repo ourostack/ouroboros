@@ -512,6 +512,38 @@ describe("checkAgentConfigWithProviderHealth", () => {
     expect(mockWriteFileSync).not.toHaveBeenCalled()
   })
 
+  it("records successful readiness when ping results omit attempt records", async () => {
+    const pingProvider = vi.fn(async () => ({ ok: true }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result.ok).toBe(true)
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      "/bundles/myagent.ouro/state/providers/readiness.json",
+      expect.not.stringContaining("\"attempts\""),
+      "utf-8",
+    )
+  })
+
+  it("records successful readiness attempt counts", async () => {
+    const pingProvider = vi.fn(async () => ({
+      ok: true,
+      attempts: [
+        { attempt: 1, provider: "anthropic", model: "claude-opus-4-6", operation: "ping", ok: false, willRetry: true },
+        { attempt: 2, provider: "anthropic", model: "claude-opus-4-6", operation: "ping", ok: true, willRetry: false },
+      ],
+    }) as const)
+
+    const result = await checkAgentConfigWithProviderHealth("myagent", BUNDLES, { pingProvider })
+
+    expect(result.ok).toBe(true)
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      "/bundles/myagent.ouro/state/providers/readiness.json",
+      expect.stringContaining("\"attempts\": 2"),
+      "utf-8",
+    )
+  })
+
   it("returns structural config errors before live health checks", async () => {
     const pingProvider = vi.fn(async () => ({ ok: true }) as const)
     mockReadFileSync.mockImplementationOnce(() => { throw new Error("ENOENT") })

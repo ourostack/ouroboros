@@ -19,6 +19,7 @@ import type {
   MailboxObligationDetailView,
   MailboxOrientationView,
   MailboxSelfFixView,
+  MailboxSentinelView,
   MailboxFriendView,
   MailboxHabitView,
   MailboxLogView,
@@ -54,6 +55,7 @@ export interface StartMailboxHttpServerOptions {
   readAgentChanges?: (agentName: string) => MailboxChangesView
   readAgentSelfFix?: (agentName: string) => MailboxSelfFixView
   readAgentContextLossGauntlet?: (agentName: string) => MailboxContextLossGauntletView
+  readAgentSentinel?: (agentName: string) => MailboxSentinelView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView

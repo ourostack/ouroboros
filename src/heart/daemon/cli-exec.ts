@@ -55,6 +55,7 @@ import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus
 import {
   buildAgentProviderVisibility,
 } from "../provider-visibility"
+import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
@@ -101,6 +102,7 @@ import type {
   AttentionCliCommand,
   WorkCardCliCommand,
   WorkGauntletCliCommand,
+  WorkSentinelCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -171,7 +173,8 @@ import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
-import { pingGithubCopilotModel, pingProvider, type ProviderPingOptions } from "../provider-ping"
+import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
+import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -532,6 +535,8 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.history":
     case "work.card":
     case "work.gauntlet":
+    case "work.sentinel":
+    case "work.sentinel.refresh":
     case "inner.status":
     case "session.list":
       return "return-message"
@@ -1577,7 +1582,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -5475,6 +5480,11 @@ function credentialPingConfig(record: ProviderCredentialRecord): Parameters<type
   } as unknown as Parameters<typeof pingProvider>[1]
 }
 
+function pingAttemptCount(result: PingResult): number | undefined {
+  if (Array.isArray(result.attempts)) return result.attempts.length
+  return undefined
+}
+
 async function readProviderCredentialRecord(
   agent: string,
   provider: AgentProvider,
@@ -5645,7 +5655,8 @@ async function executeProviderCheck(
     return message
   }
   try {
-    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const { config, configPath } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const agentRoot = path.dirname(configPath)
     const binding = providerConfigBinding(config, command.lane)
     progress.startPhase(`reading ${binding.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps, {
@@ -5673,6 +5684,19 @@ async function executeProviderCheck(
     })
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
+    const attempts = pingAttemptCount(pingResult)
+    recordProviderLaneReadiness({
+      agentRoot,
+      agentName: command.agent,
+      lane: command.lane,
+      provider: binding.provider,
+      model: binding.model,
+      credentialRevision: credential.record.revision,
+      status: pingResult.ok ? "ready" : "failed",
+      checkedAt: new Date().toISOString(),
+      ...(pingResult.ok ? {} : { error: pingResult.message }),
+      ...(attempts === undefined ? {} : { attempts }),
+    })
     const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
     emitNervesEvent({
       component: "daemon",
@@ -6553,6 +6577,41 @@ function resolveClonePath(
 }
 /* v8 ignore stop */
 
+const HOOK_SENTINEL_LOCK_TIMEOUT_MS = 500
+
+function hookSentinelGitStatus(): ContextLossSentinelGitStatus {
+  return {
+    ok: false,
+    error: "skipped during session-start hook to keep lifecycle hook bounded; run `ouro work sentinel refresh --agent <agent>` for full bundle git status",
+  }
+}
+
+async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): Promise<void> {
+  if (command.event !== "session-start") return
+  const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+  const bundleRoot = path.join(bundlesRoot, `${command.agent}.ouro`)
+  try {
+    await refreshContextLossSentinel(command.agent, bundleRoot, {
+      trigger: "session_start",
+      lockTimeoutMs: HOOK_SENTINEL_LOCK_TIMEOUT_MS,
+      gitStatus: hookSentinelGitStatus,
+    })
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.hook_sentinel_refresh_error",
+      message: "claude code hook Sentinel refresh failed",
+      meta: {
+        agent: command.agent,
+        eventType: command.event,
+        lockTimeoutMs: HOOK_SENTINEL_LOCK_TIMEOUT_MS,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+  }
+}
+
 // ── Main CLI execution ──
 
 export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefaultOuroCliDeps()): Promise<string> {
@@ -6605,6 +6664,10 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     throw new Error(resolvedCommand.message)
   }
   let command: ResolvedOuroCliCommand = resolvedCommand.command
+
+  if (command.kind === "hook") {
+    await refreshHookSentinel(command, deps)
+  }
 
   if (args.length === 0) {
     const discovered = await Promise.resolve(
@@ -8386,6 +8449,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
     const report = runContextLossGauntlet(command.agent, agentRoot, { homeDir: deps.homeDir })
     const message = command.format === "json" ? JSON.stringify(report, null, 2) : formatContextLossGauntletText(report)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── context-loss Sentinel (local, no daemon socket needed) ──
+  if (command.kind === "work.sentinel" || command.kind === "work.sentinel.refresh") {
+    const {
+      formatContextLossSentinelJson,
+      formatContextLossSentinelText,
+      readContextLossSentinelView,
+      refreshContextLossSentinel,
+    } = await import("../context-loss-sentinel")
+    if (!command.agent) throw new Error("work sentinel requires --agent <name>")
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
+    const sentinel = command.kind === "work.sentinel.refresh"
+      ? await refreshContextLossSentinel(command.agent, agentRoot, { trigger: "manual_cli", homeDir: deps.homeDir })
+      : readContextLossSentinelView(agentRoot, { limit: 20 })
+    const message = command.format === "json"
+      ? formatContextLossSentinelJson(sentinel)
+      : formatContextLossSentinelText(sentinel)
     deps.writeStdout(message)
     return message
   }

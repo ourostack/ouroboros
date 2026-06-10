@@ -19,6 +19,7 @@ import type { BundleMeta } from "../mind/bundle-manifest"
 import type { Channel } from "../mind/friends/types"
 import type { BackgroundOperationRecord } from "./background-operations"
 import type { FlightRecorderResume } from "../arc/flight-recorder"
+import type { ContextLossSentinelView } from "./context-loss-sentinel"
 
 import * as fs from "fs"
 import * as path from "path"
@@ -41,6 +42,7 @@ import type { CodingSessionStatus } from "../repertoire/coding/types"
 import { buildAgentProviderVisibility, type AgentProviderVisibility } from "./provider-visibility"
 import { listVisibleBackgroundOperations } from "./mail-import-discovery"
 import { readFlightRecorderResume } from "../arc/flight-recorder"
+import { readContextLossSentinelView } from "./context-loss-sentinel"
 
 // ── TurnContext: the raw state snapshot ─────────────────────────────
 
@@ -95,6 +97,8 @@ export interface TurnContext {
   daemonHealth: DaemonHealthState | null
   /** Arc flight-recorder resume for deterministic continuation after context loss. */
   flightRecorderResume: FlightRecorderResume
+  /** Recovery Sentinel latest/latest-ready view for deterministic context-loss recovery. */
+  recoverySentinel: ContextLossSentinelView
 }
 
 // ── Inputs ──────────────────────────────────────────────────────────
@@ -324,6 +328,16 @@ function degradedFlightRecorderResume(issue: string): FlightRecorderResume {
   }
 }
 
+function degradedRecoverySentinel(issue: string): ContextLossSentinelView {
+  return {
+    schemaVersion: 1,
+    latest: null,
+    latestReady: null,
+    history: [],
+    degraded: { issues: [issue] },
+  }
+}
+
 // ── Builder ─────────────────────────────────────────────────────────
 
 export async function buildTurnContext(input: BuildTurnContextInput): Promise<TurnContext> {
@@ -473,6 +487,15 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
   /* v8 ignore stop */
   }
 
+  let recoverySentinel: ContextLossSentinelView
+  try {
+    recoverySentinel = readContextLossSentinelView(agentRoot, { limit: 5 })
+  } catch (error) { /* v8 ignore start -- defensive: fallback on read failure @preserve */
+    const reason = error instanceof Error ? error.message : String(error)
+    recoverySentinel = degradedRecoverySentinel(`Recovery Sentinel read failed: ${reason}`)
+  /* v8 ignore stop */
+  }
+
   emitNervesEvent({
     component: "senses",
     event: "senses.turn_context_built",
@@ -508,5 +531,6 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     bundleMeta,
     daemonHealth,
     flightRecorderResume,
+    recoverySentinel,
   }
 }

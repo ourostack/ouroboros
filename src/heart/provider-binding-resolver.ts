@@ -226,6 +226,7 @@ function resolveCredential(
 
 function resolveReadiness(
   agentName: string,
+  agentRoot: string,
   lane: ProviderLane,
   provider: AgentProvider,
   model: string,
@@ -239,6 +240,7 @@ function resolveReadiness(
   }
   if (credential.status === "present") {
     const cached = readProviderLaneReadiness({
+      agentRoot,
       agentName,
       lane,
       provider,
@@ -333,6 +335,7 @@ export function resolveEffectiveProviderBinding(
   const credentialResult = resolveCredential(poolResult, agentConfigResult.provider, input.agentName)
   const readiness = resolveReadiness(
     input.agentName,
+    input.agentRoot,
     laneResolution.lane,
     agentConfigResult.provider,
     agentConfigResult.model,

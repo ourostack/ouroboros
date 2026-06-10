@@ -148,6 +148,56 @@ describe("HealthMonitor", () => {
     expect(alertSink).toHaveBeenNthCalledWith(2, "[critical] disk-space: disk usage critical (95%)")
   })
 
+  it("includes injectable Sentinel health results and alerts on blocked Sentinel state", async () => {
+    const alertSink = vi.fn(async () => undefined)
+    const sentinelChecker = vi.fn(async () => [
+      {
+        name: "context-loss-sentinel:slugger",
+        status: "critical" as const,
+        message: "Sentinel blocked: provider:outward live check failed",
+      },
+      {
+        name: "context-loss-sentinel:ouroboros",
+        status: "warn" as const,
+        message: "Sentinel watch: inner credentials not loaded",
+      },
+    ])
+    const monitor = new HealthMonitor({
+      processManager: {
+        listAgentSnapshots: () => [{ name: "slugger", status: "running" }],
+      },
+      scheduler: {
+        listJobs: () => [{ id: "nightly-reconcile", lastRun: "2026-03-07T00:00:00.000Z" }],
+      },
+      diskUsagePercent: () => 10,
+      alertSink,
+      sentinelChecker,
+    } as any)
+
+    const results = await monitor.runChecks()
+
+    expect(sentinelChecker).toHaveBeenCalledTimes(1)
+    expect(results).toEqual([
+      { name: "agent-processes", status: "ok", message: "all managed agents running" },
+      { name: "cron-health", status: "ok", message: "cron jobs are healthy" },
+      { name: "disk-space", status: "ok", message: "disk usage healthy (10%)" },
+      {
+        name: "context-loss-sentinel:slugger",
+        status: "critical",
+        message: "Sentinel blocked: provider:outward live check failed",
+      },
+      {
+        name: "context-loss-sentinel:ouroboros",
+        status: "warn",
+        message: "Sentinel watch: inner credentials not loaded",
+      },
+    ])
+    expect(alertSink).toHaveBeenCalledTimes(1)
+    expect(alertSink).toHaveBeenCalledWith(
+      "[critical] context-loss-sentinel:slugger: Sentinel blocked: provider:outward live check failed",
+    )
+  })
+
   describe("periodic scheduling", () => {
     beforeEach(() => {
       vi.useFakeTimers()

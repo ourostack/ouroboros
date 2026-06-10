@@ -102,6 +102,7 @@ describe("daemon entrypoint", () => {
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     createMcpStatusCanaryProbeMock.mockReset()
+    vi.doUnmock("os")
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
     fs.rmSync(testHomeRoot, { recursive: true, force: true })
@@ -167,6 +168,12 @@ describe("daemon entrypoint", () => {
         stopAll = vi.fn(async () => undefined)
       },
     }))
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel: vi.fn(async () => ({
+        verdict: "ready",
+        summary: "deterministic recovery is ready",
+      })),
+    }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
 
@@ -215,6 +222,8 @@ describe("daemon entrypoint", () => {
       { name: "sense-probe:bluebubbles:slugger", status: "ok", message: "bluebubbles:slugger healthy" },
       { name: "sense-probe:mcp-canary:slugger", status: "ok", message: "mcp-canary:slugger healthy" },
       { name: "sense-probe:mcp-canary:ouroboros", status: "ok", message: "mcp-canary:ouroboros healthy" },
+      { name: "context-loss-sentinel:slugger", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
+      { name: "context-loss-sentinel:ouroboros", status: "ok", message: "Sentinel ready: deterministic recovery is ready" },
     ])
     expect(createMcpStatusCanaryProbeMock).toHaveBeenCalledWith(
       expect.objectContaining({ agent: "slugger", ignoreOverviewHealth: true }),
@@ -322,6 +331,10 @@ describe("daemon entrypoint", () => {
         stopAll = vi.fn(async () => undefined)
       },
     }))
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return { ...actual, homedir: () => testHomeRoot }
+    })
     vi.doMock("../../../heart/daemon/health-monitor", () => ({
       HealthMonitor: class MockHealthMonitor {
         runChecks = vi.fn(async () => [])
@@ -476,6 +489,146 @@ describe("daemon entrypoint", () => {
         agents: ["Juno", "Northstar", "slugger"],
       }),
     )
+
+    argvSpy.mockRestore()
+  })
+
+  it("refreshes Sentinel on daemon startup and wires daemon-health Sentinel checks", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["slugger", "ouroboros"])
+
+    const start = vi.fn(async () => undefined)
+    const stop = vi.fn(async () => undefined)
+    const emitNervesEvent = vi.fn()
+    const configureDaemonRuntimeLogger = vi.fn()
+    const healthMonitorCtor = vi.fn()
+    const refreshContextLossSentinel = vi.fn(async () => ({
+      verdict: "ready",
+      summary: "Sentinel ready",
+    }))
+    vi.spyOn(process, "on").mockImplementation(((
+      _event: string,
+      _cb: () => void,
+    ) => process) as any)
+
+    class MockOuroDaemon {
+      start = start
+      stop = stop
+    }
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({
+      OuroDaemon: MockOuroDaemon,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class MockProcessManager {
+        listAgentSnapshots = vi.fn(() => [])
+        sendToAgent = vi.fn()
+      },
+    }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({
+      DaemonSenseManager: class MockSenseManager {
+        listSenseRows = vi.fn(() => [])
+        listHealthProbes = vi.fn(() => [])
+        startAutoStartSenses = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+      },
+    }))
+    vi.doMock("../../../heart/daemon/health-monitor", () => ({
+      HealthMonitor: class MockHealthMonitor {
+        constructor(options: unknown) {
+          healthMonitorCtor(options)
+        }
+        runChecks = vi.fn(async () => [])
+        startPeriodicChecks = vi.fn()
+        stopPeriodicChecks = vi.fn()
+      },
+    }))
+    vi.doMock("os", async () => {
+      const actual = await vi.importActual<typeof import("os")>("os")
+      return { ...actual, homedir: () => testHomeRoot }
+    })
+    vi.doMock("../../../heart/context-loss-sentinel", () => ({
+      refreshContextLossSentinel,
+    }))
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const bundlesRoot = path.join(testHomeRoot, "AgentBundles")
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "slugger",
+      path.join(bundlesRoot, "slugger.ouro"),
+      expect.objectContaining({ trigger: "daemon_startup" }),
+    )
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "ouroboros",
+      path.join(bundlesRoot, "ouroboros.ouro"),
+      expect.objectContaining({ trigger: "daemon_startup" }),
+    )
+
+    const healthOptions = healthMonitorCtor.mock.calls[0]?.[0] as {
+      sentinelChecker?: (resultsSoFar?: unknown[]) => Promise<Array<{ name: string; status: string; message: string }>>
+    }
+    expect(typeof healthOptions.sentinelChecker).toBe("function")
+
+    refreshContextLossSentinel.mockClear()
+    await healthOptions.sentinelChecker?.()
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "slugger",
+      path.join(bundlesRoot, "slugger.ouro"),
+      expect.objectContaining({ trigger: "daemon_health" }),
+    )
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "ouroboros",
+      path.join(bundlesRoot, "ouroboros.ouro"),
+      expect.objectContaining({ trigger: "daemon_health" }),
+    )
+
+    refreshContextLossSentinel.mockClear()
+    refreshContextLossSentinel.mockImplementation(async (agent: string) => ({
+      verdict: agent === "slugger" ? "watch" : "blocked",
+      summary: agent === "slugger" ? "provider readiness is stale" : "recovery checkpoint is blocked",
+    }))
+    const daemonHealthResults = [{ name: "disk-space", status: "ok", message: "disk ok" }]
+    await expect(healthOptions.sentinelChecker?.(daemonHealthResults)).resolves.toEqual([
+      {
+        name: "context-loss-sentinel:slugger",
+        status: "warn",
+        message: "Sentinel watch: provider readiness is stale",
+      },
+      {
+        name: "context-loss-sentinel:ouroboros",
+        status: "critical",
+        message: "Sentinel blocked: recovery checkpoint is blocked",
+      },
+    ])
+    expect(refreshContextLossSentinel).toHaveBeenCalledWith(
+      "slugger",
+      path.join(bundlesRoot, "slugger.ouro"),
+      { trigger: "daemon_health", daemonHealthResults },
+    )
+
+    refreshContextLossSentinel.mockClear()
+    refreshContextLossSentinel.mockImplementation(async (agent: string) => {
+      throw agent === "slugger" ? new Error("sentinel exploded") : "offline"
+    })
+    await expect(healthOptions.sentinelChecker?.()).resolves.toEqual([
+      {
+        name: "context-loss-sentinel:slugger",
+        status: "critical",
+        message: "Sentinel refresh failed: sentinel exploded",
+      },
+      {
+        name: "context-loss-sentinel:ouroboros",
+        status: "critical",
+        message: "Sentinel refresh failed: offline",
+      },
+    ])
 
     argvSpy.mockRestore()
   })

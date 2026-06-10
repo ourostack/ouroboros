@@ -8,6 +8,7 @@ import { readPeerPresence, readPresence } from "../../../arc/presence"
 import { detectActiveWorkChanges, formatActiveWorkChanges, type ActiveWorkSnapshot } from "../../active-work"
 import { listSessionActivity } from "../../session-activity"
 import { runContextLossGauntlet } from "../../context-loss-gauntlet"
+import { readContextLossSentinelView } from "../../context-loss-sentinel"
 import { readObligationSummary } from "./agent-machine"
 import {
   type MailboxChangesView,
@@ -19,6 +20,7 @@ import {
   type MailboxObligationDetailView,
   type MailboxOrientationView,
   type MailboxSelfFixView,
+  type MailboxSentinelView,
 } from "../mailbox-types"
 
 function sortOpenObligations(obligations: ReturnType<typeof readObligations>) {
@@ -278,6 +280,10 @@ export function readSelfFixView(_agentRoot: string): MailboxSelfFixView {
 
 export function readContextLossGauntletView(agentRoot: string, agentName: string): MailboxContextLossGauntletView {
   return runContextLossGauntlet(agentName, agentRoot)
+}
+
+export function readSentinelView(agentRoot: string): MailboxSentinelView {
+  return readContextLossSentinelView(agentRoot, { limit: 20 })
 }
 
 export function readNoteDecisionView(agentRoot: string, limit = 50): MailboxNoteDecisionView {
