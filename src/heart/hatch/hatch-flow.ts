@@ -141,6 +141,8 @@ function writeRecordScaffold(bundleRoot: string): void {
   fs.writeFileSync(recordPaths.entitiesPath, "{}\n", "utf-8")
   fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "events"), { recursive: true })
   fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "habit-receipts"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "context-loss-sentinel", "history"), { recursive: true })
+  fs.mkdirSync(path.join(bundleRoot, "arc", "flight-recorder", "context-loss-sentinel", "receipts"), { recursive: true })
   fs.mkdirSync(path.join(bundleRoot, "arc", "claims"), { recursive: true })
 }
 

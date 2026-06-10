@@ -184,6 +184,8 @@ Arc owns live continuity and evidence, not durable knowledge shelves.
 Arc stores:
 
 - Flight Recorder events and `latest.json`;
+- context-loss Sentinel receipts under
+  `arc/flight-recorder/context-loss-sentinel/`;
 - current ask and next safe action;
 - obligations and return obligations;
 - claims and evidence status;
@@ -207,6 +209,46 @@ material turn should leave Arc able to answer:
 This is why Arc is not diary and not Desk. Arc is the live flight recorder. Desk
 is the durable room and maintained record. A randomly overwritten session
 continues from Arc's latest truth and follows its locators into Desk.
+
+## Context-Loss Sentinel
+
+Sentinel is the deterministic guardrail that checks whether Arc and Desk are
+actually enough to recover after a context wipe. It exists because agents should
+keep Arc current as a general habit, not only when they predict a large prompt
+or long tool run.
+
+Sentinel receipts live at:
+
+```text
+arc/flight-recorder/context-loss-sentinel/latest.json
+arc/flight-recorder/context-loss-sentinel/latest-ready.json
+arc/flight-recorder/context-loss-sentinel/history/YYYY-MM-DD.jsonl
+arc/flight-recorder/context-loss-sentinel/receipts/<receiptId>.json
+```
+
+`latest.json` is the current truth about recovery readiness. It may be blocked.
+That is useful: a fresh agent needs to know the present failure.
+
+`latest-ready.json` is the last-known-good recovery anchor. It survives provider
+outages, missing credentials, daemon/sense warnings, dirty bundle state, and
+other current risks. It is not trusted merely because it is shape-valid; it must
+be semantically ready and contain a safe resume snapshot.
+
+Provider-down behavior is explicit:
+
+- failed live checks and missing credentials become provider-lane signals with
+  source, severity, repair actor, and repair command when available;
+- unknown readiness after a process reset stays unknown unless there is fresh or
+  persisted evidence;
+- stale readiness is only stale when a supplied readiness source says so;
+- if provider/sense/bundle risk is the only blocker, recovery points to
+  latest-ready;
+- if the current Flight Recorder gauntlet fails, Sentinel keeps that current
+  blocker visible instead of masking it with an older ready anchor.
+
+Workbench history is a projection over these receipts. It is allowed to be
+beautiful and useful, but it is not the source of truth and does not refresh
+Sentinel by reading.
 
 ## Habits
 
