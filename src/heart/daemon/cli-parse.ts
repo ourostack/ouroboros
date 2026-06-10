@@ -125,7 +125,7 @@ export function usage(): string {
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
     "  ouro friend update <id> --trust <level> [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
-    "  ouro work card|gauntlet [--agent <name>] [--format text|json|--json]",
+    "  ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]",
     "  ouro inner [--agent <name>]",
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
@@ -1039,30 +1039,45 @@ function parseAttentionCommand(args: string[]): OuroCliCommand {
   return { kind: "attention.list", ...(agent ? { agent } : {}) }
 }
 
-function parseWorkCommand(args: string[]): OuroCliCommand {
-  const { agent, rest: cleaned } = extractAgentFlag(args)
-  const sub = cleaned[0]
-  if (sub !== "card" && sub !== "gauntlet") {
-    throw new Error("Usage: ouro work card|gauntlet [--agent <name>] [--format text|json|--json]")
-  }
-
+function parseWorkFormat(args: string[], usageText: string): "text" | "json" {
   let format: "text" | "json" = "text"
-  for (let i = 1; i < cleaned.length; i += 1) {
-    if (cleaned[i] === "--json") {
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--json") {
       format = "json"
       continue
     }
-    if (cleaned[i] === "--format" && cleaned[i + 1]) {
-      const value = cleaned[++i]
+    if (args[i] === "--format" && args[i + 1]) {
+      const value = args[++i]
       if (value !== "text" && value !== "json") {
         throw new Error("--format must be text or json")
       }
       format = value
       continue
     }
-    throw new Error(`Usage: ouro work ${sub} [--agent <name>] [--format text|json|--json]`)
+    throw new Error(usageText)
+  }
+  return format
+}
+
+function parseWorkCommand(args: string[]): OuroCliCommand {
+  const { agent, rest: cleaned } = extractAgentFlag(args)
+  const sub = cleaned[0]
+  if (sub === "sentinel") {
+    const refresh = cleaned[1] === "refresh"
+    const usageText = "Usage: ouro work sentinel [refresh] [--agent <name>] [--format text|json|--json]"
+    const format = parseWorkFormat(cleaned.slice(refresh ? 2 : 1), usageText)
+    return {
+      kind: refresh ? "work.sentinel.refresh" : "work.sentinel",
+      ...(agent ? { agent } : {}),
+      ...(format !== "text" ? { format } : {}),
+    }
   }
 
+  if (sub !== "card" && sub !== "gauntlet") {
+    throw new Error("Usage: ouro work card|gauntlet|sentinel [refresh] [--agent <name>] [--format text|json|--json]")
+  }
+
+  const format = parseWorkFormat(cleaned.slice(1), `Usage: ouro work ${sub} [--agent <name>] [--format text|json|--json]`)
   return { kind: sub === "card" ? "work.card" : "work.gauntlet", ...(agent ? { agent } : {}), ...(format !== "text" ? { format } : {}) }
 }
 

@@ -102,6 +102,7 @@ import type {
   AttentionCliCommand,
   WorkCardCliCommand,
   WorkGauntletCliCommand,
+  WorkSentinelCliCommand,
   InnerStatusCliCommand,
   McpServeCliCommand,
   McpCanaryCliCommand,
@@ -533,6 +534,8 @@ function agentResolutionFailureMode(command: OuroCliCommand): AgentResolutionFai
     case "attention.history":
     case "work.card":
     case "work.gauntlet":
+    case "work.sentinel":
+    case "work.sentinel.refresh":
     case "inner.status":
     case "session.list":
       return "return-message"
@@ -1578,7 +1581,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | InnerStatusCliCommand | McpServeCliCommand | McpCanaryCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   return command
 }
 
@@ -8426,6 +8429,27 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
     const report = runContextLossGauntlet(command.agent, agentRoot, { homeDir: deps.homeDir })
     const message = command.format === "json" ? JSON.stringify(report, null, 2) : formatContextLossGauntletText(report)
+    deps.writeStdout(message)
+    return message
+  }
+
+  // ── context-loss Sentinel (local, no daemon socket needed) ──
+  if (command.kind === "work.sentinel" || command.kind === "work.sentinel.refresh") {
+    const {
+      formatContextLossSentinelJson,
+      formatContextLossSentinelText,
+      readContextLossSentinelView,
+      refreshContextLossSentinel,
+    } = await import("../context-loss-sentinel")
+    if (!command.agent) throw new Error("work sentinel requires --agent <name>")
+    const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
+    const agentRoot = deps.agentBundleRoot ?? path.join(bundlesRoot, `${command.agent}.ouro`)
+    const sentinel = command.kind === "work.sentinel.refresh"
+      ? await refreshContextLossSentinel(command.agent, agentRoot, { trigger: "manual_cli", homeDir: deps.homeDir })
+      : readContextLossSentinelView(agentRoot, { limit: 20 })
+    const message = command.format === "json"
+      ? formatContextLossSentinelJson(sentinel)
+      : formatContextLossSentinelText(sentinel)
     deps.writeStdout(message)
     return message
   }

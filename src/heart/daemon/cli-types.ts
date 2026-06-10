@@ -85,6 +85,8 @@ export type OuroCliCommand =
   | { kind: "attention.history"; agent?: string }
   | { kind: "work.card"; agent?: string; format?: "text" | "json" }
   | { kind: "work.gauntlet"; agent?: string; format?: "text" | "json" }
+  | { kind: "work.sentinel"; agent?: string; format?: "text" | "json" }
+  | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
   | { kind: "inner.status"; agent?: string }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
@@ -242,6 +244,7 @@ export type VersionsCliCommand = Extract<OuroCliCommand, { kind: "versions" }>
 export type AttentionCliCommand = Extract<OuroCliCommand, { kind: "attention.list" } | { kind: "attention.show" } | { kind: "attention.history" }>
 export type WorkCardCliCommand = Extract<OuroCliCommand, { kind: "work.card" }>
 export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gauntlet" }>
+export type WorkSentinelCliCommand = Extract<OuroCliCommand, { kind: "work.sentinel" } | { kind: "work.sentinel.refresh" }>
 export type InnerStatusCliCommand = Extract<OuroCliCommand, { kind: "inner.status" }>
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
