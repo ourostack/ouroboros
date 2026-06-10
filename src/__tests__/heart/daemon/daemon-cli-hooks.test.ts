@@ -119,6 +119,37 @@ describe("daemon CLI hook execution", () => {
     }
   })
 
+  it("records non-Error Sentinel hook refresh failures as structured text", async () => {
+    const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cli-hook-"))
+    const bundlesRoot = path.join(homeRoot, "AgentBundles")
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"), { recursive: true })
+    contextLossSentinelMock.refreshContextLossSentinel.mockRejectedValueOnce("lock busy")
+
+    try {
+      const deps: OuroCliDeps = {
+        socketPath: path.join(homeRoot, "missing.sock"),
+        sendCommand: vi.fn(async () => ({ ok: true, summary: "sent" })),
+        startDaemonProcess: vi.fn(async () => ({ pid: 12345 })),
+        writeStdout: vi.fn(),
+        checkSocketAlive: vi.fn(async () => false),
+        cleanupStaleSocket: vi.fn(),
+        fallbackPendingMessage: vi.fn(() => path.join(homeRoot, "pending.jsonl")),
+        bundlesRoot,
+      }
+
+      await expect(runOuroCli(["hook", "session-start", "--agent", "slugger"], deps)).resolves.toBe(
+        JSON.stringify({ continue: true }),
+      )
+
+      expect(nervesRuntimeMock.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.hook_sentinel_refresh_error",
+        meta: expect.objectContaining({ error: "lock busy" }),
+      }))
+    } finally {
+      fs.rmSync(homeRoot, { recursive: true, force: true })
+    }
+  })
+
   it("uses the default agent bundles root when hook deps do not override it", async () => {
     const homeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-cli-hook-"))
     const originalHome = process.env.HOME

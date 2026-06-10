@@ -905,6 +905,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       },
       currentSessionTiming,
       flightRecorderResume: ctx.flightRecorderResume,
+      recoverySentinel: ctx.recoverySentinel,
     })
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {

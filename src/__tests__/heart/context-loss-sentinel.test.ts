@@ -698,6 +698,7 @@ describe("context-loss Sentinel core", () => {
 
     const sessionReceipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "session_start",
+      now: () => new Date("2026-06-09T20:16:00.000Z"),
       lockTimeoutMs: 1_000,
       homeDir: agentRoot,
     })
