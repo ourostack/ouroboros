@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.662",
       "changes": [
-        "Parse `--github-token` and `--base-url` in `ouro hatch` so the GitHub Copilot provider can be connected headlessly at cold-start. The credential type, per-provider validation, and storage split already supported github-copilot (githubToken -> vault credential, baseUrl -> config); only the argv parsing was missing, which left the provider selectable but unconnectable from a non-interactive hatch — the exact path Ouro Workbench's provider-config form uses for the work agent."
+        "Parse `--github-token` and `--base-url` in `ouro hatch` so the GitHub Copilot provider can be connected headlessly at cold-start. The credential type, per-provider validation, and storage split already supported github-copilot (githubToken -> vault credential, baseUrl -> config); only the argv parsing was missing, which left the provider selectable but unconnectable from a non-interactive hatch — the exact path Ouro Workbench's provider-config form uses for the work agent.",
+        "Override the transitive `shell-quote` dependency to `^1.8.4` (pulled in via `ink` -> `react-devtools-core`) to clear the newly-disclosed GHSA-w7jw-789q-3m8p critical advisory that was failing the release-preflight `npm audit` gate on every PR."
       ]
     },
     {
