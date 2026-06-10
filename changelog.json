@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.664",
+      "changes": [
+        "Coalesce unchanged periodic Arc Sentinel daemon-health receipts so healthy daemons do not keep synced bundles dirty."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.663",
       "changes": [
         "Add deterministic Arc Sentinel recovery receipts, lifecycle refreshes, and Workbench Sentinel history.",

@@ -171,6 +171,48 @@ function signal(receiptSignals: ContextLossSentinelSignal[], id: string): Contex
   return found!
 }
 
+function sentinelFileSnapshot(rootDir: string): Record<string, string> {
+  const files: Record<string, string> = {}
+  function visit(dir: string): void {
+    if (!fs.existsSync(dir)) return
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        visit(absolute)
+      } else if (entry.isFile()) {
+        files[path.relative(rootDir, absolute)] = fs.readFileSync(absolute, "utf-8")
+      }
+    }
+  }
+  visit(rootDir)
+  return files
+}
+
+function sentinelFileMetadataSnapshot(rootDir: string): Record<string, { mtimeMs: number; size: number }> {
+  const files: Record<string, { mtimeMs: number; size: number }> = {}
+  function visit(dir: string): void {
+    if (!fs.existsSync(dir)) return
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        visit(absolute)
+      } else if (entry.isFile()) {
+        const stat = fs.statSync(absolute)
+        files[path.relative(rootDir, absolute)] = {
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+        }
+      }
+    }
+  }
+  visit(rootDir)
+  return files
+}
+
+function sentinelWatermarkPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark.json")
+}
+
 function runChildVitest(testPath: string, env: Record<string, string>): Promise<void> {
   const repoRoot = process.cwd()
   const vitestBin = path.join(repoRoot, "node_modules", "vitest", "vitest.mjs")
@@ -297,6 +339,590 @@ describe("context-loss Sentinel core", () => {
     formatContextLossSentinelText(view)
     formatContextLossSentinelJson(view)
     expect(mtimes.map(([filePath, mtime]) => [filePath, fs.statSync(filePath).mtimeMs])).toEqual(mtimes)
+  })
+
+  it("coalesces unchanged periodic daemon-health refreshes without rewriting Sentinel files", async () => {
+    const agentRoot = makeAgentRoot()
+    const first = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-first",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const before = sentinelFileSnapshot(paths.rootDir)
+    const beforeMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+
+    const second = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-second",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(first.id).toBe("sentinel-health-first")
+    expect(second.id).toBe("sentinel-health-first")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(before)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMetadata)
+    expect(JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))).toMatchObject({
+      latest: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-second",
+      },
+      latestReady: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-second",
+      },
+    })
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-health-second.json"))).toBe(false)
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-first")
+    expect(view.latestReady?.id).toBe("sentinel-health-first")
+    expect(view.history.map((entry) => entry.id)).toEqual(["sentinel-health-first"])
+  })
+
+  it("uses coalesced daemon-health order watermarks for older delayed refreshes", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-first",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const watermarkAfterNewer = JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-older-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    expect(JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))).toEqual(watermarkAfterNewer)
+    const delayed = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:30.000Z"),
+      createReceiptId: () => "sentinel-delayed-blocked",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:11:00.000Z", error: "provider had recovered by the later health check" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(delayed.id).toBe("sentinel-delayed-blocked")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-first")
+    expect(view.latestReady?.id).toBe("sentinel-health-first")
+    expect(view.history.map((entry) => entry.id)).toEqual([
+      "sentinel-health-first",
+      "sentinel-delayed-blocked",
+    ])
+  })
+
+  it("does not treat tracked file mtimes as Sentinel ordering authority", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-ready-before-touch",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const touched = new Date("2026-06-08T21:00:00.000Z")
+    fs.utimesSync(paths.latest, touched, touched)
+    fs.utimesSync(paths.latestReady, touched, touched)
+
+    const laterReady = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-ready-after-touch",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(laterReady.id).toBe("sentinel-ready-after-touch")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-ready-after-touch")
+    expect(view.latestReady?.id).toBe("sentinel-ready-after-touch")
+  })
+
+  it("treats corrupt local coalescence watermarks as disposable cache", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-first",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const watermarkPath = sentinelWatermarkPath(agentRoot)
+    fs.writeFileSync(watermarkPath, "{not-json", "utf-8")
+    const beforeMalformedJson = sentinelFileSnapshot(paths.rootDir)
+    const beforeMalformedJsonMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+
+    const afterMalformedJson = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-after-malformed-watermark",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    expect(afterMalformedJson.id).toBe("sentinel-health-first")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(beforeMalformedJson)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMalformedJsonMetadata)
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-health-after-malformed-watermark.json"))).toBe(false)
+    expect(JSON.parse(fs.readFileSync(watermarkPath, "utf-8"))).toMatchObject({
+      latest: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-after-malformed-watermark",
+      },
+      latestReady: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-after-malformed-watermark",
+      },
+    })
+
+    fs.writeFileSync(
+      watermarkPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        latest: { generatedAt: "not-a-date", id: "sentinel-fake-latest" },
+        latestReady: { generatedAt: "2026-06-08T20:12:00.000Z" },
+      })}\n`,
+      "utf-8",
+    )
+
+    const before = sentinelFileSnapshot(paths.rootDir)
+    const beforeMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+    const afterInvalidOrders = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-after-invalid-watermark",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(afterInvalidOrders.id).toBe("sentinel-health-first")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(before)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMetadata)
+    expect(JSON.parse(fs.readFileSync(watermarkPath, "utf-8"))).toMatchObject({
+      latest: {
+        generatedAt: "2026-06-08T20:12:00.000Z",
+        id: "sentinel-health-after-invalid-watermark",
+      },
+      latestReady: {
+        generatedAt: "2026-06-08T20:12:00.000Z",
+        id: "sentinel-health-after-invalid-watermark",
+      },
+    })
+  })
+
+  it("writes a fresh latest-ready when a ready daemon-health receipt changes latest", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-old",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-blocked",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:11:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const readyNew = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-new",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(readyNew.id).toBe("sentinel-health-ready-new")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-ready-new")
+    expect(view.latestReady?.id).toBe("sentinel-health-ready-new")
+  })
+
+  it("uses the latest-ready order watermark to reject delayed older ready receipts", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-old",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:13:00.000Z"),
+      createReceiptId: () => "sentinel-health-blocked",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:13:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const delayedReady = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-delayed-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(delayedReady.id).toBe("sentinel-delayed-ready")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-blocked")
+    expect(view.latestReady?.id).toBe("sentinel-health-ready-old")
+    expect(JSON.parse(fs.readFileSync(contextLossSentinelPaths(agentRoot).latestReady, "utf-8")).id)
+      .toBe("sentinel-health-ready-old")
+  })
+
+  it("uses coalesced receipt ids to fence same-timestamp stale candidates", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-old",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-z-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const watermarkAfterHigherId = JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))
+    const beforeLowerIdHealth = sentinelFileSnapshot(paths.rootDir)
+    const beforeLowerIdHealthMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+
+    const lowerIdHealthSameTimestamp = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-a-coalesced",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(lowerIdHealthSameTimestamp.id).toBe("sentinel-health-ready-old")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(beforeLowerIdHealth)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeLowerIdHealthMetadata)
+    expect(JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))).toEqual(watermarkAfterHigherId)
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-a-coalesced.json"))).toBe(false)
+
+    const lowerIdSameTimestamp = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-a-stale",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:12:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(lowerIdSameTimestamp.id).toBe("sentinel-a-stale")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-ready-old")
+    expect(view.latestReady?.id).toBe("sentinel-health-ready-old")
+  })
+
+  it("does not coalesce non-ready daemon-health refreshes when latest-ready state must be cleared", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-blocked",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:11:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.rmSync(paths.latestReady)
+
+    const cleared = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-cleared",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:12:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(cleared.id).toBe("sentinel-health-cleared")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-cleared")
+    expect(view.latest?.latestReadyLocator).toBeNull()
+    expect(view.latestReady).toBeNull()
+  })
+
+  it("coalesces unchanged watch daemon-health refreshes without touching latest-ready", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-watch-first",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "stale", checkedAt: "2026-06-08T20:10:00.000Z", reason: "scheduled live check skipped" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const before = sentinelFileSnapshot(paths.rootDir)
+    const beforeMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+
+    const coalesced = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-watch-second",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "stale", checkedAt: "2026-06-08T20:10:00.000Z", reason: "scheduled live check skipped" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(coalesced.id).toBe("sentinel-health-watch-first")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(before)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMetadata)
+    expect(JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))).toMatchObject({
+      latest: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-watch-second",
+      },
+      latestReady: null,
+    })
+    expect(fs.existsSync(paths.latestReady)).toBe(false)
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-health-watch-second.json"))).toBe(false)
+  })
+
+  it("does not coalesce ready daemon-health refreshes when latest-ready must be restored", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-first",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.rmSync(paths.latestReady)
+
+    const restored = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-restored",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(restored.id).toBe("sentinel-health-restored")
+    expect(JSON.parse(fs.readFileSync(paths.latestReady, "utf-8")).id).toBe("sentinel-health-restored")
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-health-restored.json"))).toBe(true)
+    expect(readContextLossSentinelView(agentRoot, { limit: 5 }).history.map((entry) => entry.id)).toEqual([
+      "sentinel-health-first",
+      "sentinel-health-restored",
+    ])
+  })
+
+  it("does not restore missing latest-ready from an older ready receipt", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-latest",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.rmSync(paths.latestReady)
+    fs.rmSync(sentinelWatermarkPath(agentRoot), { force: true })
+
+    const delayedReady = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-delayed-ready-restore",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(delayedReady.id).toBe("sentinel-delayed-ready-restore")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest?.id).toBe("sentinel-health-ready-latest")
+    expect(view.latestReady).toBeNull()
+    expect(fs.existsSync(paths.latestReady)).toBe(false)
+    expect(view.history.map((entry) => entry.id)).toEqual([
+      "sentinel-health-ready-latest",
+      "sentinel-delayed-ready-restore",
+    ])
+  })
+
+  it("does not restore missing latest from an older receipt when the watermark is newer", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-tracked",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-watermark",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.rmSync(paths.latest)
+
+    const delayedBlocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-delayed-blocked-latest-restore",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:11:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(delayedBlocked.id).toBe("sentinel-delayed-blocked-latest-restore")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest).toBeNull()
+    expect(view.latestReady?.id).toBe("sentinel-health-ready-tracked")
+    expect(fs.existsSync(paths.latest)).toBe(false)
+  })
+
+  it("does not restore missing latest from an older receipt when latest-ready is newer", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-health-ready-only",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.rmSync(paths.latest)
+    fs.rmSync(sentinelWatermarkPath(agentRoot), { force: true })
+
+    const delayedBlocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-delayed-blocked-latest-ready-fence",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:11:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(delayedBlocked.id).toBe("sentinel-delayed-blocked-latest-ready-fence")
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latest).toBeNull()
+    expect(view.latestReady?.id).toBe("sentinel-health-ready-only")
+    expect(fs.existsSync(paths.latest)).toBe(false)
   })
 
   it("uses the wall clock when a refresh does not inject time", async () => {
@@ -1203,6 +1829,25 @@ describe("context-loss Sentinel core", () => {
       gitStatus: () => ({ ok: true, porcelain: "" }),
     })
     expect(readContextLossSentinelView(agentRoot).latest?.id).toBe("sentinel-z")
+
+    const ascendingTieRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", ascendingTieRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:20:30.000Z"),
+      createReceiptId: () => "sentinel-a",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", ascendingTieRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:20:30.000Z"),
+      createReceiptId: () => "sentinel-z",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    expect(readContextLossSentinelView(ascendingTieRoot).latest?.id).toBe("sentinel-z")
 
     const lockedRoot = makeAgentRoot()
     const paths = contextLossSentinelPaths(lockedRoot)
