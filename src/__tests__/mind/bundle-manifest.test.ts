@@ -123,6 +123,13 @@ describe("bundle-manifest", () => {
     expect(entry?.kind).toBe("dir")
   })
 
+  it("includes the context-loss Sentinel flight-recorder directory in the canonical manifest", () => {
+    const paths = CANONICAL_BUNDLE_MANIFEST.map((entry) => entry.path)
+    expect(paths).toContain("arc/flight-recorder/context-loss-sentinel")
+    const entry = CANONICAL_BUNDLE_MANIFEST.find((item) => item.path === "arc/flight-recorder/context-loss-sentinel")
+    expect(entry?.kind).toBe("dir")
+  })
+
   it("accepts plugins/ and desk/ as canonical paths", () => {
     expect(isCanonicalBundlePath("plugins")).toBe(true)
     expect(isCanonicalBundlePath("plugins/")).toBe(true)

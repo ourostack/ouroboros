@@ -112,6 +112,8 @@ describe("hatch flow", () => {
 
     // tasks/habits/ should NOT be created
     expect(fs.existsSync(path.join(result.bundleRoot, "tasks", "habits"))).toBe(false)
+
+    expect(fs.existsSync(path.join(result.bundleRoot, "arc", "flight-recorder", "context-loss-sentinel"))).toBe(true)
   })
 
   it("writes hatchling provider selection into agent.json", async () => {
