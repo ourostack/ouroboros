@@ -192,9 +192,9 @@ function makeSentinelView(overrides: Partial<MailboxSentinelView> = {}): Mailbox
       recordedAt: "2026-06-08T12:06:00.000Z",
     },
     gauntlet: {
-      verdict: "blocked",
-      scorePercentage: 58,
-      failedChecks: ["provider:outward"],
+      verdict: "ready",
+      scorePercentage: 100,
+      failedChecks: [],
       warnedChecks: [],
       sourceLocator: "arc/flight-recorder/latest.json",
     },
@@ -1171,6 +1171,10 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.container.textContent).toContain("session start")
     expect(ui.container.textContent).toContain("finish the visibility layer")
     expect(ui.container.textContent).not.toContain("Context-loss gauntlet")
+    expect(ui.container.textContent).not.toContain("score")
+    expect(ui.container.textContent).not.toContain("100%")
+    expect((ui.container.textContent?.match(/outward provider lane is unavailable/g) ?? []).length).toBe(1)
+    expect((ui.container.textContent?.match(/latest-ready recovery anchor is usable/g) ?? []).length).toBe(1)
 
     ui.rerender(
       <NavigationContext.Provider value={() => {}}>
@@ -1179,13 +1183,20 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8))
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.includes("/context-loss-gauntlet"))).toBe(false)
   })
 
   it("clears stale recovery sentinel data on agent switch and shows refresh failures", async () => {
     let rejectCobraSentinel: ((reason?: unknown) => void) | null = null
+    let resolveSluggerCoding: ((response: Response) => void) | null = null
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith("/coding")) return jsonResponse({ items: [] })
+      if (url.includes("/slugger/coding")) {
+        return new Promise<Response>((resolve) => {
+          resolveSluggerCoding = resolve
+        })
+      }
+      if (url.includes("/cobra/coding")) return jsonResponse({ items: [] })
       if (url.endsWith("/obligations")) return jsonResponse({ openCount: 0, primaryId: null, primarySelectionReason: null, items: [] })
       if (url.endsWith("/self-fix")) return jsonResponse({ active: false, currentStep: null, steps: [] })
       if (url.includes("/sentinel")) {
@@ -1218,6 +1229,36 @@ describe("Mailbox deep-tab live refresh", () => {
 
     await waitFor(() => expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.endsWith("/agents/cobra/sentinel"))).toBe(true))
     expect(ui.container.textContent).not.toContain("outward provider lane is unavailable")
+
+    await act(async () => {
+      resolveSluggerCoding?.(jsonResponse({
+        items: [{
+          id: "stale-coding",
+          runner: "stale-runner",
+          status: "running",
+          checkpoint: "old agent work",
+          taskRef: null,
+          workdir: "/tmp/stale-slugger",
+          originSession: null,
+          obligationId: null,
+          scopeFile: null,
+          stateFile: null,
+          artifactPath: null,
+          pid: 31337,
+          startedAt: "2026-06-08T11:00:00.000Z",
+          lastActivityAt: "2026-06-08T11:30:00.000Z",
+          endedAt: null,
+          restartCount: 0,
+          lastExitCode: null,
+          lastSignal: null,
+          stdoutTail: "",
+          stderrTail: "",
+          failure: null,
+        }],
+      }))
+    })
+    await flushRefresh()
+    expect(ui.container.textContent).not.toContain("stale-runner")
 
     await act(async () => {
       rejectCobraSentinel?.(new Error("sentinel offline"))
