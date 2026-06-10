@@ -535,6 +535,7 @@ function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
       cwd: agentRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 1_000,
     })
     return { ok: true, porcelain }
   } catch (error) {

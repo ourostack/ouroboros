@@ -60,8 +60,17 @@ describe("daemon CLI hook execution", () => {
       expect(contextLossSentinelMock.refreshContextLossSentinel).toHaveBeenCalledWith(
         "slugger",
         agentRoot,
-        { trigger: "session_start", lockTimeoutMs: 500 },
+        expect.objectContaining({
+          trigger: "session_start",
+          lockTimeoutMs: 500,
+          gitStatus: expect.any(Function),
+        }),
       )
+      const hookOptions = contextLossSentinelMock.refreshContextLossSentinel.mock.calls[0]?.[2]
+      expect(hookOptions?.gitStatus?.()).toEqual({
+        ok: false,
+        error: expect.stringContaining("skipped during session-start hook"),
+      })
       expect(deps.sendCommand).not.toHaveBeenCalled()
       expect(nervesRuntimeMock.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         component: "daemon",
@@ -175,7 +184,11 @@ describe("daemon CLI hook execution", () => {
       expect(contextLossSentinelMock.refreshContextLossSentinel).toHaveBeenCalledWith(
         "slugger",
         agentRoot,
-        { trigger: "session_start", lockTimeoutMs: 500 },
+        expect.objectContaining({
+          trigger: "session_start",
+          lockTimeoutMs: 500,
+          gitStatus: expect.any(Function),
+        }),
       )
     } finally {
       if (originalHome === undefined) {

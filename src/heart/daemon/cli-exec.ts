@@ -55,7 +55,7 @@ import { resolveEffectiveProviderBinding, type EffectiveProviderCredentialStatus
 import {
   buildAgentProviderVisibility,
 } from "../provider-visibility"
-import { refreshContextLossSentinel } from "../context-loss-sentinel"
+import { refreshContextLossSentinel, type ContextLossSentinelGitStatus } from "../context-loss-sentinel"
 import type { ProviderLane } from "../provider-lanes"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { getDefaultModelForProvider, getProviderModelMismatchMessage, resolveModelForProviderSelection } from "../provider-models"
@@ -6556,6 +6556,13 @@ function resolveClonePath(
 
 const HOOK_SENTINEL_LOCK_TIMEOUT_MS = 500
 
+function hookSentinelGitStatus(): ContextLossSentinelGitStatus {
+  return {
+    ok: false,
+    error: "skipped during session-start hook to keep lifecycle hook bounded; run `ouro work sentinel refresh --agent <agent>` for full bundle git status",
+  }
+}
+
 async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): Promise<void> {
   if (command.event !== "session-start") return
   const bundlesRoot = deps.bundlesRoot ?? getAgentBundlesRoot()
@@ -6564,6 +6571,7 @@ async function refreshHookSentinel(command: HookCliCommand, deps: OuroCliDeps): 
     await refreshContextLossSentinel(command.agent, bundleRoot, {
       trigger: "session_start",
       lockTimeoutMs: HOOK_SENTINEL_LOCK_TIMEOUT_MS,
+      gitStatus: hookSentinelGitStatus,
     })
   } catch (error) {
     emitNervesEvent({
