@@ -382,6 +382,23 @@ describe("effective provider binding resolver", () => {
     })
   })
 
+  it("ignores malformed durable readiness stores", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
+    const storePath = path.join(agentRoot, "state", "providers", "readiness.json")
+    fs.mkdirSync(path.dirname(storePath), { recursive: true })
+    fs.writeFileSync(storePath, `${JSON.stringify({ schemaVersion: 2, lanes: { outward: {} } })}\n`, "utf8")
+
+    expect(readProviderLaneReadiness({
+      agentRoot,
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+    })).toBeNull()
+  })
+
   it("prefers newer durable readiness over stale in-memory readiness", () => {
     const bundlesRoot = tempBundlesRoot()
     const agentRoot = writeAgentConfig(bundlesRoot)
