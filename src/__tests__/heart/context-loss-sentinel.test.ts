@@ -299,6 +299,22 @@ describe("context-loss Sentinel core", () => {
     expect(mtimes.map(([filePath, mtime]) => [filePath, fs.statSync(filePath).mtimeMs])).toEqual(mtimes)
   })
 
+  it("uses the wall clock when a refresh does not inject time", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-06-08T20:10:30.000Z"))
+    const agentRoot = makeAgentRoot()
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "manual_cli",
+      createReceiptId: () => "sentinel-default-clock",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.generatedAt).toBe("2026-06-08T20:10:30.000Z")
+  })
+
   it("preserves latest-ready when a later blocked receipt becomes latest", async () => {
     const agentRoot = makeAgentRoot()
     await refreshContextLossSentinel("slugger", agentRoot, {
