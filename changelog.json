@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.662",
+      "changes": [
+        "Parse `--github-token` and `--base-url` in `ouro hatch` so the GitHub Copilot provider can be connected headlessly at cold-start. The credential type, per-provider validation, and storage split already supported github-copilot (githubToken -> vault credential, baseUrl -> config); only the argv parsing was missing, which left the provider selectable but unconnectable from a non-interactive hatch — the exact path Ouro Workbench's provider-config form uses for the work agent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.661",
       "changes": [
         "Default the local machine owner (the OS user running the daemon) to family trust when first encountered as a friend, instead of stranger. The Workbench boss check-in resolves the machine owner as a `local` friend; because MCP tool calls are trust-gated, a stranger-level owner caused the boss's own runtime-injected `ouro_workbench` machine-introspection tools to be rejected with the trust guardrail (\"i'd need a closer friend to vouch for you\"). The person running the daemon owns the agent and its bundle, so they are family, not a stranger.",

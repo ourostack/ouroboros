@@ -178,6 +178,23 @@ describe("github-copilot config", () => {
       provider: "github-copilot",
     })
   })
+
+  it("parses --github-token and --base-url into hatch credentials", async () => {
+    const { parseOuroCommand } = await import("../../../heart/daemon/daemon-cli")
+    expect(
+      parseOuroCommand([
+        "hatch",
+        "--agent", "test",
+        "--provider", "github-copilot",
+        "--github-token", "ghp_example_token",
+        "--base-url", "https://api.githubcopilot.com",
+      ]),
+    ).toMatchObject({
+      kind: "hatch.start",
+      provider: "github-copilot",
+      credentials: { githubToken: "ghp_example_token", baseUrl: "https://api.githubcopilot.com" },
+    })
+  })
 })
 
 // --- Unit 2a: Provider Runtime tests ---
