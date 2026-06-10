@@ -6,30 +6,41 @@ import {
 } from "../../heart/context-loss-sentinel"
 
 function providerVisibility(generatedAt: string) {
+  const scenario = process.env.SENTINEL_PROVIDER_SCENARIO ?? "ready"
+  const outward = configuredLane("outward", generatedAt)
+  const inner = configuredLane("inner", generatedAt)
+
+  if (scenario === "outward_failed") {
+    outward.readiness = { status: "failed", checkedAt: generatedAt, error: "MiniMax 503", attempts: 2 }
+  } else if (scenario === "inner_missing") {
+    inner.credential = {
+      status: "missing",
+      repairCommand: "ouro auth --agent slugger --provider anthropic",
+    }
+  } else if (scenario === "unknown_readiness") {
+    outward.readiness = { status: "unknown", reason: "fresh process has no provider readiness cache" }
+  } else if (scenario === "stale_with_evidence") {
+    outward.readiness = { status: "stale", checkedAt: "2026-06-08T19:00:00.000Z", reason: "persisted readiness expired" }
+  } else if (scenario === "stale_without_evidence") {
+    outward.readiness = { status: "stale" }
+  }
+
   return {
     agentName: "slugger",
-    lanes: [
-      {
-        lane: "outward",
-        status: "configured",
-        provider: "minimax",
-        model: "minimax-text-01",
-        source: "agent.json",
-        readiness: { status: "ready", checkedAt: generatedAt },
-        credential: { status: "present", source: "vault:slugger:providers/outward" },
-        warnings: [],
-      },
-      {
-        lane: "inner",
-        status: "configured",
-        provider: "anthropic",
-        model: "claude-opus-4",
-        source: "agent.json",
-        readiness: { status: "ready", checkedAt: generatedAt },
-        credential: { status: "present", source: "vault:slugger:providers/inner" },
-        warnings: [],
-      },
-    ],
+    lanes: [outward, inner],
+  }
+}
+
+function configuredLane(lane: "outward" | "inner", generatedAt: string) {
+  return {
+    lane,
+    status: "configured",
+    provider: lane === "outward" ? "minimax" : "anthropic",
+    model: lane === "outward" ? "minimax-text-01" : "claude-opus-4",
+    source: "agent.json",
+    readiness: { status: "ready", checkedAt: generatedAt },
+    credential: { status: "present", source: `vault:slugger:providers/${lane}`, revision: `rev-${lane}` },
+    warnings: [],
   }
 }
 

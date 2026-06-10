@@ -345,6 +345,120 @@ describe("context-loss Sentinel core", () => {
     expect(view.history.map((entry) => entry.id)).toEqual(["sentinel-ready", "sentinel-blocked"])
   })
 
+  it("drills durable latest-ready recovery across fresh-process context wipe provider receipts", async () => {
+    const agentRoot = makeAgentRoot("context-wipe-drill-")
+    const helperPath = path.join(process.cwd(), "src", "__tests__", "heart", "context-loss-sentinel-child-process.test.ts")
+    const ready = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-09T21:00:00.000Z"),
+      createReceiptId: () => "sentinel-context-wipe-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const cases: Array<{
+      scenario: string
+      receiptId: string
+      generatedAt: string
+      trigger: "session_start" | "daemon_health" | "provider_failover"
+      verdict: "blocked" | "watch"
+      signalId: string
+      signal: Partial<ContextLossSentinelSignal>
+      repair: Partial<NonNullable<ContextLossSentinelSignal["repair"]>>
+      summary: string
+    }> = [
+      {
+        scenario: "outward_failed",
+        receiptId: "sentinel-context-wipe-outward-failed",
+        generatedAt: "2026-06-09T21:01:00.000Z",
+        trigger: "session_start",
+        verdict: "blocked",
+        signalId: "provider:outward",
+        signal: { status: "fail", severity: "critical", verdictImpact: "blocked" },
+        repair: { actor: "agent-runnable", kind: "provider-live-check", command: "ouro provider check --agent slugger --lane outward" },
+        summary: "outward live check failed",
+      },
+      {
+        scenario: "inner_missing",
+        receiptId: "sentinel-context-wipe-inner-missing",
+        generatedAt: "2026-06-09T21:02:00.000Z",
+        trigger: "provider_failover",
+        verdict: "blocked",
+        signalId: "provider:inner",
+        signal: { status: "fail", severity: "critical", verdictImpact: "blocked" },
+        repair: { actor: "human-required", kind: "provider-credential", command: "ouro auth --agent slugger --provider anthropic" },
+        summary: "inner credentials missing",
+      },
+      {
+        scenario: "unknown_readiness",
+        receiptId: "sentinel-context-wipe-unknown-readiness",
+        generatedAt: "2026-06-09T21:03:00.000Z",
+        trigger: "daemon_health",
+        verdict: "watch",
+        signalId: "provider:outward",
+        signal: { status: "warn", severity: "warn", verdictImpact: "watch" },
+        repair: { actor: "agent-runnable", kind: "provider-live-check", command: "ouro provider check --agent slugger --lane outward" },
+        summary: "outward readiness unknown",
+      },
+      {
+        scenario: "stale_with_evidence",
+        receiptId: "sentinel-context-wipe-stale-evidence",
+        generatedAt: "2026-06-09T21:04:00.000Z",
+        trigger: "daemon_health",
+        verdict: "watch",
+        signalId: "provider:outward",
+        signal: { status: "warn", severity: "warn", verdictImpact: "watch" },
+        repair: { actor: "agent-runnable", kind: "provider-live-check", command: "ouro provider check --agent slugger --lane outward" },
+        summary: "outward readiness stale",
+      },
+      {
+        scenario: "stale_without_evidence",
+        receiptId: "sentinel-context-wipe-stale-without-evidence",
+        generatedAt: "2026-06-09T21:05:00.000Z",
+        trigger: "daemon_health",
+        verdict: "watch",
+        signalId: "provider:outward",
+        signal: { status: "warn", severity: "warn", verdictImpact: "watch" },
+        repair: { actor: "agent-runnable", kind: "provider-live-check", command: "ouro provider check --agent slugger --lane outward" },
+        summary: "outward readiness unknown",
+      },
+    ]
+
+    for (const testCase of cases) {
+      await runChildVitest(helperPath, {
+        SENTINEL_AGENT_ROOT: agentRoot,
+        SENTINEL_RECEIPT_ID: testCase.receiptId,
+        SENTINEL_GENERATED_AT: testCase.generatedAt,
+        SENTINEL_DELAY_MS: "0",
+        SENTINEL_TRIGGER: testCase.trigger,
+        SENTINEL_PROVIDER_SCENARIO: testCase.scenario,
+      })
+
+      const view = readContextLossSentinelView(agentRoot, { limit: 20 })
+      const receipt = view.history.find((entry) => entry.id === testCase.receiptId)
+      expect(receipt, `expected ${testCase.receiptId}`).toBeTruthy()
+      expect(view.latest?.id).toBe(testCase.receiptId)
+      expect(view.latestReady?.id).toBe(ready.id)
+      expect(receipt!.verdict).toBe(testCase.verdict)
+      expect(receipt!.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+      expect(receipt!.recoveryAnchor).toMatchObject({
+        kind: "latest-ready",
+        currentAsk: ready.recoveryAnchor.currentAsk,
+        nextSafeAction: ready.recoveryAnchor.nextSafeAction,
+        flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+      })
+      const providerSignal = signal(receipt!.signals, testCase.signalId)
+      expect(providerSignal).toMatchObject({
+        kind: "provider_lane",
+        source: { kind: "provider-visibility", locator: `agent.json#providers.${testCase.signalId.split(":")[1]}` },
+        ...testCase.signal,
+        repair: testCase.repair,
+      })
+      expect(providerSignal.summary).toContain(testCase.summary)
+    }
+  })
+
   it("classifies every provider state for both outward and inner lanes with repair actors, sources, severity, and verdict impact", () => {
     const lanes = ["outward", "inner"] as const
     const cases: Array<{
