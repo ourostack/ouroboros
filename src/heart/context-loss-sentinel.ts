@@ -132,20 +132,24 @@ export interface ReadContextLossSentinelViewOptions {
 
 const REQUIRED_LANES = ["outward", "inner"] as const
 
+function logicalLocator(...parts: string[]): string {
+  return path.posix.join(...parts)
+}
+
 function relativeSentinelRoot(): string {
-  return path.join("arc", "flight-recorder", "context-loss-sentinel")
+  return logicalLocator("arc", "flight-recorder", "context-loss-sentinel")
 }
 
 function latestLocator(): string {
-  return path.join(relativeSentinelRoot(), "latest.json")
+  return logicalLocator(relativeSentinelRoot(), "latest.json")
 }
 
 function latestReadyLocator(): string {
-  return path.join(relativeSentinelRoot(), "latest-ready.json")
+  return logicalLocator(relativeSentinelRoot(), "latest-ready.json")
 }
 
 function receiptLocator(receiptId: string): string {
-  return path.join(relativeSentinelRoot(), "receipts", `${receiptId}.json`)
+  return logicalLocator(relativeSentinelRoot(), "receipts", `${receiptId}.json`)
 }
 
 function historyDay(generatedAt: string): string {
@@ -153,7 +157,7 @@ function historyDay(generatedAt: string): string {
 }
 
 function historyLocator(generatedAt: string): string {
-  return path.join(relativeSentinelRoot(), "history", `${historyDay(generatedAt)}.jsonl`)
+  return logicalLocator(relativeSentinelRoot(), "history", `${historyDay(generatedAt)}.jsonl`)
 }
 
 export function contextLossSentinelPaths(agentRoot: string): ContextLossSentinelPaths {
@@ -228,6 +232,10 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string")
 }
 
+function isValidTimestamp(value: string): boolean {
+  return Number.isFinite(Date.parse(value))
+}
+
 function isSource(value: unknown): value is ContextLossSentinelSource {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
@@ -289,6 +297,7 @@ function isReceipt(value: unknown): value is ContextLossSentinelReceipt {
     && typeof record.agent === "string"
     && (record.trigger === "post_turn" || record.trigger === "provider_failover" || record.trigger === "daemon_startup" || record.trigger === "daemon_health" || record.trigger === "session_start" || record.trigger === "manual_cli")
     && typeof record.generatedAt === "string"
+    && isValidTimestamp(record.generatedAt)
     && (record.verdict === "ready" || record.verdict === "watch" || record.verdict === "blocked")
     && typeof record.summary === "string"
     && typeof record.receiptLocator === "string"

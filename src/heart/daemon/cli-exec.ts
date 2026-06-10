@@ -173,7 +173,8 @@ import { pollDaemonStartup } from "./startup-tui"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
-import { pingGithubCopilotModel, pingProvider, type ProviderPingOptions } from "../provider-ping"
+import { pingGithubCopilotModel, pingProvider, type PingResult, type ProviderPingOptions } from "../provider-ping"
+import { recordProviderLaneReadiness } from "../provider-readiness-cache"
 import { listBundleSyncRows, listEnabledBundleAgents } from "./agent-discovery"
 import { runBootSyncProbe, type BootSyncProbeFinding } from "./boot-sync-probe"
 import { connectEntryNeedsAttention, renderConnectBay, summarizeProvidersForConnect, type ConnectMenuEntry } from "./connect-bay"
@@ -5479,6 +5480,11 @@ function credentialPingConfig(record: ProviderCredentialRecord): Parameters<type
   } as unknown as Parameters<typeof pingProvider>[1]
 }
 
+function pingAttemptCount(result: PingResult): number | undefined {
+  if (Array.isArray(result.attempts)) return result.attempts.length
+  return undefined
+}
+
 async function readProviderCredentialRecord(
   agent: string,
   provider: AgentProvider,
@@ -5677,6 +5683,18 @@ async function executeProviderCheck(
     })
     const status = pingResult.ok ? "ready" : `failed (${pingResult.message})`
     progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
+    const attempts = pingAttemptCount(pingResult)
+    recordProviderLaneReadiness({
+      agentName: command.agent,
+      lane: command.lane,
+      provider: binding.provider,
+      model: binding.model,
+      credentialRevision: credential.record.revision,
+      status: pingResult.ok ? "ready" : "failed",
+      checkedAt: new Date().toISOString(),
+      ...(pingResult.ok ? {} : { error: pingResult.message }),
+      ...(attempts === undefined ? {} : { attempts }),
+    })
     const message = `${command.agent} ${command.lane} ${binding.provider} / ${binding.model}: ${status}`
     emitNervesEvent({
       component: "daemon",

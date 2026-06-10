@@ -296,6 +296,10 @@ function latestFromEvent(event: FlightRecorderEvent, previous: FlightRecorderRes
   const nextSafeActionValue = event.nextSafeAction !== undefined ? event.nextSafeAction : previous.nextSafeAction.value
   const currentAskSourceEventIds = event.currentAsk !== undefined ? [event.id] : previous.currentAsk.sourceEventIds
   const nextSafeActionSourceEventIds = event.nextSafeAction !== undefined ? [event.id] : previous.nextSafeAction.sourceEventIds
+  const inheritedBlocker = event.blockedBecause === undefined && previous.blockedBecause.length > 0
+  const lastSafeCheckpointEventIds = inheritedBlocker
+    ? uniqueStrings([...previous.lastSafeCheckpoint.sourceEventIds, event.id])
+    : [event.id]
   const hasCurrentAsk = typeof currentAskValue === "string" && currentAskValue.trim().length > 0
   const hasNextSafeAction = typeof nextSafeActionValue === "string" && nextSafeActionValue.trim().length > 0
   return {
@@ -327,7 +331,7 @@ function latestFromEvent(event: FlightRecorderEvent, previous: FlightRecorderRes
       turnId: event.turnId ?? previous.lastSafeCheckpoint.turnId,
       sessionRef: event.sessionRef ?? previous.lastSafeCheckpoint.sessionRef,
       recordedAt: event.recordedAt,
-      sourceEventIds: [event.id],
+      sourceEventIds: lastSafeCheckpointEventIds,
     },
     recorderHealth: { status: "ok", issues: [] },
   }

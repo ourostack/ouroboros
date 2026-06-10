@@ -129,6 +129,7 @@ import {
 } from "../../helpers/agent-provider-selection"
 import * as runtimeCredentials from "../../../heart/runtime-credentials"
 import { resetRuntimeCredentialConfigCache } from "../../../heart/runtime-credentials"
+import { clearProviderReadinessCache, readProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
 import { provisionMailboxRegistry } from "../../../mailroom/core"
 
 const NOW = "2026-04-12T20:10:00.000Z"
@@ -650,6 +651,7 @@ afterEach(() => {
   mockVaultDeps.rawSecrets.clear()
   mockVaultDeps.storedItems.clear()
   resetRuntimeCredentialConfigCache()
+  clearProviderReadinessCache()
   while (cleanup.length > 0) {
     const entry = cleanup.pop()
     if (!entry) continue
@@ -5160,6 +5162,37 @@ describe("provider CLI command execution", () => {
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner.provider).toBe("anthropic")
+  })
+
+  it("ouro provider check records readiness for Sentinel repair commands", async () => {
+    emitTestEvent("provider cli check records sentinel readiness")
+    const bundlesRoot = makeTempDir("provider-cli-check-readiness-bundles")
+    const homeDir = makeTempDir("provider-cli-check-readiness-home")
+    writeAgentConfig(bundlesRoot, "Slugger")
+    writeAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"), agentProviderSelection())
+    writeProviderCredentialPool(homeDir, credentialPool())
+    mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1, 2] })
+
+    const result = await runOuroCli([
+      "check",
+      "--agent",
+      "Slugger",
+      "--lane",
+      "outward",
+    ], makeCliDeps(homeDir, bundlesRoot))
+
+    expect(result).toContain("Slugger outward anthropic / claude-opus-4-6: ready")
+    expect(readProviderLaneReadiness({
+      agentName: "Slugger",
+      lane: "outward",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      credentialRevision: "cred_anthropic_1",
+    })).toMatchObject({
+      status: "ready",
+      checkedAt: expect.any(String),
+      attempts: 2,
+    })
   })
 
   it("ouro use --force records the broken binding without durable readiness state", async () => {

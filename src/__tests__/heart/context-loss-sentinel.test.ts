@@ -361,6 +361,38 @@ describe("context-loss Sentinel core", () => {
     expect(view.history.map((entry) => entry.id)).toEqual(["sentinel-ready", "sentinel-blocked"])
   })
 
+  it("persists canonical POSIX logical locators independent of platform path separators", async () => {
+    const actualPath = await vi.importActual<typeof import("path")>("path")
+    vi.resetModules()
+    vi.doMock("path", () => ({
+      ...actualPath,
+      join: (...parts: string[]) => parts[0] === "arc" ? parts.join("\\") : actualPath.join(...parts),
+    }))
+
+    try {
+      const isolated = await import("../../heart/context-loss-sentinel")
+      const agentRoot = makeAgentRoot("sentinel-posix-locators-")
+
+      const receipt = await isolated.refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "post_turn",
+        now: () => new Date("2026-06-08T20:12:00.000Z"),
+        createReceiptId: () => "sentinel-posix-locators",
+        providerVisibility: providerVisibility(),
+        daemonHealthResults: okHealth(),
+        gitStatus: () => ({ ok: true, porcelain: "" }),
+      })
+
+      expect(receipt.receiptLocator)
+        .toBe("arc/flight-recorder/context-loss-sentinel/receipts/sentinel-posix-locators.json")
+      expect(receipt.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+      expect(receipt.sourceLocators).toContain("arc/flight-recorder/context-loss-sentinel/history/2026-06-08.jsonl")
+      expect(receipt.sourceLocators.join("\n")).not.toContain("\\")
+    } finally {
+      vi.doUnmock("path")
+      vi.resetModules()
+    }
+  })
+
   it("drills durable latest-ready recovery across fresh-process context wipe provider receipts", async () => {
     const agentRoot = makeAgentRoot("context-wipe-drill-")
     const helperPath = path.join(process.cwd(), "src", "__tests__", "heart", "context-loss-sentinel-child-process.test.ts")
@@ -1404,6 +1436,52 @@ describe("context-loss Sentinel core", () => {
     expect(humanBlocked.gauntlet.failedChecks).toContain("stale_guard")
     expect(humanBlocked.recoveryAnchor.kind).toBe("flight-recorder")
 
+    const inheritedBlockerRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", inheritedBlockerRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:45:00.000Z"),
+      createReceiptId: () => "sentinel-inherited-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    await refreshContextLossSentinel("slugger", inheritedBlockerRoot, {
+      trigger: "provider_failover",
+      now: () => new Date("2026-06-08T20:46:00.000Z"),
+      createReceiptId: () => "sentinel-inherited-blocker",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:46:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    recordFlightRecorderEvent(inheritedBlockerRoot, {
+      id: "fr-ordinary-after-sentinel-blocker",
+      kind: "claim_recorded",
+      recordedAt: "2026-06-08T20:47:00.000Z",
+      summary: "ordinary claim event inherits the active blocker",
+      producedRefs: [{
+        kind: "claim",
+        locator: "arc/claims/claim-after-sentinel-blocker.json",
+      }],
+    })
+
+    const inheritedBlockerRecovery = await refreshContextLossSentinel("slugger", inheritedBlockerRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:48:00.000Z"),
+      createReceiptId: () => "sentinel-after-inherited-self-blocker",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(inheritedBlockerRecovery.verdict).toBe("ready")
+    expect(inheritedBlockerRecovery.gauntlet.failedChecks).not.toContain("stale_guard")
+    expect(inheritedBlockerRecovery.recoveryAnchor.kind).toBe("latest-ready")
+
     const missingEventsRoot = makeAgentRoot()
     fs.rmSync(path.join(missingEventsRoot, "arc", "flight-recorder", "events"), { recursive: true, force: true })
     writeFlightRecorderResume(missingEventsRoot, {
@@ -1572,6 +1650,49 @@ describe("context-loss Sentinel core", () => {
     expect(blocked.latestReadyLocator).toBeNull()
     expect(blocked.recoveryAnchor.kind).toBe("flight-recorder")
     expect(blocked.resumeSnapshot.currentAsk.value).toBe("keep the Arc updated even if the transcript disappears")
+  })
+
+  it("replaces structurally valid receipts with invalid timestamps during repair", async () => {
+    const agentRoot = makeAgentRoot()
+    const paths = contextLossSentinelPaths(agentRoot)
+    const base = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:49:55.000Z"),
+      createReceiptId: () => "sentinel-valid-timestamp-base",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const malformed = {
+      ...base,
+      id: "sentinel-invalid-generated-at",
+      generatedAt: "not-a-date",
+      receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-invalid-generated-at.json",
+    }
+
+    fs.writeFileSync(paths.latest, `${JSON.stringify(malformed, null, 2)}\n`, "utf-8")
+    fs.writeFileSync(paths.latestReady, `${JSON.stringify(malformed, null, 2)}\n`, "utf-8")
+    fs.writeFileSync(
+      path.join(paths.receiptsDir, "sentinel-invalid-generated-at.json"),
+      `${JSON.stringify(malformed, null, 2)}\n`,
+      "utf-8",
+    )
+
+    const repaired = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:50:00.000Z"),
+      createReceiptId: () => "sentinel-after-invalid-generated-at",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(repaired.verdict).toBe("ready")
+    expect(view.latest?.id).toBe("sentinel-after-invalid-generated-at")
+    expect(view.latestReady?.id).toBe("sentinel-after-invalid-generated-at")
+    expect(view.degraded.issues.join("\n")).not.toContain("latest.json malformed")
+    expect(view.degraded.issues.join("\n")).not.toContain("latest-ready.json malformed")
   })
 
   it("degrades malformed nested receipt shapes instead of accepting partial disk state", async () => {
