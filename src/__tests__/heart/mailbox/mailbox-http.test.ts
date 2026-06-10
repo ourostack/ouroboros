@@ -50,6 +50,7 @@ function createRouteOptions(overrides: Record<string, unknown> = {}) {
     readAgentChanges: vi.fn(() => ({ changeCount: 0, items: [], snapshotAge: null, formatted: "" })),
     readAgentSelfFix: vi.fn(() => ({ active: false, currentStep: null, steps: [] })),
     readAgentContextLossGauntlet: vi.fn(() => ({ schemaVersion: 1, agent: "slugger", generatedAt: "2026-06-08T12:00:00.000Z", verdict: "ready", summary: "ready", score: { earned: 1, possible: 1, percentage: 100 }, currentAsk: { available: true, value: "test", source: "flight_recorder", confidence: "current" }, nextAction: { actor: "agent", summary: "continue" }, counts: { owed: 0, returnObligations: 0, activePackets: 0, evolutionCases: 0, waitingOnHuman: 0, unverifiedClaims: null, staleRiskyClaims: null }, checks: [], workCard: {} })),
+    readAgentSentinel: vi.fn(() => ({ schemaVersion: 1, latest: null, latestReady: null, history: [], degraded: { issues: [] } })),
     readAgentNoteDecisions: vi.fn(() => ({ totalCount: 0, items: [] })),
     readAgentHabits: vi.fn(() => ({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] })),
     readAgentMail: vi.fn(() => ({ status: "ready", agentName: "slugger", mailboxAddress: "slugger@ouro.bot", generatedAt: "2026-04-21T00:00:00.000Z", store: null, folders: [], messages: [], accessLog: [], error: null })),
@@ -228,6 +229,7 @@ describe("mailbox http", () => {
     expect(defaultHooks.readAgentChanges("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentSelfFix("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentContextLossGauntlet("nobody")).toBeTruthy()
+    expect(defaultHooks.readAgentSentinel("nobody")).toBeTruthy()
     expect(defaultHooks.readAgentNoteDecisions("nobody")).toBeTruthy()
     await expect(defaultHooks.readAgentMail("mailless-default-hooks")).resolves.toEqual(expect.objectContaining({
       status: "auth-required",
@@ -1139,6 +1141,56 @@ describe("mailbox http", () => {
     expect(body).toEqual(mockGauntlet)
 
     await server.stop()
+  })
+
+  it("serves /api/agents/:agent/sentinel endpoint through a read-only hook", async () => {
+    const { createMailboxHttpRequestHandler } = await import("../../../heart/mailbox/mailbox-http-routes")
+    const sentinel = {
+      schemaVersion: 1,
+      latest: {
+        schemaVersion: 1,
+        id: "sentinel-http-latest",
+        agent: "slugger",
+        trigger: "daemon_health",
+        generatedAt: "2026-06-09T20:10:00.000Z",
+        verdict: "blocked",
+        summary: "deterministic recovery is blocked",
+        receiptLocator: "arc/flight-recorder/context-loss-sentinel/receipts/sentinel-http-latest.json",
+        latestReadyLocator: "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
+        recoveryAnchor: {
+          kind: "latest-ready",
+          currentAsk: "keep context",
+          nextSafeAction: "use latest-ready",
+          flightRecorderLatestLocator: "arc/flight-recorder/latest.json",
+          sourceEventIds: ["fr-ready"],
+          recordedAt: "2026-06-09T20:00:00.000Z",
+        },
+        gauntlet: {
+          verdict: "ready",
+          scorePercentage: 100,
+          failedChecks: [],
+          warnedChecks: [],
+          sourceLocator: "arc/work-card",
+        },
+        signals: [],
+        sourceLocators: [],
+        resumeSnapshot: {} as never,
+      },
+      latestReady: null,
+      history: [],
+      degraded: { issues: [] },
+    }
+    const hooks = createRouteOptions().hooks
+    hooks.readAgentSentinel = vi.fn(() => sentinel)
+    const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
+
+    const response = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/sentinel"), response)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(response.statusCode).toBe(200)
+    expect(JSON.parse(response.body.toString("utf8"))).toEqual(sentinel)
+    expect(hooks.readAgentSentinel).toHaveBeenCalledWith("slugger")
   })
 
   it("serves /api/agents/:agent/note-decisions endpoint", async () => {
