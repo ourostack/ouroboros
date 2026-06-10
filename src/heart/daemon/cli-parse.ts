@@ -337,6 +337,16 @@ function parseHatchCommand(args: string[]): OuroCliCommand {
       i += 1
       continue
     }
+    if (token === "--github-token") {
+      credentials.githubToken = args[i + 1]
+      i += 1
+      continue
+    }
+    if (token === "--base-url") {
+      credentials.baseUrl = args[i + 1]
+      i += 1
+      continue
+    }
     if (token === "--migration-path") {
       migrationPath = args[i + 1]
       i += 1
