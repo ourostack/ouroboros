@@ -855,6 +855,7 @@ function formatReceipt(receipt: ContextLossSentinelReceipt): string[] {
   return [
     `Recovery Sentinel - ${receipt.agent}`,
     `generated: ${receipt.generatedAt}`,
+    `receipt: ${receipt.receiptLocator}`,
     `trigger: ${receipt.trigger}`,
     `verdict: ${receipt.verdict}`,
     `latest-ready: ${receipt.latestReadyLocator ?? "unavailable"}`,
@@ -873,14 +874,15 @@ function formatReceipt(receipt: ContextLossSentinelReceipt): string[] {
 export function formatContextLossSentinelText(input: ContextLossSentinelView | ContextLossSentinelReceipt | null): string {
   if (input === null) return "Recovery Sentinel - unavailable"
   if ("latest" in input) {
-    if (!input.latest) {
+    const displayReceipt = input.latest ?? input.latestReady
+    if (!displayReceipt) {
       return [
         "Recovery Sentinel - unavailable",
         ...input.degraded.issues.map((issue) => `degraded: ${issue}`),
       ].join("\n").trim()
     }
     return [
-      ...formatReceipt(input.latest),
+      ...formatReceipt(displayReceipt),
       "",
       `history: ${input.history.length} receipt${input.history.length === 1 ? "" : "s"}`,
       ...(input.degraded.issues.length > 0 ? ["", ...input.degraded.issues.map((issue) => `degraded: ${issue}`)] : []),

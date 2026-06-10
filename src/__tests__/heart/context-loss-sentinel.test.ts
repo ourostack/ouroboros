@@ -693,6 +693,48 @@ describe("context-loss Sentinel core", () => {
     expect(fs.existsSync(paths.rootDir)).toBe(false)
   })
 
+  it("formats latest-only and latest-ready-only read views without mutating Sentinel state", async () => {
+    const blockedRoot = makeAgentRoot()
+    const blockedReceipt = await refreshContextLossSentinel("slugger", blockedRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-09T20:12:00.000Z"),
+      createReceiptId: () => "sentinel-latest-only-blocked",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", error: "provider down" },
+        }),
+        configuredLane("inner"),
+      ]),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const latestOnlyView = readContextLossSentinelView(blockedRoot, { limit: 5 })
+
+    expect(latestOnlyView.latest?.id).toBe(blockedReceipt.id)
+    expect(latestOnlyView.latestReady).toBeNull()
+    expect(formatContextLossSentinelText(latestOnlyView)).toContain("latest-ready: unavailable")
+
+    const latestReadyRoot = makeAgentRoot()
+    const readyReceipt = await refreshContextLossSentinel("slugger", latestReadyRoot, {
+      trigger: "manual_cli",
+      now: () => new Date("2026-06-09T20:13:00.000Z"),
+      createReceiptId: () => "sentinel-latest-ready-only",
+      providerVisibility: providerVisibility(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(latestReadyRoot)
+    fs.unlinkSync(paths.latest)
+    const before = fs.statSync(paths.latestReady).mtimeMs
+    const latestReadyOnlyView = readContextLossSentinelView(latestReadyRoot, { limit: 5 })
+    const formatted = formatContextLossSentinelText(latestReadyOnlyView)
+
+    expect(latestReadyOnlyView.latest).toBeNull()
+    expect(latestReadyOnlyView.latestReady?.id).toBe(readyReceipt.id)
+    expect(formatted).toContain("sentinel-latest-ready-only")
+    expect(formatted).toContain("trigger: manual_cli")
+    expect(formatted).toContain("history: 1 receipt")
+    expect(fs.statSync(paths.latestReady).mtimeMs).toBe(before)
+  })
+
   it("covers default refresh dependencies, generated ids, session/manual triggers, and unavailable latest-ready formatting", async () => {
     const agentRoot = makeNamedBundleRoot()
 
