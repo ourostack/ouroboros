@@ -123,8 +123,8 @@ function makeSentinelReceipt(overrides: Partial<MailboxSentinelReceipt> = {}): M
     generatedAt: overrides.generatedAt ?? "2026-06-08T12:00:00.000Z",
     verdict,
     summary: overrides.summary ?? "latest-ready recovery anchor is usable",
-    receiptLocator: overrides.receiptLocator ?? `arc/context-loss-sentinel/history/${id}.json`,
-    latestReadyLocator: overrides.latestReadyLocator ?? "arc/context-loss-sentinel/latest-ready.json",
+    receiptLocator: overrides.receiptLocator ?? `arc/flight-recorder/context-loss-sentinel/receipts/${id}.json`,
+    latestReadyLocator: overrides.latestReadyLocator ?? "arc/flight-recorder/context-loss-sentinel/latest-ready.json",
     recoveryAnchor: overrides.recoveryAnchor ?? {
       kind: "latest-ready",
       currentAsk: "finish the visibility layer",
