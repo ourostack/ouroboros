@@ -975,6 +975,89 @@ export type MailboxContextLossGauntletVerdict = ContextLossGauntletVerdict
 export type MailboxContextLossGauntletCheck = ContextLossGauntletCheck
 export type MailboxContextLossGauntletView = ContextLossGauntletReport
 
+export type MailboxSentinelTrigger =
+  | "post_turn"
+  | "provider_failover"
+  | "daemon_startup"
+  | "daemon_health"
+  | "session_start"
+  | "manual_cli"
+
+export type MailboxSentinelVerdict = "ready" | "watch" | "blocked"
+export type MailboxSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "bundle"
+export type MailboxSentinelSignalStatus = "pass" | "warn" | "fail"
+export type MailboxSentinelSignalSeverity = "info" | "warn" | "critical"
+export type MailboxSentinelVerdictImpact = "none" | "watch" | "blocked"
+export type MailboxSentinelRepairActor = "agent-runnable" | "human-required" | "human-choice"
+
+export interface MailboxSentinelSource {
+  kind: string
+  locator: string
+}
+
+export interface MailboxSentinelRepair {
+  actor: MailboxSentinelRepairActor
+  kind: string
+  command?: string
+  detail: string
+}
+
+export interface MailboxSentinelSignal {
+  id: string
+  kind: MailboxSentinelSignalKind
+  status: MailboxSentinelSignalStatus
+  severity: MailboxSentinelSignalSeverity
+  verdictImpact: MailboxSentinelVerdictImpact
+  summary: string
+  source: MailboxSentinelSource
+  repair?: MailboxSentinelRepair
+  meta?: Record<string, unknown>
+}
+
+export interface MailboxSentinelRecoveryAnchor {
+  kind: "flight-recorder" | "latest-ready"
+  currentAsk: string | null
+  nextSafeAction: string | null
+  flightRecorderLatestLocator: string
+  sourceEventIds: string[]
+  recordedAt: string | null
+}
+
+export interface MailboxSentinelGauntletSummary {
+  verdict: MailboxContextLossGauntletVerdict
+  scorePercentage: number
+  failedChecks: string[]
+  warnedChecks: string[]
+  sourceLocator: string
+}
+
+export interface MailboxSentinelReceipt {
+  schemaVersion: 1
+  id: string
+  agent: string
+  trigger: MailboxSentinelTrigger
+  generatedAt: string
+  verdict: MailboxSentinelVerdict
+  summary: string
+  receiptLocator: string
+  latestReadyLocator: string | null
+  recoveryAnchor: MailboxSentinelRecoveryAnchor
+  gauntlet: MailboxSentinelGauntletSummary
+  signals: MailboxSentinelSignal[]
+  sourceLocators: string[]
+  resumeSnapshot: unknown
+}
+
+export interface MailboxSentinelView {
+  schemaVersion: 1
+  latest: MailboxSentinelReceipt | null
+  latestReady: MailboxSentinelReceipt | null
+  history: MailboxSentinelReceipt[]
+  degraded: {
+    issues: string[]
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Notes decisions — save/skip judgement log
 // ---------------------------------------------------------------------------

@@ -561,33 +561,40 @@ describe("mailbox direct reads", () => {
     scaffoldDeskRecord(agentRoot)
     writeFlightRecorderResume(agentRoot, readyResume())
     try {
-      await refreshContextLossSentinel("slugger", agentRoot, {
-        trigger: "daemon_health",
-        now: () => new Date("2026-06-09T20:10:00.000Z"),
-        createReceiptId: () => "sentinel-mailbox-ready",
-        providerVisibility: readyProviderVisibility("slugger"),
-        daemonHealthResults: [],
-        gitStatus: () => ({ ok: true, porcelain: "" }),
-      })
+      for (let index = 1; index <= 22; index += 1) {
+        await refreshContextLossSentinel("slugger", agentRoot, {
+          trigger: "daemon_health",
+          now: () => new Date(`2026-06-09T20:${String(index).padStart(2, "0")}:00.000Z`),
+          createReceiptId: () => `sentinel-mailbox-${String(index).padStart(2, "0")}`,
+          providerVisibility: readyProviderVisibility("slugger"),
+          daemonHealthResults: [],
+          gitStatus: () => ({ ok: true, porcelain: "" }),
+        })
+      }
       const paths = contextLossSentinelPaths(agentRoot)
       const pinnedMtime = new Date("2026-06-09T20:11:00.000Z")
-      for (const filePath of [
-        paths.latest,
-        paths.latestReady,
-        path.join(paths.receiptsDir, "sentinel-mailbox-ready.json"),
-        path.join(paths.historyDir, "2026-06-09.jsonl"),
-      ]) {
-        fs.utimesSync(filePath, pinnedMtime, pinnedMtime)
+      const pinFileTimes = (dir: string): void => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const absolute = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            pinFileTimes(absolute)
+            continue
+          }
+          fs.utimesSync(absolute, pinnedMtime, pinnedMtime)
+        }
       }
+      pinFileTimes(paths.rootDir)
       const before = fileStats(paths.rootDir)
       const { readSentinelView } = await import("../../../heart/mailbox/readers/continuity-readers")
 
       const view: MailboxSentinelView = readSentinelView(agentRoot)
 
       expect(view.schemaVersion).toBe(1)
-      expect(view.latest?.id).toBe("sentinel-mailbox-ready")
-      expect(view.latestReady?.id).toBe("sentinel-mailbox-ready")
-      expect(view.history.map((receipt) => receipt.id)).toEqual(["sentinel-mailbox-ready"])
+      expect(view.latest?.id).toBe("sentinel-mailbox-22")
+      expect(view.latestReady?.id).toBe("sentinel-mailbox-22")
+      expect(view.history.map((receipt) => receipt.id)).toEqual(
+        Array.from({ length: 20 }, (_, index) => `sentinel-mailbox-${String(index + 3).padStart(2, "0")}`),
+      )
       expect(fileStats(paths.rootDir)).toEqual(before)
     } finally {
       fs.rmSync(bundlesRoot, { recursive: true, force: true })

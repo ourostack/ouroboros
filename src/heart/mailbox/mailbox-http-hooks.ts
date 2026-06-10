@@ -19,6 +19,7 @@ import {
   readOrientationView,
   readMailboxContinuity,
   readSelfFixView,
+  readSentinelView,
   readSessionInventory,
   readSessionTranscript,
 } from "./mailbox-read"
@@ -42,6 +43,7 @@ import type {
   MailboxObligationDetailView,
   MailboxOrientationView,
   MailboxSelfFixView,
+  MailboxSentinelView,
   MailboxSessionInventory,
   MailboxSessionTranscript,
 } from "./mailbox-types"
@@ -63,6 +65,7 @@ export interface MailboxHttpReadHookOptions {
   readAgentChanges?: (agentName: string) => MailboxChangesView
   readAgentSelfFix?: (agentName: string) => MailboxSelfFixView
   readAgentContextLossGauntlet?: (agentName: string) => MailboxContextLossGauntletView
+  readAgentSentinel?: (agentName: string) => MailboxSentinelView
   readAgentNoteDecisions?: (agentName: string) => MailboxNoteDecisionView
   readAgentHabits?: (agentName: string) => MailboxHabitView
   readAgentMail?: (agentName: string) => Promise<MailboxMailView> | MailboxMailView
@@ -86,6 +89,7 @@ export interface MailboxHttpReadHooks {
   readAgentChanges(agentName: string): MailboxChangesView
   readAgentSelfFix(agentName: string): MailboxSelfFixView
   readAgentContextLossGauntlet(agentName: string): MailboxContextLossGauntletView
+  readAgentSentinel(agentName: string): MailboxSentinelView
   readAgentNoteDecisions(agentName: string): MailboxNoteDecisionView
   readAgentHabits(agentName: string): MailboxHabitView
   readAgentMail(agentName: string): Promise<MailboxMailView> | MailboxMailView
@@ -116,6 +120,7 @@ export function createMailboxHttpReadHooks(options: MailboxHttpReadHookOptions):
     readAgentChanges: options.readAgentChanges ?? ((agentName: string) => readChangesView(agentRoot(agentName))),
     readAgentSelfFix: options.readAgentSelfFix ?? ((agentName: string) => readSelfFixView(agentRoot(agentName))),
     readAgentContextLossGauntlet: options.readAgentContextLossGauntlet ?? ((agentName: string) => readContextLossGauntletView(agentRoot(agentName), agentName)),
+    readAgentSentinel: options.readAgentSentinel ?? ((agentName: string) => readSentinelView(agentRoot(agentName))),
     readAgentNoteDecisions: options.readAgentNoteDecisions ?? ((agentName: string) => readNoteDecisionView(agentRoot(agentName))),
     readAgentHabits: options.readAgentHabits ?? ((agentName: string) => readHabitView(agentRoot(agentName))),
     readAgentMail: options.readAgentMail ?? ((agentName: string) => readMailView(agentName)),

@@ -202,6 +202,11 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
     return
   }
 
+  if (surface === "sentinel") {
+    writeJson(response, 200, options.hooks.readAgentSentinel(agent))
+    return
+  }
+
   if (surface === "note-decisions") {
     writeJson(response, 200, options.hooks.readAgentNoteDecisions(agent))
     return

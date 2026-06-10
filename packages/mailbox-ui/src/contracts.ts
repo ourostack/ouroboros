@@ -52,6 +52,8 @@ export type {
   MailboxOrientationView,
   MailboxSelfFixStep,
   MailboxSelfFixView,
+  MailboxSentinelReceipt,
+  MailboxSentinelView,
   MailboxSessionInventory,
   MailboxSessionInventoryItem,
   MailboxSessionTranscript,
