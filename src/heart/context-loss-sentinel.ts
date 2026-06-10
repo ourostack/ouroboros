@@ -130,6 +130,17 @@ export interface ReadContextLossSentinelViewOptions {
   limit?: number
 }
 
+interface ContextLossSentinelOrder {
+  generatedAt: string
+  id: string
+}
+
+interface ContextLossSentinelWatermark {
+  schemaVersion: 1
+  latest: ContextLossSentinelOrder | null
+  latestReady: ContextLossSentinelOrder | null
+}
+
 const REQUIRED_LANES = ["outward", "inner"] as const
 
 function logicalLocator(...parts: string[]): string {
@@ -218,6 +229,125 @@ function compareReceiptOrder(left: ContextLossSentinelReceipt, right: ContextLos
 
 function shouldReplaceReceipt(existing: ContextLossSentinelReceipt | null, candidate: ContextLossSentinelReceipt): boolean {
   return existing === null || compareReceiptOrder(candidate, existing) >= 0
+}
+
+function orderFromReceipt(receipt: ContextLossSentinelReceipt): ContextLossSentinelOrder {
+  return { generatedAt: receipt.generatedAt, id: receipt.id }
+}
+
+function compareOrder(left: ContextLossSentinelOrder, right: ContextLossSentinelOrder): number {
+  const leftTime = Date.parse(left.generatedAt)
+  const rightTime = Date.parse(right.generatedAt)
+  if (leftTime !== rightTime) return leftTime - rightTime
+  return left.id.localeCompare(right.id)
+}
+
+function maxOrder(
+  left: ContextLossSentinelOrder | null,
+  right: ContextLossSentinelOrder | null,
+): ContextLossSentinelOrder | null {
+  if (!left) return right
+  if (!right) return left
+  return compareOrder(left, right) >= 0 ? left : right
+}
+
+function isOrder(value: unknown): value is ContextLossSentinelOrder {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.generatedAt === "string"
+    && isValidTimestamp(record.generatedAt)
+    && typeof record.id === "string"
+}
+
+function sentinelWatermarkPath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark.json")
+}
+
+function readWatermark(agentRoot: string): ContextLossSentinelWatermark {
+  const filePath = sentinelWatermarkPath(agentRoot)
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, unknown>
+    return {
+      schemaVersion: 1,
+      latest: isOrder(parsed.latest) ? parsed.latest : null,
+      latestReady: isOrder(parsed.latestReady) ? parsed.latestReady : null,
+    }
+  } catch {
+    return { schemaVersion: 1, latest: null, latestReady: null }
+  }
+}
+
+function writeWatermark(agentRoot: string, watermark: ContextLossSentinelWatermark): void {
+  atomicWriteJson(sentinelWatermarkPath(agentRoot), watermark)
+}
+
+function updateWatermarkOrder(
+  watermark: ContextLossSentinelWatermark,
+  key: "latest" | "latestReady",
+  candidate: ContextLossSentinelReceipt,
+): void {
+  watermark[key] = maxOrder(watermark[key], orderFromReceipt(candidate))
+}
+
+function stableReceiptState(receipt: ContextLossSentinelReceipt): string {
+  return JSON.stringify({
+    verdict: receipt.verdict,
+    summary: receipt.summary,
+    latestReadyLocator: receipt.latestReadyLocator,
+    recoveryAnchor: receipt.recoveryAnchor,
+    gauntlet: receipt.gauntlet,
+    signals: receipt.signals,
+    resumeSnapshot: receipt.resumeSnapshot,
+  })
+}
+
+function sameRecoveryState(left: ContextLossSentinelReceipt, right: ContextLossSentinelReceipt): boolean {
+  return stableReceiptState(left) === stableReceiptState(right)
+}
+
+function setReceiptFileMtime(filePath: string, receipt: ContextLossSentinelReceipt): void {
+  const timestamp = new Date(receipt.generatedAt)
+  fs.utimesSync(filePath, timestamp, timestamp)
+}
+
+function selectLatestReadyReceipt(
+  existingReady: ContextLossSentinelReceipt | null,
+  candidate: ContextLossSentinelReceipt,
+  latestReadyOrder: ContextLossSentinelOrder | null,
+): ContextLossSentinelReceipt | null {
+  if (candidate.verdict !== "ready") return existingReady
+  if (latestReadyOrder && compareOrder(orderFromReceipt(candidate), latestReadyOrder) < 0) return existingReady
+  return candidate
+}
+
+function shouldReplaceLatestReceipt(
+  existingLatest: ContextLossSentinelReceipt | null,
+  candidate: ContextLossSentinelReceipt,
+  latestOrder: ContextLossSentinelOrder | null,
+): boolean {
+  if (latestOrder && compareOrder(orderFromReceipt(candidate), latestOrder) < 0) return false
+  if (!existingLatest) return true
+  return shouldReplaceReceipt(existingLatest, candidate)
+}
+
+function coalescedDaemonHealthReceipt(
+  agentRoot: string,
+  existingLatest: ContextLossSentinelReceipt | null,
+  existingReady: ContextLossSentinelReceipt | null,
+  candidate: ContextLossSentinelReceipt,
+  watermark: ContextLossSentinelWatermark,
+): ContextLossSentinelReceipt | null {
+  if (candidate.trigger !== "daemon_health") return null
+  if (!existingLatest || !sameRecoveryState(existingLatest, candidate)) return null
+  if (candidate.verdict === "ready" && (!existingReady || !sameRecoveryState(existingReady, candidate))) return null
+  const candidateOrder = orderFromReceipt(candidate)
+  if (watermark.latest && compareOrder(candidateOrder, watermark.latest) <= 0) return existingLatest
+  updateWatermarkOrder(watermark, "latest", candidate)
+  if (candidate.verdict === "ready" && existingReady) {
+    updateWatermarkOrder(watermark, "latestReady", candidate)
+  }
+  writeWatermark(agentRoot, watermark)
+  return existingLatest
 }
 
 function readJson(filePath: string): { ok: true; value: unknown } | { ok: false; reason: string } {
@@ -830,27 +960,56 @@ function recordBlockedReceiptEvent(agentRoot: string, receipt: ContextLossSentin
   })
 }
 
-async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelReceipt, lockTimeoutMs: number): Promise<void> {
+async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelReceipt, lockTimeoutMs: number): Promise<ContextLossSentinelReceipt> {
   const paths = contextLossSentinelPaths(agentRoot)
-  await withFileLock(paths.lock, lockTimeoutMs, async () => {
+  return withFileLock(paths.lock, lockTimeoutMs, async () => {
     ensureSentinelDirs(paths)
     const existingLatest = readReceiptFile(paths.latest, "latest.json", [])
     const existingReady = readLatestReady(agentRoot)
-    const nextReady = receipt.verdict === "ready" && shouldReplaceReceipt(existingReady, receipt)
-      ? receipt
-      : existingReady
+    const watermark = readWatermark(agentRoot)
+    const latestOrder = maxOrder(
+      maxOrder(
+        maxOrder(
+          existingLatest ? orderFromReceipt(existingLatest) : null,
+          existingReady ? orderFromReceipt(existingReady) : null,
+        ),
+        watermark.latest,
+      ),
+      watermark.latestReady,
+    )
+    const latestReadyOrder = maxOrder(
+      maxOrder(existingReady ? orderFromReceipt(existingReady) : null, watermark.latestReady),
+      existingLatest?.verdict === "ready" ? orderFromReceipt(existingLatest) : null,
+    )
+    const nextReady = selectLatestReadyReceipt(existingReady, receipt, latestReadyOrder)
     syncLatestReadyState(receipt, nextReady)
+    const coalesced = coalescedDaemonHealthReceipt(
+      agentRoot,
+      existingLatest,
+      existingReady,
+      receipt,
+      watermark,
+    )
+    if (coalesced) return coalesced
     atomicWriteJson(path.join(paths.receiptsDir, `${receipt.id}.json`), receipt)
     appendHistory(paths, receipt)
-    if (shouldReplaceReceipt(existingLatest, receipt)) {
+    if (shouldReplaceLatestReceipt(existingLatest, receipt, latestOrder)) {
       atomicWriteJson(paths.latest, receipt)
+      updateWatermarkOrder(watermark, "latest", receipt)
+      writeWatermark(agentRoot, watermark)
+      setReceiptFileMtime(paths.latest, receipt)
       recordBlockedReceiptEvent(agentRoot, receipt)
-    } else if (existingLatest && receipt.verdict === "ready") {
-      atomicWriteJson(paths.latest, syncLatestReadyState(existingLatest, nextReady))
+    } else if (existingLatest && nextReady === receipt) {
+      const updatedLatest = syncLatestReadyState(existingLatest, nextReady)
+      atomicWriteJson(paths.latest, updatedLatest)
     }
     if (receipt.verdict === "ready" && nextReady === receipt) {
       atomicWriteJson(paths.latestReady, receipt)
+      updateWatermarkOrder(watermark, "latestReady", receipt)
+      writeWatermark(agentRoot, watermark)
+      setReceiptFileMtime(paths.latestReady, receipt)
     }
+    return receipt
   })
 }
 
@@ -864,7 +1023,7 @@ export async function refreshContextLossSentinel(
   if (options.delayBeforeWriteMs && options.delayBeforeWriteMs > 0) {
     await sleep(options.delayBeforeWriteMs)
   }
-  await persistReceipt(agentRoot, receipt, options.lockTimeoutMs ?? 5_000)
+  const persistedReceipt = await persistReceipt(agentRoot, receipt, options.lockTimeoutMs ?? 5_000)
   emitNervesEvent({
     component: "engine",
     event: "engine.context_loss_sentinel_refreshed",
@@ -872,13 +1031,13 @@ export async function refreshContextLossSentinel(
     meta: {
       agentName,
       trigger: options.trigger,
-      verdict: receipt.verdict,
-      receiptId: receipt.id,
-      blockedSignals: receipt.signals.filter((entry) => entry.verdictImpact === "blocked").map((entry) => entry.id),
-      watchSignals: receipt.signals.filter((entry) => entry.verdictImpact === "watch").map((entry) => entry.id),
+      verdict: persistedReceipt.verdict,
+      receiptId: persistedReceipt.id,
+      blockedSignals: persistedReceipt.signals.filter((entry) => entry.verdictImpact === "blocked").map((entry) => entry.id),
+      watchSignals: persistedReceipt.signals.filter((entry) => entry.verdictImpact === "watch").map((entry) => entry.id),
     },
   })
-  return receipt
+  return persistedReceipt
 }
 
 function readHistory(paths: ContextLossSentinelPaths, limit: number, issues: string[]): ContextLossSentinelReceipt[] {

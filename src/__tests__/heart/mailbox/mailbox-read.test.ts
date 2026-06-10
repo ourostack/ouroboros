@@ -563,7 +563,7 @@ describe("mailbox direct reads", () => {
     try {
       for (let index = 1; index <= 22; index += 1) {
         await refreshContextLossSentinel("slugger", agentRoot, {
-          trigger: "daemon_health",
+          trigger: "manual_cli",
           now: () => new Date(`2026-06-09T20:${String(index).padStart(2, "0")}:00.000Z`),
           createReceiptId: () => `sentinel-mailbox-${String(index).padStart(2, "0")}`,
           providerVisibility: readyProviderVisibility("slugger"),
