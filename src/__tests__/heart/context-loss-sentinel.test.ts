@@ -459,6 +459,58 @@ describe("context-loss Sentinel core", () => {
     }
   })
 
+  it("does not hide a broken current Arc behind latest-ready when provider risk is also present", async () => {
+    const agentRoot = makeAgentRoot("context-wipe-broken-arc-")
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-09T21:10:00.000Z"),
+      createReceiptId: () => "sentinel-broken-arc-ready-anchor",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      hasCompleteState: false,
+      canContinue: false,
+      missing: ["currentAsk"],
+      currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+      nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+      blockedBecause: ["human-authored current Arc state is incomplete"],
+      lastSafeCheckpoint: {
+        ...readyResume().lastSafeCheckpoint,
+        sourceEventIds: ["fr-human-broken-current-arc"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-09T21:11:00.000Z"),
+      createReceiptId: () => "sentinel-broken-arc-plus-provider-risk",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "unknown", reason: "fresh process has no provider readiness cache" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.verdict).toBe("blocked")
+    expect(signal(receipt.signals, "gauntlet:context-loss")).toMatchObject({
+      status: "fail",
+      verdictImpact: "blocked",
+    })
+    expect(signal(receipt.signals, "provider:outward")).toMatchObject({
+      status: "warn",
+      verdictImpact: "watch",
+    })
+    expect(receipt.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+    expect(receipt.recoveryAnchor.kind).toBe("flight-recorder")
+    expect(receipt.resumeSnapshot.currentAsk.value).toBeNull()
+  })
+
   it("classifies every provider state for both outward and inner lanes with repair actors, sources, severity, and verdict impact", () => {
     const lanes = ["outward", "inner"] as const
     const cases: Array<{
@@ -1169,6 +1221,8 @@ describe("context-loss Sentinel core", () => {
     expect(view.latest?.id).toBe("sentinel-blocked-fast")
     expect(view.latestReady?.id).toBe("sentinel-ready-slow")
     expect(view.latest?.latestReadyLocator).toBe("arc/flight-recorder/context-loss-sentinel/latest-ready.json")
+    expect(view.latest?.recoveryAnchor.kind).toBe("latest-ready")
+    expect(view.latest?.resumeSnapshot.currentAsk.value).toBe("keep the Arc updated even if the transcript disappears")
     expect(formatContextLossSentinelText(view)).toContain("history: 2 receipts")
 
     await Promise.all([
@@ -1381,6 +1435,127 @@ describe("context-loss Sentinel core", () => {
     expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 1 malformed")
     expect(view.degraded.issues.join("\n")).toContain("history/2026-06-08.jsonl line 2 unreadable")
     expect(fs.statSync(paths.latest).mtimeMs).toBe(latestMtime)
+  })
+
+  it("ignores semantically non-ready latest-ready receipts", async () => {
+    const agentRoot = makeAgentRoot()
+    const ready = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:48:00.000Z"),
+      createReceiptId: () => "sentinel-semantic-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.writeFileSync(paths.latestReady, `${JSON.stringify({
+      ...ready,
+      id: "sentinel-semantic-blocked-in-latest-ready",
+      verdict: "blocked",
+      summary: "this structurally valid receipt must not be trusted as latest-ready",
+    }, null, 2)}\n`, "utf-8")
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latestReady).toBeNull()
+    expect(view.degraded.issues.join("\n")).toContain("latest-ready.json is not a ready receipt")
+
+    const blocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:49:00.000Z"),
+      createReceiptId: () => "sentinel-after-semantic-bad-latest-ready",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:49:00.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(blocked.verdict).toBe("blocked")
+    expect(blocked.latestReadyLocator).toBeNull()
+    expect(blocked.recoveryAnchor.kind).toBe("flight-recorder")
+  })
+
+  it("ignores contradictory ready latest-ready receipts", async () => {
+    const agentRoot = makeAgentRoot()
+    const ready = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:49:30.000Z"),
+      createReceiptId: () => "sentinel-contradictory-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.writeFileSync(paths.latestReady, `${JSON.stringify({
+      ...ready,
+      gauntlet: {
+        ...ready.gauntlet,
+        verdict: "blocked",
+        failedChecks: ["current_ask"],
+      },
+      signals: [{
+        ...ready.signals[0],
+        status: "fail",
+        severity: "critical",
+        verdictImpact: "blocked",
+        summary: "contradictory blocker",
+      }],
+    }, null, 2)}\n`, "utf-8")
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latestReady).toBeNull()
+    expect(view.degraded.issues.join("\n")).toContain("latest-ready.json is not a semantically ready receipt")
+  })
+
+  it("ignores latest-ready receipts with unsafe resume snapshots", async () => {
+    const agentRoot = makeAgentRoot()
+    const ready = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-06-08T20:49:45.000Z"),
+      createReceiptId: () => "sentinel-unsafe-snapshot-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    fs.writeFileSync(paths.latestReady, `${JSON.stringify({
+      ...ready,
+      resumeSnapshot: {
+        ...ready.resumeSnapshot,
+        canContinue: false,
+        hasCompleteState: false,
+        currentAsk: { value: null, confidence: "unknown", sourceEventIds: [] },
+        nextSafeAction: { value: null, stopBefore: [], sourceEventIds: [] },
+        blockedBecause: ["snapshot says the agent cannot continue"],
+        recorderHealth: { status: "degraded", issues: ["corrupt resume snapshot"] },
+      },
+    }, null, 2)}\n`, "utf-8")
+
+    const view = readContextLossSentinelView(agentRoot, { limit: 5 })
+    expect(view.latestReady).toBeNull()
+    expect(view.degraded.issues.join("\n")).toContain("latest-ready.json is not a semantically ready receipt")
+
+    const blocked = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:49:50.000Z"),
+      createReceiptId: () => "sentinel-after-unsafe-snapshot",
+      providerVisibility: providerVisibility([
+        configuredLane("outward", {
+          readiness: { status: "failed", checkedAt: "2026-06-08T20:49:50.000Z", error: "MiniMax 503" },
+        }),
+        configuredLane("inner"),
+      ]),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(blocked.verdict).toBe("blocked")
+    expect(blocked.latestReadyLocator).toBeNull()
+    expect(blocked.recoveryAnchor.kind).toBe("flight-recorder")
+    expect(blocked.resumeSnapshot.currentAsk.value).toBe("keep the Arc updated even if the transcript disappears")
   })
 
   it("degrades malformed nested receipt shapes instead of accepting partial disk state", async () => {

@@ -315,8 +315,40 @@ function readReceiptFile(filePath: string, label: string, issues: string[]): Con
   return parsed.value
 }
 
+function isNonEmptyText(value: string | null): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function hasSafeResumeSnapshot(receipt: ContextLossSentinelReceipt): boolean {
+  const resume = receipt.resumeSnapshot
+  return resume.canContinue
+    && resume.hasCompleteState
+    && resume.recorderHealth.status === "ok"
+    && resume.blockedBecause.length === 0
+    && isNonEmptyText(resume.currentAsk.value)
+    && isNonEmptyText(resume.nextSafeAction.value)
+}
+
+function readLatestReadyFile(filePath: string, label: string, issues: string[]): ContextLossSentinelReceipt | null {
+  const receipt = readReceiptFile(filePath, label, issues)
+  if (receipt && receipt.verdict !== "ready") {
+    issues.push(`${label} is not a ready receipt`)
+    return null
+  }
+  if (receipt && (
+    receipt.gauntlet.verdict !== "ready"
+    || receipt.signals.some((signal) => signal.verdictImpact !== "none")
+    || !hasSafeResumeSnapshot(receipt)
+  )) {
+    issues.push(`${label} is not a semantically ready receipt`)
+    return null
+  }
+  return receipt
+}
+
 function readLatestReady(agentRoot: string): ContextLossSentinelReceipt | null {
-  return readReceiptFile(contextLossSentinelPaths(agentRoot).latestReady, "latest-ready.json", [])
+  const receipt = readLatestReadyFile(contextLossSentinelPaths(agentRoot).latestReady, "latest-ready.json", [])
+  return receipt?.verdict === "ready" ? receipt : null
 }
 
 function signalStatusForImpact(impact: ContextLossSentinelVerdictImpact): Pick<ContextLossSentinelSignal, "status" | "severity"> {
@@ -664,6 +696,18 @@ function resolveProviderVisibility(agentName: string, agentRoot: string, options
   })
 }
 
+function shouldUseLatestReadyRecovery(
+  anchorKind: ContextLossSentinelRecoveryAnchor["kind"],
+  verdict: ContextLossSentinelVerdict,
+  signals: ContextLossSentinelSignal[],
+): boolean {
+  if (anchorKind === "latest-ready") return true
+  if (verdict === "ready") return false
+  const hasNonGauntletRisk = signals.some((signal) => signal.kind !== "gauntlet" && signal.verdictImpact !== "none")
+  const hasGauntletBlocker = signals.some((signal) => signal.kind === "gauntlet" && signal.verdictImpact === "blocked")
+  return hasNonGauntletRisk && !hasGauntletBlocker
+}
+
 function makeReceipt(
   agentName: string,
   agentRoot: string,
@@ -685,7 +729,11 @@ function makeReceipt(
     bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))()),
   ]
   const verdict = sentinelVerdict(signals)
-  const readyLocator = verdict === "ready" || readLatestReady(agentRoot) ? latestReadyLocator() : null
+  const latestReady = readLatestReady(agentRoot)
+  const recoverySource = latestReady && shouldUseLatestReadyRecovery(selectedResume.anchorKind, verdict, signals)
+    ? { resume: latestReady.resumeSnapshot, anchorKind: "latest-ready" as const }
+    : selectedResume
+  const readyLocator = verdict === "ready" || latestReady ? latestReadyLocator() : null
   return {
     schemaVersion: 1,
     id: receiptId,
@@ -696,7 +744,7 @@ function makeReceipt(
     summary: summaryForVerdict(verdict),
     receiptLocator: receiptLocator(receiptId),
     latestReadyLocator: readyLocator,
-    recoveryAnchor: anchorFromResume(selectedResume.anchorKind, selectedResume.resume),
+    recoveryAnchor: anchorFromResume(recoverySource.anchorKind, recoverySource.resume),
     gauntlet: gauntletSummary(report),
     signals,
     sourceLocators: [
@@ -706,7 +754,7 @@ function makeReceipt(
       receiptLocator(receiptId),
       ...(readyLocator ? [readyLocator] : []),
     ],
-    resumeSnapshot: selectedResume.resume,
+    resumeSnapshot: recoverySource.resume,
   }
 }
 
@@ -727,6 +775,18 @@ function syncLatestReadyLocator(receipt: ContextLossSentinelReceipt, hasLatestRe
   receipt.sourceLocators = hasLatestReady
     ? Array.from(new Set([...receipt.sourceLocators, locator]))
     : receipt.sourceLocators.filter((entry) => entry !== locator)
+  return receipt
+}
+
+function syncLatestReadyState(
+  receipt: ContextLossSentinelReceipt,
+  latestReady: ContextLossSentinelReceipt | null,
+): ContextLossSentinelReceipt {
+  syncLatestReadyLocator(receipt, latestReady !== null)
+  if (latestReady && shouldUseLatestReadyRecovery(receipt.recoveryAnchor.kind, receipt.verdict, receipt.signals)) {
+    receipt.recoveryAnchor = anchorFromResume("latest-ready", latestReady.resumeSnapshot)
+    receipt.resumeSnapshot = latestReady.resumeSnapshot
+  }
   return receipt
 }
 
@@ -761,17 +821,20 @@ async function persistReceipt(agentRoot: string, receipt: ContextLossSentinelRec
   await withFileLock(paths.lock, lockTimeoutMs, async () => {
     ensureSentinelDirs(paths)
     const existingLatest = readReceiptFile(paths.latest, "latest.json", [])
-    const existingReady = readReceiptFile(paths.latestReady, "latest-ready.json", [])
-    syncLatestReadyLocator(receipt, receipt.verdict === "ready" || existingReady !== null)
+    const existingReady = readLatestReady(agentRoot)
+    const nextReady = receipt.verdict === "ready" && shouldReplaceReceipt(existingReady, receipt)
+      ? receipt
+      : existingReady
+    syncLatestReadyState(receipt, nextReady)
     atomicWriteJson(path.join(paths.receiptsDir, `${receipt.id}.json`), receipt)
     appendHistory(paths, receipt)
     if (shouldReplaceReceipt(existingLatest, receipt)) {
       atomicWriteJson(paths.latest, receipt)
       recordBlockedReceiptEvent(agentRoot, receipt)
     } else if (existingLatest && receipt.verdict === "ready") {
-      atomicWriteJson(paths.latest, syncLatestReadyLocator(existingLatest, true))
+      atomicWriteJson(paths.latest, syncLatestReadyState(existingLatest, nextReady))
     }
-    if (receipt.verdict === "ready" && shouldReplaceReceipt(existingReady, receipt)) {
+    if (receipt.verdict === "ready" && nextReady === receipt) {
       atomicWriteJson(paths.latestReady, receipt)
     }
   })
@@ -840,7 +903,7 @@ export function readContextLossSentinelView(
   return {
     schemaVersion: 1,
     latest: readReceiptFile(paths.latest, "latest.json", issues),
-    latestReady: readReceiptFile(paths.latestReady, "latest-ready.json", issues),
+    latestReady: readLatestReadyFile(paths.latestReady, "latest-ready.json", issues),
     history: readHistory(paths, limit, issues),
     degraded: { issues },
   }
