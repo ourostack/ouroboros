@@ -707,7 +707,7 @@ function healthSignals(results: DaemonHealthResult[]): ContextLossSentinelSignal
 
 function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
   try {
-    const porcelain = execFileSync("git", ["status", "--porcelain"], {
+    const porcelain = execFileSync("git", ["status", "--porcelain=v1", "-uall"], {
       cwd: agentRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -719,7 +719,57 @@ function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
   }
 }
 
-function bundleSignal(status: ContextLossSentinelGitStatus): ContextLossSentinelSignal {
+function gitStatusEntries(porcelain: string): string[] {
+  return porcelain.split(/\r?\n/).filter((line) => line.trim().length > 0)
+}
+
+function normalizeGitStatusPath(entryPath: string): string {
+  return entryPath.trim().replace(/^"|"$/g, "")
+}
+
+function gitStatusPaths(entry: string): string[] {
+  const rawPath = entry.slice(3).trim()
+  const paths: string[] = []
+  let start = 0
+  let inQuote = false
+  let escaped = false
+  for (let index = 0; index < rawPath.length; index += 1) {
+    const char = rawPath[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (inQuote && char === "\\") {
+      escaped = true
+      continue
+    }
+    if (char === "\"") {
+      inQuote = !inQuote
+      continue
+    }
+    if (!inQuote && rawPath.startsWith(" -> ", index)) {
+      paths.push(rawPath.slice(start, index))
+      start = index + 4
+      index += 3
+    }
+  }
+  paths.push(rawPath.slice(start))
+  return paths.map(normalizeGitStatusPath)
+}
+
+function isSentinelGitStatusEntry(entry: string): boolean {
+  const sentinelRoot = relativeSentinelRoot()
+  return gitStatusPaths(entry).every((entryPath) => {
+    const normalizedPath = entryPath.replace(/\/$/, "")
+    return normalizedPath === sentinelRoot || normalizedPath.startsWith(`${sentinelRoot}/`)
+  })
+}
+
+function bundleSignal(
+  status: ContextLossSentinelGitStatus,
+  options: { ignoreSentinelDirtyEntries?: boolean } = {},
+): ContextLossSentinelSignal {
+  const gitStatusCommand = "git status --porcelain=v1 -uall"
   if (!status.ok) {
     return {
       id: "bundle:git",
@@ -728,11 +778,12 @@ function bundleSignal(status: ContextLossSentinelGitStatus): ContextLossSentinel
       severity: "warn",
       verdictImpact: "watch",
       summary: `bundle git status unavailable: ${status.error}`,
-      source: { kind: "git", locator: "git status --porcelain" },
-      repair: repair("agent-runnable", "bundle-cleanup", "Inspect bundle git state before assuming the local state is clean.", "git status --porcelain"),
+      source: { kind: "git", locator: gitStatusCommand },
+      repair: repair("agent-runnable", "bundle-cleanup", "Inspect bundle git state before assuming the local state is clean.", gitStatusCommand),
     }
   }
-  const dirtyEntries = status.porcelain.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  const dirtyEntries = gitStatusEntries(status.porcelain)
+    .filter((entry) => !(options.ignoreSentinelDirtyEntries && isSentinelGitStatusEntry(entry)))
   if (dirtyEntries.length > 0) {
     return {
       id: "bundle:git",
@@ -741,8 +792,8 @@ function bundleSignal(status: ContextLossSentinelGitStatus): ContextLossSentinel
       severity: "warn",
       verdictImpact: "watch",
       summary: `bundle has ${dirtyEntries.length} uncommitted git status entr${dirtyEntries.length === 1 ? "y" : "ies"}`,
-      source: { kind: "git", locator: "git status --porcelain" },
-      repair: repair("agent-runnable", "bundle-cleanup", "Resolve or intentionally preserve local bundle changes before handoff.", "git status --porcelain"),
+      source: { kind: "git", locator: gitStatusCommand },
+      repair: repair("agent-runnable", "bundle-cleanup", "Resolve or intentionally preserve local bundle changes before handoff.", gitStatusCommand),
       meta: { dirtyEntries },
     }
   }
@@ -753,7 +804,7 @@ function bundleSignal(status: ContextLossSentinelGitStatus): ContextLossSentinel
     severity: "info",
     verdictImpact: "none",
     summary: "bundle git status clean",
-    source: { kind: "git", locator: "git status --porcelain" },
+    source: { kind: "git", locator: gitStatusCommand },
   }
 }
 
@@ -870,7 +921,9 @@ function makeReceipt(
     gauntletSignal(report),
     ...deriveContextLossSentinelProviderSignals(providerVisibility),
     ...healthSignals(options.daemonHealthResults ?? []),
-    bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))()),
+    bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))(), {
+      ignoreSentinelDirtyEntries: options.trigger === "daemon_health",
+    }),
   ]
   const verdict = sentinelVerdict(signals)
   const latestReady = readLatestReady(agentRoot)

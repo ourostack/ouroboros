@@ -1,7 +1,7 @@
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
-import { spawn } from "child_process"
+import { execFileSync, spawn } from "child_process"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
@@ -383,6 +383,231 @@ describe("context-loss Sentinel core", () => {
     expect(view.latest?.id).toBe("sentinel-health-first")
     expect(view.latestReady?.id).toBe("sentinel-health-first")
     expect(view.history.map((entry) => entry.id)).toEqual(["sentinel-health-first"])
+  })
+
+  it("coalesces daemon-health refreshes when only previous Sentinel artifacts are dirty", async () => {
+    const agentRoot = makeAgentRoot()
+    await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:10:00.000Z"),
+      createReceiptId: () => "sentinel-health-first",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+    const paths = contextLossSentinelPaths(agentRoot)
+    const before = sentinelFileSnapshot(paths.rootDir)
+    const beforeMetadata = sentinelFileMetadataSnapshot(paths.rootDir)
+
+    const coalesced = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-self-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: [
+          " M arc/flight-recorder/context-loss-sentinel/history/2026-06-08.jsonl",
+          " M arc/flight-recorder/context-loss-sentinel/latest.json",
+          "?? arc/flight-recorder/context-loss-sentinel/receipts/sentinel-health-first.json",
+          "R  arc/flight-recorder/context-loss-sentinel/latest-old.json -> arc/flight-recorder/context-loss-sentinel/latest.json",
+        ].join("\n"),
+      }),
+    })
+
+    expect(coalesced.id).toBe("sentinel-health-first")
+    expect(sentinelFileSnapshot(paths.rootDir)).toEqual(before)
+    expect(sentinelFileMetadataSnapshot(paths.rootDir)).toEqual(beforeMetadata)
+    expect(fs.existsSync(path.join(paths.receiptsDir, "sentinel-health-self-dirty.json"))).toBe(false)
+    expect(JSON.parse(fs.readFileSync(sentinelWatermarkPath(agentRoot), "utf-8"))).toMatchObject({
+      latest: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-self-dirty",
+      },
+      latestReady: {
+        generatedAt: "2026-06-08T20:11:00.000Z",
+        id: "sentinel-health-self-dirty",
+      },
+    })
+  })
+
+  it("keeps mixed-source rename dirt visible even when the target is Sentinel-owned", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-mixed-rename-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: "R  agent.json -> arc/flight-recorder/context-loss-sentinel/latest.json",
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: {
+        dirtyEntries: ["R  agent.json -> arc/flight-recorder/context-loss-sentinel/latest.json"],
+      },
+    })
+  })
+
+  it("keeps quoted backslash sibling paths visible instead of treating them as Sentinel-owned", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-backslash-sibling-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: '?? "arc/flight-recorder/context-loss-sentinel\\\\evil"',
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: {
+        dirtyEntries: ['?? "arc/flight-recorder/context-loss-sentinel\\\\evil"'],
+      },
+    })
+  })
+
+  it("keeps quoted arrow sibling paths visible instead of splitting them as Sentinel renames", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-arrow-sibling-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: '?? "arc/flight-recorder/context-loss-sentinel -> arc/flight-recorder/context-loss-sentinel/evil"',
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: {
+        dirtyEntries: ['?? "arc/flight-recorder/context-loss-sentinel -> arc/flight-recorder/context-loss-sentinel/evil"'],
+      },
+    })
+  })
+
+  it("keeps quoted mixed-source rename dirt visible when only the arrow target is Sentinel-owned", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-quoted-rename-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: 'R  "arc/flight-recorder/context-loss-sentinel -> scratch" -> arc/flight-recorder/context-loss-sentinel/latest.json',
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: {
+        dirtyEntries: ['R  "arc/flight-recorder/context-loss-sentinel -> scratch" -> arc/flight-recorder/context-loss-sentinel/latest.json'],
+      },
+    })
+  })
+
+  it("keeps real bundle dirt visible while ignoring Sentinel-owned daemon-health dirt", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-health-real-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: [
+          " M arc/flight-recorder/context-loss-sentinel/latest.json",
+          "?? arc/flight-recorder/context-loss-sentinel/receipts/sentinel-health-first.json",
+          " M agent.json",
+        ].join("\n"),
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 1 uncommitted git status entry",
+      meta: {
+        dirtyEntries: [" M agent.json"],
+      },
+    })
+  })
+
+  it("keeps manual refresh strict about Sentinel-owned bundle dirt", async () => {
+    const agentRoot = makeAgentRoot()
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "manual_cli",
+      now: () => new Date("2026-06-08T20:11:00.000Z"),
+      createReceiptId: () => "sentinel-manual-self-dirty",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({
+        ok: true,
+        porcelain: [
+          " M arc/flight-recorder/context-loss-sentinel/latest.json",
+          "?? arc/flight-recorder/context-loss-sentinel/receipts/sentinel-health-first.json",
+        ].join("\n"),
+      }),
+    })
+
+    expect(receipt.verdict).toBe("watch")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "bundle has 2 uncommitted git status entries",
+    })
+  })
+
+  it("uses full untracked git status expansion for default daemon-health bundle checks", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "context-loss-sentinel-git-status-"))
+    tempDirs.push(repoRoot)
+    execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" })
+    fs.mkdirSync(path.join(repoRoot, "arc", "flight-recorder", "context-loss-sentinel", "receipts"), { recursive: true })
+    fs.writeFileSync(
+      path.join(repoRoot, "arc", "flight-recorder", "context-loss-sentinel", "receipts", "sentinel-existing.json"),
+      "{}\n",
+      "utf-8",
+    )
+
+    const defaultStatus = execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf-8" })
+    const expandedStatus = execFileSync("git", ["status", "--porcelain=v1", "-uall"], { cwd: repoRoot, encoding: "utf-8" })
+
+    expect(defaultStatus).toBe("?? arc/\n")
+    expect(expandedStatus).toBe("?? arc/flight-recorder/context-loss-sentinel/receipts/sentinel-existing.json\n")
   })
 
   it("uses coalesced daemon-health order watermarks for older delayed refreshes", async () => {
@@ -1520,7 +1745,7 @@ describe("context-loss Sentinel core", () => {
       repair: {
         actor: "agent-runnable",
         kind: "bundle-cleanup",
-        command: "git status --porcelain",
+        command: "git status --porcelain=v1 -uall",
       },
     })
   })
@@ -1542,6 +1767,15 @@ describe("context-loss Sentinel core", () => {
       severity: "warn",
       verdictImpact: "watch",
       summary: "bundle git status unavailable: spawn git ENOENT",
+      source: {
+        kind: "git",
+        locator: "git status --porcelain=v1 -uall",
+      },
+      repair: {
+        actor: "agent-runnable",
+        kind: "bundle-cleanup",
+        command: "git status --porcelain=v1 -uall",
+      },
     })
   })
 
@@ -2011,7 +2245,7 @@ describe("context-loss Sentinel core", () => {
     const view = readContextLossSentinelView(agentRoot, { limit: 10 })
     expect(view.latest?.id).toBe("sentinel-process-b")
     expect(view.latestReady?.id).toBe("sentinel-process-b")
-  })
+  }, 20_000)
 
   it("does not self-poison future refreshes on Sentinel-authored blocker events", async () => {
     const agentRoot = makeAgentRoot()
