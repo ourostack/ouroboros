@@ -385,10 +385,10 @@ function SentinelReceiptBlock({ label, receipt, prominent = false }: { label: st
         </div>
       )}
 
-      {receipt.sourceLocators.length > 0 && (
+      {uniqueStrings(receipt.sourceLocators).length > 0 && (
         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
           <span className="font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">Sources</span>
-          {receipt.sourceLocators.map((locator) => (
+          {uniqueStrings(receipt.sourceLocators).map((locator) => (
             <span key={locator} className="max-w-full truncate font-mono text-[10px] text-ouro-moss">{locator}</span>
           ))}
         </div>
@@ -458,6 +458,10 @@ function sentinelSignalColor(signal: MailboxSentinelSignal) {
 
 function sentinelReceiptKey(receipt: MailboxSentinelReceipt) {
   return receipt.receiptLocator || receipt.id
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
 }
 
 function triggerLabel(trigger: MailboxSentinelReceipt["trigger"]) {
