@@ -382,6 +382,88 @@ describe("effective provider binding resolver", () => {
     })
   })
 
+  it("prefers newer durable readiness over stale in-memory readiness", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
+      minimax: record("minimax", "vault_minimax"),
+    }))
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "ready",
+      checkedAt: timestamp,
+      attempts: 1,
+      agentRoot,
+    })
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "failed",
+      checkedAt: "2026-04-13T11:59:00.000Z",
+      error: "stale daemon failure",
+      attempts: 2,
+    })
+
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        readiness: { status: "ready", checkedAt: timestamp, attempts: 1 },
+      },
+    })
+    expect(readProviderLaneReadiness({
+      agentRoot,
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+    })).toMatchObject({ status: "ready", checkedAt: timestamp })
+  })
+
+  it("keeps newer in-memory readiness over older durable readiness", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
+      minimax: record("minimax", "vault_minimax"),
+    }))
+    recordProviderLaneReadiness({
+      agentRoot,
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "failed",
+      checkedAt: "2026-04-13T11:59:00.000Z",
+      error: "older durable failure",
+      attempts: 2,
+    })
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "ready",
+      checkedAt: timestamp,
+      attempts: 1,
+    })
+
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        readiness: { status: "ready", checkedAt: timestamp, attempts: 1 },
+      },
+    })
+  })
+
   it("reads durable provider readiness from a fresh process", async () => {
     const bundlesRoot = tempBundlesRoot()
     const agentRoot = writeAgentConfig(bundlesRoot)

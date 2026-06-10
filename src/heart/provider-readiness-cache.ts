@@ -77,6 +77,10 @@ function matchesLookup(entry: ProviderReadinessCacheEntry, input: ProviderReadin
     && entry.credentialRevision === input.credentialRevision
 }
 
+function isNewerReadiness(candidate: ProviderReadinessCacheEntry, existing: ProviderReadinessCacheEntry): boolean {
+  return Date.parse(candidate.checkedAt) > Date.parse(existing.checkedAt)
+}
+
 export function recordProviderLaneReadiness(input: ProviderReadinessRecordInput): void {
   const { agentRoot, ...entry } = input
   readinessByLane.set(cacheKey(entry.agentName, entry.lane), { ...entry })
@@ -97,12 +101,16 @@ export function recordProviderLaneReadiness(input: ProviderReadinessRecordInput)
 
 export function readProviderLaneReadiness(input: ProviderReadinessCacheLookup): ProviderReadinessCacheEntry | null {
   const entry = readinessByLane.get(cacheKey(input.agentName, input.lane))
-  if (entry && matchesLookup(entry, input)) return { ...entry }
-  if (!input.agentRoot) return null
+  if (!input.agentRoot) return entry && matchesLookup(entry, input) ? { ...entry } : null
   const durable = readReadinessStore(input.agentRoot).lanes[input.lane]
-  if (!durable || !matchesLookup(durable, input)) return null
-  readinessByLane.set(cacheKey(durable.agentName, durable.lane), { ...durable })
-  return { ...durable }
+  const memoryMatch = entry && matchesLookup(entry, input) ? entry : null
+  const durableMatch = durable && matchesLookup(durable, input) ? durable : null
+  const selected = memoryMatch && durableMatch
+    ? (isNewerReadiness(durableMatch, memoryMatch) ? durableMatch : memoryMatch)
+    : (durableMatch ?? memoryMatch)
+  if (!selected) return null
+  readinessByLane.set(cacheKey(selected.agentName, selected.lane), { ...selected })
+  return { ...selected }
 }
 
 export function clearProviderReadinessCache(): void {
