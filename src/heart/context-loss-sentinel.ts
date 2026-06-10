@@ -27,7 +27,7 @@ export type ContextLossSentinelTrigger =
   | "manual_cli"
 
 export type ContextLossSentinelVerdict = "ready" | "watch" | "blocked"
-export type ContextLossSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "bundle"
+export type ContextLossSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "daemon" | "bundle"
 export type ContextLossSentinelSignalStatus = "pass" | "warn" | "fail"
 export type ContextLossSentinelSignalSeverity = "info" | "warn" | "critical"
 export type ContextLossSentinelVerdictImpact = "none" | "watch" | "blocked"
@@ -255,7 +255,7 @@ function isSignal(value: unknown): value is ContextLossSentinelSignal {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   return typeof record.id === "string"
-    && (record.kind === "gauntlet" || record.kind === "provider_lane" || record.kind === "sense" || record.kind === "bundle")
+    && (record.kind === "gauntlet" || record.kind === "provider_lane" || record.kind === "sense" || record.kind === "daemon" || record.kind === "bundle")
     && (record.status === "pass" || record.status === "warn" || record.status === "fail")
     && (record.severity === "info" || record.severity === "warn" || record.severity === "critical")
     && (record.verdictImpact === "none" || record.verdictImpact === "watch" || record.verdictImpact === "blocked")
@@ -546,18 +546,23 @@ function gauntletSignal(report: ContextLossGauntletReport): ContextLossSentinelS
   }
 }
 
-function senseSignals(results: DaemonHealthResult[]): ContextLossSentinelSignal[] {
+function healthSignalKind(result: DaemonHealthResult): "sense" | "daemon" {
+  return result.name.startsWith("sense-probe:") ? "sense" : "daemon"
+}
+
+function healthSignals(results: DaemonHealthResult[]): ContextLossSentinelSignal[] {
   return results
-    .filter((result) => result.name.startsWith("sense-probe:"))
+    .filter((result) => result.name.startsWith("sense-probe:") || result.status !== "ok")
     .map((result): ContextLossSentinelSignal => {
       const impact: ContextLossSentinelVerdictImpact = result.status === "critical"
         ? "blocked"
         : result.status === "warn"
           ? "watch"
           : "none"
+      const kind = healthSignalKind(result)
       return {
-        id: `sense:${result.name}`,
-        kind: "sense",
+        id: `${kind}:${result.name}`,
+        kind,
         ...signalStatusForImpact(impact),
         verdictImpact: impact,
         summary: result.message,
@@ -734,7 +739,7 @@ function makeReceipt(
   const signals = [
     gauntletSignal(report),
     ...deriveContextLossSentinelProviderSignals(providerVisibility),
-    ...senseSignals(options.daemonHealthResults ?? []),
+    ...healthSignals(options.daemonHealthResults ?? []),
     bundleSignal((options.gitStatus ?? (() => defaultGitStatus(agentRoot)))()),
   ]
   const verdict = sentinelVerdict(signals)

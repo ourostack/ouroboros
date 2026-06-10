@@ -984,7 +984,7 @@ export type MailboxSentinelTrigger =
   | "manual_cli"
 
 export type MailboxSentinelVerdict = "ready" | "watch" | "blocked"
-export type MailboxSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "bundle"
+export type MailboxSentinelSignalKind = "gauntlet" | "provider_lane" | "sense" | "daemon" | "bundle"
 export type MailboxSentinelSignalStatus = "pass" | "warn" | "fail"
 export type MailboxSentinelSignalSeverity = "info" | "warn" | "critical"
 export type MailboxSentinelVerdictImpact = "none" | "watch" | "blocked"

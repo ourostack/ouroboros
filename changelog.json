@@ -6,7 +6,8 @@
       "changes": [
         "Add deterministic Arc Sentinel recovery receipts, lifecycle refreshes, and Workbench Sentinel history.",
         "Harden Sentinel recovery receipts with canonical POSIX Arc locators, invalid timestamp rejection, inherited blocker provenance, and exact latest-ready recovery after Sentinel-authored blockers.",
-        "Make Sentinel's printed `ouro provider check --agent <agent> --lane <lane>` repair command executable, persist non-secret provider readiness under the agent bundle for cross-process recovery, and prefer the freshest exact-matching readiness without mutating orientation-only probes."
+        "Make Sentinel's printed `ouro provider check --agent <agent> --lane <lane>` repair command executable, persist non-secret provider readiness under the agent bundle for cross-process recovery, and prefer the freshest exact-matching readiness without mutating orientation-only probes.",
+        "Include non-OK generic daemon health results in Sentinel receipts so failures such as crashed managed agents, cron delays, or disk pressure appear in Workbench and start-of-turn recovery context alongside sense health."
       ]
     },
     {

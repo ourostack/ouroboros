@@ -830,6 +830,16 @@ describe("context-loss Sentinel core", () => {
       daemonHealthResults: [
         ...okHealth(),
         {
+          name: "agent-processes",
+          status: "critical",
+          message: "managed agent crashed",
+        },
+        {
+          name: "cron-health",
+          status: "warn",
+          message: "cron queue delayed",
+        },
+        {
           name: "sense-probe:bluebubbles",
           status: "critical",
           message: "bluebubbles failed: local attachment disconnected",
@@ -853,6 +863,29 @@ describe("context-loss Sentinel core", () => {
         locator: "daemon.health:sense-probe:bluebubbles",
       },
     })
+    expect(signal(receipt.signals, "daemon:agent-processes")).toMatchObject({
+      kind: "daemon",
+      status: "fail",
+      severity: "critical",
+      verdictImpact: "blocked",
+      summary: "managed agent crashed",
+      source: {
+        kind: "daemon-health",
+        locator: "daemon.health:agent-processes",
+      },
+    })
+    expect(signal(receipt.signals, "daemon:cron-health")).toMatchObject({
+      kind: "daemon",
+      status: "warn",
+      severity: "warn",
+      verdictImpact: "watch",
+      summary: "cron queue delayed",
+      source: {
+        kind: "daemon-health",
+        locator: "daemon.health:cron-health",
+      },
+    })
+    expect(receipt.signals.some((entry) => entry.id === "daemon:disk-space")).toBe(false)
     expect(signal(receipt.signals, "bundle:git")).toMatchObject({
       kind: "bundle",
       status: "warn",
