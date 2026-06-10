@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { spawn } from "node:child_process"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentProvider } from "../../heart/identity"
 import type { ProviderCredentialPoolReadResult, ProviderCredentialRecord } from "../../heart/provider-credentials"
@@ -91,6 +92,42 @@ function failedPool(reason: "invalid" | "unavailable" | "missing" = "invalid"): 
     poolPath: "vault:slugger:providers/*",
     error: `${reason} pool`,
   }
+}
+
+function runChildVitest(testPath: string, env: Record<string, string>): Promise<void> {
+  const repoRoot = process.cwd()
+  const vitestBin = path.join(repoRoot, "node_modules", "vitest", "vitest.mjs")
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      vitestBin,
+      "run",
+      testPath,
+      "--config",
+      path.join(repoRoot, "vitest.config.ts"),
+      "--pool",
+      "forks",
+    ], {
+      cwd: repoRoot,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk)
+    })
+    child.on("error", reject)
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve()
+        return
+      }
+      reject(new Error(`child Vitest exited ${code}\nSTDOUT:\n${stdout}\nSTDERR:\n${stderr}`))
+    })
+  })
 }
 
 describe("effective provider binding resolver", () => {
@@ -259,7 +296,7 @@ describe("effective provider binding resolver", () => {
     })
   })
 
-  it("uses matching in-memory live-check readiness without persisting readiness", () => {
+  it("uses matching in-memory live-check readiness", () => {
     const bundlesRoot = tempBundlesRoot()
     const agentRoot = writeAgentConfig(bundlesRoot)
     mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
@@ -318,7 +355,66 @@ describe("effective provider binding resolver", () => {
     })
   })
 
-  it("keeps provider readiness exact-match and in-memory only", () => {
+  it("uses durable live-check readiness after the in-memory cache is gone", () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
+    mockProviderCredentials.readProviderCredentialPool.mockReturnValue(okPool({
+      minimax: record("minimax", "vault_minimax"),
+    }))
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "outward",
+      provider: "minimax",
+      model: "MiniMax-M2.5",
+      credentialRevision: "vault_minimax",
+      status: "ready",
+      checkedAt: timestamp,
+      attempts: 1,
+      agentRoot,
+    })
+    clearProviderReadinessCache()
+
+    expect(resolveEffectiveProviderBinding({ agentName, agentRoot, lane: "outward" })).toMatchObject({
+      ok: true,
+      binding: {
+        readiness: { status: "ready", checkedAt: timestamp, attempts: 1 },
+      },
+    })
+  })
+
+  it("reads durable provider readiness from a fresh process", async () => {
+    const bundlesRoot = tempBundlesRoot()
+    const agentRoot = writeAgentConfig(bundlesRoot)
+    recordProviderLaneReadiness({
+      agentName,
+      lane: "inner",
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      credentialRevision: "vault_codex",
+      status: "failed",
+      checkedAt: timestamp,
+      error: "expired",
+      attempts: 3,
+      agentRoot,
+    })
+
+    await runChildVitest(
+      path.join(process.cwd(), "src", "__tests__", "heart", "provider-readiness-cache-child-process.test.ts"),
+      {
+        PROVIDER_READINESS_AGENT_ROOT: agentRoot,
+        PROVIDER_READINESS_AGENT_NAME: agentName,
+        PROVIDER_READINESS_LANE: "inner",
+        PROVIDER_READINESS_PROVIDER: "openai-codex",
+        PROVIDER_READINESS_MODEL: "gpt-5.5",
+        PROVIDER_READINESS_CREDENTIAL_REVISION: "vault_codex",
+        PROVIDER_READINESS_STATUS: "failed",
+        PROVIDER_READINESS_ATTEMPTS: "3",
+        PROVIDER_READINESS_ERROR: "expired",
+      },
+    )
+  })
+
+  it("keeps provider readiness exact-match", () => {
     const entry = {
       agentName,
       lane: "inner" as const,

@@ -117,6 +117,7 @@ import { resolveMailImportFilePath } from "../../../heart/daemon/cli-exec"
 import * as agentConfigCheck from "../../../heart/daemon/agent-config-check"
 import * as sessionActivity from "../../../heart/session-activity"
 import { pingGithubCopilotModel, pingProvider } from "../../../heart/provider-ping"
+import { buildAgentProviderVisibility } from "../../../heart/provider-visibility"
 import type {
   ProviderCredentialPool,
   ProviderCredentialPoolReadResult,
@@ -780,6 +781,11 @@ describe("provider CLI command parsing", () => {
     expect(parseOuroCommand(["check", "--lane", "inner"])).toEqual({
       kind: "provider.check",
       lane: "inner",
+    })
+    expect(parseOuroCommand(["provider", "check", "--agent", "Slugger", "--lane", "outward"])).toEqual({
+      kind: "provider.check",
+      agent: "Slugger",
+      lane: "outward",
     })
   })
 
@@ -5173,13 +5179,14 @@ describe("provider CLI command execution", () => {
     writeProviderCredentialPool(homeDir, credentialPool())
     mockPingProvider.mockResolvedValue({ ok: true, message: "ok", attempts: [1, 2] })
 
-    const result = await runOuroCli([
-      "check",
-      "--agent",
-      "Slugger",
-      "--lane",
-      "outward",
-    ], makeCliDeps(homeDir, bundlesRoot))
+    const exactRepairCommand = ["provider", "check", "--agent", "Slugger", "--lane", "outward"]
+    expect(parseOuroCommand(exactRepairCommand)).toEqual({
+      kind: "provider.check",
+      agent: "Slugger",
+      lane: "outward",
+    })
+
+    const result = await runOuroCli(exactRepairCommand, makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("Slugger outward anthropic / claude-opus-4-6: ready")
     expect(readProviderLaneReadiness({
@@ -5192,6 +5199,27 @@ describe("provider CLI command execution", () => {
       status: "ready",
       checkedAt: expect.any(String),
       attempts: 2,
+    })
+    clearProviderReadinessCache()
+    expect(readProviderLaneReadiness({
+      agentName: "Slugger",
+      lane: "outward",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      credentialRevision: "cred_anthropic_1",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+    })).toMatchObject({
+      status: "ready",
+      checkedAt: expect.any(String),
+      attempts: 2,
+    })
+    const visibility = buildAgentProviderVisibility({
+      agentName: "Slugger",
+      agentRoot: agentRoot(bundlesRoot, "Slugger"),
+      homeDir,
+    })
+    expect(visibility.lanes.find((lane) => lane.lane === "outward")).toMatchObject({
+      readiness: { status: "ready", attempts: 2 },
     })
   })
 

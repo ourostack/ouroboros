@@ -399,6 +399,7 @@ export async function checkAgentConfigWithProviderHealth(
   const selectionResult = readProviderSelectionForCheck(agentName, bundlesRoot)
   if (!selectionResult.ok) return selectionResult.result
   if (selectionResult.disabled) return { ok: true }
+  const agentRoot = agentRootFor(agentName, bundlesRoot)
 
   deps.onProgress?.(selectedProviderPlan(agentName, selectionResult.bindings))
 
@@ -472,6 +473,7 @@ export async function checkAgentConfigWithProviderHealth(
     if (!result.ok) {
       for (const lane of group.lanes) {
         recordProviderLaneReadiness({
+          agentRoot,
           agentName,
           lane,
           provider: group.provider,
@@ -488,6 +490,7 @@ export async function checkAgentConfigWithProviderHealth(
     }
     for (const lane of group.lanes) {
       recordProviderLaneReadiness({
+        agentRoot,
         agentName,
         lane,
         provider: group.provider,

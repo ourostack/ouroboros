@@ -1020,11 +1020,12 @@ function parseProviderCheckCommand(args: string[]): OuroCliCommand {
 
 function parseProviderCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
+  if (sub === "check") return parseProviderCheckCommand(args.slice(1))
   const { agent, rest } = extractAgentFlag(args.slice(1))
   if (sub === "refresh" && rest.length === 0) {
     return { kind: "provider.refresh", ...(agent ? { agent } : {}) }
   }
-  throw new Error("Usage: ouro provider refresh [--agent <name>]")
+  throw new Error("Usage: ouro provider refresh [--agent <name>] OR ouro provider check [--agent <name>] --lane outward|inner")
 }
 
 function parseSessionCommand(args: string[]): OuroCliCommand {

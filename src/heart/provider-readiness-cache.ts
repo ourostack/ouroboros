@@ -1,3 +1,5 @@
+import * as fs from "fs"
+import * as path from "path"
 import type { AgentProvider } from "./identity"
 import type { ProviderLane, ProviderReadinessStatus } from "./provider-lanes"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -15,11 +17,20 @@ export interface ProviderReadinessCacheEntry {
 }
 
 export interface ProviderReadinessCacheLookup {
+  agentRoot?: string
   agentName: string
   lane: ProviderLane
   provider: AgentProvider
   model: string
   credentialRevision: string
+}
+
+type ProviderReadinessRecordInput = ProviderReadinessCacheEntry & { agentRoot?: string }
+
+interface ProviderReadinessStore {
+  schemaVersion: 1
+  updatedAt: string
+  lanes: Partial<Record<ProviderLane, ProviderReadinessCacheEntry>>
 }
 
 const readinessByLane = new Map<string, ProviderReadinessCacheEntry>()
@@ -28,8 +39,48 @@ function cacheKey(agentName: string, lane: ProviderLane): string {
   return `${agentName}\0${lane}`
 }
 
-export function recordProviderLaneReadiness(entry: ProviderReadinessCacheEntry): void {
+function readinessStorePath(agentRoot: string): string {
+  return path.join(agentRoot, "state", "providers", "readiness.json")
+}
+
+function defaultReadinessStore(): ProviderReadinessStore {
+  return { schemaVersion: 1, updatedAt: new Date(0).toISOString(), lanes: {} }
+}
+
+function readReadinessStore(agentRoot: string): ProviderReadinessStore {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(readinessStorePath(agentRoot), "utf-8")) as ProviderReadinessStore
+    if (parsed.schemaVersion === 1 && parsed.lanes && typeof parsed.lanes === "object") return parsed
+  } catch {
+    return defaultReadinessStore()
+  }
+  return defaultReadinessStore()
+}
+
+function writeReadinessStore(agentRoot: string, entry: ProviderReadinessCacheEntry): void {
+  const storePath = readinessStorePath(agentRoot)
+  const store = readReadinessStore(agentRoot)
+  const updated: ProviderReadinessStore = {
+    schemaVersion: 1,
+    updatedAt: entry.checkedAt,
+    lanes: { ...store.lanes, [entry.lane]: entry },
+  }
+  fs.mkdirSync(path.dirname(storePath), { recursive: true })
+  fs.writeFileSync(storePath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8")
+}
+
+function matchesLookup(entry: ProviderReadinessCacheEntry, input: ProviderReadinessCacheLookup): boolean {
+  return entry.agentName === input.agentName
+    && entry.lane === input.lane
+    && entry.provider === input.provider
+    && entry.model === input.model
+    && entry.credentialRevision === input.credentialRevision
+}
+
+export function recordProviderLaneReadiness(input: ProviderReadinessRecordInput): void {
+  const { agentRoot, ...entry } = input
   readinessByLane.set(cacheKey(entry.agentName, entry.lane), { ...entry })
+  if (agentRoot) writeReadinessStore(agentRoot, entry)
   emitNervesEvent({
     component: "config/identity",
     event: "config.provider_readiness_recorded",
@@ -46,11 +97,12 @@ export function recordProviderLaneReadiness(entry: ProviderReadinessCacheEntry):
 
 export function readProviderLaneReadiness(input: ProviderReadinessCacheLookup): ProviderReadinessCacheEntry | null {
   const entry = readinessByLane.get(cacheKey(input.agentName, input.lane))
-  if (!entry) return null
-  if (entry.provider !== input.provider) return null
-  if (entry.model !== input.model) return null
-  if (entry.credentialRevision !== input.credentialRevision) return null
-  return { ...entry }
+  if (entry && matchesLookup(entry, input)) return { ...entry }
+  if (!input.agentRoot) return null
+  const durable = readReadinessStore(input.agentRoot).lanes[input.lane]
+  if (!durable || !matchesLookup(durable, input)) return null
+  readinessByLane.set(cacheKey(durable.agentName, durable.lane), { ...durable })
+  return { ...durable }
 }
 
 export function clearProviderReadinessCache(): void {

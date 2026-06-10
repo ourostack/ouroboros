@@ -5655,7 +5655,8 @@ async function executeProviderCheck(
     return message
   }
   try {
-    const { config } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const { config, configPath } = readAgentConfigForAgent(command.agent, deps.bundlesRoot)
+    const agentRoot = path.dirname(configPath)
     const binding = providerConfigBinding(config, command.lane)
     progress.startPhase(`reading ${binding.provider} credentials`)
     const credential = await readProviderCredentialRecord(command.agent, binding.provider, deps, {
@@ -5685,6 +5686,7 @@ async function executeProviderCheck(
     progress.completePhase(`checking ${binding.provider} / ${binding.model}`, status)
     const attempts = pingAttemptCount(pingResult)
     recordProviderLaneReadiness({
+      agentRoot,
       agentName: command.agent,
       lane: command.lane,
       provider: binding.provider,
