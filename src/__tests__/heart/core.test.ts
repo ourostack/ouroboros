@@ -1196,6 +1196,45 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit callback buffers replay clear and flush only after approval", async () => {
+    const { createHabitCallbackBuffer } = await import("../../heart/core")
+    const events: string[] = []
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => { events.push("stream-start") },
+      onTextChunk: (text) => { events.push(`text:${text}`) },
+      onReasoningChunk: (text) => { events.push(`reasoning:${text}`) },
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+      onClearText: () => { events.push("clear") },
+      flushNow: async () => { events.push("flush") },
+    }
+    const buffer = createHabitCallbackBuffer(callbacks)
+
+    buffer.callbacks.onModelStreamStart()
+    buffer.callbacks.onTextChunk("draft")
+    buffer.callbacks.onReasoningChunk("private thought")
+    buffer.callbacks.onClearText?.()
+    await buffer.callbacks.flushNow?.()
+
+    expect(events).toEqual([])
+
+    await buffer.flush()
+    expect(events).toEqual([
+      "stream-start",
+      "text:draft",
+      "reasoning:private thought",
+      "clear",
+      "flush",
+    ])
+
+    buffer.callbacks.onTextChunk("discard me")
+    buffer.discard()
+    await buffer.flush()
+    expect(events).not.toContain("text:discard me")
+  })
+
   it("habit mode suppresses streamed callback output when the final tool batch is blocked", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1263,6 +1302,128 @@ describe("runAgent", () => {
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("blocked") }),
+    ]))
+  })
+
+  it("habit mode blocks non-object tool arguments before execution", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_array", function: { name: "read_file", arguments: "[]" } },
+            { index: 1, id: "tc_bad_json", function: { name: "read_file", arguments: "{\"path\":" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const readTool = {
+      type: "function" as const,
+      function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [readTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["read_file"],
+          grantedTools: ["read_file"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_array", content: expect.stringContaining("arguments must be a JSON object") }),
+      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("arguments must be a JSON object") }),
+    ]))
+  })
+
+  it("habit mode blocks malformed JSON tool arguments before execution", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_bad_json", function: { name: "read_file", arguments: "{\"path\":" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const readTool = {
+      type: "function" as const,
+      function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [readTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["read_file"],
+          grantedTools: ["read_file"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON arguments") }),
     ]))
   })
 
@@ -1387,6 +1548,73 @@ describe("runAgent", () => {
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "done" })
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_shell", content: "/mock/repo\n" }),
+    ]))
+  })
+
+  it("habit mode passes a habit-session-only tool context into generic execution", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"done\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async (_name, _args, ctx) => {
+      await ctx.signin()
+      ctx.setReasoningEffort("low")
+      expect(ctx.habitSession.runId).toBe("habit-run-ctx")
+      expect(typeof ctx.setReasoningEffort).toBe("function")
+      return "file contents"
+    })
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const readTool = {
+      type: "function" as const,
+      function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [readTool],
+      execTool,
+      habitSession: {
+        runId: "habit-run-ctx",
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["read_file"],
+          grantedTools: ["read_file"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_read", content: "file contents" }),
     ]))
   })
 

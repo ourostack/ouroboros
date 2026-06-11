@@ -296,13 +296,13 @@ type HabitBufferedCallbackEvent =
   | { kind: "clear" }
   | { kind: "flush" };
 
-interface HabitCallbackBuffer {
+export interface HabitCallbackBuffer {
   callbacks: ChannelCallbacks;
   flush(): Promise<void>;
   discard(): void;
 }
 
-function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
+export function createHabitCallbackBuffer(callbacks: ChannelCallbacks): HabitCallbackBuffer {
   const events: HabitBufferedCallbackEvent[] = [];
   return {
     callbacks: {

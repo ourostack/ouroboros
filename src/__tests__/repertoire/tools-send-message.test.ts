@@ -584,6 +584,75 @@ describe("send_message tool", () => {
     )
   })
 
+  it("records structured habit send attempts without parsing handler prose", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    const recordSurfaceAttempt = vi.fn()
+    const habitSession = { recordSurfaceAttempt } as any
+
+    await tool.handler({
+      friendId: "queued-friend",
+      channel: "cli",
+      key: "session",
+      content: "queue this",
+    }, { habitSession } as any)
+
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValueOnce({ delivered: true })
+    await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "deliver this",
+    }, makeTrustedBlueBubblesTurnContext({ habitSession }))
+
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValueOnce({ delivered: false, reason: "missing_target" })
+    await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;missing-group",
+      content: "this cannot route",
+    }, makeTrustedBlueBubblesTurnContext({ habitSession }))
+
+    mockSendProactiveBlueBubblesMessageToSession.mockResolvedValueOnce({ delivered: false, reason: "send_error" })
+    await tool.handler({
+      friendId: "group-uuid",
+      channel: "bluebubbles",
+      key: "chat:any;+;project-group-123",
+      content: "this will fail",
+    }, makeTrustedBlueBubblesTurnContext({ habitSession }))
+
+    expect(recordSurfaceAttempt).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      recipient: "queued-friend",
+      channel: "cli",
+      reason: "status",
+      result: "queued",
+      rawStatus: "queued_for_later",
+    }))
+    expect(recordSurfaceAttempt).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      recipient: "group-uuid",
+      channel: "bluebubbles",
+      reason: "status",
+      result: "delivered_now",
+      rawStatus: "delivered_now",
+    }))
+    expect(recordSurfaceAttempt).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      recipient: "group-uuid",
+      channel: "bluebubbles",
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
+      error: "bluebubbles could not resolve a routable target for that session",
+    }))
+    expect(recordSurfaceAttempt).toHaveBeenNthCalledWith(4, expect.objectContaining({
+      recipient: "group-uuid",
+      channel: "bluebubbles",
+      reason: "other",
+      result: "failed",
+      rawStatus: "failed",
+      error: "bluebubbles send failed",
+    }))
+  })
+
   it("reports delivered-now truthfully for a trusted explicit teams cross-chat request", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!

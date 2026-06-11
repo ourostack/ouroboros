@@ -530,6 +530,55 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("records unreadable habit files as receipt errors with a fail-closed session", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) throw new Error("habit missing")
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "missing", trigger: "poke" })
+
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+        habitSession: expect.objectContaining({
+          permissionEnvelope: expect.objectContaining({
+            canMessageOutward: false,
+            deniedTools: ["send_message", "surface"],
+          }),
+          toolPolicy: expect.objectContaining({
+            requestedTools: [],
+            grantedTools: [],
+          }),
+        }),
+      }))
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "missing",
+        outcome: "error",
+        errors: [expect.stringContaining("habit missing")],
+      }))
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.habit_file_read_error",
+        level: "warn",
+      }))
+    })
+
+    it("writes structured recorder errors into the habit receipt", async () => {
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordError("tool metadata failed")
+        return { messages: [] }
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "error-recorder", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "error-recorder",
+        outcome: "error",
+        errors: ["tool metadata failed"],
+      }))
+    })
+
     it("records lastRun AFTER the turn completes (not before)", async () => {
       const callOrder: string[] = []
 

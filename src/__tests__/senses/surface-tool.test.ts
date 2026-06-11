@@ -315,6 +315,29 @@ describe("surface tool", () => {
       expect(routeToFriend).toHaveBeenCalledWith("ari", "here's my answer", queueItem)
     })
 
+    it("reports route results through the optional habit recorder callback", async () => {
+      const queueItem: AttentionItem = {
+        id: "abc123", friendId: "ari", friendName: "Ari", channel: "bluebubbles", key: "c1",
+        delegatedContent: "think about this", source: "drained", timestamp: 1000,
+      }
+      const onRouteResult = vi.fn()
+
+      await handleSurface({
+        content: "here's my answer",
+        delegationId: "abc123",
+        queue: [queueItem],
+        routeToFriend: async () => ({ status: "deferred", detail: "they'll see it next time" }),
+        advanceObligation: () => {},
+        onRouteResult,
+      })
+
+      expect(onRouteResult).toHaveBeenCalledWith({
+        targetFriendId: "ari",
+        queueItem,
+        result: { status: "deferred", detail: "they'll see it next time" },
+      })
+    })
+
     it("passes undefined queueItem to routeToFriend for spontaneous outreach", async () => {
       const routeToFriend = vi.fn().mockResolvedValue({ status: "queued", detail: "pending" })
       await handleSurface({
@@ -839,6 +862,44 @@ describe("surface tool", () => {
         expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\//),
         expect.any(String),
       )
+    })
+
+    it("surfaceToolDefinition records structured habit surface attempts from route results", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      const recordSurfaceAttempt = vi.fn()
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "return to the requester",
+        delegationId: "delegation-cli",
+      }, {
+        delegatedOrigins: [
+          {
+            id: "delegation-cli",
+            friendId: "friend-1",
+            friendName: "Ari",
+            channel: "cli",
+            key: "session",
+            delegatedContent: "think privately",
+            source: "drained",
+            timestamp: 1,
+          },
+        ],
+        habitSession: { recordSurfaceAttempt },
+      } as any)
+
+      expect(result).toContain("queued")
+      expect(recordSurfaceAttempt).toHaveBeenCalledWith({
+        recipient: "friend-1",
+        channel: "cli",
+        reason: "answer",
+        result: "queued",
+        rawStatus: "queued",
+        routeKind: "originator",
+      })
     })
 
     it("surfaceToolDefinition queues freshest BlueBubbles DM returns without live-sending iMessage", async () => {
