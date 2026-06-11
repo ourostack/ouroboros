@@ -1253,6 +1253,22 @@ describe("mailbox http", () => {
     expect(JSON.parse(listResponse.body.toString("utf8"))).toEqual(habitRuns)
     expect(hooks.readAgentHabitRuns).toHaveBeenCalledWith("slugger")
 
+    const limitedResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs?limit=1"), limitedResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(limitedResponse.statusCode).toBe(200)
+    expect(JSON.parse(limitedResponse.body.toString("utf8"))).toEqual(habitRuns)
+    expect(hooks.readAgentHabitRuns).toHaveBeenCalledWith("slugger", { limit: 1 })
+
+    const invalidLimitResponse = createMockResponse()
+    handler(createMockRequest("/api/agents/slugger/habit-runs?limit=0"), invalidLimitResponse)
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(invalidLimitResponse.statusCode).toBe(400)
+    expect(JSON.parse(invalidLimitResponse.body.toString("utf8"))).toEqual({
+      ok: false,
+      error: "limit must be an integer between 1 and 100",
+    })
+
     const detailResponse = createMockResponse()
     handler(createMockRequest("/api/agents/slugger/habit-runs/run-http"), detailResponse)
     await new Promise((resolve) => setImmediate(resolve))
@@ -1267,7 +1283,7 @@ describe("mailbox http", () => {
     hooks.readAgentHabitRun = vi.fn(() => null)
     const handler = createMailboxHttpRequestHandler(createRouteOptions({ hooks }))
 
-    for (const runId of ["missing", "bad%2fescape", "bad%5cescape", "malformed"]) {
+    for (const runId of ["missing", "bad%2fescape", "bad%5cescape", "malformed", "foo/bar"]) {
       const response = createMockResponse()
       handler(createMockRequest(`/api/agents/slugger/habit-runs/${runId}`), response)
       await new Promise((resolve) => setImmediate(resolve))

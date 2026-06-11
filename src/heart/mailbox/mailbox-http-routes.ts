@@ -42,6 +42,14 @@ function decodePathSegment(value: string): string | null {
   }
 }
 
+function parseHabitRunLimit(urlValue: string | undefined): number | null | undefined {
+  const rawLimit = new URL(urlValue ?? "/", "http://127.0.0.1").searchParams.get("limit")
+  if (rawLimit === null) return undefined
+  if (!/^[1-9][0-9]*$/.test(rawLimit)) return null
+  const limit = Number.parseInt(rawLimit, 10)
+  return limit >= 1 && limit <= 100 ? limit : null
+}
+
 export function createMailboxHttpRequestHandler(options: MailboxHttpRouteOptions): http.RequestListener {
   const staticFiles = options.staticFiles ?? { resolveSpaDistDir, serveStaticFile }
 
@@ -241,13 +249,20 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
   }
 
   if (surface === "habit-runs") {
-    writeJson(response, 200, options.hooks.readAgentHabitRuns(agent))
+    const limit = parseHabitRunLimit(request.url)
+    if (limit === null) {
+      writeJson(response, 400, { ok: false, error: "limit must be an integer between 1 and 100" })
+      return
+    }
+    const view = limit === undefined
+      ? options.hooks.readAgentHabitRuns(agent)
+      : options.hooks.readAgentHabitRuns(agent, { limit })
+    writeJson(response, 200, view)
     return
   }
 
-  const habitRunMatch = /^habit-runs\/([^/]+)$/.exec(surface)
-  if (habitRunMatch) {
-    const rawRunId = habitRunMatch[1]!
+  if (surface.startsWith("habit-runs/")) {
+    const rawRunId = surface.slice("habit-runs/".length)
     const runId = decodePathSegment(rawRunId)
     const view = runId ? options.hooks.readAgentHabitRun(agent, runId) : null
     if (!view) {
