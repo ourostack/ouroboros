@@ -441,13 +441,15 @@ async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
+  activeToolNames: ReadonlySet<string>,
 ): Promise<string | null> {
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
   const denied = new Set(habitSession.toolPolicy.deniedTools)
   for (const call of toolCalls) {
-    if (HABIT_CONTROL_TOOLS.has(call.name)) continue
     if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
+    if (!activeToolNames.has(call.name)) return `habit tool '${call.name}' was not advertised to this model turn`
+    if (HABIT_CONTROL_TOOLS.has(call.name)) continue
     if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
     const parsed = habitToolArgs(call)
     if (!parsed.ok) return parsed.reason
@@ -1126,8 +1128,11 @@ export async function runAgent(
     // Inner dialog gets restTool instead of settleTool (rest = end turn, gated by attention queue).
     // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
     const isInnerDialog = channel === "inner";
+    const innerHabitCanSendMessage = isInnerDialog
+      && habitSession?.toolPolicy.outwardMessagingAllowed === true
+      && habitSession.toolPolicy.grantedTools.includes("send_message");
     const filteredBaseTools = isInnerDialog
-      ? baseTools.filter((t) => t.function.name !== "send_message")
+      ? baseTools.filter((t) => innerHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
     const activeTools = [
       ...filteredBaseTools,
@@ -1137,6 +1142,7 @@ export async function runAgent(
       ...(!isInnerDialog ? [settleTool] : []),
       ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
     ];
+    const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
       const hasSupersedingFollowUp = steeringFollowUps.some((followUp) => followUp.effect === "clear_and_supersede");
@@ -1420,7 +1426,7 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins)
+        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins, activeToolNames)
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           messages.push(msg)
