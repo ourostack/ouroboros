@@ -42,8 +42,8 @@ function decodePathSegment(value: string): string | null {
   }
 }
 
-function parseHabitRunLimit(urlValue: string | undefined): number | null | undefined {
-  const rawLimit = new URL(urlValue ?? "/", "http://127.0.0.1").searchParams.get("limit")
+function parseHabitRunLimit(urlValue: string): number | null | undefined {
+  const rawLimit = new URL(urlValue, "http://127.0.0.1").searchParams.get("limit")
   if (rawLimit === null) return undefined
   if (!/^[1-9][0-9]*$/.test(rawLimit)) return null
   const limit = Number.parseInt(rawLimit, 10)
@@ -249,7 +249,7 @@ async function handleAgentRoute(request: http.IncomingMessage, response: http.Se
   }
 
   if (surface === "habit-runs") {
-    const limit = parseHabitRunLimit(request.url)
+    const limit = parseHabitRunLimit(request.url as string)
     if (limit === null) {
       writeJson(response, 400, { ok: false, error: "limit must be an integer between 1 and 100" })
       return

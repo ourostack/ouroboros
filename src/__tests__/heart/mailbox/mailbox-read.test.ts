@@ -2673,6 +2673,9 @@ describe("mailbox deep readers", () => {
         }],
       })
       expect(JSON.stringify(view)).not.toContain("transcriptShouldNotLeak")
+
+      expect(readHabitRunView(agentRoot).limit).toBe(20)
+      expect(readHabitRunView(agentRoot, { limit: 1.5 }).limit).toBe(20)
     })
 
     it("reads one habit receipt and returns null for missing unsafe or malformed receipts", async () => {

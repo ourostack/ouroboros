@@ -8005,6 +8005,10 @@ describe("ouro habit CLI parsing", () => {
       agent: "slugger",
       limit: 20,
     })
+    expect(parseOuroCommand(["habit", "runs"])).toEqual({
+      kind: "habit.runs",
+      limit: 20,
+    })
     expect(parseOuroCommand(["habit", "runs", "--agent", "slugger", "--limit", "5"])).toEqual({
       kind: "habit.runs",
       agent: "slugger",
@@ -8012,12 +8016,19 @@ describe("ouro habit CLI parsing", () => {
     })
     expect(() => parseOuroCommand(["habit", "runs", "--limit", "0"])).toThrow("limit")
     expect(() => parseOuroCommand(["habit", "runs", "--limit", "101"])).toThrow("limit")
+    expect(() => parseOuroCommand(["habit", "runs", "--limit"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "runs", "--unknown", "5"])).toThrow("Usage")
+    expect(() => parseOuroCommand(["habit", "runs", "--limit", "1.5"])).toThrow("limit")
   })
 
   it("parses ouro habit inspect with an agent and run id", () => {
     expect(parseOuroCommand(["habit", "inspect", "--agent", "slugger", "run-new"])).toEqual({
       kind: "habit.inspect",
       agent: "slugger",
+      runId: "run-new",
+    })
+    expect(parseOuroCommand(["habit", "inspect", "run-new"])).toEqual({
+      kind: "habit.inspect",
       runId: "run-new",
     })
     expect(() => parseOuroCommand(["habit", "inspect", "--agent", "slugger"])).toThrow("Usage")
