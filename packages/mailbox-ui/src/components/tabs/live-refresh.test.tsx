@@ -1409,6 +1409,9 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.getByText("mail-check")).toBeTruthy()
     expect(ui.getByText("blocked")).toBeTruthy()
     expect(ui.getByText("originator")).toBeTruthy()
+    expect(ui.getByText("allowed")).toBeTruthy()
+    expect(ui.getByText("ari/cli/session")).toBeTruthy()
+    expect(ui.getByText("originator route checked")).toBeTruthy()
     expect(ui.getByText("queued")).toBeTruthy()
     expect(ui.getByText("shell")).toBeTruthy()
     expect(ui.getByText("arc/flight-recorder/habit-receipts/run-mail-check-2026-06-11-long-id-for-wrapping.json")).toBeTruthy()
@@ -1422,6 +1425,28 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4))
+  })
+
+  it("does not show an empty habit run ledger while history is loading", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return Promise.resolve(jsonResponse({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }))
+      if (url.endsWith("/habit-runs")) return new Promise<Response>(() => {})
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(ui.getByText("Loading runs")).toBeTruthy()
+    expect(ui.queryByText("No habit sessions recorded.")).toBeNull()
   })
 
   it("re-fetches notes data when refreshGeneration advances", async () => {
