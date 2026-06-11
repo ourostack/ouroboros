@@ -10,6 +10,7 @@ import type { TrustGateInput, TrustGateResult } from "../../senses/trust-gate"
 import type { UsageData } from "../../mind/context"
 import type { PendingMessage } from "../../mind/pending"
 import * as daemonThoughts from "../../heart/daemon/thoughts"
+import * as daemonSocketClient from "../../heart/daemon/socket-client"
 import * as identity from "../../heart/identity"
 import * as pending from "../../mind/pending"
 import * as startOfTurnPacketModule from "../../heart/start-of-turn-packet"
@@ -383,6 +384,23 @@ describe("handleInboundTurn", () => {
     mockRefreshContextLossSentinel.mockReset()
     mockEmitNervesEvent.mockReset()
     mockBuildTurnContext.mockReset().mockResolvedValue(defaultTurnContext())
+    vi.mocked(daemonSocketClient.requestInnerWake).mockClear()
+  })
+
+  it("does not wake inner dialog solely for ordinary non-inner turn awareness", async () => {
+    const agentNameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("slugger")
+    const input = makeInput({
+      channel: "cli",
+      capabilities: makeCapabilities({ channel: "cli" }),
+    })
+
+    try {
+      await handleInboundTurn(input)
+
+      expect(daemonSocketClient.requestInnerWake).not.toHaveBeenCalled()
+    } finally {
+      agentNameSpy.mockRestore()
+    }
   })
 
   // Step 1: friend resolution
