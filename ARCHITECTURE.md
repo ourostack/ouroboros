@@ -213,11 +213,11 @@ This creates a natural conversation rhythm between agents and developer tools. T
 Habits are the agent's autonomous rhythms — recurring patterns that fire independently.
 
 - Habits live at `~/AgentBundles/<agent>.ouro/habits/` as simple markdown files.
-- Each habit has: title, cadence (e.g., `"30m"`, `"1d"`), status (`active`/`paused`), lastRun, created, and a body (the agent's instructions to themselves).
+- Each habit has: title, cadence (e.g., `"30m"`, `"1d"`), status (`active`/`paused`), created, and a body (the agent's instructions to themselves).
 - The `HabitScheduler` registers each active habit as an OS cron entry (launchd on macOS, crontab on Linux).
-- When a cron fires, it pokes the daemon, which routes it to the agent's inner dialog.
-- The agent sees their own habit body as the prompt, plus an "also due" line showing other overdue habits.
-- `lastRun` is updated in the habit's frontmatter after each turn.
+- When a cron fires, it pokes the daemon with trigger provenance (`launchd`, `cron`, `overdue`, or `poke`), which starts an explicit private habit session for the agent.
+- The agent sees their own habit body as the private session prompt, with per-run `state/habit-sessions/<runId>/` paths, permission policy, return routes, and an Arc receipt.
+- Runtime timestamps such as `lastRun` live in `state/habits/<habit>.json`; auditable run history lives in `arc/flight-recorder/habit-receipts/`.
 - `fs.watch` + CLI notifications provide event-driven discovery (no polling).
 - On daemon startup, the scheduler auto-migrates any old `tasks/habits/` files and fires overdue habits.
 
@@ -233,9 +233,9 @@ The inner dialog is the agent's private thinking space.
 - **settle**: In outer conversations, the agent *settles* on a response (not available in inner dialog).
 - **observe**: In group chats, the agent can choose to stay quiet.
 
-The inner dialog session is continuous — different habits and delegations are different prompts into the same stream of thought.
+The inner dialog is one private agent-facing surface. Habits are separate explicit private sessions with their own session/pending paths and Arc receipts; they are not folded into one continuous inner-dialog stream.
 
-**Cross-session awareness:** When activity happens on any other channel (CLI, Teams, BlueBubbles, MCP), the pipeline notifies the inner dialog. The next time the inner dialog wakes — whether from a habit, a ponder, or a delegation — its checkpoint includes awareness of those other active sessions. This means the agent's private thinking space knows about MCP conversations happening in Claude Code, messages arriving on Teams, and CLI chats in progress. The agent sees their whole world, not just the channel they're currently on.
+**Cross-session truth:** When activity happens on any other channel (CLI, Teams, BlueBubbles, MCP), the harness records it in durable activity state. Ordinary channel turns do not wake inner dialog solely for awareness; the next private agent-facing turn renders the current checkpoint from Arc, pulse, session state, and pending work. The agent sees their whole world without turning every external event into a hidden private loop.
 
 ## Desk Record
 
@@ -332,7 +332,7 @@ Lifecycle hooks give agents passive awareness of activity in developer tools.
 - Hooks fire via `ouro hook <event> --agent <name>`, which forwards the event to the daemon over the Unix socket.
 - Hooks are designed to never block the dev tool — they always exit 0, even if the daemon is unavailable.
 - PostToolUse hooks fire on Bash, Edit, and Write tool calls, giving the agent awareness of file changes happening in their codebase.
-- The daemon records hook events so the agent's inner dialog can include them in its next checkpoint.
+- The daemon records hook events so private agent-facing turns can include them in the next checkpoint without forcing an inner-dialog wake.
 
 ## Harness-Level Skills
 
