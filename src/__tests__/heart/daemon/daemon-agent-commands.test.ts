@@ -89,7 +89,7 @@ describe("daemon agent service command routing", () => {
       mailboxServerFactory,
       mode: "dev",
     } as any)
-    return { daemon }
+    return { daemon, processManager, scheduler }
   }
 
   afterEach(() => {
@@ -253,5 +253,56 @@ describe("daemon agent service command routing", () => {
       message: "all agent command routing test complete",
       meta: {},
     })
+  })
+
+  it("preserves explicit habit trigger provenance on daemon habit pokes", async () => {
+    const socketPath = tmpSocketPath("agent-habit-poke-trigger")
+    const { daemon, processManager } = make(socketPath)
+    await daemon.start()
+    try {
+      const raw = await sendRaw(socketPath, JSON.stringify({
+        kind: "habit.poke",
+        agent: "a",
+        habitName: "heartbeat",
+        trigger: "launchd",
+      }))
+      const response = JSON.parse(raw)
+      expect(response.ok).toBe(true)
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("a", {
+        type: "habit",
+        habitName: "heartbeat",
+        trigger: "launchd",
+      })
+    } finally {
+      await daemon.stop()
+    }
+  })
+
+  it("routes daemon cron.trigger habit jobs as cron before falling back to task scheduler", async () => {
+    const socketPath = tmpSocketPath("agent-habit-cron-trigger")
+    const { daemon, processManager, scheduler } = make(socketPath)
+    const triggerHabitJob = vi.fn(async (jobId: string) => {
+      processManager.sendToAgent("a", { type: "habit", habitName: "heartbeat", trigger: "cron" })
+      return { ok: true, message: `triggered habit ${jobId}` }
+    })
+    ;(scheduler as typeof scheduler & { triggerHabitJob: typeof triggerHabitJob }).triggerHabitJob = triggerHabitJob
+    await daemon.start()
+    try {
+      const raw = await sendRaw(socketPath, JSON.stringify({
+        kind: "cron.trigger",
+        jobId: "a:heartbeat:cadence",
+      }))
+      const response = JSON.parse(raw)
+      expect(response).toMatchObject({ ok: true, message: "triggered habit a:heartbeat:cadence" })
+      expect(triggerHabitJob).toHaveBeenCalledWith("a:heartbeat:cadence")
+      expect(scheduler.triggerJob).not.toHaveBeenCalled()
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("a", {
+        type: "habit",
+        habitName: "heartbeat",
+        trigger: "cron",
+      })
+    } finally {
+      await daemon.stop()
+    }
   })
 })

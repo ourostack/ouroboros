@@ -855,6 +855,27 @@ describe("HabitScheduler", () => {
       expect(syncedJobs[0].command).toContain("--habit heartbeat")
     })
 
+    it("generated OS habit jobs carry launchd trigger provenance", () => {
+      const readdir = vi.fn(() => ["heartbeat.md"])
+      const readFile = vi.fn(() => "content")
+      deps = makeDeps({ readdir, readFile })
+
+      mockParseHabitFile.mockReturnValueOnce(makeHeartbeatHabit())
+
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/bundles/slugger.ouro/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+      })
+
+      scheduler.start()
+
+      const syncedJobs = (cronManager.sync as ReturnType<typeof vi.fn>).mock.calls[0][0] as ScheduledTaskJob[]
+      expect(syncedJobs[0].command).toBe("/usr/local/bin/ouro poke slugger --habit heartbeat --trigger launchd")
+    })
+
     it("uses cadence with unparseable cron: skips habit", () => {
       const readdir = vi.fn(() => ["broken-cadence.md"])
       const readFile = vi.fn(() => "content")
@@ -1386,7 +1407,7 @@ describe("HabitScheduler", () => {
     })
 
     it("on Linux, checks crontab -l output for specific habit command lines", () => {
-      const execForVerify = vi.fn(() => "*/30 * * * * /usr/local/bin/ouro poke slugger --habit heartbeat\n")
+      const execForVerify = vi.fn(() => "*/30 * * * * /usr/local/bin/ouro poke slugger --habit heartbeat --trigger launchd\n")
 
       const { scheduler } = makeSchedulerWithVerify({ execForVerify, platform: "linux" })
 
@@ -1432,7 +1453,7 @@ describe("HabitScheduler", () => {
       // Advance by cadence (30m = 1800000ms)
       vi.advanceTimersByTime(30 * 60 * 1000)
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
     })
 
     it("timer fires repeatedly at cadence interval", () => {
@@ -1445,10 +1466,11 @@ describe("HabitScheduler", () => {
 
       // Advance by 2 cadence intervals
       vi.advanceTimersByTime(30 * 60 * 1000)
-      expect(onHabitFire).toHaveBeenCalledTimes(1)
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
 
       vi.advanceTimersByTime(30 * 60 * 1000)
       expect(onHabitFire).toHaveBeenCalledTimes(2)
+      expect(onHabitFire).toHaveBeenLastCalledWith("heartbeat", "overdue")
     })
 
     it("getDegradedHabits returns habits on timer fallback", () => {

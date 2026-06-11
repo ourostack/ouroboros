@@ -12,8 +12,10 @@ import {
   filterHabitToolsForEnvelope,
   isSafeHabitRunId,
   normalizeHabitPermissionEnvelope,
+  readLatestHabitSessionState,
   resolveHabitReturnRoute,
 } from "../../../heart/habits/habit-session"
+import { writeHabitRunReceipt } from "../../../arc/flight-recorder"
 
 const mockEmitNervesEvent = vi.fn()
 
@@ -572,5 +574,119 @@ describe("habit-session helpers", () => {
     expect(buildHabitRunReceipt(base).nextRunAt).toBeNull()
     expect(buildHabitRunReceipt({ ...base, nextRunAt: "2026-06-12T00:00:00.000Z" }).nextRunAt)
       .toBe("2026-06-12T00:00:00.000Z")
+  })
+
+  it("reconstructs latest habit session state from Arc receipts and runtime state without reading transcripts", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "ari", channel: "cli", key: "main" },
+      surface: { family: true, originator: true, extra: [] },
+    }), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: ["send_message", "surface"],
+      deniedTools: ["shell"],
+      outwardMessagingAllowed: true,
+    }
+    writeHabitRunReceipt(agentRoot, buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat" }),
+      runId: "run-old",
+      trigger: "launchd",
+      startedAt: "2026-06-11T10:00:00.000Z",
+      endedAt: "2026-06-11T10:01:00.000Z",
+      outcome: "no_change",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    }))
+    const latest = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat" }),
+      runId: "run-cron",
+      trigger: "cron",
+      startedAt: "2026-06-11T12:00:00.000Z",
+      endedAt: "2026-06-11T12:01:00.000Z",
+      outcome: "blocked",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+      producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "cli",
+        reason: "blocked",
+        result: "blocked",
+        routeKind: "originator",
+        rawStatus: "blocked",
+        error: "needs input",
+      }],
+      errors: ["needs input"],
+    })
+    writeHabitRunReceipt(agentRoot, latest)
+
+    const transcriptPath = path.join(agentRoot, "state", "habit-sessions", latest.runId, "session.json")
+    fs.mkdirSync(transcriptPath, { recursive: true })
+    const runtimeStatePath = path.join(agentRoot, "state", "habits", "heartbeat.json")
+    fs.mkdirSync(path.dirname(runtimeStatePath), { recursive: true })
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: latest.endedAt,
+      updatedAt: latest.endedAt,
+    }, null, 2), "utf-8")
+
+    const state = readLatestHabitSessionState(agentRoot)
+
+    expect(state).toMatchObject({
+      receipt: {
+        runId: latest.runId,
+        habitName: "heartbeat",
+        trigger: "cron",
+        outcome: "blocked",
+        permissionEnvelope: envelope,
+        toolPolicy: policy,
+        producedRefs: latest.producedRefs,
+        surfaceAttempts: latest.surfaceAttempts,
+        errors: ["needs input"],
+        nextRunAt: "2026-06-11T12:31:00.000Z",
+      },
+      runtimeState: {
+        schemaVersion: 1,
+        name: "heartbeat",
+        lastRun: latest.endedAt,
+        updatedAt: latest.endedAt,
+      },
+    })
+  })
+
+  it("returns null for no receipts and skips malformed receipts when runtime state is missing", async () => {
+    expect(readLatestHabitSessionState(agentRoot)).toBeNull()
+
+    const receiptDir = path.join(agentRoot, "arc", "flight-recorder", "habit-receipts")
+    fs.mkdirSync(receiptDir, { recursive: true })
+    fs.writeFileSync(path.join(receiptDir, "run-malformed-late.json"), "{\"schemaVersion\":2}", "utf-8")
+
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const good = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat" }),
+      runId: "run-good",
+      trigger: "poke",
+      startedAt: "2026-06-11T09:00:00.000Z",
+      endedAt: "2026-06-11T09:01:00.000Z",
+      outcome: "no_change",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+    writeHabitRunReceipt(agentRoot, good)
+
+    expect(readLatestHabitSessionState(agentRoot)).toMatchObject({
+      receipt: { runId: "run-good", trigger: "poke" },
+      runtimeState: null,
+    })
   })
 })

@@ -8039,7 +8039,18 @@ describe("ouro habit CLI parsing", () => {
       kind: "habit.poke",
       agent: "slugger",
       habitName: "heartbeat",
+      trigger: "poke",
     })
+  })
+
+  it("parses generated habit pokes with canonical launchd trigger provenance", () => {
+    expect(parseOuroCommand(["poke", "slugger", "--habit", "heartbeat", "--trigger", "launchd"])).toEqual({
+      kind: "habit.poke",
+      agent: "slugger",
+      habitName: "heartbeat",
+      trigger: "launchd",
+    })
+    expect(() => parseOuroCommand(["poke", "slugger", "--habit", "heartbeat", "--trigger", "banana"])).toThrow("trigger")
   })
 
   it("poke --habit takes priority over --task", () => {
@@ -8047,6 +8058,7 @@ describe("ouro habit CLI parsing", () => {
       kind: "habit.poke",
       agent: "slugger",
       habitName: "heartbeat",
+      trigger: "poke",
     })
   })
 
@@ -8395,6 +8407,24 @@ describe("ouro habit CLI execution", () => {
         kind: "habit.poke",
         agent: "slugger",
         habitName: "heartbeat",
+        trigger: "poke",
+      }),
+    )
+  })
+
+  it("ouro poke --habit forwards generated trigger provenance to the daemon", async () => {
+    const deps = makeDeps({
+      sendCommand: vi.fn(async () => ({ ok: true, message: "poked" })),
+    })
+    const result = await runOuroCli(["poke", "slugger", "--habit", "heartbeat", "--trigger", "launchd"], deps)
+    expect(result).toContain("poked")
+    expect(deps.sendCommand).toHaveBeenCalledWith(
+      deps.socketPath,
+      expect.objectContaining({
+        kind: "habit.poke",
+        agent: "slugger",
+        habitName: "heartbeat",
+        trigger: "launchd",
       }),
     )
   })
