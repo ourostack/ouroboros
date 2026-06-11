@@ -19,7 +19,6 @@ import { resolveMustResolveBeforeHandoff } from "./continuity"
 import { formatBridgeContext } from "../heart/bridges/manager"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { readAgentConfigForAgent } from "../heart/auth/auth-flow"
-import { requestInnerWake } from "../heart/daemon/socket-client"
 import { buildActiveWorkFrame } from "../heart/active-work"
 import { decideDelegation } from "../heart/delegation"
 import { listActiveReturnObligationsForRoot, readPendingObligations } from "../arc/obligations"
@@ -1138,14 +1137,6 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       friendId: resolvedContext.friend.id,
     },
   })
-
-  // DRY cross-session awareness: notify inner dialog that activity happened on another channel
-  // Inner dialog's next checkpoint will include this session's state
-  if (input.channel !== "inner") {
-    try {
-      requestInnerWake(getAgentName(), existingToolContext?.daemonSocketPath).catch(/* v8 ignore next */ () => { /* best effort — daemon may not be running */ })
-    } catch { /* getAgentName may fail in test environments */ }
-  }
 
   return {
     resolvedContext,
