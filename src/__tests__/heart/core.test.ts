@@ -1266,6 +1266,130 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit mode blocks granted tools whose executable risk mutates external state", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_shell", function: { name: "shell", arguments: '{"command":"rm -rf /tmp/habit"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"blocked"}' } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const shellTool = {
+      type: "function" as const,
+      function: { name: "shell", description: "shell", parameters: { type: "object", properties: {} } },
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [shellTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["shell"],
+          grantedTools: ["shell"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("external_side_effect") }),
+    ]))
+  })
+
+  it("habit mode allows granted shell calls when the executable risk is read-only", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_shell", function: { name: "shell", arguments: '{"command":"pwd"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"done"}' } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "/mock/repo\n")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const shellTool = {
+      type: "function" as const,
+      function: { name: "shell", description: "shell", parameters: { type: "object", properties: {} } },
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [shellTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["shell"],
+          grantedTools: ["shell"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledWith("shell", { command: "pwd" }, expect.any(Object))
+    expect(callbacks.onToolStart).toHaveBeenCalledWith("shell", { command: "pwd" })
+    expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "done" })
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_shell", content: "/mock/repo\n" }),
+    ]))
+  })
+
   it("habit mode route-checks allowed send_message before handler execution", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {

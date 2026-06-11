@@ -3,8 +3,8 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel } from "../repertoire/tools";
-import type { HabitSessionToolContext, ToolContext } from "../repertoire/tools-base";
+import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName } from "../repertoire/tools";
+import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -419,6 +419,24 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
 
 const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
 
+function habitToolArgs(call: { name: string; arguments: string }): { ok: true; args: Record<string, string> } | { ok: false; reason: string } {
+  try {
+    const parsed = JSON.parse(call.arguments)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, reason: `habit tool '${call.name}' arguments must be a JSON object` }
+    }
+    return { ok: true, args: parsed as Record<string, string> }
+  } catch {
+    return { ok: false, reason: `habit tool '${call.name}' has malformed JSON arguments` }
+  }
+}
+
+function highRiskExternalMutation(profile: ToolRiskProfile): string | null {
+  if (profile.risk !== "high") return null
+  const mutates = typeof profile.mutates === "string" ? [profile.mutates] : [...profile.mutates]
+  return mutates.includes("external_side_effect") ? mutates.join(", ") : null
+}
+
 async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
@@ -431,18 +449,20 @@ async function habitToolBatchBlockReason(
     if (HABIT_CONTROL_TOOLS.has(call.name)) continue
     if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
     if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
+    const parsed = habitToolArgs(call)
+    if (!parsed.ok) return parsed.reason
+    const riskProfile = riskProfileForToolName(call.name, parsed.args)
+    if (!riskProfile) return `habit tool '${call.name}' does not have a known executable risk profile`
+    const externalMutation = highRiskExternalMutation(riskProfile)
+    if (externalMutation && call.name !== "send_message" && call.name !== "surface") {
+      return `habit tool '${call.name}' has high-risk executable mutation ${externalMutation}: ${riskProfile.reason}`
+    }
     if (call.name === "send_message" || call.name === "surface") {
-      let args: Record<string, string> = {}
-      try {
-        args = JSON.parse(call.arguments) as Record<string, string>
-      } catch {
-        return `habit tool '${call.name}' has malformed JSON arguments`
-      }
       const route = await resolveHabitReturnRoute({
         agentRoot: getAgentRoot(),
         envelope: habitSession.permissionEnvelope,
         toolName: call.name,
-        args,
+        args: parsed.args,
         friendStore: habitSession.friendStore,
         delegatedOrigins,
       })

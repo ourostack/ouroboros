@@ -226,6 +226,11 @@ export function riskProfileForTool(def: ToolDefinition, name: string, args: Reco
   return def.riskProfile ?? { mutates: "none", risk: "low" }
 }
 
+export function riskProfileForToolName(name: string, args: Record<string, string>): ToolRiskProfile | null {
+  const def = findDefinition(name)
+  return def ? riskProfileForTool(def, name, args) : null
+}
+
 function orientationHoldMessage(name: string, profile: Extract<ToolRiskProfile, { risk: "high" }>, reason: string): string {
   return `orientation hold: ${reason} Available: orientation_get plus read-only inspection tools like trip_status, query_session, read_config, read_file, grep, search_facts, consult_diary, and consult_notes. Resolve the referent/correction, then retry ${name} if the action is still correct. Blocked ${mutationKindsFor(profile).join(", ")}. ${profile.reason}.`
 }
