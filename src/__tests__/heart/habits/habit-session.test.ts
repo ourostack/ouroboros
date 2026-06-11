@@ -618,6 +618,41 @@ describe("habit-session helpers", () => {
     expect(runtimeWriteIndex).toBeGreaterThan(receiptWriteIndex)
   })
 
+  it("defaults omitted completion refs, attempts, and errors to a no-change receipt", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: true,
+    }
+
+    const result = completeHabitRun({
+      agentRoot,
+      habit: makeHabit({ name: "quiet-heartbeat", cadence: null }),
+      runId: "2026-06-11T17-02-00-000Z-quiet-heartbeat-abc123ef",
+      trigger: "overdue",
+      startedAt: "2026-06-11T17:02:00.000Z",
+      endedAt: "2026-06-11T17:02:10.000Z",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+
+    expect(result).toMatchObject({
+      outcome: "no_change",
+      producedRefs: [],
+      receiptWritten: true,
+      runtimeStateRecorded: true,
+    })
+    expect(readHabitRunReceipt(agentRoot, "2026-06-11T17-02-00-000Z-quiet-heartbeat-abc123ef")).toMatchObject({
+      habitName: "quiet-heartbeat",
+      outcome: "no_change",
+      producedRefs: [],
+      surfaceAttempts: [],
+      errors: [],
+    })
+  })
+
   it("sets null nextRunAt for inactive, unparseable, and invalid-ended runs unless explicitly provided", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
     const policy = {
