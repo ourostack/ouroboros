@@ -199,7 +199,7 @@ function ouroShellRiskReason(command: string): string | null {
   return `ouro CLI command may mutate runtime/config state or be unavailable from shell.${hint}`
 }
 
-function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
+export function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
   const command = String(args.command)
   const destructive = detectDestructivePatterns(command)
   if (destructive.length > 0) {
@@ -220,7 +220,7 @@ function shellRiskProfile(args: Record<string, string>): ToolRiskProfile {
   return { mutates: "none", risk: "low" }
 }
 
-function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
+export function riskProfileForTool(def: ToolDefinition, name: string, args: Record<string, string>): ToolRiskProfile {
   if (name === "shell") return shellRiskProfile(args)
   if (typeof def.riskProfile === "function") return def.riskProfile(args)
   return def.riskProfile ?? { mutates: "none", risk: "low" }
