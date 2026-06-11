@@ -4,7 +4,7 @@ import {
 } from "./config";
 import { loadAgentConfig } from "./identity";
 import { execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel } from "../repertoire/tools";
-import type { ToolContext } from "../repertoire/tools";
+import type { HabitSessionToolContext, ToolContext } from "../repertoire/tools-base";
 import { getChannelCapabilities, channelToFacing, type Facing } from "../mind/friends/channel";
 import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
@@ -317,6 +317,8 @@ export interface RunAgentOptions {
   providerVisibility?: AgentProviderVisibility;
   /** Structured orientation frame for the current inbound turn. */
   orientationFrame?: OrientationFrame;
+  /** Habit-session policy envelope for private habit turns. */
+  habitSession?: HabitSessionToolContext;
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -361,6 +363,23 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
     typeof message?.content === "string"
     && message.content.trim().length > 0,
   )
+}
+
+const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
+
+function habitToolBatchBlockReason(
+  habitSession: HabitSessionToolContext | undefined,
+  toolCalls: Array<{ name: string }>,
+): string | null {
+  if (!habitSession) return null
+  const granted = new Set(habitSession.toolPolicy.grantedTools)
+  const denied = new Set(habitSession.toolPolicy.deniedTools)
+  for (const call of toolCalls) {
+    if (HABIT_CONTROL_TOOLS.has(call.name)) continue
+    if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
+    if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
+  }
+  return null
 }
 
 export type RunAgentOutcome =
@@ -984,6 +1003,7 @@ export async function runAgent(
   // Augment tool context with reasoning effort controls from provider
   const baseToolContext: ToolContext | undefined = options?.toolContext
     ?? (options?.orientationFrame ? { signin: async () => undefined, orientationFrame: options.orientationFrame } : undefined)
+  const habitSession = options?.habitSession ?? baseToolContext?.habitSession
   const augmentedToolContext: ToolContext | undefined = baseToolContext
       ? {
         ...baseToolContext,
@@ -991,6 +1011,14 @@ export async function runAgent(
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
         orientationFrame: options?.orientationFrame ?? baseToolContext.orientationFrame,
+        ...(habitSession ? { habitSession } : {}),
+      }
+    : habitSession
+      ? {
+        signin: async () => undefined,
+        habitSession,
+        supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
+        setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
       }
     : undefined;
 
@@ -1295,6 +1323,23 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
+        const habitBlockReason = habitToolBatchBlockReason(habitSession, result.toolCalls)
+        if (habitBlockReason) {
+          messages.push(msg)
+          const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
+          for (const call of result.toolCalls) {
+            messages.push({ role: "tool", tool_call_id: call.id, content: blockedOutput })
+            providerRuntime.appendToolOutput(call.id, blockedOutput)
+          }
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.habit_tool_batch_blocked",
+            message: "habit tool batch blocked before side effects",
+            meta: { reason: habitBlockReason, toolCalls: result.toolCalls.map((call) => call.name) },
+          })
+          continue
+        }
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
           /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */

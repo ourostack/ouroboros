@@ -3,6 +3,7 @@ import type { Integration, ResolvedContext } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
+import type { HabitPermissionEnvelope, HabitToolPolicy } from "../arc/flight-recorder";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
@@ -69,6 +70,15 @@ export interface VoiceCallControl {
   playAudio?: (request: VoiceCallAudioRequest) => Promise<VoiceCallAudioResult> | VoiceCallAudioResult;
 }
 
+export interface HabitSessionToolContext {
+  runId?: string;
+  sessionPath?: string;
+  pendingDir?: string;
+  permissionEnvelope: HabitPermissionEnvelope;
+  toolPolicy: HabitToolPolicy;
+  friendStore?: FriendStore;
+}
+
 export interface ToolContext {
   graphToken?: string;
   adoToken?: string;
@@ -95,6 +105,7 @@ export interface ToolContext {
   delegatedOrigins?: import("../arc/attention-types").AttentionItem[];
   voiceCall?: VoiceCallControl;
   orientationFrame?: OrientationFrame;
+  habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
   agentRoot?: string;
   currentUserMessage?: string;

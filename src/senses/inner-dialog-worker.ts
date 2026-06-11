@@ -317,12 +317,21 @@ export function createInnerDialogWorker(
             })
             break
           }
-          consecutiveInstinctTurns += 1
-          nextReason = "instinct"
-          nextTaskId = undefined
-          nextHabitName = undefined
-          nextAwaitName = undefined
-          nextTrigger = undefined
+          if (currentReason === "habit" && currentHabitName) {
+            consecutiveInstinctTurns += 1
+            nextReason = "habit"
+            nextTaskId = undefined
+            nextHabitName = currentHabitName
+            nextAwaitName = undefined
+            nextTrigger = currentTrigger
+          } else {
+            consecutiveInstinctTurns += 1
+            nextReason = "instinct"
+            nextTaskId = undefined
+            nextHabitName = undefined
+            nextAwaitName = undefined
+            nextTrigger = undefined
+          }
           continue
         }
 

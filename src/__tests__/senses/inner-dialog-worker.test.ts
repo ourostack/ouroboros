@@ -518,11 +518,11 @@ describe("inner-dialog-worker", () => {
 
       await worker.run("habit", undefined, "heartbeat")
 
-      // Heartbeat turn (1) + 3 instinct follow-ups + cap = 4 total turns
+      // Heartbeat turn (1) + 3 same-run habit follow-ups + cap = 4 total turns
       expect(runTurn).toHaveBeenCalledTimes(4)
       expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
       for (let i = 1; i <= 3; i++) {
-        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "instinct" }))
+        expect(runTurn.mock.calls[i]?.[0]).toEqual(expect.objectContaining({ reason: "habit", habitName: "heartbeat" }))
       }
       // Cap event was emitted exactly once
       const capEvents = mockEmitNervesEvent.mock.calls.filter(([event]) => (event as any).event === "senses.inner_dialog_worker_instinct_loop_capped")
@@ -532,7 +532,7 @@ describe("inner-dialog-worker", () => {
         meta: expect.objectContaining({
           consecutiveInstinctTurns: 3,
           cap: 3,
-          lastReason: "instinct",
+          lastReason: "habit",
         }),
       }))
     })
