@@ -125,6 +125,44 @@ function isSelfTarget(friendId: string, channel?: string, key?: string): boolean
     || `${normalizeIdentifier(friendId)}/${normalizeIdentifier(channel ?? "")}/${normalizeIdentifier(key ?? "")}` === "self/inner/dialog"
 }
 
+function decodedSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
+function isUnsafePathSegment(value: string): boolean {
+  const raw = value.trim()
+  const decoded = decodedSegment(raw)
+  const decodedTrimmed = decoded === null ? null : decoded.trim()
+  return raw.length === 0
+    || decodedTrimmed === null
+    || raw === "."
+    || raw === ".."
+    || decodedTrimmed === "."
+    || decodedTrimmed === ".."
+    || raw.includes("..")
+    || decodedTrimmed.includes("..")
+    || raw.includes("/")
+    || raw.includes("\\")
+    || decodedTrimmed.includes("/")
+    || decodedTrimmed.includes("\\")
+}
+
+function unsafeRouteSegmentReason(friendId: string, channel: string, key: string): string | null {
+  const segments = [
+    ["friendId", friendId],
+    ["channel", channel],
+    ["key", key],
+  ] as const
+  for (const [name, value] of segments) {
+    if (value.length > 0 && isUnsafePathSegment(value)) return `unsafe route ${name}: ${value}`
+  }
+  return null
+}
+
 async function resolveFriend(friendStore: FriendStore | undefined, rawFriendIdOrName: string): Promise<ResolvedFriend | null> {
   const raw = rawFriendIdOrName.trim()
   if (!raw) return null
@@ -167,18 +205,27 @@ async function resolveExactRoute(
   key: string,
   options: NormalizeHabitPermissionOptions,
 ): Promise<{ route: HabitReturnRoute; warning?: string }> {
+  const routeRecipient = `${recipient}/${channel}/${key}`
+  const unsafeReason = unsafeRouteSegmentReason(recipient, channel, key)
+  if (unsafeReason) {
+    return { route: unresolvedRoute(kind, routeRecipient, unsafeReason), warning: unsafeReason }
+  }
   if (isSelfTarget(recipient, channel, key)) {
     const warning = `${kind} route targets self/inner and cannot be used by a habit`
-    return { route: unresolvedRoute(kind, `${recipient}/${channel}/${key}`, warning), warning }
+    return { route: unresolvedRoute(kind, routeRecipient, warning), warning }
   }
   const friend = await resolveFriend(options.friendStore, recipient)
   if (!friend) {
     const warning = `${kind} route recipient unresolved: ${recipient}`
     return { route: unresolvedRoute(kind, recipient, warning), warning }
   }
+  const resolvedUnsafeReason = unsafeRouteSegmentReason(friend.id, channel, key)
+  if (resolvedUnsafeReason) {
+    return { route: unresolvedRoute(kind, routeRecipient, resolvedUnsafeReason), warning: resolvedUnsafeReason }
+  }
   if (friend.isSelf || isSelfTarget(friend.id, channel, key)) {
     const warning = `${kind} route targets self/inner and cannot be used by a habit`
-    return { route: unresolvedRoute(kind, `${recipient}/${channel}/${key}`, warning), warning }
+    return { route: unresolvedRoute(kind, routeRecipient, warning), warning }
   }
   return { route: allowedRoute(kind, recipient, friend.id, channel, key) }
 }
@@ -309,12 +356,20 @@ export async function resolveHabitReturnRoute(input: ResolveHabitReturnRouteInpu
   if (!target) {
     return deniedRoute("habit tool call has no permitted return route target")
   }
+  const unsafeReason = unsafeRouteSegmentReason(target.friendId, target.channel, target.key)
+  if (unsafeReason) {
+    return deniedRoute(`habit return route target is unsafe: ${unsafeReason}`)
+  }
   if (isSelfTarget(target.friendId, target.channel, target.key)) {
     return deniedRoute("habit sessions cannot route messages to self/inner")
   }
 
   const friend = await resolveFriend(input.friendStore, target.friendId)
   if (!friend) return deniedRoute(`habit return route recipient unresolved: ${target.friendId}`)
+  const resolvedUnsafeReason = unsafeRouteSegmentReason(friend.id, target.channel, target.key)
+  if (resolvedUnsafeReason) {
+    return deniedRoute(`habit return route target is unsafe: ${resolvedUnsafeReason}`)
+  }
   if (friend.isSelf || isSelfTarget(friend.id, target.channel, target.key)) {
     return deniedRoute("habit sessions cannot route messages to self/inner")
   }

@@ -403,7 +403,24 @@ describe("Arc flight recorder", () => {
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "malformed.json"), "{", "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "array.json"), "[]", "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-shape.json"), JSON.stringify({ schemaVersion: 2, runId: "wrong-shape" }), "utf-8")
-    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "old-schema.json"), JSON.stringify({ ...first, runId: "old-schema", schemaVersion: 1 }), "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-legacy.json"), JSON.stringify({ schemaVersion: 1, runId: "wrong-legacy" }), "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "old-schema.json"), JSON.stringify({
+      schemaVersion: 1,
+      runId: "old-schema",
+      habitName: "legacy-checkup",
+      trigger: "poke",
+      startedAt: "2026-06-08T11:00:00.000Z",
+      endedAt: "2026-06-08T11:01:00.000Z",
+      outcome: "surfaced",
+      producedRefs: [{ kind: "surface", locator: "sessions/ari/cli/main" }],
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "cli",
+        reason: "status",
+        result: "sent",
+      }],
+      errors: ["legacy warning"],
+    }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-envelope.json"), JSON.stringify({ ...first, runId: "wrong-envelope", permissionEnvelope: [] }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-policy.json"), JSON.stringify({ ...first, runId: "wrong-policy", toolPolicy: [] }), "utf-8")
     fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-attempts.json"), JSON.stringify({ ...first, runId: "wrong-attempts", surfaceAttempts: {} }), "utf-8")
@@ -420,7 +437,20 @@ describe("Arc flight recorder", () => {
     expect(recorder.readHabitRunReceipt(agentRoot, "bad%2fescape")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "array")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-shape")).toBeNull()
-    expect(recorder.readHabitRunReceipt(agentRoot, "old-schema")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-legacy")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "old-schema")).toMatchObject({
+      schemaVersion: 2,
+      runId: "old-schema",
+      sessionId: "old-schema",
+      habitName: "legacy-checkup",
+      definitionLocator: "habits/legacy-checkup.md",
+      receiptLocator: "arc/flight-recorder/habit-receipts/old-schema.json",
+      permissionEnvelope: expect.objectContaining({
+        schemaVersion: 1,
+        canMessageOutward: true,
+      }),
+      errors: ["legacy warning"],
+    })
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-envelope")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-policy")).toBeNull()
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-attempts")).toBeNull()
@@ -428,9 +458,9 @@ describe("Arc flight recorder", () => {
     expect(recorder.readHabitRunReceipt(agentRoot, "wrong-produced-entry")).toBeNull()
 
     const listed = recorder.listHabitRunReceipts(agentRoot, { limit: 10 })
-    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId])
-    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId])
-    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId])
+    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
+    expect(recorder.listHabitRunReceipts(agentRoot, { limit: -1 }).map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId, "old-schema"])
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       level: "warn",
       event: "mind.flight_recorder_habit_receipt_malformed",
@@ -546,6 +576,38 @@ describe("Arc flight recorder", () => {
         runId,
         trigger: triggers[index % triggers.length],
         outcome,
+      })
+    }
+  })
+
+  it("normalizes every legacy habit trigger and outcome variant from disk", async () => {
+    const recorder = await import("../../arc/flight-recorder") as any
+    const triggers = ["cron", "launchd", "poke", "overdue", "manual"]
+    const outcomes = ["no_change", "wrote_arc", "updated_desk", "wrote_record", "surfaced", "blocked", "error"]
+    const receiptDir = path.join(agentRoot, "arc", "flight-recorder", "habit-receipts")
+    fs.mkdirSync(receiptDir, { recursive: true })
+
+    for (const [index, outcome] of outcomes.entries()) {
+      const runId = `legacy-${index}5555555`
+      fs.writeFileSync(path.join(receiptDir, `${runId}.json`), JSON.stringify({
+        schemaVersion: 1,
+        runId,
+        habitName: "legacy-checkup",
+        trigger: triggers[index % triggers.length],
+        startedAt: "2026-06-08T12:00:00.000Z",
+        endedAt: `2026-06-08T12:${String(index).padStart(2, "0")}:30.000Z`,
+        outcome,
+        producedRefs: [],
+        surfaceAttempts: [],
+        errors: [],
+      }), "utf-8")
+
+      expect(recorder.readHabitRunReceipt(agentRoot, runId)).toMatchObject({
+        schemaVersion: 2,
+        runId,
+        trigger: triggers[index % triggers.length],
+        outcome,
+        definitionLocator: "habits/legacy-checkup.md",
       })
     }
   })

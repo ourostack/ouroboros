@@ -563,6 +563,30 @@ function isHabitRunReceipt(value: unknown): value is HabitRunReceipt {
     && isStringArray(value.errors)
 }
 
+function isLegacyHabitRunReceipt(value: unknown): value is LegacyHabitRunReceipt {
+  if (!isPlainRecord(value)) return false
+  return value.schemaVersion === 1
+    && isSafeHabitRunId(value.runId)
+    && typeof value.habitName === "string"
+    && (value.trigger === "cron"
+      || value.trigger === "launchd"
+      || value.trigger === "poke"
+      || value.trigger === "overdue"
+      || value.trigger === "manual")
+    && typeof value.startedAt === "string"
+    && typeof value.endedAt === "string"
+    && (value.outcome === "no_change"
+      || value.outcome === "wrote_arc"
+      || value.outcome === "updated_desk"
+      || value.outcome === "wrote_record"
+      || value.outcome === "surfaced"
+      || value.outcome === "blocked"
+      || value.outcome === "error")
+    && isProducedRefArray(value.producedRefs)
+    && isHabitSurfaceAttemptArray(value.surfaceAttempts)
+    && isStringArray(value.errors)
+}
+
 function warnMalformedHabitReceipt(agentRoot: string, runId: string, reason: string): void {
   emitNervesEvent({
     level: "warn",
@@ -660,7 +684,12 @@ export function readHabitRunReceipt(agentRoot: string, runId: string): HabitRunR
   }
   try {
     const parsed = JSON.parse(fs.readFileSync(habitReceiptPath(agentRoot, runId), "utf-8")) as unknown
-    if (!isHabitRunReceipt(parsed)) {
+    const receipt = isHabitRunReceipt(parsed)
+      ? parsed
+      : isLegacyHabitRunReceipt(parsed)
+        ? normalizeLegacyHabitRunReceipt(parsed)
+        : null
+    if (!receipt) {
       warnMalformedHabitReceipt(agentRoot, runId, "invalid habit receipt shape")
       return null
     }
@@ -670,7 +699,7 @@ export function readHabitRunReceipt(agentRoot: string, runId: string): HabitRunR
       message: "flight recorder habit receipt read",
       meta: { agentRoot, runId },
     })
-    return parsed
+    return receipt
   } catch (error) {
     warnMalformedHabitReceipt(
       agentRoot,

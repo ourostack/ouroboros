@@ -129,7 +129,7 @@ describe("habit-session helpers", () => {
       surface: {
         family: true,
         originator: true,
-        extra: ["Teammate/mcp/thread-1", "malformed", "self/inner/dialog", "Unknown/mcp/thread-2", "Loop/mcp/thread-3"],
+        extra: ["Teammate/mcp/thread-1", "malformed", "self/inner/dialog", "Unknown/mcp/thread-2", "Loop/mcp/thread-3", "ari/../main", "ari/bad%ZZ/main"],
       },
     }), { agentRoot, friendStore })
 
@@ -146,10 +146,13 @@ describe("habit-session helpers", () => {
       expect.objectContaining({ kind: "extra", recipient: "self/inner/dialog", status: "unresolved" }),
       expect.objectContaining({ kind: "extra", recipient: "Unknown", status: "unresolved" }),
       expect.objectContaining({ kind: "extra", recipient: "Loop/mcp/thread-3", status: "unresolved" }),
+      expect.objectContaining({ kind: "extra", recipient: "ari/../main", status: "unresolved" }),
+      expect.objectContaining({ kind: "extra", recipient: "ari/bad%ZZ/main", status: "unresolved" }),
     ]))
     expect(envelope.warnings.join("\n")).toContain("malformed")
     expect(envelope.warnings.join("\n")).toContain("self/inner")
     expect(envelope.warnings.join("\n")).toContain("Unknown")
+    expect(envelope.warnings.join("\n")).toContain("unsafe")
   })
 
   it("removes outward messaging tools when every return route is disabled or unresolved", async () => {
@@ -204,6 +207,34 @@ describe("habit-session helpers", () => {
       expect.objectContaining({ kind: "originator", recipient: "missing", status: "unresolved" }),
     ])
     expect(envelope.warnings.join("\n")).toContain("missing")
+  })
+
+  it("rejects unsafe origin route path segments before they can become pending paths", async () => {
+    const friendStore = makeFriendStore([makeFriend("ari", "Ari", "family")])
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "ari", channel: "..", key: "main" },
+      surface: { family: false, originator: true, extra: [] },
+    }), { agentRoot, friendStore })
+
+    expect(envelope.canMessageOutward).toBe(false)
+    expect(envelope.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "originator", recipient: "ari/../main", status: "unresolved" }),
+    ])
+    expect(envelope.warnings.join("\n")).toContain("unsafe")
+  })
+
+  it("rejects routes whose resolved friend id is unsafe even when the label is safe", async () => {
+    const friendStore = makeFriendStore([makeFriend("../bad", "Bad", "family")])
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: false, extra: ["Bad/mcp/thread-1"] },
+    }), { agentRoot, friendStore })
+
+    expect(envelope.canMessageOutward).toBe(false)
+    expect(envelope.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "extra", recipient: "Bad/mcp/thread-1", status: "unresolved" }),
+    ])
+    expect(envelope.warnings.join("\n")).toContain("unsafe")
   })
 
   it("resolves route attempts before handlers run and denies non-family, self, and live voice routes", async () => {
@@ -273,6 +304,39 @@ describe("habit-session helpers", () => {
       args: { friendId: "ari", channel: "voice", content: "live call" },
       friendStore,
     })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("voice") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "ari", channel: "..", key: "main", content: "escape" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("unsafe") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "casey", channel: "cli", key: "bad%ZZ", content: "escape" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("unsafe") })
+  })
+
+  it("rejects route targets whose resolved friend id is unsafe", async () => {
+    const friendStore = makeFriendStore([makeFriend("../bad", "Bad", "family")])
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope: {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "family", recipient: "family", status: "allowed" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolName: "send_message",
+      args: { friendId: "Bad", channel: "cli", key: "main", content: "escape" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("unsafe") })
   })
 
   it("rejects missing, unsupported, unresolved, self-resolved, and no-route tool targets", async () => {
