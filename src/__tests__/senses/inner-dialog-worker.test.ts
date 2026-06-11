@@ -1,14 +1,46 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const mockRunInnerDialogTurn = vi.fn()
-const mockEmitNervesEvent = vi.fn()
-const mockGetAgentName = vi.fn(() => "slugger")
-const mockGetAgentRoot = vi.fn(() => "/bundles/slugger.ouro")
-const mockGetInnerDialogPendingDir = vi.fn(() => "/mock/pending/self/inner/dialog")
-const mockHasPendingMessages = vi.fn(() => false)
-const mockRecordHabitRun = vi.fn()
-const mockCreateHabitRunId = vi.fn(() => "habit-run-id")
-const mockWriteHabitRunReceipt = vi.fn()
+const {
+  mockRunInnerDialogTurn,
+  mockEmitNervesEvent,
+  mockGetAgentName,
+  mockGetAgentRoot,
+  mockGetInnerDialogPendingDir,
+  mockHasPendingMessages,
+  mockRecordHabitRun,
+  mockCreateHabitRunId,
+  mockIsSafeHabitRunId,
+  mockWriteHabitRunReceipt,
+  mockReadFileSync,
+  MockFileFriendStore,
+} = vi.hoisted(() => ({
+  mockRunInnerDialogTurn: vi.fn(),
+  mockEmitNervesEvent: vi.fn(),
+  mockGetAgentName: vi.fn(() => "slugger"),
+  mockGetAgentRoot: vi.fn(() => "/bundles/slugger.ouro"),
+  mockGetInnerDialogPendingDir: vi.fn(() => "/mock/pending/self/inner/dialog"),
+  mockHasPendingMessages: vi.fn(() => false),
+  mockRecordHabitRun: vi.fn(),
+  mockCreateHabitRunId: vi.fn(() => "habit-run-id"),
+  mockIsSafeHabitRunId: vi.fn(() => true),
+  mockWriteHabitRunReceipt: vi.fn(),
+  mockReadFileSync: vi.fn(),
+  MockFileFriendStore: class {
+    get = vi.fn(async () => null)
+    put = vi.fn(async () => undefined)
+    delete = vi.fn(async () => undefined)
+    findByExternalId = vi.fn(async () => null)
+    listAll = vi.fn(async () => [])
+  },
+}))
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  return {
+    ...actual,
+    readFileSync: (...args: any[]) => mockReadFileSync(...args),
+  }
+})
 
 vi.mock("../../senses/inner-dialog", () => ({
   runInnerDialogTurn: (...args: any[]) => mockRunInnerDialogTurn(...args),
@@ -32,8 +64,13 @@ vi.mock("../../heart/habits/habit-runtime-state", () => ({
   recordHabitRun: (...args: any[]) => mockRecordHabitRun(...args),
 }))
 
+vi.mock("../../mind/friends/store-file", () => ({
+  FileFriendStore: MockFileFriendStore,
+}))
+
 vi.mock("../../arc/flight-recorder", () => ({
   createHabitRunId: (...args: any[]) => mockCreateHabitRunId(...args),
+  isSafeHabitRunId: (...args: any[]) => mockIsSafeHabitRunId(...args),
   writeHabitRunReceipt: (...args: any[]) => mockWriteHabitRunReceipt(...args),
 }))
 
@@ -41,12 +78,17 @@ import { createInnerDialogWorker, HEARTBEAT_OK_REST_SUPPRESSION_MS, startInnerDi
 
 describe("inner-dialog-worker", () => {
   beforeEach(() => {
+    mockReadFileSync.mockReset().mockImplementation((filePath: any) => {
+      if (String(filePath).includes("/habits/")) return "habit body"
+      return ""
+    })
     mockHasPendingMessages.mockReset().mockReturnValue(false)
     mockGetAgentName.mockReset().mockReturnValue("slugger")
     mockGetAgentRoot.mockReset().mockReturnValue("/bundles/slugger.ouro")
     mockGetInnerDialogPendingDir.mockReset().mockReturnValue("/mock/pending/self/inner/dialog")
     mockRecordHabitRun.mockReset()
     mockCreateHabitRunId.mockReset().mockReturnValue("habit-run-id")
+    mockIsSafeHabitRunId.mockReset().mockReturnValue(true)
     mockWriteHabitRunReceipt.mockReset()
     mockEmitNervesEvent.mockReset()
   })
@@ -65,7 +107,7 @@ describe("inner-dialog-worker", () => {
 
     expect(runTurn).toHaveBeenCalledTimes(5)
     expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct", taskId: undefined, habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct", taskId: undefined, habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "instinct", taskId: undefined, habitName: undefined })
@@ -105,7 +147,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "heartbeat" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat", awaitName: undefined }))
   })
 
   it("handles await messages with awaitName", async () => {
@@ -129,7 +171,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "habit", habitName: "daily-reflection" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "daily-reflection" })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-reflection" }))
   })
 
   it("backward compat: heartbeat message maps to habit/heartbeat", async () => {
@@ -137,7 +179,7 @@ describe("inner-dialog-worker", () => {
     const worker = createInnerDialogWorker(runTurn)
 
     await worker.handleMessage({ type: "heartbeat" })
-    expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
   })
 
   it("queues multiple pokes while busy instead of overwriting", async () => {
@@ -224,10 +266,10 @@ describe("inner-dialog-worker", () => {
 
     expect(runTurn).toHaveBeenCalledTimes(5)
     expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "boot", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(3, { reason: "instinct", taskId: "task-x", habitName: undefined })
     expect(runTurn).toHaveBeenNthCalledWith(4, { reason: "instinct", taskId: undefined, habitName: undefined })
-    expect(runTurn).toHaveBeenNthCalledWith(5, { reason: "habit", taskId: undefined, habitName: "daily-check" })
+    expect(runTurn).toHaveBeenNthCalledWith(5, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "daily-check" }))
   })
 
   it("emits an error event when a turn fails", async () => {
@@ -283,8 +325,8 @@ describe("inner-dialog-worker", () => {
     await Promise.all([first, second])
 
     expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
-    expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
   })
 
   it("preserves deferred taskId when an overlapping poke arrives during an active run", async () => {
@@ -301,7 +343,7 @@ describe("inner-dialog-worker", () => {
     await Promise.all([first, second])
 
     expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn).toHaveBeenNthCalledWith(1, { reason: "habit", taskId: undefined, habitName: "heartbeat" })
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
     expect(runTurn).toHaveBeenNthCalledWith(2, { reason: "instinct", taskId: "daily-standup", habitName: undefined })
   })
 
@@ -335,11 +377,11 @@ describe("inner-dialog-worker", () => {
       expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "boot", taskId: undefined, habitName: undefined })
 
       listeners.message?.({ type: "heartbeat" })
-      await Promise.resolve()
-      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(mockRunInnerDialogTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
 
       listeners.message?.({ type: "poke", taskId: "check-in" })
-      await Promise.resolve()
+      await new Promise((resolve) => setImmediate(resolve))
       expect(mockRunInnerDialogTurn).toHaveBeenCalledWith({ reason: "instinct", taskId: "check-in", habitName: undefined })
 
       expect(() => listeners.disconnect?.()).toThrow("process.exit called")
@@ -384,13 +426,21 @@ describe("inner-dialog-worker", () => {
 
       expect(mockCreateHabitRunId).toHaveBeenCalledWith("daily-record", new Date("2026-06-08T12:00:00.000Z"))
       expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "habit-run-id",
+        sessionId: "habit-run-id",
         habitName: "daily-record",
         trigger: "poke",
         startedAt: "2026-06-08T12:00:00.000Z",
         endedAt: "2026-06-08T12:00:00.000Z",
         outcome: "wrote_record",
+        definitionLocator: "habits/daily-record.md",
+        sessionLocator: "state/habit-sessions/habit-run-id/session.json",
+        pendingLocator: "state/habit-sessions/habit-run-id/pending",
+        runtimeStateLocator: "state/habits/daily-record.json",
+        receiptLocator: "arc/flight-recorder/habit-receipts/habit-run-id.json",
+        permissionEnvelope: expect.objectContaining({ schemaVersion: 1, canMessageOutward: true }),
+        toolPolicy: expect.objectContaining({ requestedTools: null, outwardMessagingAllowed: true }),
         producedRefs: [{ kind: "desk_record", locator: "desk/_record" }],
         surfaceAttempts: [],
         errors: [],
@@ -538,6 +588,9 @@ describe("inner-dialog-worker", () => {
     })
 
     it("keeps habit-created follow-on pending work in the same habit run instead of generic instinct", async () => {
+      mockCreateHabitRunId
+        .mockReturnValueOnce("habit-run-1")
+        .mockReturnValueOnce("habit-run-2")
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn()
         .mockReturnValueOnce(true)
@@ -554,6 +607,17 @@ describe("inner-dialog-worker", () => {
       expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
         reason: "habit",
         habitName: "heartbeat",
+      }))
+      expect(mockCreateHabitRunId).toHaveBeenCalledTimes(1)
+      expect(runTurn.mock.calls[0]?.[0].habitSession).toEqual(expect.objectContaining({
+        runId: "habit-run-1",
+        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
+        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
+      }))
+      expect(runTurn.mock.calls[1]?.[0].habitSession).toEqual(expect.objectContaining({
+        runId: "habit-run-1",
+        sessionPath: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/session.json",
+        pendingDir: "/bundles/slugger.ouro/state/habit-sessions/habit-run-1/pending",
       }))
     })
 
@@ -702,7 +766,7 @@ describe("inner-dialog-worker", () => {
       await worker.handleMessage({ type: "heartbeat" })
 
       expect(runTurn).toHaveBeenCalledTimes(1)
-      expect(runTurn).toHaveBeenCalledWith({ reason: "habit", taskId: undefined, habitName: "heartbeat" })
+      expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ reason: "habit", taskId: undefined, habitName: "heartbeat" }))
       expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(
         expect.objectContaining({
