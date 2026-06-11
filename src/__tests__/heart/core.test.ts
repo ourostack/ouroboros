@@ -1196,6 +1196,173 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit mode route-checks allowed send_message before handler execution", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"casey","channel":"bluebubbles","key":"chat","content":"checking in"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"blocked"}' } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "message delivered")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const friendStore = {
+      get: vi.fn(async (id: string) => id === "casey" ? {
+        id: "casey",
+        name: "Casey",
+        trustLevel: "friend",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+        schemaVersion: 1,
+      } : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => []),
+    }
+    const sendTool = {
+      type: "function" as const,
+      function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [sendTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [{ kind: "family", recipient: "family", status: "allowed" }],
+          deniedTools: [],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: ["send_message"],
+          deniedTools: [],
+          outwardMessagingAllowed: true,
+        },
+        friendStore,
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
+    expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_send", content: expect.stringContaining("family") }),
+    ]))
+  })
+
+  it("habit mode lets route-approved send_message reach the handler", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_send", function: { name: "send_message", arguments: '{"friendId":"ari","channel":"bluebubbles","key":"chat","content":"checking in"}' } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: '{"status":"done"}' } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "message delivered")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: () => {},
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const friendStore = {
+      get: vi.fn(async (id: string) => id === "ari" ? {
+        id: "ari",
+        name: "Ari",
+        trustLevel: "family",
+        externalIds: [],
+        tenantMemberships: [],
+        toolPreferences: {},
+        notes: {},
+        totalTokens: 0,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+        schemaVersion: 1,
+      } : null),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+      listAll: vi.fn(async () => []),
+    }
+    const sendTool = {
+      type: "function" as const,
+      function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
+    }
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [sendTool],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [{ kind: "family", recipient: "family", status: "allowed" }],
+          deniedTools: [],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: null,
+          grantedTools: ["send_message"],
+          deniedTools: [],
+          outwardMessagingAllowed: true,
+        },
+        friendStore,
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledWith("send_message", {
+      friendId: "ari",
+      channel: "bluebubbles",
+      key: "chat",
+      content: "checking in",
+    }, expect.any(Object))
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_send", content: "message delivered" }),
+    ]))
+  })
+
   it("loops back for another model call after tool execution", async () => {
     mockReadFileToolResult("data")
 

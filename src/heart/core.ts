@@ -41,6 +41,7 @@ import {
   type ProviderCredentialRecord,
 } from "./provider-credentials";
 import type { ProviderLane } from "./provider-lanes";
+import { resolveHabitReturnRoute } from "./habits/habit-session";
 import {
   ProviderAttemptAbortError,
   runProviderAttempt,
@@ -367,10 +368,11 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
 
 const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
 
-function habitToolBatchBlockReason(
+async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
-  toolCalls: Array<{ name: string }>,
-): string | null {
+  toolCalls: Array<{ name: string; arguments: string }>,
+  delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
+): Promise<string | null> {
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
   const denied = new Set(habitSession.toolPolicy.deniedTools)
@@ -378,6 +380,23 @@ function habitToolBatchBlockReason(
     if (HABIT_CONTROL_TOOLS.has(call.name)) continue
     if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
     if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
+    if (call.name === "send_message" || call.name === "surface") {
+      let args: Record<string, string> = {}
+      try {
+        args = JSON.parse(call.arguments) as Record<string, string>
+      } catch {
+        return `habit tool '${call.name}' has malformed JSON arguments`
+      }
+      const route = await resolveHabitReturnRoute({
+        agentRoot: getAgentRoot(),
+        envelope: habitSession.permissionEnvelope,
+        toolName: call.name,
+        args,
+        friendStore: habitSession.friendStore,
+        delegatedOrigins,
+      })
+      if (!route.allowed) return route.reason ?? `habit tool '${call.name}' route was denied`
+    }
   }
   return null
 }
@@ -1323,7 +1342,7 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const habitBlockReason = habitToolBatchBlockReason(habitSession, result.toolCalls)
+        const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins)
         if (habitBlockReason) {
           messages.push(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
