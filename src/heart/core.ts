@@ -437,6 +437,27 @@ function highRiskExternalMutation(profile: ToolRiskProfile): string | null {
   return mutates.includes("external_side_effect") ? mutates.join(", ") : null
 }
 
+function recordBlockedHabitSurfaceAttempts(
+  habitSession: HabitSessionToolContext | undefined,
+  toolCalls: Array<{ name: string; arguments: string }>,
+  reason: string,
+): void {
+  if (!habitSession?.recordSurfaceAttempt) return
+  for (const call of toolCalls) {
+    if (call.name !== "send_message" && call.name !== "surface") continue
+    const parsed = habitToolArgs(call)
+    const args = parsed.ok ? parsed.args : {}
+    habitSession.recordSurfaceAttempt({
+      recipient: String(args.friendId ?? args.delegationId ?? "unknown"),
+      channel: String(args.channel ?? call.name),
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
+      error: reason,
+    })
+  }
+}
+
 async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
@@ -1429,6 +1450,7 @@ export async function runAgent(
         const habitBlockReason = await habitToolBatchBlockReason(habitSession, result.toolCalls, augmentedToolContext?.delegatedOrigins, activeToolNames)
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
+          recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
           messages.push(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
           for (const call of result.toolCalls) {
@@ -1896,6 +1918,7 @@ export async function runAgent(
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
+            augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
           toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);

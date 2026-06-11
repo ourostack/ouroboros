@@ -1548,6 +1548,7 @@ describe("runAgent", () => {
       type: "function" as const,
       function: { name: "send_message", description: "send", parameters: { type: "object", properties: {} } },
     }
+    const recordSurfaceAttempt = vi.fn()
 
     await (runAgent as any)(messages, callbacks, "inner", undefined, {
       tools: [sendTool],
@@ -1567,6 +1568,7 @@ describe("runAgent", () => {
           outwardMessagingAllowed: true,
         },
         friendStore,
+        recordSurfaceAttempt,
       },
     })
 
@@ -1576,6 +1578,14 @@ describe("runAgent", () => {
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_send", content: expect.stringContaining("family") }),
     ]))
+    expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: "casey",
+      channel: "bluebubbles",
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
+      error: expect.stringContaining("family"),
+    }))
   })
 
   it("habit mode lets route-approved send_message reach the handler", async () => {

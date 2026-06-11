@@ -66,6 +66,8 @@ interface PreparedHabitRun {
   friendStore: FileFriendStore
   results: unknown[]
   errors: string[]
+  producedRefs: FlightRecorderProducedRef[]
+  surfaceAttempts: HabitRunReceipt["surfaceAttempts"]
 }
 
 /**
@@ -169,6 +171,8 @@ async function prepareHabitRun(habitName: string, trigger: HabitRunReceipt["trig
     friendStore,
     results: [],
     errors,
+    producedRefs: [],
+    surfaceAttempts: [],
   }
 }
 
@@ -234,8 +238,8 @@ export function createInnerDialogWorker(
         outcome,
         permissionEnvelope: habitRun.permissionEnvelope,
         toolPolicy: habitRun.toolPolicy,
-        producedRefs,
-        surfaceAttempts: [],
+        producedRefs: habitRun.producedRefs.length > 0 ? habitRun.producedRefs : producedRefs,
+        surfaceAttempts: habitRun.surfaceAttempts,
         errors: habitRun.errors,
       }))
     } catch {
@@ -368,6 +372,9 @@ export function createInnerDialogWorker(
                   permissionEnvelope: currentHabitRun.permissionEnvelope,
                   toolPolicy: currentHabitRun.toolPolicy,
                   friendStore: currentHabitRun.friendStore,
+                  recordProducedRef: (ref) => { currentHabitRun.producedRefs.push(ref) },
+                  recordSurfaceAttempt: (attempt) => { currentHabitRun.surfaceAttempts.push(attempt) },
+                  recordError: (error) => { currentHabitRun.errors.push(error) },
                 },
               }
               : {}),

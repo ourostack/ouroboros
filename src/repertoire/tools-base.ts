@@ -3,7 +3,7 @@ import type { Integration, ResolvedContext } from "../mind/friends/types";
 import type { FriendStore } from "../mind/friends/store";
 import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
-import type { HabitPermissionEnvelope, HabitToolPolicy } from "../arc/flight-recorder";
+import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
@@ -77,6 +77,9 @@ export interface HabitSessionToolContext {
   permissionEnvelope: HabitPermissionEnvelope;
   toolPolicy: HabitToolPolicy;
   friendStore?: FriendStore;
+  recordProducedRef?: (ref: FlightRecorderProducedRef) => void;
+  recordSurfaceAttempt?: (attempt: HabitSurfaceAttempt) => void;
+  recordError?: (error: string) => void;
 }
 
 export interface ToolContext {

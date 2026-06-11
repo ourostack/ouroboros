@@ -117,6 +117,21 @@ function renderCrossChatDeliveryStatus(
   }))
 }
 
+function normalizeHabitSendStatus(status: CrossChatDeliveryResult["status"]): "delivered_now" | "queued" | "blocked" | "failed" | "unavailable" {
+  return status === "queued_for_later" ? "queued" : status
+}
+
+function recordHabitSendAttempt(ctx: ToolContext | undefined, args: { friendId: string; channel: string; key: string }, result: CrossChatDeliveryResult): void {
+  ctx?.habitSession?.recordSurfaceAttempt?.({
+    recipient: args.friendId,
+    channel: args.channel,
+    reason: result.status === "blocked" ? "blocked" : result.status === "failed" ? "other" : "status",
+    result: normalizeHabitSendStatus(result.status),
+    rawStatus: result.status,
+    ...(result.status === "blocked" || result.status === "failed" ? { error: result.detail } : {}),
+  })
+}
+
 async function deliverVoiceChannelMessage(
   request: CrossChatDeliveryRequest,
   agentName: string,
@@ -756,6 +771,7 @@ export const sessionToolDefinitions: ToolDefinition[] = [
         },
       })
 
+      recordHabitSendAttempt(ctx, { friendId, channel, key }, deliveryResult)
       return renderCrossChatDeliveryStatus(`${friendId} on ${channel}/${key}`, deliveryResult)
     },
     riskProfile: sendMessageRiskProfile,

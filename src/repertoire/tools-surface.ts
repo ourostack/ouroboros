@@ -311,6 +311,17 @@ export const surfaceToolDefinition: ToolDefinition = {
         }
         /* v8 ignore stop */
       },
+      onRouteResult: ({ targetFriendId, queueItem, result }) => {
+        ctx?.habitSession?.recordSurfaceAttempt?.({
+          recipient: targetFriendId,
+          channel: queueItem?.channel ?? args.channel ?? "surface",
+          reason: result.status === "failed" ? "blocked" : "answer",
+          result: result.status,
+          rawStatus: result.status,
+          ...(queueItem ? { routeKind: "originator" } : {}),
+          ...(result.status === "failed" ? { error: result.detail ?? "surface route failed" } : {}),
+        })
+      },
     })
   },
   summaryKeys: ["content", "delegationId", "friendId", "channel"],

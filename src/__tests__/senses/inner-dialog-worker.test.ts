@@ -502,6 +502,34 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("writes structured recorder refs and surface attempts into the habit receipt", async () => {
+      const producedRef = { kind: "claim" as const, locator: "claim:abc123" }
+      const surfaceAttempt = {
+        recipient: "ari",
+        channel: "bluebubbles",
+        reason: "answer" as const,
+        result: "queued" as const,
+        rawStatus: "queued",
+        routeKind: "originator" as const,
+      }
+      const runTurn = vi.fn().mockImplementation(async (options) => {
+        options.habitSession.recordProducedRef(producedRef)
+        options.habitSession.recordSurfaceAttempt(surfaceAttempt)
+        return { messages: [] }
+      })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "structured", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        schemaVersion: 2,
+        habitName: "structured",
+        producedRefs: [producedRef],
+        surfaceAttempts: [surfaceAttempt],
+        errors: [],
+      }))
+    })
+
     it("records lastRun AFTER the turn completes (not before)", async () => {
       const callOrder: string[] = []
 
