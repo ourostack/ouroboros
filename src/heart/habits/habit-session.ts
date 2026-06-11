@@ -4,6 +4,7 @@ import type { AttentionItem } from "../../arc/attention-types"
 import {
   isSafeHabitRunId as isSafeFlightRecorderHabitRunId,
   listHabitRunReceipts,
+  writeHabitRunReceipt,
   type FlightRecorderProducedRef,
   type HabitPermissionEnvelope,
   type HabitReturnRoute,
@@ -20,6 +21,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import type { ToolDefinition, ToolRiskProfile } from "../../repertoire/tools-base"
 import { parseCadenceToMs } from "../daemon/cadence"
 import type { HabitFile } from "./habit-parser"
+import { recordHabitRun } from "./habit-runtime-state"
 
 export { isSafeHabitRunId } from "../../arc/flight-recorder"
 
@@ -74,6 +76,15 @@ export interface BuildHabitRunReceiptInput {
   surfaceAttempts?: HabitSurfaceAttempt[]
   errors?: string[]
   nextRunAt?: string | null
+}
+
+export type CompleteHabitRunInput = Omit<BuildHabitRunReceiptInput, "outcome" | "nextRunAt">
+
+export interface CompleteHabitRunResult {
+  outcome: HabitRunOutcome
+  producedRefs: FlightRecorderProducedRef[]
+  receiptWritten: boolean
+  runtimeStateRecorded: boolean
 }
 
 export interface HabitRuntimeStateSnapshot {
@@ -571,4 +582,87 @@ export function buildHabitRunReceipt(input: BuildHabitRunReceiptInput): HabitRun
     meta: { agentRoot: input.agentRoot, habitName: input.habit.name, runId: input.runId, outcome: input.outcome },
   })
   return receipt
+}
+
+function successfulSurfaceAttempt(attempt: HabitSurfaceAttempt): boolean {
+  return attempt.result !== "blocked"
+    && attempt.result !== "failed"
+    && attempt.result !== "unavailable"
+}
+
+function surfaceRefsFromAttempts(attempts: HabitSurfaceAttempt[]): FlightRecorderProducedRef[] {
+  return attempts
+    .filter(successfulSurfaceAttempt)
+    .map((attempt) => ({
+      kind: "surface",
+      locator: `surface/${attempt.recipient}/${attempt.channel}`,
+    }))
+}
+
+function habitOutcomeForCompletion(input: CompleteHabitRunInput): { outcome: HabitRunOutcome; producedRefs: FlightRecorderProducedRef[] } {
+  const attempts = input.surfaceAttempts ?? []
+  const producedRefs = input.producedRefs && input.producedRefs.length > 0
+    ? [...input.producedRefs]
+    : surfaceRefsFromAttempts(attempts)
+  if ((input.errors ?? []).length > 0) return { outcome: "error", producedRefs }
+  if (producedRefs.some((ref) => ref.kind === "surface")) return { outcome: "surfaced", producedRefs }
+  if (producedRefs.some((ref) => ref.kind === "desk_record")) return { outcome: "wrote_record", producedRefs }
+  if (producedRefs.some((ref) => ref.kind === "desk_task")) return { outcome: "updated_desk", producedRefs }
+  if (producedRefs.some((ref) => ref.kind === "arc" || ref.kind === "claim")) return { outcome: "wrote_arc", producedRefs }
+  if (attempts.length > 0 && attempts.every((attempt) => !successfulSurfaceAttempt(attempt))) {
+    return { outcome: "blocked", producedRefs }
+  }
+  return { outcome: "no_change", producedRefs }
+}
+
+export function completeHabitRun(input: CompleteHabitRunInput): CompleteHabitRunResult {
+  const { outcome, producedRefs } = habitOutcomeForCompletion(input)
+  try {
+    writeHabitRunReceipt(input.agentRoot, buildHabitRunReceipt({
+      agentRoot: input.agentRoot,
+      habit: input.habit,
+      runId: input.runId,
+      trigger: input.trigger,
+      startedAt: input.startedAt,
+      endedAt: input.endedAt,
+      outcome,
+      permissionEnvelope: input.permissionEnvelope,
+      toolPolicy: input.toolPolicy,
+      producedRefs,
+      surfaceAttempts: input.surfaceAttempts,
+      errors: input.errors,
+    }))
+  } catch (error) {
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.habit_receipt_write_error",
+      message: "habit receipt could not be written; runtime state was not advanced",
+      meta: {
+        habitName: input.habit.name,
+        runId: input.runId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return { outcome, producedRefs, receiptWritten: false, runtimeStateRecorded: false }
+  }
+  try {
+    recordHabitRun(input.agentRoot, input.habit.name, input.endedAt, {
+      definitionPath: path.join(input.agentRoot, "habits", `${input.habit.name}.md`),
+    })
+    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: true }
+  } catch (error) {
+    emitNervesEvent({
+      level: "warn",
+      component: "senses",
+      event: "senses.habit_runtime_state_record_error",
+      message: "habit runtime state could not be updated after receipt write",
+      meta: {
+        habitName: input.habit.name,
+        runId: input.runId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    return { outcome, producedRefs, receiptWritten: true, runtimeStateRecorded: false }
+  }
 }

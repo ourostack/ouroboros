@@ -8,6 +8,7 @@ import type { FriendStore } from "../../../mind/friends/store"
 import type { ToolDefinition, ToolRiskProfile } from "../../../repertoire/tools-base"
 import {
   buildHabitRunReceipt,
+  completeHabitRun,
   createHabitSessionPaths,
   filterHabitToolsForEnvelope,
   isSafeHabitRunId,
@@ -15,7 +16,7 @@ import {
   readLatestHabitSessionState,
   resolveHabitReturnRoute,
 } from "../../../heart/habits/habit-session"
-import { writeHabitRunReceipt } from "../../../arc/flight-recorder"
+import { readHabitRunReceipt, writeHabitRunReceipt } from "../../../arc/flight-recorder"
 
 const mockEmitNervesEvent = vi.fn()
 
@@ -569,6 +570,52 @@ describe("habit-session helpers", () => {
       toolPolicy: policy,
     })
     expect(fs.existsSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${receipt.runId}.json`))).toBe(false)
+  })
+
+  it("completes habit runs through the habit-session helper before advancing runtime state", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: ["desk"],
+      deniedTools: [],
+      outwardMessagingAllowed: true,
+    }
+
+    const result = completeHabitRun({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: "30m" }),
+      runId: "2026-06-11T17-00-00-000Z-heartbeat-abc123ef",
+      trigger: "poke",
+      startedAt: "2026-06-11T17:00:00.000Z",
+      endedAt: "2026-06-11T17:01:00.000Z",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+      producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
+      surfaceAttempts: [],
+      errors: [],
+    })
+
+    expect(result).toMatchObject({
+      outcome: "updated_desk",
+      producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
+      receiptWritten: true,
+      runtimeStateRecorded: true,
+    })
+    expect(readHabitRunReceipt(agentRoot, "2026-06-11T17-00-00-000Z-heartbeat-abc123ef")).toMatchObject({
+      habitName: "heartbeat",
+      outcome: "updated_desk",
+      producedRefs: [{ kind: "desk_task", locator: "desk/tasks/check-in" }],
+    })
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "habits", "heartbeat.json"), "utf-8"))).toMatchObject({
+      schemaVersion: 1,
+      name: "heartbeat",
+      lastRun: "2026-06-11T17:01:00.000Z",
+    })
+
+    const receiptWriteIndex = mockEmitNervesEvent.mock.calls.findIndex(([event]) => event.event === "mind.flight_recorder_habit_receipt_written")
+    const runtimeWriteIndex = mockEmitNervesEvent.mock.calls.findIndex(([event]) => event.event === "daemon.habit_runtime_state_write")
+    expect(receiptWriteIndex).toBeGreaterThanOrEqual(0)
+    expect(runtimeWriteIndex).toBeGreaterThan(receiptWriteIndex)
   })
 
   it("sets null nextRunAt for inactive, unparseable, and invalid-ended runs unless explicitly provided", async () => {
