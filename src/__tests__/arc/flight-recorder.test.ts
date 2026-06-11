@@ -300,4 +300,84 @@ describe("Arc flight recorder", () => {
       event: "mind.flight_recorder_habit_receipt_written",
     }))
   })
+
+  it("reads and lists schema v2 habit run receipts without loading transcripts", async () => {
+    const recorder = await import("../../arc/flight-recorder") as any
+    const first = {
+      schemaVersion: 2,
+      runId: "2026-06-08T12-00-00-000Z-checkup-11111111",
+      sessionId: "2026-06-08T12-00-00-000Z-checkup-11111111",
+      habitName: "checkup",
+      trigger: "poke",
+      startedAt: "2026-06-08T12:00:00.000Z",
+      endedAt: "2026-06-08T12:01:00.000Z",
+      outcome: "surfaced",
+      definitionLocator: "habits/checkup.md",
+      sessionLocator: "state/habit-sessions/2026-06-08T12-00-00-000Z-checkup-11111111/session.json",
+      pendingLocator: "state/habit-sessions/2026-06-08T12-00-00-000Z-checkup-11111111/pending",
+      runtimeStateLocator: "state/habits/checkup.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-08T12-00-00-000Z-checkup-11111111.json",
+      nextRunAt: "2026-06-08T12:31:00.000Z",
+      permissionEnvelope: {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "family", recipient: "family", status: "allowed" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolPolicy: {
+        requestedTools: null,
+        grantedTools: ["read_file", "surface"],
+        deniedTools: ["shell"],
+        outwardMessagingAllowed: true,
+      },
+      producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "cli",
+        reason: "status",
+        result: "queued",
+        routeKind: "family",
+      }],
+      errors: [],
+    }
+    const second = {
+      ...first,
+      runId: "2026-06-08T12-05-00-000Z-checkup-22222222",
+      sessionId: "2026-06-08T12-05-00-000Z-checkup-22222222",
+      startedAt: "2026-06-08T12:05:00.000Z",
+      endedAt: "2026-06-08T12:06:00.000Z",
+      receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-08T12-05-00-000Z-checkup-22222222.json",
+      surfaceAttempts: [{
+        recipient: "ari",
+        channel: "cli",
+        reason: "answer",
+        result: "deferred",
+        rawStatus: "deferred",
+        routeKind: "family",
+      }],
+    }
+
+    recorder.writeHabitRunReceipt(agentRoot, first)
+    recorder.writeHabitRunReceipt(agentRoot, second)
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "malformed.json"), "{", "utf-8")
+    fs.writeFileSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", "wrong-shape.json"), JSON.stringify({ schemaVersion: 2, runId: "wrong-shape" }), "utf-8")
+
+    expect(recorder.readHabitRunReceipt(agentRoot, first.runId)).toMatchObject({
+      runId: first.runId,
+      schemaVersion: 2,
+      sessionLocator: first.sessionLocator,
+      surfaceAttempts: first.surfaceAttempts,
+    })
+    expect(recorder.readHabitRunReceipt(agentRoot, "../escape")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "bad%2fescape")).toBeNull()
+    expect(recorder.readHabitRunReceipt(agentRoot, "wrong-shape")).toBeNull()
+
+    const listed = recorder.listHabitRunReceipts(agentRoot, { limit: 10 })
+    expect(listed.map((receipt: { runId: string }) => receipt.runId)).toEqual([second.runId, first.runId])
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "warn",
+      event: "mind.flight_recorder_habit_receipt_malformed",
+    }))
+  })
 })

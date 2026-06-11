@@ -1,0 +1,286 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
+import type { HabitFile } from "../../../heart/habits/habit-parser"
+import type { FriendRecord, TrustLevel } from "../../../mind/friends/types"
+import type { FriendStore } from "../../../mind/friends/store"
+import type { ToolDefinition, ToolRiskProfile } from "../../../repertoire/tools-base"
+import {
+  buildHabitRunReceipt,
+  createHabitSessionPaths,
+  filterHabitToolsForEnvelope,
+  isSafeHabitRunId,
+  normalizeHabitPermissionEnvelope,
+  resolveHabitReturnRoute,
+} from "../../../heart/habits/habit-session"
+
+const mockEmitNervesEvent = vi.fn()
+
+vi.mock("../../../nerves/runtime", () => ({
+  emitNervesEvent: (...args: any[]) => mockEmitNervesEvent(...args),
+}))
+
+function makeHabit(overrides: Partial<HabitFile> = {}): HabitFile {
+  return {
+    name: "heartbeat",
+    title: "Heartbeat",
+    cadence: "30m",
+    status: "active",
+    lastRun: "2026-06-11T17:00:00.000Z",
+    created: "2026-06-01T00:00:00.000Z",
+    tools: undefined,
+    origin: null,
+    surface: { family: true, originator: true, extra: [] },
+    body: "Check in.",
+    ...overrides,
+  }
+}
+
+function makeFriend(id: string, name: string, trustLevel: TrustLevel): FriendRecord {
+  return {
+    id,
+    name,
+    trustLevel,
+    externalIds: [],
+    tenantMemberships: [],
+    toolPreferences: {},
+    notes: {},
+    totalTokens: 0,
+    createdAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+    schemaVersion: 1,
+  }
+}
+
+function makeFriendStore(records: FriendRecord[]): FriendStore {
+  return {
+    get: vi.fn(async (id: string) => records.find((record) => record.id === id) ?? null),
+    put: vi.fn(),
+    delete: vi.fn(),
+    findByExternalId: vi.fn(async () => null),
+    listAll: vi.fn(async () => [...records]),
+  }
+}
+
+function makeTool(
+  name: string,
+  riskProfile?: ToolRiskProfile | ((args: Record<string, string>) => ToolRiskProfile),
+): ToolDefinition {
+  return {
+    tool: {
+      type: "function",
+      function: {
+        name,
+        description: name,
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    handler: () => "ok",
+    ...(riskProfile ? { riskProfile } : {}),
+  }
+}
+
+describe("habit-session helpers", () => {
+  let agentRoot: string
+
+  beforeEach(() => {
+    agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "habit-session-"))
+    mockEmitNervesEvent.mockReset()
+  })
+
+  afterEach(() => {
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("creates per-run session paths and rejects unsafe run ids before path joining", () => {
+    const runId = "2026-06-11T17-00-00-000Z-heartbeat-abc123ef"
+
+    expect(isSafeHabitRunId(runId)).toBe(true)
+    for (const unsafe of ["", "/", "\\", "..", "ok/../bad", "bad%2fvalue", "bad%2Fvalue", "bad%5cvalue"]) {
+      expect(isSafeHabitRunId(unsafe)).toBe(false)
+    }
+
+    expect(createHabitSessionPaths(agentRoot, runId)).toEqual({
+      runDir: path.join(agentRoot, "state", "habit-sessions", runId),
+      sessionPath: path.join(agentRoot, "state", "habit-sessions", runId, "session.json"),
+      pendingDir: path.join(agentRoot, "state", "habit-sessions", runId, "pending"),
+      runtimeStatePath: path.join(agentRoot, "state", "habits", "heartbeat.json"),
+      receiptPath: path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${runId}.json`),
+      sessionLocator: `state/habit-sessions/${runId}/session.json`,
+      pendingLocator: `state/habit-sessions/${runId}/pending`,
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
+    })
+  })
+
+  it("normalizes return-route permissions from parser defaults, origin, and exact extra specs", async () => {
+    const ari = makeFriend("ari", "Ari", "family")
+    const teammate = makeFriend("teammate-id", "Teammate", "friend")
+    const friendStore = makeFriendStore([ari, teammate])
+
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "ari", channel: "cli", key: "main" },
+      surface: {
+        family: true,
+        originator: true,
+        extra: ["Teammate/mcp/thread-1", "malformed", "self/inner/dialog"],
+      },
+    }), { agentRoot, friendStore })
+
+    expect(envelope).toMatchObject({
+      schemaVersion: 1,
+      canMessageOutward: true,
+      deniedTools: [],
+    })
+    expect(envelope.returnRoutes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "family", recipient: "family", status: "allowed" }),
+      expect.objectContaining({ kind: "originator", recipient: "ari", status: "allowed", friendId: "ari", channel: "cli", key: "main" }),
+      expect.objectContaining({ kind: "extra", recipient: "Teammate", status: "allowed", friendId: "teammate-id", channel: "mcp", key: "thread-1" }),
+      expect.objectContaining({ kind: "extra", recipient: "malformed", status: "unresolved" }),
+      expect.objectContaining({ kind: "extra", recipient: "self/inner/dialog", status: "unresolved" }),
+    ]))
+    expect(envelope.warnings.join("\n")).toContain("malformed")
+    expect(envelope.warnings.join("\n")).toContain("self/inner")
+  })
+
+  it("removes outward messaging tools when every return route is disabled or unresolved", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: false, extra: [] },
+    }), { agentRoot })
+
+    expect(envelope.canMessageOutward).toBe(false)
+    expect(envelope.deniedTools).toEqual(expect.arrayContaining(["send_message", "surface"]))
+    expect(envelope.returnRoutes).toEqual([])
+  })
+
+  it("resolves route attempts before handlers run and denies non-family, self, and live voice routes", async () => {
+    const friendStore = makeFriendStore([
+      makeFriend("ari", "Ari", "family"),
+      makeFriend("casey", "Casey", "friend"),
+    ])
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "ari", channel: "cli", key: "main" },
+      surface: { family: true, originator: true, extra: ["casey/mcp/thread-1"] },
+    }), { agentRoot, friendStore })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "ari", channel: "bluebubbles", key: "chat", content: "checking in" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari" })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "casey", channel: "bluebubbles", key: "chat", content: "checking in" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("family") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "self", channel: "inner", key: "dialog", content: "loop" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("self/inner") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { delegationId: "held-1", content: "answer" },
+      friendStore,
+      delegatedOrigins: [{
+        id: "held-1",
+        friendId: "ari",
+        friendName: "Ari",
+        channel: "cli",
+        key: "main",
+        delegatedContent: "question",
+        source: "drained",
+        timestamp: 1,
+      }],
+    })).resolves.toMatchObject({ allowed: true, routeKind: "originator", friendId: "ari", channel: "cli", key: "main" })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { friendId: "ari", channel: "voice", content: "live call" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("voice") })
+  })
+
+  it("filters habit tools with the supplied executable risk classifier and route envelope", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: false, extra: [] },
+    }), { agentRoot })
+    const shellRisk = vi.fn((args: Record<string, string>) =>
+      args.command?.startsWith("echo")
+        ? { mutates: "none", risk: "low" as const }
+        : { mutates: "external_side_effect" as const, risk: "high" as const, reason: "mutating shell command" })
+    const tools = [
+      makeTool("read_file", { mutates: "none", risk: "low" }),
+      makeTool("shell", shellRisk),
+      makeTool("graph_mutate", { mutates: "external_side_effect", risk: "high", reason: "mutates graph" }),
+      makeTool("send_message", { mutates: "external_side_effect", risk: "high", reason: "messages outward" }),
+      makeTool("surface", { mutates: ["durable_state_write", "external_side_effect"], risk: "high", reason: "surfaces outward" }),
+    ]
+
+    const policy = filterHabitToolsForEnvelope(tools, null, envelope, (definition) => {
+      if (typeof definition.riskProfile === "function") return definition.riskProfile({ command: "rm -rf /tmp/habit-policy-probe" })
+      return definition.riskProfile ?? { mutates: "none", risk: "low" }
+    })
+
+    expect(shellRisk).toHaveBeenCalled()
+    expect(policy.grantedTools).toEqual(["read_file"])
+    expect(policy.deniedTools).toEqual(expect.arrayContaining(["shell", "graph_mutate", "send_message", "surface"]))
+    expect(policy.outwardMessagingAllowed).toBe(false)
+  })
+
+  it("builds complete schema v2 receipts without writing them", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: ["read_file"],
+      deniedTools: ["shell"],
+      outwardMessagingAllowed: true,
+    }
+
+    const receipt = buildHabitRunReceipt({
+      agentRoot,
+      habit: makeHabit({ name: "heartbeat", cadence: "30m" }),
+      runId: "2026-06-11T17-00-00-000Z-heartbeat-abc123ef",
+      trigger: "poke",
+      startedAt: "2026-06-11T17:00:00.000Z",
+      endedAt: "2026-06-11T17:01:00.000Z",
+      outcome: "surfaced",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+      producedRefs: [{ kind: "surface", locator: "state/pending/ari/cli/main" }],
+      surfaceAttempts: [{ recipient: "ari", channel: "cli", reason: "status", result: "queued", routeKind: "family" }],
+      errors: [],
+    })
+
+    expect(receipt).toMatchObject({
+      schemaVersion: 2,
+      runId: "2026-06-11T17-00-00-000Z-heartbeat-abc123ef",
+      sessionId: "2026-06-11T17-00-00-000Z-heartbeat-abc123ef",
+      definitionLocator: "habits/heartbeat.md",
+      sessionLocator: "state/habit-sessions/2026-06-11T17-00-00-000Z-heartbeat-abc123ef/session.json",
+      pendingLocator: "state/habit-sessions/2026-06-11T17-00-00-000Z-heartbeat-abc123ef/pending",
+      runtimeStateLocator: "state/habits/heartbeat.json",
+      receiptLocator: "arc/flight-recorder/habit-receipts/2026-06-11T17-00-00-000Z-heartbeat-abc123ef.json",
+      nextRunAt: "2026-06-11T17:31:00.000Z",
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    })
+    expect(fs.existsSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${receipt.runId}.json`))).toBe(false)
+  })
+})
