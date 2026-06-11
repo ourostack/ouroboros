@@ -715,6 +715,27 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("records non-Error runtime-state failures after receipt write", async () => {
+      mockRecordHabitRun.mockImplementation(() => {
+        throw "runtime state unavailable"
+      })
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.run("habit", undefined, "heartbeat")
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledTimes(1)
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        level: "warn",
+        event: "senses.habit_runtime_state_record_error",
+        meta: expect.objectContaining({
+          habitName: "heartbeat",
+          runId: "habit-run-id",
+          error: "runtime state unavailable",
+        }),
+      }))
+    })
+
     it("does not update lastRun for non-habit turns", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const worker = createInnerDialogWorker(runTurn)

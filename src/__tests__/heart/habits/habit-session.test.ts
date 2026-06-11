@@ -423,6 +423,20 @@ describe("habit-session helpers", () => {
       args: { friendId: "ari", channel: "cli", key: "main" },
       friendStore,
     })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope: {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "extra", recipient: "ari/cli/other", status: "allowed", friendId: "ari", channel: "cli", key: "other" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolName: "send_message",
+      args: { friendId: "ari", channel: "cli", key: "main" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route") })
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "daemon.habit_return_route_denied",
     }))
