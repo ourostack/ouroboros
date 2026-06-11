@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Badge } from "../../catalyst/badge"
 import { fetchJson, relTime, truncate } from "../../api"
 import { classifyToolCall } from "../../tools"
@@ -7,6 +7,8 @@ import { useStickyScroll } from "../../hooks/use-sticky-scroll"
 import type {
   MailboxAgentView,
   MailboxHabitItem,
+  MailboxHabitRunSummary,
+  MailboxHabitRunView,
   MailboxHabitView,
   MailboxSessionTranscript,
   MailboxTranscriptMessage as TranscriptMessage,
@@ -32,6 +34,7 @@ function formatTranscriptTimestamp(msg: TranscriptMessage): string {
 export function InnerTab({ agentName, view, refreshGeneration }: { agentName: string; view: MailboxAgentView; refreshGeneration: number }) {
   const nav = useNavigate()
   const [habits, setHabits] = useState<MailboxHabitView | null>(null)
+  const [habitRuns, setHabitRuns] = useState<MailboxHabitRunView | null>(null)
   const [transcript, setTranscript] = useState<MailboxSessionTranscript | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const transcriptRefreshRef = useRef<number | null>(null)
@@ -39,6 +42,10 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
 
   useEffect(() => {
     fetchJson<MailboxHabitView>(`/agents/${encodeURIComponent(agentName)}/habits`).then(setHabits)
+  }, [agentName, refreshGeneration])
+
+  useEffect(() => {
+    fetchJson<MailboxHabitRunView>(`/agents/${encodeURIComponent(agentName)}/habit-runs`).then(setHabitRuns)
   }, [agentName, refreshGeneration])
 
   useEffect(() => {
@@ -59,6 +66,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
   }
 
   const habitItems = habits?.items ?? []
+  const habitRunItems = habitRuns?.items ?? []
   const overdueHabits = habitItems.filter((h) => h.isOverdue)
   const activeHealthy = habitItems.filter((h) => h.status === "active" && !h.isOverdue)
   const pausedHabits = habitItems.filter((h) => h.status === "paused")
@@ -136,6 +144,31 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
         </div>
       </section>
 
+      {/* Habit session receipts — explicit private work ledger */}
+      <section>
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ouro-glow">Habit sessions</p>
+            <p className="mt-1 text-xs text-ouro-shadow">
+              {habitRuns ? `${habitRuns.totalCount} recorded` : "Loading runs"}
+            </p>
+          </div>
+          {habitRuns && habitRuns.totalCount > habitRunItems.length && (
+            <span className="shrink-0 font-mono text-[10px] text-ouro-shadow">
+              showing {habitRunItems.length}/{habitRuns.totalCount}
+            </span>
+          )}
+        </div>
+
+        {habitRunItems.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {habitRunItems.map((run) => <HabitRunRow key={run.runId} run={run} />)}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-ouro-shadow">No habit sessions recorded.</p>
+        )}
+      </section>
+
       {/* Inner dialog — always show recent, load more on demand */}
       <section>
         <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-ouro-glow">
@@ -196,6 +229,130 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
           <p className="mt-2 text-sm text-ouro-shadow">No habits configured.</p>
         )}
       </section>
+    </div>
+  )
+}
+
+function outcomeTone(outcome: MailboxHabitRunSummary["outcome"]): "good" | "warn" | "bad" | "quiet" {
+  if (outcome === "error" || outcome === "blocked") return "bad"
+  if (outcome === "surfaced" || outcome === "wrote_arc" || outcome === "updated_desk" || outcome === "wrote_record") return "good"
+  if (outcome === "no_change") return "quiet"
+  return "warn"
+}
+
+function outcomeClass(outcome: MailboxHabitRunSummary["outcome"]): string {
+  const tone = outcomeTone(outcome)
+  if (tone === "bad") return "bg-ouro-fang/10 text-ouro-fang ring-ouro-fang/20"
+  if (tone === "good") return "bg-ouro-scale/10 text-ouro-glow ring-ouro-scale/20"
+  if (tone === "warn") return "bg-ouro-gold/10 text-ouro-gold ring-ouro-gold/20"
+  return "bg-ouro-void/60 text-ouro-shadow ring-ouro-moss/15"
+}
+
+function HabitRunRow({ run }: { run: MailboxHabitRunSummary }) {
+  const routes = run.permissionEnvelope.returnRoutes
+  const attempts = run.surfaceAttempts
+  const deniedTools = Array.from(new Set([
+    ...run.permissionEnvelope.deniedTools,
+    ...run.toolPolicy.deniedTools,
+  ]))
+
+  return (
+    <article className="rounded-lg bg-ouro-void/45 px-3 py-3 ring-1 ring-ouro-moss/15">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded-md px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider ring-1 ${outcomeClass(run.outcome)}`}>
+              {run.outcome}
+            </span>
+            <span className="font-medium text-ouro-bone">{run.habitName}</span>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-ouro-shadow">{run.trigger}</span>
+          </div>
+          <p className="mt-1 font-mono text-[11px] text-ouro-shadow break-all">{run.runId}</p>
+        </div>
+        <div className="shrink-0 text-left sm:text-right">
+          <p className="font-mono text-[10px] text-ouro-shadow">{relTime(run.endedAt)}</p>
+          {run.nextRunAt && <p className="font-mono text-[10px] text-ouro-glow">next {relTime(run.nextRunAt)}</p>}
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 lg:grid-cols-3">
+        <RunFact label="routes">
+          {routes.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {routes.map((route, index) => (
+                <span key={`${route.kind}-${route.recipient}-${index}`} className="rounded bg-ouro-moss/20 px-1.5 py-0.5 font-mono text-[10px] text-ouro-mist ring-1 ring-ouro-moss/20">
+                  {route.kind}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-ouro-shadow">none</span>
+          )}
+          <p className="mt-1 text-[11px] text-ouro-shadow">
+            outward {run.permissionEnvelope.canMessageOutward ? "allowed" : "closed"}
+          </p>
+        </RunFact>
+
+        <RunFact label="attempts">
+          {attempts.length > 0 ? (
+            <div className="space-y-1">
+              {attempts.map((attempt, index) => (
+                <div key={`${attempt.recipient}-${attempt.channel}-${index}`} className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded bg-ouro-moss/20 px-1.5 py-0.5 font-mono text-[10px] text-ouro-bone ring-1 ring-ouro-moss/20">
+                      {attempt.result}
+                    </span>
+                    <span className="text-[11px] text-ouro-shadow">{attempt.reason}</span>
+                  </div>
+                  <p className="mt-0.5 font-mono text-[10px] text-ouro-shadow break-all">
+                    {attempt.recipient}/{attempt.channel}
+                    {attempt.error ? ` - ${attempt.error}` : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="text-ouro-shadow">none</span>
+          )}
+        </RunFact>
+
+        <RunFact label="tools">
+          <div className="flex flex-wrap gap-1.5">
+            {run.toolPolicy.grantedTools.map((tool) => (
+              <span key={`granted-${tool}`} className="rounded bg-ouro-scale/10 px-1.5 py-0.5 font-mono text-[10px] text-ouro-glow ring-1 ring-ouro-scale/15">{tool}</span>
+            ))}
+            {deniedTools.map((tool) => (
+              <span key={`denied-${tool}`} className="rounded bg-ouro-fang/8 px-1.5 py-0.5 font-mono text-[10px] text-ouro-fang ring-1 ring-ouro-fang/15">{tool}</span>
+            ))}
+            {run.toolPolicy.grantedTools.length === 0 && deniedTools.length === 0 && <span className="text-ouro-shadow">none</span>}
+          </div>
+          {run.errorCount > 0 && <p className="mt-1 font-mono text-[10px] text-ouro-fang">{run.errorCount} error{run.errorCount === 1 ? "" : "s"}</p>}
+        </RunFact>
+      </div>
+
+      {(run.producedRefs.length > 0 || run.receiptLocator) && (
+        <div className="mt-3 border-t border-ouro-moss/15 pt-2">
+          {run.producedRefs.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {run.producedRefs.map((ref, index) => (
+                <span key={`${ref.kind}-${ref.locator}-${index}`} className="rounded bg-ouro-void/60 px-1.5 py-0.5 font-mono text-[10px] text-ouro-shadow ring-1 ring-ouro-moss/10">
+                  {ref.kind}: {ref.locator}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="font-mono text-[10px] text-ouro-shadow break-all">{run.receiptLocator}</p>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function RunFact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 border-l border-ouro-moss/15 pl-2.5">
+      <p className="mb-1 font-mono text-[9px] uppercase tracking-wider text-ouro-shadow">{label}</p>
+      <div className="min-w-0 text-xs text-ouro-mist">{children}</div>
     </div>
   )
 }
