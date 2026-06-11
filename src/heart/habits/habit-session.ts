@@ -1,7 +1,9 @@
+import * as fs from "fs"
 import * as path from "path"
 import type { AttentionItem } from "../../arc/attention-types"
 import {
   isSafeHabitRunId as isSafeFlightRecorderHabitRunId,
+  listHabitRunReceipts,
   type FlightRecorderProducedRef,
   type HabitPermissionEnvelope,
   type HabitReturnRoute,
@@ -74,6 +76,18 @@ export interface BuildHabitRunReceiptInput {
   nextRunAt?: string | null
 }
 
+export interface HabitRuntimeStateSnapshot {
+  schemaVersion: 1
+  name: string
+  lastRun: string
+  updatedAt: string
+}
+
+export interface HabitSessionRecoveryState {
+  receipt: HabitRunReceipt
+  runtimeState: HabitRuntimeStateSnapshot | null
+}
+
 interface ResolvedFriend {
   id: string
   name: string
@@ -89,6 +103,61 @@ interface RouteTarget {
 
 function habitSessionRoot(agentRoot: string): string {
   return path.join(agentRoot, "state", "habit-sessions")
+}
+
+function isHabitRuntimeStateSnapshot(value: unknown, habitName: string): value is HabitRuntimeStateSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Partial<HabitRuntimeStateSnapshot>
+  return record.schemaVersion === 1
+    && record.name === habitName
+    && typeof record.lastRun === "string"
+    && typeof record.updatedAt === "string"
+}
+
+function readHabitRuntimeStateSnapshot(agentRoot: string, habitName: string): HabitRuntimeStateSnapshot | null {
+  const runtimeStatePath = path.join(agentRoot, "state", "habits", `${habitName}.json`)
+  try {
+    const parsed = JSON.parse(fs.readFileSync(runtimeStatePath, "utf-8")) as unknown
+    if (isHabitRuntimeStateSnapshot(parsed, habitName)) return parsed
+    emitNervesEvent({
+      level: "warn",
+      component: "daemon",
+      event: "daemon.habit_runtime_state_malformed",
+      message: "habit runtime state could not be used for recovery",
+      meta: { agentRoot, habitName, runtimeStatePath },
+    })
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function readLatestHabitSessionState(
+  agentRoot: string,
+  options: { habitName?: string } = {},
+): HabitSessionRecoveryState | null {
+  const receipt = listHabitRunReceipts(agentRoot)
+    .find((entry) => options.habitName === undefined || entry.habitName === options.habitName)
+  if (!receipt) {
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.habit_session_recovery_state_empty",
+      message: "no habit session receipt available for recovery",
+      meta: { agentRoot, habitName: options.habitName ?? null },
+    })
+    return null
+  }
+  const state = {
+    receipt,
+    runtimeState: readHabitRuntimeStateSnapshot(agentRoot, receipt.habitName),
+  }
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.habit_session_recovery_state_read",
+    message: "habit session recovery state read",
+    meta: { agentRoot, habitName: receipt.habitName, runId: receipt.runId, hasRuntimeState: state.runtimeState !== null },
+  })
+  return state
 }
 
 export function createHabitSessionPaths(agentRoot: string, runId: string, habitName = "heartbeat"): HabitSessionPaths {

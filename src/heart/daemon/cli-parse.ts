@@ -16,6 +16,8 @@ import type { DnsWorkflowAction, OuroCliCommand } from "./cli-types"
 import type { VaultItemTemplate } from "./vault-items"
 import { suggestCommand } from "./cli-help"
 import { parseDeskCommand, parseTaskAliasCommand } from "./cli-desk"
+import { isHabitRunTrigger } from "../../arc/flight-recorder"
+import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import {
   isVaultItemTemplate,
   normalizePorkbunOpsAccount,
@@ -115,7 +117,7 @@ export function usage(): string {
     "  ouro chat <agent>",
     "  ouro msg --to <agent> [--session <id>] [--task <ref>] <message>",
     "  ouro poke <agent> --task <task-id>",
-    "  ouro poke <agent> --habit <name>",
+    "  ouro poke <agent> --habit <name> [--trigger poke|launchd|cron|overdue|manual]",
     "  ouro habit list [--agent <name>]",
     "  ouro habit create [--agent <name>] <name> [--cadence <interval>]",
     "  ouro habit runs [--agent <name>] [--limit <n>]",
@@ -193,6 +195,7 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
   let taskId: string | undefined
   let habitName: string | undefined
   let awaitName: string | undefined
+  let trigger: HabitRunTrigger | undefined
   for (let i = 1; i < args.length; i += 1) {
     if (args[i] === "--task") {
       taskId = args[i + 1]
@@ -206,11 +209,18 @@ function parsePokeCommand(args: string[]): OuroCliCommand {
       awaitName = args[i + 1]
       i += 1
     }
+    if (args[i] === "--trigger") {
+      const rawTrigger = args[i + 1]
+      if (!isHabitRunTrigger(rawTrigger)) throw new Error("invalid habit trigger")
+      trigger = rawTrigger
+      i += 1
+    }
   }
 
   // Priority order: --await > --habit > --task
   if (awaitName) return { kind: "await.poke", agent, awaitName }
-  if (habitName) return { kind: "habit.poke", agent, habitName }
+  if (habitName) return { kind: "habit.poke", agent, habitName, trigger: trigger ?? "poke" }
+  if (trigger) throw new Error(`Usage\n${usage()}`)
   if (!taskId) throw new Error(`Usage\n${usage()}`)
   return { kind: "task.poke", agent, taskId }
 }

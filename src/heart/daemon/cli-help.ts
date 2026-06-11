@@ -143,7 +143,7 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   poke: {
     category: "Tasks",
     description: "Poke an agent about a task or habit",
-    usage: "ouro poke <agent> --task <task-id> | --habit <name>",
+    usage: "ouro poke <agent> --task <task-id> | --habit <name> [--trigger poke|launchd|cron|overdue|manual]",
     example: "ouro poke ouroboros --task abc123",
   },
   habit: {

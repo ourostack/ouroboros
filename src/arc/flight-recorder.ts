@@ -162,6 +162,14 @@ export interface HabitRunReceipt {
 
 export type WritableHabitRunReceipt = HabitRunReceipt | LegacyHabitRunReceipt
 
+export function isHabitRunTrigger(value: unknown): value is HabitRunTrigger {
+  return value === "cron"
+    || value === "launchd"
+    || value === "poke"
+    || value === "overdue"
+    || value === "manual"
+}
+
 export interface RecordFlightRecorderEventInput extends Omit<FlightRecorderEvent, "schemaVersion" | "id" | "recordedAt" | "summary"> {
   id?: string
   recordedAt?: string

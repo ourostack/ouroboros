@@ -336,7 +336,7 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
     })
 
     it("does not fire habits that are not overdue", () => {
@@ -387,7 +387,7 @@ describe("HabitScheduler", () => {
 
       scheduler.start()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
     })
 
     it("does not fire paused habits even if overdue", () => {
@@ -514,7 +514,7 @@ describe("HabitScheduler", () => {
 
       scheduler.reconcile()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
     })
 
     it("fires overdue habits on reconcile (elapsed > cadence)", () => {
@@ -539,7 +539,7 @@ describe("HabitScheduler", () => {
 
       scheduler.reconcile()
 
-      expect(onHabitFire).toHaveBeenCalledWith("heartbeat")
+      expect(onHabitFire).toHaveBeenCalledWith("heartbeat", "overdue")
     })
 
     it("does not re-fire recently-fired habits on reconcile", () => {
