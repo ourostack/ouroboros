@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.666",
       "changes": [
-        "Add explicit auditable habit sessions with permissioned return routes, Arc receipts, CLI/API inspection, Workbench visibility, and context-wipe reconstruction."
+        "Add explicit auditable habit sessions with permissioned return routes, Arc receipts, CLI/API inspection, Workbench visibility, and context-wipe reconstruction.",
+        "Harden habit audit truth after review: receipt outcomes now derive from structured successful effects, runtime lastRun advances only after receipt write, incomplete return routes fail closed, Workbench shows run error details, and agent orientation docs describe the schema v2 receipt contract."
       ]
     },
     {
