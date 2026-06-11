@@ -537,6 +537,26 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("keeps habit-created follow-on pending work in the same habit run instead of generic instinct", async () => {
+      const runTurn = vi.fn().mockResolvedValue(undefined)
+      const hasPendingWork = vi.fn()
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false)
+      const worker = createInnerDialogWorker(runTurn, hasPendingWork)
+
+      await worker.run("habit", undefined, "heartbeat", undefined, "poke")
+
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      expect(runTurn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        reason: "habit",
+        habitName: "heartbeat",
+      }))
+      expect(runTurn.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+        reason: "habit",
+        habitName: "heartbeat",
+      }))
+    })
+
     it("counts the initial instinct entry against the cap", async () => {
       const runTurn = vi.fn().mockResolvedValue(undefined)
       const hasPendingWork = vi.fn().mockReturnValue(true)
