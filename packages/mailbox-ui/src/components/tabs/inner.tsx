@@ -48,6 +48,7 @@ export function InnerTab({ agentName, view, refreshGeneration }: { agentName: st
   useEffect(() => {
     let cancelled = false
     setHabitRunsError(false)
+    setHabitRuns(null)
     fetchJson<MailboxHabitRunView>(`/agents/${encodeURIComponent(agentName)}/habit-runs`)
       .then((data) => {
         if (!cancelled) setHabitRuns(data)

@@ -1449,6 +1449,61 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.queryByText("No habit sessions recorded.")).toBeNull()
   })
 
+  it("clears stale habit run rows when refresh cannot reload history", async () => {
+    const habitRuns = {
+      totalCount: 1,
+      limit: 20,
+      items: [{
+        runId: "run-stale-row",
+        habitName: "mail-check",
+        trigger: "cron",
+        startedAt: "2026-06-11T10:00:00.000Z",
+        endedAt: "2026-06-11T10:02:00.000Z",
+        outcome: "surfaced",
+        nextRunAt: null,
+        permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] },
+        toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: true },
+        producedRefs: [],
+        surfaceAttempts: [],
+        errorCount: 0,
+        receiptLocator: "arc/flight-recorder/habit-receipts/run-stale-row.json",
+        sessionLocator: "state/habit-sessions/run-stale-row/session.json",
+        runtimeStateLocator: "state/habits/mail-check.json",
+      }],
+    }
+    let habitRunCalls = 0
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith("/habits")) return Promise.resolve(jsonResponse({ totalCount: 0, activeCount: 0, pausedCount: 0, degradedCount: 0, overdueCount: 0, items: [] }))
+      if (url.endsWith("/habit-runs")) {
+        habitRunCalls += 1
+        if (habitRunCalls === 1) return Promise.resolve(jsonResponse(habitRuns))
+        return Promise.reject(new Error("network down"))
+      }
+      throw new Error(`unexpected url: ${url}`)
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const view = makeAgentView()
+    const ui = render(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={0} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.getByText("mail-check")).toBeTruthy())
+
+    ui.rerender(
+      <NavigationContext.Provider value={() => {}}>
+        <InnerTab agentName="slugger" view={view} refreshGeneration={1} />
+      </NavigationContext.Provider>
+    )
+
+    await waitFor(() => expect(ui.getByText("Habit sessions unavailable.")).toBeTruthy())
+    expect(ui.queryByText("mail-check")).toBeNull()
+    expect(ui.queryByText("1 recorded")).toBeNull()
+  })
+
   it("re-fetches notes data when refreshGeneration advances", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
