@@ -273,8 +273,9 @@ Every habit run writes an audit receipt in Arc:
 
 ```ts
 interface HabitRunReceipt {
-  schemaVersion: 1
+  schemaVersion: 2
   runId: string
+  sessionId: string
   habitName: string
   trigger: "cron" | "launchd" | "poke" | "overdue" | "manual"
   startedAt: string
@@ -287,6 +288,33 @@ interface HabitRunReceipt {
     | "surfaced"
     | "blocked"
     | "error"
+  definitionLocator: string
+  sessionLocator: string
+  pendingLocator: string
+  runtimeStateLocator: string
+  receiptLocator: string
+  nextRunAt: string | null
+  permissionEnvelope: {
+    schemaVersion: 1
+    canMessageOutward: boolean
+    returnRoutes: Array<{
+      kind: "family" | "originator" | "extra"
+      recipient: string
+      status: "allowed" | "unresolved"
+      friendId?: string
+      channel?: string
+      key?: string
+      reason?: string
+    }>
+    deniedTools: string[]
+    warnings: string[]
+  }
+  toolPolicy: {
+    requestedTools: string[] | null
+    grantedTools: string[]
+    deniedTools: string[]
+    outwardMessagingAllowed: boolean
+  }
   producedRefs: Array<{
     kind: "arc" | "desk_task" | "desk_record" | "claim" | "surface" | "none"
     locator: string
@@ -295,14 +323,27 @@ interface HabitRunReceipt {
     recipient: string
     channel: string
     reason: "needed_input" | "status" | "answer" | "blocked" | "other"
-    result: "sent" | "queued" | "blocked" | "failed"
+    result:
+      | "sent"
+      | "delivered"
+      | "delivered_now"
+      | "queued"
+      | "deferred"
+      | "blocked"
+      | "failed"
+      | "unavailable"
+    rawStatus?: string
+    routeKind?: "family" | "originator" | "extra"
+    error?: string
   }>
   errors: string[]
 }
 ```
 
 This audit log is not a permission bureaucracy. It is the durable record of
-what happened.
+what happened. After a context wipe, the agent should be able to reconstruct the
+latest habit run from Arc habit receipts plus `state/habits/<habit>.json`
+runtime state without loading the private session transcript.
 
 ## Habit Surfacing
 
