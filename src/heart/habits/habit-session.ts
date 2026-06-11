@@ -128,7 +128,6 @@ function isSelfTarget(friendId: string, channel?: string, key?: string): boolean
 async function resolveFriend(friendStore: FriendStore | undefined, rawFriendIdOrName: string): Promise<ResolvedFriend | null> {
   const raw = rawFriendIdOrName.trim()
   if (!raw) return null
-  if (isSelfTarget(raw)) return { id: "self", name: "self", isSelf: true }
 
   const direct = await friendStore?.get(raw)
   if (direct) {

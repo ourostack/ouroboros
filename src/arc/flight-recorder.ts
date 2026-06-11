@@ -119,7 +119,7 @@ export interface HabitSurfaceAttempt {
   recipient: string
   channel: string
   reason: "needed_input" | "status" | "answer" | "blocked" | "other"
-  result: "sent" | "queued" | "deferred" | "blocked" | "failed"
+  result: "sent" | "delivered" | "delivered_now" | "queued" | "deferred" | "blocked" | "failed" | "unavailable"
   routeKind?: HabitReturnRouteKind
   rawStatus?: string
   error?: string
@@ -486,10 +486,13 @@ function isHabitSurfaceAttemptArray(value: unknown): value is HabitSurfaceAttemp
         || entry.reason === "blocked"
         || entry.reason === "other")
       && (entry.result === "sent"
+        || entry.result === "delivered"
+        || entry.result === "delivered_now"
         || entry.result === "queued"
         || entry.result === "deferred"
         || entry.result === "blocked"
-        || entry.result === "failed")
+        || entry.result === "failed"
+        || entry.result === "unavailable")
       && (entry.routeKind === undefined
         || entry.routeKind === "family"
         || entry.routeKind === "originator"

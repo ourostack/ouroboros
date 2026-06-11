@@ -112,19 +112,24 @@ describe("habit-session helpers", () => {
       runtimeStateLocator: "state/habits/heartbeat.json",
       receiptLocator: `arc/flight-recorder/habit-receipts/${runId}.json`,
     })
+    expect(() => createHabitSessionPaths(agentRoot, "../escape")).toThrow("unsafe habit run id")
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.habit_session_unsafe_run_id",
+    }))
   })
 
   it("normalizes return-route permissions from parser defaults, origin, and exact extra specs", async () => {
     const ari = makeFriend("ari", "Ari", "family")
     const teammate = makeFriend("teammate-id", "Teammate", "friend")
-    const friendStore = makeFriendStore([ari, teammate])
+    const loop = makeFriend("self", "Loop", "friend")
+    const friendStore = makeFriendStore([ari, teammate, loop])
 
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
       origin: { friendId: "ari", channel: "cli", key: "main" },
       surface: {
         family: true,
         originator: true,
-        extra: ["Teammate/mcp/thread-1", "malformed", "self/inner/dialog"],
+        extra: ["Teammate/mcp/thread-1", "malformed", "self/inner/dialog", "Unknown/mcp/thread-2", "Loop/mcp/thread-3"],
       },
     }), { agentRoot, friendStore })
 
@@ -139,9 +144,12 @@ describe("habit-session helpers", () => {
       expect.objectContaining({ kind: "extra", recipient: "Teammate", status: "allowed", friendId: "teammate-id", channel: "mcp", key: "thread-1" }),
       expect.objectContaining({ kind: "extra", recipient: "malformed", status: "unresolved" }),
       expect.objectContaining({ kind: "extra", recipient: "self/inner/dialog", status: "unresolved" }),
+      expect.objectContaining({ kind: "extra", recipient: "Unknown", status: "unresolved" }),
+      expect.objectContaining({ kind: "extra", recipient: "Loop/mcp/thread-3", status: "unresolved" }),
     ]))
     expect(envelope.warnings.join("\n")).toContain("malformed")
     expect(envelope.warnings.join("\n")).toContain("self/inner")
+    expect(envelope.warnings.join("\n")).toContain("Unknown")
   })
 
   it("removes outward messaging tools when every return route is disabled or unresolved", async () => {
@@ -153,6 +161,49 @@ describe("habit-session helpers", () => {
     expect(envelope.canMessageOutward).toBe(false)
     expect(envelope.deniedTools).toEqual(expect.arrayContaining(["send_message", "surface"]))
     expect(envelope.returnRoutes).toEqual([])
+  })
+
+  it("records unresolved originator routes when origin is missing", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: true, extra: [] },
+    }), { agentRoot })
+
+    expect(envelope.canMessageOutward).toBe(false)
+    expect(envelope.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "originator", recipient: "originator", status: "unresolved" }),
+    ])
+    expect(envelope.warnings.join("\n")).toContain("no origin")
+  })
+
+  it("handles malformed originators and no-store exact extra routes", async () => {
+    const malformed = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "", channel: "cli", key: "main" },
+      surface: { family: false, originator: true, extra: [] },
+    }), { agentRoot })
+    expect(malformed.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "originator", recipient: "", status: "unresolved" }),
+    ])
+
+    const permissive = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: false, extra: ["Peer/mcp/thread-1"] },
+    }), { agentRoot })
+    expect(permissive.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "extra", recipient: "Peer", status: "allowed", friendId: "Peer" }),
+    ])
+  })
+
+  it("records originator warnings when the stated origin cannot be resolved", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "missing", channel: "cli", key: "main" },
+      surface: { family: false, originator: true, extra: [] },
+    }), { agentRoot, friendStore: makeFriendStore([]) })
+
+    expect(envelope.returnRoutes).toEqual([
+      expect.objectContaining({ kind: "originator", recipient: "missing", status: "unresolved" }),
+    ])
+    expect(envelope.warnings.join("\n")).toContain("missing")
   })
 
   it("resolves route attempts before handlers run and denies non-family, self, and live voice routes", async () => {
@@ -172,6 +223,14 @@ describe("habit-session helpers", () => {
       args: { friendId: "ari", channel: "bluebubbles", key: "chat", content: "checking in" },
       friendStore,
     })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari" })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "ari", content: "checking in" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: true, routeKind: "family", friendId: "ari", channel: "", key: "" })
 
     await expect(resolveHabitReturnRoute({
       agentRoot,
@@ -216,6 +275,127 @@ describe("habit-session helpers", () => {
     })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("voice") })
   })
 
+  it("rejects missing, unsupported, unresolved, self-resolved, and no-route tool targets", async () => {
+    const friendStore = makeFriendStore([
+      makeFriend("ari", "Ari", "family"),
+      makeFriend("self", "Loop", "friend"),
+    ])
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: null,
+      surface: { family: false, originator: false, extra: [] },
+    }), { agentRoot, friendStore })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { channel: "cli", key: "main" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "shell",
+      args: { command: "echo ok" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { delegationId: "missing" },
+      delegatedOrigins: [],
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { content: "floating answer" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no permitted return route target") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { friendId: "ari", content: "floating answer" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "missing", channel: "cli", key: "main" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("unresolved") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "Loop", channel: "cli", key: "main" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("self/inner") })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "send_message",
+      args: { friendId: "ari", channel: "cli", key: "main" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("no habit return route") })
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.habit_return_route_denied",
+    }))
+  })
+
+  it("allows exact routes with omitted optional keys when the tool target also omits them", async () => {
+    const friendStore = makeFriendStore([makeFriend("ari", "Ari", "family")])
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope: {
+        schemaVersion: 1,
+        canMessageOutward: true,
+        returnRoutes: [{ kind: "extra", recipient: "Ari", status: "allowed", friendId: "ari", channel: "cli" }],
+        deniedTools: [],
+        warnings: [],
+      },
+      toolName: "send_message",
+      args: { friendId: "ari", channel: "cli", content: "checking in" },
+      friendStore,
+    })).resolves.toMatchObject({ allowed: true, routeKind: "extra", friendId: "ari", channel: "cli", key: "" })
+  })
+
+  it("resolves singleton delegated surface routes without mutating queues", async () => {
+    const friendStore = makeFriendStore([makeFriend("ari", "Ari", "family")])
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
+      origin: { friendId: "ari", channel: "cli", key: "main" },
+    }), { agentRoot, friendStore })
+
+    await expect(resolveHabitReturnRoute({
+      agentRoot,
+      envelope,
+      toolName: "surface",
+      args: { content: "answer" },
+      friendStore,
+      delegatedOrigins: [{
+        id: "held-1",
+        friendId: "ari",
+        friendName: "Ari",
+        channel: "cli",
+        key: "main",
+        delegatedContent: "question",
+        source: "drained",
+        timestamp: 1,
+      }],
+    })).resolves.toMatchObject({ allowed: true, routeKind: "originator", friendId: "ari", channel: "cli", key: "main" })
+  })
+
   it("filters habit tools with the supplied executable risk classifier and route envelope", async () => {
     const envelope = await normalizeHabitPermissionEnvelope(makeHabit({
       origin: null,
@@ -242,6 +422,25 @@ describe("habit-session helpers", () => {
     expect(policy.grantedTools).toEqual(["read_file"])
     expect(policy.deniedTools).toEqual(expect.arrayContaining(["shell", "graph_mutate", "send_message", "surface"]))
     expect(policy.outwardMessagingAllowed).toBe(false)
+  })
+
+  it("filters requested tools while preserving route-checked outward messaging exceptions", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const tools = [
+      makeTool("read_file", { mutates: "none", risk: "low" }),
+      makeTool("send_message", { mutates: "external_side_effect", risk: "high", reason: "messages outward" }),
+      makeTool("shell", { mutates: "none", risk: "low" }),
+    ]
+
+    const policy = filterHabitToolsForEnvelope(tools, ["send_message"], envelope, (definition) =>
+      definition.riskProfile as ToolRiskProfile)
+
+    expect(policy).toMatchObject({
+      requestedTools: ["send_message"],
+      grantedTools: ["send_message"],
+      deniedTools: [],
+      outwardMessagingAllowed: true,
+    })
   })
 
   it("builds complete schema v2 receipts without writing them", async () => {
@@ -282,5 +481,32 @@ describe("habit-session helpers", () => {
       toolPolicy: policy,
     })
     expect(fs.existsSync(path.join(agentRoot, "arc", "flight-recorder", "habit-receipts", `${receipt.runId}.json`))).toBe(false)
+  })
+
+  it("sets null nextRunAt for inactive, unparseable, and invalid-ended runs unless explicitly provided", async () => {
+    const envelope = await normalizeHabitPermissionEnvelope(makeHabit(), { agentRoot })
+    const policy = {
+      requestedTools: null,
+      grantedTools: [],
+      deniedTools: [],
+      outwardMessagingAllowed: false,
+    }
+    const base = {
+      agentRoot,
+      habit: makeHabit(),
+      runId: "2026-06-11T17-00-00-000Z-heartbeat-abc123ef",
+      trigger: "poke" as const,
+      startedAt: "2026-06-11T17:00:00.000Z",
+      endedAt: "not-a-date",
+      outcome: "no_change" as const,
+      permissionEnvelope: envelope,
+      toolPolicy: policy,
+    }
+
+    expect(buildHabitRunReceipt({ ...base, habit: makeHabit({ status: "paused" }) }).nextRunAt).toBeNull()
+    expect(buildHabitRunReceipt({ ...base, habit: makeHabit({ cadence: "someday" }) }).nextRunAt).toBeNull()
+    expect(buildHabitRunReceipt(base).nextRunAt).toBeNull()
+    expect(buildHabitRunReceipt({ ...base, nextRunAt: "2026-06-12T00:00:00.000Z" }).nextRunAt)
+      .toBe("2026-06-12T00:00:00.000Z")
   })
 })
