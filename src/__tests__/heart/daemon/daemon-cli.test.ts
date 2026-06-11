@@ -8051,6 +8051,7 @@ describe("ouro habit CLI parsing", () => {
       trigger: "launchd",
     })
     expect(() => parseOuroCommand(["poke", "slugger", "--habit", "heartbeat", "--trigger", "banana"])).toThrow("trigger")
+    expect(() => parseOuroCommand(["poke", "slugger", "--trigger", "manual"])).toThrow("Usage")
   })
 
   it("poke --habit takes priority over --task", () => {
