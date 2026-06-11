@@ -192,10 +192,10 @@ export function createInnerDialogWorker(
   const recentHabitFires: number[] = []
   let heartbeatOkRestedAt: number | null = null
 
-  function habitOutcomeForTurn(result: unknown, errors: string[]): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
+  function habitOutcomeForTurn(turnResults: unknown[], errors: string[]): { outcome: HabitRunReceipt["outcome"]; producedRefs: FlightRecorderProducedRef[] } {
     if (errors.length > 0) return { outcome: "error", producedRefs: [] }
     const toolNames = new Set<string>()
-    const results = Array.isArray(result) ? result : [result]
+    const results = turnResults.flatMap((entry) => Array.isArray(entry) ? entry : [entry])
     for (const turnResult of results) {
       if (!turnResult || typeof turnResult !== "object" || !Array.isArray((turnResult as { messages?: unknown }).messages)) continue
       for (const message of (turnResult as { messages: Array<Record<string, unknown>> }).messages) {

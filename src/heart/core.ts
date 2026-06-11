@@ -489,7 +489,7 @@ async function habitToolBatchBlockReason(
         friendStore: habitSession.friendStore,
         delegatedOrigins,
       })
-      if (!route.allowed) return route.reason ?? `habit tool '${call.name}' route was denied`
+      if (!route.allowed) return route.reason
     }
   }
   return null

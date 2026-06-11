@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 const mockListSessionActivity = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockGetBridge = vi.fn()
+const mockPlaceTrustedFriendVoiceOutboundCall = vi.fn()
 
 vi.mock("fs", () => ({
   existsSync: vi.fn().mockReturnValue(false),
@@ -36,6 +37,10 @@ vi.mock("../../heart/bridges/manager", () => ({
   }),
 }))
 
+vi.mock("../../senses/voice/outbound", () => ({
+  placeTrustedFriendVoiceOutboundCall: (...args: unknown[]) => mockPlaceTrustedFriendVoiceOutboundCall(...args),
+}))
+
 describe("surface tool", () => {
   let surfaceToolDef: typeof import("../../repertoire/tools").surfaceToolDef
   let handleSurface: typeof import("../../senses/surface-tool").handleSurface
@@ -56,6 +61,11 @@ describe("surface tool", () => {
       reason: "send_error",
     })
     mockGetBridge.mockReturnValue(null)
+    mockPlaceTrustedFriendVoiceOutboundCall.mockReset()
+    mockPlaceTrustedFriendVoiceOutboundCall.mockResolvedValue({
+      status: "placed",
+      detail: "voice call initiated",
+    })
     const toolsMod = await import("../../repertoire/tools")
     surfaceToolDef = toolsMod.surfaceToolDef
     const surfaceMod = await import("../../senses/surface-tool")
@@ -899,6 +909,61 @@ describe("surface tool", () => {
         result: "queued",
         rawStatus: "queued",
         routeKind: "originator",
+      })
+    })
+
+    it("surfaceToolDefinition records delivered voice route attempts for habit receipts", async () => {
+      const recordSurfaceAttempt = vi.fn()
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "call with the result",
+        friendId: "ari",
+        channel: "voice",
+      }, {
+        delegatedOrigins: [],
+        habitSession: { recordSurfaceAttempt },
+      } as any)
+
+      expect(result).toContain("delivered")
+      expect(mockPlaceTrustedFriendVoiceOutboundCall).toHaveBeenCalledWith(expect.objectContaining({
+        friendId: "ari",
+        reason: "call with the result",
+      }))
+      expect(recordSurfaceAttempt).toHaveBeenCalledWith({
+        recipient: "ari",
+        channel: "voice",
+        reason: "answer",
+        result: "delivered",
+        rawStatus: "delivered",
+      })
+    })
+
+    it("surfaceToolDefinition records failed voice route attempts for habit receipts", async () => {
+      mockPlaceTrustedFriendVoiceOutboundCall.mockResolvedValueOnce({
+        status: "blocked",
+        detail: "voice route unavailable",
+      })
+      const recordSurfaceAttempt = vi.fn()
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "call with the result",
+        friendId: "ari",
+        channel: "voice",
+      }, {
+        delegatedOrigins: [],
+        habitSession: { recordSurfaceAttempt },
+      } as any)
+
+      expect(result).toContain("failed")
+      expect(recordSurfaceAttempt).toHaveBeenCalledWith({
+        recipient: "ari",
+        channel: "voice",
+        reason: "blocked",
+        result: "failed",
+        rawStatus: "failed",
+        error: "voice route unavailable",
       })
     })
 

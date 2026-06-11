@@ -466,6 +466,28 @@ describe("inner-dialog-worker", () => {
       }))
     })
 
+    it("classifies array-shaped habit turn results", async () => {
+      const runTurn = vi.fn().mockResolvedValue([
+        { messages: [] },
+        {
+          messages: [{
+            role: "assistant",
+            tool_calls: [
+              { id: "tc-1", type: "function", function: { name: "surface", arguments: "{}" } },
+            ],
+          }],
+        },
+      ])
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "array-result", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        outcome: "surfaced",
+        producedRefs: [{ kind: "surface", locator: "tool:send_message_or_surface" }],
+      }))
+    })
+
     it("classifies habit turns that update Desk through MCP desk tools", async () => {
       const runTurn = vi.fn().mockResolvedValue({
         messages: [{
@@ -560,6 +582,23 @@ describe("inner-dialog-worker", () => {
       expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         event: "senses.habit_file_read_error",
         level: "warn",
+      }))
+    })
+
+    it("records non-Error habit file read failures losslessly", async () => {
+      mockReadFileSync.mockImplementation((filePath: any) => {
+        if (String(filePath).includes("/habits/")) throw "habit missing as string"
+        return ""
+      })
+      const runTurn = vi.fn().mockResolvedValue({ messages: [] })
+      const worker = createInnerDialogWorker(runTurn, undefined, () => new Date("2026-06-08T12:00:00.000Z").getTime())
+
+      await worker.handleMessage({ type: "habit", habitName: "string-missing", trigger: "poke" })
+
+      expect(mockWriteHabitRunReceipt).toHaveBeenCalledWith("/bundles/slugger.ouro", expect.objectContaining({
+        habitName: "string-missing",
+        outcome: "error",
+        errors: [expect.stringContaining("habit missing as string")],
       }))
     })
 

@@ -277,6 +277,7 @@ describe("deliverCrossChatMessage", () => {
     expect(result).toEqual({
       status: "queued_for_later",
       detail: "live delivery unavailable right now; queued for the next active turn",
+      rawStatus: "unavailable",
     })
     expect(queuePending).toHaveBeenCalledTimes(1)
   })

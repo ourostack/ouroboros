@@ -1427,6 +1427,118 @@ describe("runAgent", () => {
     ]))
   })
 
+  it("habit mode blocks known tools that were not granted", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [{ type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } }],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["read_file"],
+          grantedTools: [],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_read", content: expect.stringContaining("not granted") }),
+    ]))
+  })
+
+  it("habit mode blocks advertised tools with no executable risk profile", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_custom", function: { name: "custom_local_tool", arguments: "{}" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [{ type: "function" as const, function: { name: "custom_local_tool", description: "custom", parameters: { type: "object", properties: {} } } }],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["custom_local_tool"],
+          grantedTools: ["custom_local_tool"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_custom", content: expect.stringContaining("known executable risk profile") }),
+    ]))
+  })
+
   it("habit mode blocks granted tools whose executable risk mutates external state", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
@@ -1486,6 +1598,62 @@ describe("runAgent", () => {
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("external_side_effect") }),
+    ]))
+  })
+
+  it("habit mode allows explicitly granted durable-state-only high-risk tools", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_write", function: { name: "write_file", arguments: "{\"path\":\"note.txt\",\"content\":\"ok\"}" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"done\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "wrote file")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [{ type: "function" as const, function: { name: "write_file", description: "write", parameters: { type: "object", properties: {} } } }],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: false,
+          returnRoutes: [],
+          deniedTools: ["send_message", "surface"],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["write_file"],
+          grantedTools: ["write_file"],
+          deniedTools: ["send_message", "surface"],
+          outwardMessagingAllowed: false,
+        },
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledWith("write_file", { path: "note.txt", content: "ok" }, expect.any(Object))
+    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool_call_id: "tc_write", content: "wrote file" }),
     ]))
   })
 
@@ -1616,6 +1784,67 @@ describe("runAgent", () => {
     expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
       expect.objectContaining({ tool_call_id: "tc_read", content: "file contents" }),
     ]))
+  })
+
+  it("habit mode preserves habit sessions provided through a base tool context", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"done\"}" } },
+        ]),
+      ])
+    })
+
+    const habitSession = {
+      runId: "base-context-run",
+      permissionEnvelope: {
+        schemaVersion: 1,
+        canMessageOutward: false,
+        returnRoutes: [],
+        deniedTools: ["send_message", "surface"],
+        warnings: [],
+      },
+      toolPolicy: {
+        requestedTools: ["read_file"],
+        grantedTools: ["read_file"],
+        deniedTools: ["send_message", "surface"],
+        outwardMessagingAllowed: false,
+      },
+    }
+    const execTool = vi.fn(async (_name, _args, ctx) => {
+      expect(ctx.habitSession).toBe(habitSession)
+      return "file contents"
+    })
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [{ type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } }],
+      execTool,
+      toolContext: {
+        signin: async () => undefined,
+        habitSession,
+      },
+    })
+
+    expect(execTool).toHaveBeenCalledTimes(1)
   })
 
   it("habit mode honors explicit denials before special control tool branches", async () => {
@@ -1813,6 +2042,81 @@ describe("runAgent", () => {
       result: "blocked",
       rawStatus: "blocked",
       error: expect.stringContaining("family"),
+    }))
+  })
+
+  it("habit mode records blocked surface attempts with fallback recipients and channels", async () => {
+    let callCount = 0
+    mockCreate.mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return makeStream([
+          makeChunk(undefined, [
+            { index: 0, id: "tc_surface_unknown", function: { name: "surface", arguments: "{\"content\":\"no target\"}" } },
+            { index: 1, id: "tc_surface_delegated", function: { name: "surface", arguments: "{\"delegationId\":\"delegation-1\",\"content\":\"return this\"}" } },
+            { index: 2, id: "tc_read", function: { name: "read_file", arguments: "{\"path\":\"safe.txt\"}" } },
+            { index: 3, id: "tc_surface_bad_json", function: { name: "surface", arguments: "{\"content\":" } },
+          ]),
+        ])
+      }
+      return makeStream([
+        makeChunk(undefined, [
+          { index: 0, id: "tc_rest", function: { name: "rest", arguments: "{\"status\":\"blocked\"}" } },
+        ]),
+      ])
+    })
+
+    const execTool = vi.fn(async () => "side effect happened")
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {},
+      onModelStreamStart: () => {},
+      onTextChunk: () => {},
+      onReasoningChunk: () => {},
+      onToolStart: vi.fn(),
+      onToolEnd: () => {},
+      onError: () => {},
+    }
+    const messages: any[] = [{ role: "system", content: "test" }]
+    const recordSurfaceAttempt = vi.fn()
+
+    await (runAgent as any)(messages, callbacks, "inner", undefined, {
+      tools: [
+        { type: "function" as const, function: { name: "surface", description: "surface", parameters: { type: "object", properties: {} } } },
+        { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object", properties: {} } } },
+      ],
+      execTool,
+      habitSession: {
+        permissionEnvelope: {
+          schemaVersion: 1,
+          canMessageOutward: true,
+          returnRoutes: [],
+          deniedTools: [],
+          warnings: [],
+        },
+        toolPolicy: {
+          requestedTools: ["surface", "read_file"],
+          grantedTools: ["surface", "read_file"],
+          deniedTools: [],
+          outwardMessagingAllowed: true,
+        },
+        recordSurfaceAttempt,
+      },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: "unknown",
+      channel: "surface",
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
+    }))
+    expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: "delegation-1",
+      channel: "surface",
+      reason: "blocked",
+      result: "blocked",
+      rawStatus: "blocked",
     }))
   })
 

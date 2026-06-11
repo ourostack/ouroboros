@@ -38,14 +38,18 @@ export interface NormalizeHabitPermissionOptions {
   friendStore?: FriendStore
 }
 
-export interface HabitReturnRouteResolution {
-  allowed: boolean
-  routeKind?: HabitReturnRouteKind
-  friendId?: string
-  channel?: string
-  key?: string
-  reason?: string
-}
+export type HabitReturnRouteResolution =
+  | {
+    allowed: true
+    routeKind: HabitReturnRouteKind
+    friendId: string
+    channel: string
+    key: string
+  }
+  | {
+    allowed: false
+    reason: string
+  }
 
 export interface ResolveHabitReturnRouteInput extends NormalizeHabitPermissionOptions {
   envelope: HabitPermissionEnvelope

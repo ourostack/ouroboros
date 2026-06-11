@@ -127,7 +127,7 @@ function recordHabitSendAttempt(ctx: ToolContext | undefined, args: { friendId: 
     channel: args.channel,
     reason: result.status === "blocked" ? "blocked" : result.status === "failed" ? "other" : "status",
     result: normalizeHabitSendStatus(result.status),
-    rawStatus: result.status,
+    rawStatus: result.rawStatus ?? result.status,
     ...(result.status === "blocked" || result.status === "failed" ? { error: result.detail } : {}),
   })
 }

@@ -707,19 +707,27 @@ describe("send_message tool", () => {
   it("falls back to truthful queued status when teams live delivery is unavailable", async () => {
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+    const recordSurfaceAttempt = vi.fn()
 
     const result = await tool.handler({
       friendId: "friend-uuid-4",
       channel: "teams",
       key: "target-thread",
       content: "queue this teams message for later",
-    }, makeTrustedTeamsTurnContext({ botApi: undefined }))
+    }, makeTrustedTeamsTurnContext({ botApi: undefined, habitSession: { recordSurfaceAttempt } }))
 
     expect(result.toLowerCase()).toContain("queued for later")
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       expect.stringMatching(/^\/mock\/agent-root\/state\/pending\/friend-uuid-4\/teams\/target-thread\/\d+-.+\.json$/),
       expect.any(String),
     )
+    expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: "friend-uuid-4",
+      channel: "teams",
+      reason: "status",
+      result: "queued",
+      rawStatus: "unavailable",
+    }))
   })
 
   it("falls back to truthful queued status when teams adapter reports undelivered without a specific reason", async () => {
