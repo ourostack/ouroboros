@@ -418,8 +418,8 @@ function exactRouteMatches(route: HabitReturnRoute, target: RouteTarget): boolea
   return route.status === "allowed"
     && route.kind !== "family"
     && route.friendId === target.friendId
-    && (route.channel ?? "") === target.channel
-    && (route.key ?? "") === target.key
+    && route.channel === target.channel
+    && route.key === target.key
 }
 
 function deniedRoute(reason: string): HabitReturnRouteResolution {
